@@ -1,0 +1,6 @@
+[submodule "lib/etl"]
+	path = lib/etl
+	url = https://github.com/ETLCPP/etl.git
+[submodule "lib/opensbi"]
+	path = lib/opensbi
+	url = https://github.com/riscv-software-src/opensbi.git

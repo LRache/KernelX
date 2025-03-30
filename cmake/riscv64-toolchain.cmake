@@ -1,0 +1,15 @@
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR riscv64)
+
+set(TOOLCHAIN_PREFIX "/usr/bin/riscv64-linux-gnu-")
+
+set(CMAKE_C_COMPILER "${TOOLCHAIN_PREFIX}gcc")
+set(CMAKE_CXX_COMPILER "${TOOLCHAIN_PREFIX}g++")
+set(CMAKE_ASM_COMPILER "${TOOLCHAIN_PREFIX}gcc")
+set(CMAKE_LINKER "${TOOLCHAIN_PREFIX}ld")
+
+set(RISCV_ARCH_FLAGS "-march=rv64gc -mabi=lp64d -mcmodel=medany")
+
+set(ARCH riscv64)
+set(CMAKE_C_FLAGS   "${RISCV_ARCH_FLAGS}")
+set(CMAKE_CXX_FLAGS "${RISCV_ARCH_FLAGS}")
