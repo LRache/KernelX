@@ -1,0 +1,10 @@
+{
+    "rust-analyzer.check.extraArgs": [
+        "--target",
+        "riscv64gc-unknown-none-elf",
+    ],
+    "rust-analyzer.cargo.features": [
+        "platform-qemu-virt-riscv64"
+    ],
+    "cmake.sourceDirectory": "/home/rache/code/KernelX/c"
+}

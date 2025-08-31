@@ -1,0 +1,34 @@
+ARCH ?= riscv64
+CROSS_COMPILE ?= riscv64-linux-gnu-
+
+CC = $(CROSS_COMPILE)gcc
+
+SRC_DIR = .
+BUILD_DIR = build/$(ARCH)
+OUTPUT_DIR = $(BUILD_DIR)/output
+
+CFLAGS += -Wall -Wextra
+
+TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+TEST_TARGETS = $(addprefix $(OUTPUT_DIR)/, $(TESTS))
+
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+	$(info + CC $<)
+	@ mkdir -p $(OUTPUT_DIR)
+	@ $(CC) $(CFLAGS) -c $< -o $@
+
+$(OUTPUT_DIR)/%: $(BUILD_DIR)/%.o
+	$(info + LD $<)
+	@ mkdir -p $(OUTPUT_DIR)
+	@ $(CC) $(CFLAGS) $< -o $@
+
+all: $(TEST_TARGETS)
+
+clean:
+	$(info + CLEAN)
+	@ rm -rf $(BUILD_DIR)
+
+show-tests:
+	@echo "Auto-discovered tests:"
+	@for test in $(TESTS); do echo "  - $$test"; done
+	@for test in $(TESTS); do echo "  - $$test"; done
