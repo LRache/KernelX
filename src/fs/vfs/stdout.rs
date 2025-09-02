@@ -1,11 +1,11 @@
+use core::u32;
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use spin::Lazy;
 
 use crate::fs::file::File;
-use crate::fs::inode::manager::InodeWrapper;
-use crate::fs::Inode;
-use crate::fs::inode::InodeNumber;
+use crate::fs::{Inode, LockedInode};
 use crate::fs::file::FileFlags;
 use crate::kernel::errno::Errno;
 use crate::platform;
@@ -13,12 +13,12 @@ use crate::platform;
 pub struct StdoutInode;
 
 impl Inode for StdoutInode {
-    fn get_ino(&self) -> InodeNumber {
+    fn get_ino(&self) -> u32 {
         // panic!("StdoutInode does not have a valid inode number")
         0
     }
 
-    fn get_fsno(&self) -> usize {
+    fn get_sno(&self) -> u32 {
         panic!("StdoutInode does not belong to a filesystem")
     }
     
@@ -40,7 +40,7 @@ impl Inode for StdoutInode {
 }
 
 static STDOUT: Lazy<Arc<File>> = Lazy::new(|| {
-    Arc::new(File::new(InodeWrapper::new(Box::new(StdoutInode)), FileFlags::dontcare()))
+    Arc::new(File::new(LockedInode::new(u32::MAX, u32::MAX, Box::new(StdoutInode)), FileFlags::dontcare()))
 });
 
 pub fn stdout() -> Arc<File> {

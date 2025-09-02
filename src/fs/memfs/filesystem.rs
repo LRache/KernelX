@@ -20,7 +20,7 @@ unsafe extern "C" {
 }
 
 impl FileSystem for MemoryFileSystem {
-    fn create(&self, fsno: usize, _device: Option<Box<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, Errno> {
-        Ok(MemoryFileSystemSuperBlock::new(fsno))
+    fn create(&self, sno: u32, _device: Option<Box<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, Errno> {
+        Ok(MemoryFileSystemSuperBlock::new(sno))
     }
 }

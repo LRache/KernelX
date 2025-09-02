@@ -13,4 +13,4 @@ use inode::Inode;
 
 pub use init::init;
 pub use filestat::FileStat;
-pub use inode::InodeWrapper;
+pub use inode::LockedInode;

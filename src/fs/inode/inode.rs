@@ -6,7 +6,7 @@ use crate::kernel::errno::Errno;
 pub trait Inode: Send + Sync {
     fn get_ino(&self) -> u32;
 
-    fn get_fsno(&self) -> usize;
+    fn get_sno(&self) -> u32;
 
     fn readat(&mut self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
         panic!("readat not implemented for this inode type")
@@ -32,7 +32,7 @@ pub struct LockedInode {
 }
 
 impl LockedInode {
-    pub fn new(sno: u32, ino: u32, inode: Box<dyn Inode>) -> Self {
+    pub const fn new(sno: u32, ino: u32, inode: Box<dyn Inode>) -> Self {
         Self {
             sno,
             ino,

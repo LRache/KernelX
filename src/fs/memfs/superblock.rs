@@ -6,17 +6,17 @@ use alloc::sync::Arc;
 use spin::Mutex;
 
 use super::inode::MemoryFileSystemInode;
-use crate::fs::inode::{Inode, InodeNumber};
+use crate::fs::inode::Inode;
 use crate::fs::filesystem::SuperBlock;
 use crate::kernel::errno::Errno;
 
 struct Entry {
     pub inode: MemoryFileSystemInode,
-    pub entries: BTreeMap<String, InodeNumber>,
+    pub entries: BTreeMap<String, u32>,
 }
 
 pub struct MemoryFileSystemSuperBlock {
-    fsno: usize,
+    sno: u32,
     entries: Mutex<Vec<Entry>>,
 }
 
@@ -26,9 +26,9 @@ unsafe extern "C" {
 }
 
 impl MemoryFileSystemSuperBlock {
-    pub fn new(fsno: usize) -> Arc<Self> {
+    pub fn new(sno: u32) -> Arc<Self> {
         let this = Arc::new(MemoryFileSystemSuperBlock {
-            fsno,
+            sno,
             entries: Mutex::new(Vec::new()),
         });
 
@@ -62,13 +62,13 @@ impl MemoryFileSystemSuperBlock {
         this
     }
 
-    pub fn get_fsno(&self) -> usize {
-        self.fsno
+    pub fn get_fsno(&self) -> u32 {
+        self.sno
     }
 
-    pub fn lookup(&self, ino: InodeNumber, name: &str) -> Option<InodeNumber> {
+    pub fn lookup(&self, ino: u32, name: &str) -> Option<u32> {
         let entries = self.entries.lock();
-        if let Some(entry) = entries.get(ino) {
+        if let Some(entry) = entries.get(ino as usize) {
             entry.entries.get(name).cloned()
         } else {
             None
@@ -81,8 +81,8 @@ impl SuperBlock for MemoryFileSystemSuperBlock {
         Box::new(self.entries.lock()[0].inode.clone()) as Box<dyn Inode>
     }
 
-    fn get_inode(&self, ino: usize) -> Result<Box<dyn Inode>, Errno> {
-        self.entries.lock().get(ino).map(|entry| {
+    fn get_inode(&self, ino: u32) -> Result<Box<dyn Inode>, Errno> {
+        self.entries.lock().get(ino as usize).map(|entry| {
             Box::new(entry.inode.clone()) as Box<dyn Inode>
         }).ok_or(Errno::ENOENT)
     }

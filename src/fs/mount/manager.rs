@@ -13,17 +13,17 @@ impl Manager {
         }
     }
 
-    pub fn add_mount(&mut self, fsno: usize, ino: usize, mount_fsno: usize, mount_ino: usize) {
+    pub fn add_mount(&mut self, sno: u32, ino: u32, mount_sno: u32, mount_ino: u32) {
         self.mounts.insert(
-            inode::Index { fsno, ino },
+            inode::Index { sno, ino },
             inode::Index {
-                fsno: mount_fsno,
+                sno: mount_sno,
                 ino: mount_ino,
             },
         );
     }
 
-    pub fn get_mount(&self, fsno: usize, ino: usize) -> Option<inode::Index> {
-        self.mounts.get(&inode::Index { fsno, ino }).cloned()
+    pub fn get_mount(&self, sno: u32, ino: u32) -> Option<inode::Index> {
+        self.mounts.get(&inode::Index { sno, ino }).cloned()
     }
 }

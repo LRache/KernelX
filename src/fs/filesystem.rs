@@ -7,7 +7,7 @@ use crate::kernel::errno::Errno;
 use crate::fs::inode::Inode;
 
 pub trait FileSystem: Send + Sync {
-    fn create(&self, fsno: usize, device: Option<Box<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, Errno>;
+    fn create(&self, fsno: u32, device: Option<Box<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, Errno>;
 }
 
 pub trait SuperBlock: Send + Sync {

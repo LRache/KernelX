@@ -1,10 +1,8 @@
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use spin::mutex::Mutex;
 
-use crate::fs::inode::{LockedInode, Inode};
-use crate::fs::inode;
+use crate::fs::inode::{LockedInode, Index};
 
 // pub struct InodeWrapper {
 //     inner: Mutex<dyn Inode>,
@@ -51,22 +49,6 @@ use crate::fs::inode;
 //     }
 // }
 
-#[derive(Eq, PartialEq, PartialOrd, Hash, Clone, Copy)]
-struct Index {
-    pub sno: usize,
-    pub ino: usize,
-}
-
-impl Ord for Index {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        if self.sno != other.sno {
-            self.sno.cmp(&other.sno)
-        } else {
-            self.ino.cmp(&other.ino)
-        }
-    }
-}
-
 pub struct Manager {
     inodes: Mutex<BTreeMap<Index, Weak<LockedInode>>>,
 }
@@ -78,11 +60,11 @@ impl Manager {
         }
     }
 
-    pub fn with_inode<F, R>(&self, fsno: usize, ino: usize, f: F) -> Option<R>
+    pub fn with_inode<F, R>(&self, sno: u32, ino: u32, f: F) -> Option<R>
     where
         F: FnOnce(&LockedInode) -> R,
     {
-        if let Some(weak_inode) = self.inodes.lock().get(&inode::Index { fsno, ino }) {
+        if let Some(weak_inode) = self.inodes.lock().get(&Index { sno, ino }) {
             if let Some(strong_inode) = weak_inode.upgrade() {
                 return Some(f(&strong_inode));
             }
@@ -90,13 +72,13 @@ impl Manager {
         None
     }
 
-    pub fn get_inode(&self, fsno: u32, ino: u32) -> Option<Arc<LockedInode>> {
+    pub fn get_inode(&self, sno: u32, ino: u32) -> Option<Arc<LockedInode>> {
         let mut inodes = self.inodes.lock();
-        if let Some(weak) = inodes.get(&inode::Index { fsno, ino }) {
+        if let Some(weak) = inodes.get(&Index { sno, ino }) {
             if let Some(strong) = weak.upgrade() {
                 return Some(strong);
             } else {
-                inodes.remove(&inode::Index { fsno, ino });
+                inodes.remove(&Index { sno, ino });
                 return None;
             }
         } else {
@@ -104,7 +86,7 @@ impl Manager {
         }
     }
 
-    pub fn add_inode(&self, sno: u32, ino: u32, inode: Box<dyn Inode>) -> Arc<LockedInode> {
+    pub fn add_inode(&self, sno: u32, ino: u32, inode: LockedInode) -> Arc<LockedInode> {
         let inode = Arc::new(inode);
         self.inodes.lock().insert(
             Index { sno, ino },

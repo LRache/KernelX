@@ -1,8 +1,8 @@
 use alloc::sync::Weak;
 
 use super::superblock::MemoryFileSystemSuperBlock;
-use crate::fs::inode::{Inode, InodeNumber};
-use crate::kernel::errno::Errno;
+use crate::fs::inode::Inode;
+use crate::kernel::errno::{Errno, SysResult};
 
 #[derive(Clone)]
 pub struct MemoryFileSystemInode {
@@ -21,7 +21,7 @@ impl Inode for MemoryFileSystemInode {
         self.ino
     }
 
-    fn get_fsno(&self) -> u32 {
+    fn get_sno(&self) -> u32 {
         self.superblock.upgrade().expect("MemoryFileSystemInode: superblock is gone").get_fsno()
     }
 
@@ -36,11 +36,11 @@ impl Inode for MemoryFileSystemInode {
         Ok(len)
     }
 
-    fn writeat(&mut self, _buf: &[u8], _offset: usize) -> Result<usize, Errno> {
+    fn writeat(&mut self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
         Ok(0)
     }
 
-    fn lookup(&mut self, name: &str) -> Result<InodeNumber, Errno> {
+    fn lookup(&mut self, name: &str) -> SysResult<u32> {
         let superblock = self.superblock.upgrade().ok_or(Errno::ENOENT)?;
         superblock.lookup(self.ino, name).ok_or(Errno::ENOENT)
     }

@@ -11,7 +11,7 @@ use super::ffi::*;
 
 pub struct Ext4SuperBlock {
     driver: Box<dyn BlockDriver>,
-    fsno: usize,
+    sno: u32,
     fs_handler: usize,
 }
 
@@ -32,14 +32,14 @@ fn ffi_bclose(this: *mut c_void) -> i32 {
 }
 
 impl Ext4SuperBlock {
-    pub fn new(fsno: usize, device: Box<dyn BlockDevice>) -> Result<Arc<Self>, Errno> {
+    pub fn new(sno: u32, device: Box<dyn BlockDevice>) -> Result<Arc<Self>, Errno> {
         let driver = device.driver();
         let block_size = driver.get_block_size();
         let block_count = driver.get_block_count();
         
         let mut this = Arc::new(Ext4SuperBlock {
             driver,
-            fsno,
+            sno,
             fs_handler: 0,
         });
 
@@ -89,8 +89,8 @@ unsafe impl Send for Ext4SuperBlock {}
 unsafe impl Sync for Ext4SuperBlock {}
 
 impl SuperBlock for Ext4SuperBlock {  
-    fn get_inode(&self, ino: usize) -> Result<Box<dyn Inode>, Errno> {
-        Ok(Box::new(Ext4Inode::new(ino as u32, self.fsno, self.fs_handler)?))
+    fn get_inode(&self, ino: u32) -> Result<Box<dyn Inode>, Errno> {
+        Ok(Box::new(Ext4Inode::new(ino as u32, self.sno, self.fs_handler)?))
     }
 
     fn get_root_inode(&self) -> Box<dyn Inode> {

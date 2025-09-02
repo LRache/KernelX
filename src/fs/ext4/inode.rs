@@ -1,31 +1,30 @@
 use crate::fs::inode::Inode;
-use crate::fs::inode::InodeNumber;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use super::ffi;
 
 pub struct Ext4Inode {
     pub ino: u32,
-    fsno: usize,
+    sno: u32,
     inode_handler: usize
 }
 
 impl Ext4Inode {
-    pub fn new(ino: u32, fsno: usize, fs_handler: usize) -> Result<Self, Errno> {
+    pub fn new(ino: u32, sno: u32, fs_handler: usize) -> Result<Self, Errno> {
         Ok(Self {
             ino,
-            fsno,
+            sno,
             inode_handler: ffi::get_inode_handler(fs_handler, ino)?
         })
     }
 }
 
 impl Inode for Ext4Inode {
-    fn get_ino(&self) -> InodeNumber {
-        self.ino as usize
+    fn get_ino(&self) -> u32 {
+        self.ino
     }
 
-    fn get_fsno(&self) -> usize {
-        self.fsno
+    fn get_sno(&self) -> u32 {
+        self.sno
     }
 
     fn readat(&mut self, buf: &mut [u8], offset: usize) -> Result<usize, Errno> {
@@ -36,8 +35,8 @@ impl Inode for Ext4Inode {
         ffi::inode_writeat(self.inode_handler, buf, offset)
     }
 
-    fn lookup(&self, name: &str) -> Result<InodeNumber, Errno> {
-        Ok(ffi::inode_lookup(self.inode_handler, name)? as InodeNumber)
+    fn lookup(&mut self, name: &str) -> SysResult<u32> {
+        ffi::inode_lookup(self.inode_handler, name)
     }
 
     fn size(&self) -> Result<usize, Errno> {

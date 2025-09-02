@@ -1,5 +1,7 @@
-use crate::fs::vfs;
+use super::VFS;
 
 pub fn init() {
-    vfs::vfs::VFS.init();
+    unsafe {
+        VFS.init();
+    }
 }

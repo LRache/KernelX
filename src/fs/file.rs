@@ -1,8 +1,7 @@
 use alloc::sync::Arc;
 use spin::Mutex;
 
-use crate::fs::inode::manager::InodeWrapper;
-use crate::kernel::errno::Errno;
+use crate::{fs::inode::LockedInode, kernel::errno::Errno};
 use super::FileStat;
 
 pub enum SeekWhence {
@@ -33,7 +32,7 @@ impl FileFlags {
 }
 
 pub struct File {
-    inode: Arc<InodeWrapper>,
+    inode: Arc<LockedInode>,
     pos: Mutex<usize>,
     ftype: FileType,
     
@@ -41,7 +40,7 @@ pub struct File {
 }
 
 impl File {
-    pub const fn new(inode: Arc<InodeWrapper>, flags: FileFlags) -> Self {
+    pub const fn new(inode: Arc<LockedInode>, flags: FileFlags) -> Self {
         File {
             inode,
             pos: Mutex::new(0),
@@ -114,7 +113,7 @@ impl File {
         Ok(kstat)
     }
 
-    pub fn get_inode(&self) -> &Arc<InodeWrapper> {
+    pub fn get_inode(&self) -> &Arc<LockedInode> {
         &self.inode
     }
 }

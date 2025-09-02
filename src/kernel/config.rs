@@ -11,3 +11,5 @@ pub const USER_LINKER_ADDR_BASE: usize = 0x40000000; // Base address for the dyn
 pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 
 pub const KERNEL_STACK_PAGE_COUNT: usize = 12; // Kernel stack page count
+
+pub const INODE_CACHE_SIZE: usize = 512; // Inode cache size

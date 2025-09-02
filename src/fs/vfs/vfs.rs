@@ -1,3 +1,5 @@
+use core::mem::MaybeUninit;
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -5,14 +7,15 @@ use alloc::string::String;
 use alloc::collections::BTreeMap;
 use spin::mutex::Mutex;
 
-use crate::fs::inode::inode::LockedInode;
-use crate::kdebug;
-use crate::kernel::errno::{Errno, SysResult};
+use crate::fs::inode::LockedInode;
 use crate::fs::filesystem::{FileSystem, SuperBlock};
 use crate::fs::mount::Manager as MountManager;
-use crate::fs::inode::{Inode, Manager as INodeManager};
 use crate::fs::inode;
-use crate::fs::vfs::rootfs::RootFileSystem;
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kdebug;
+
+use super::rootfs::RootFileSystem;
+use super::dentry::Dentry;
 
 pub struct SuperBlockTable {
     table: Vec<Option<Arc<dyn SuperBlock>>>
@@ -45,23 +48,25 @@ impl SuperBlockTable {
 }
 
 pub struct VirtualFileSystem {
-    pub inodemanager: INodeManager,
+    cache: inode::Cache,
     pub mountmanager: Mutex<MountManager>,
     pub superblock_table: Mutex<SuperBlockTable>,
     pub fstype_map: Mutex<BTreeMap<String, Box<dyn FileSystem>>>,
+    root: MaybeUninit<Arc<Dentry>>,
 }
 
 impl VirtualFileSystem {
     pub const fn new() -> Self {
         VirtualFileSystem {
-            inodemanager: INodeManager::new(),
+            cache: inode::Cache::new(),
             mountmanager: Mutex::new(MountManager::new()),
             superblock_table: Mutex::new(SuperBlockTable::new()),
             fstype_map: Mutex::new(BTreeMap::new()),
+            root: MaybeUninit::zeroed()
         }
     }
 
-    pub fn init(&self) {
+    pub fn init(&mut self) {
         {
             let fstype_map = self.fstype_map.lock();
             if !fstype_map.is_empty() {
@@ -75,19 +80,24 @@ impl VirtualFileSystem {
         }
 
         superblock_table.push(RootFileSystem::new().create(0, None).unwrap());
+
+        self.root = MaybeUninit::new(
+            Arc::new(Dentry::root(&self.open_inode(0, 0).unwrap()))
+        );
     }
 
-    pub fn lookup_inode(&self, path: &str, fsno: usize, ino: usize) -> Result<inode::Index, Errno> {
+    fn get_root(&self) -> &Arc<Dentry> {
+        unsafe { self.root.assume_init_ref() }
+    }
+
+    pub fn lookup_inode(&self, path: &str, start: &Arc<Dentry>) -> Result<inode::Index, Errno> {
         let parts = path.split('/').filter(|s| !s.is_empty());
         
-        let mut current_ino ;
-        let mut current_fsno;
+        let mut current;
         if path.starts_with("/") {
-            current_fsno = 0;
-            current_ino = 0;
+            current = self.get_root();
         } else {
-            current_fsno = fsno;
-            current_ino = ino;
+            current = start;
         }
 
         let mounts = VFS.mountmanager.lock();  
@@ -146,7 +156,7 @@ impl VirtualFileSystem {
     //     }
     // }
     pub fn open_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<LockedInode>> {
-        if let Some(inode) = self.inodemanager.get_inode(sno, ino) {
+        if let Some(inode) = self.cache.find(inode::Index { sno, ino }) {
             Ok(inode)
         } else {
             let superblock_table = self.superblock_table.lock();
@@ -157,4 +167,4 @@ impl VirtualFileSystem {
     }
 }
 
-pub static VFS: VirtualFileSystem = VirtualFileSystem::new();
+pub static mut VFS: VirtualFileSystem = VirtualFileSystem::new();

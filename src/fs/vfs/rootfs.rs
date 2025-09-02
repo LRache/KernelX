@@ -3,7 +3,6 @@ use alloc::sync::Arc;
 
 use crate::fs::filesystem::{FileSystem, SuperBlock};
 use crate::fs::Inode;
-use crate::fs::inode::InodeNumber;
 use crate::driver::block::BlockDevice;
 use crate::kernel::errno::Errno;
 
@@ -13,12 +12,18 @@ pub struct RootInode {}
 unsafe impl Send for RootInode {}
 unsafe impl Sync for RootInode {}
 
+impl RootInode {
+    pub const fn new() -> Self {
+        RootInode {}
+    }
+}
+
 impl Inode for RootInode {
-    fn get_ino(&self) -> InodeNumber {
+    fn get_ino(&self) -> u32 {
         0
     }
 
-    fn get_fsno(&self) -> usize {
+    fn get_sno(&self) -> u32 {
         0
     }
 
@@ -30,7 +35,7 @@ impl Inode for RootInode {
         Ok(0)
     }
 
-    fn lookup(&self, _name: &str) -> Result<InodeNumber, Errno> {
+    fn lookup(&mut self, _name: &str) -> Result<u32, Errno> {
         Err(Errno::ENOENT)
     }
 }
@@ -56,13 +61,13 @@ impl SuperBlock for RootFileSystemSuperBlock {
         Box::new(RootInode {})
     }
 
-    fn get_inode(&self, _ino: usize) -> Result<Box<dyn Inode>, Errno> {
+    fn get_inode(&self, _ino: u32) -> Result<Box<dyn Inode>, Errno> {
         Ok(Box::new(RootInode {}))
     }
 }
 
 impl FileSystem for RootFileSystem {
-    fn create(&self, _fsno: usize, _device: Option<Box<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, Errno> {
+    fn create(&self, _fsno: u32, _device: Option<Box<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, Errno> {
         Ok(Arc::new(RootFileSystemSuperBlock::new()))
     }
 }

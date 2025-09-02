@@ -15,7 +15,7 @@ impl Ext4FileSystem {
 }
 
 impl FileSystem for Ext4FileSystem {
-    fn create(&self, fsno: usize, device: Option<Box<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, Errno> {
-        Ok(Ext4SuperBlock::new(fsno, device.unwrap())?)
+    fn create(&self, sno: u32, device: Option<Box<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, Errno> {
+        Ok(Ext4SuperBlock::new(sno, device.unwrap())?)
     }
 }
