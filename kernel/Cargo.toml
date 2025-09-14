@@ -1,0 +1,33 @@
+[package]
+name = "kernelx"
+version = "0.1.0"
+edition = "2024"
+build = "scripts/build.rs"
+
+[features]
+default = ["platform-qemu-virt-riscv64"]
+
+platform-riscv-common = []
+platform-qemu-virt-riscv64=["platform-riscv-common"]
+platform-starfive-jh7110-riscv64=["platform-riscv-common"]
+
+log-warn  = []
+log-info  = ["log-warn"]
+log-debug = ["log-info"]
+log-trace = ["log-debug"]
+log-trace-syscall = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+buddy_system_allocator = { version = "0.9", default-features = false, features = ["use_spin"] }
+spin = "0.9"
+bitflags = "2.0"
+virtio-drivers = "0.7.5"
+
+[build-dependencies]
+cc = "1.0"
