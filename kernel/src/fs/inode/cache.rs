@@ -34,6 +34,9 @@ impl Cache {
     }
 
     pub fn clear(&self) {
+        for (_, inode) in self.cache.lock().iter() {
+            inode.destroy().unwrap();
+        }
         self.cache.lock().clear();
     }
 }

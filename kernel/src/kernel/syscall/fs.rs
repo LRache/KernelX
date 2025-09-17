@@ -111,8 +111,6 @@ pub fn write(fd: usize, uptr_buffer: usize, mut count: usize) -> Result<usize, E
     let addrspace = current::addrspace();
     let mut written = 0;
 
-    // ktrace!("Writing");
-
     while count != 0 {
         let mut buffer = [0u8; BUFFER_SIZE];
         let to_write = core::cmp::min(count, BUFFER_SIZE);

@@ -7,4 +7,4 @@ pub mod trap;
 pub mod syscall;
 pub mod config;
 
-pub use main::deinit;
+pub use main::fini;

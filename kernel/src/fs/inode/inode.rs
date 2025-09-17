@@ -6,7 +6,7 @@ use crate::fs::inode;
 use crate::fs::FileStat;
 use crate::fs::file::FileFlags;
 
-pub trait Inode: Send + Sync {
+pub trait Inode {
     fn get_ino(&self) -> u32;
 
     fn get_sno(&self) -> u32;
@@ -43,6 +43,10 @@ pub trait Inode: Send + Sync {
 
     fn create(&mut self, _name: &str, _flags: FileFlags) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
+    }
+
+    fn destroy(&mut self) -> SysResult<()> {
+        Ok(())
     }
 }
 
@@ -99,7 +103,14 @@ impl LockedInode {
         self.inner.lock().create(name, flags)
     }
 
+    pub fn destroy(&self) -> SysResult<()> {
+        self.inner.lock().destroy()
+    }
+
     pub fn type_name(&self) -> &'static str {
         self.inner.lock().type_name()
     }
 }
+
+unsafe impl Send for LockedInode {}
+unsafe impl Sync for LockedInode {}

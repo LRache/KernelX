@@ -5,7 +5,8 @@ use super::ffi;
 pub struct Ext4Inode {
     pub ino: u32,
     sno: u32,
-    inode_handler: usize
+    inode_handler: usize,
+    destroyed: bool
 }
 
 impl Ext4Inode {
@@ -13,7 +14,8 @@ impl Ext4Inode {
         Ok(Self {
             ino,
             sno,
-            inode_handler: ffi::get_inode_handler(fs_handler, ino)?
+            inode_handler: ffi::get_inode_handler(fs_handler, ino)?,
+            destroyed: false
         })
     }
 }
@@ -54,10 +56,21 @@ impl Inode for Ext4Inode {
     fn size(&self) -> Result<usize, Errno> {
         ffi::inode_get_size(self.inode_handler)
     }
+
+    fn destroy(&mut self) -> SysResult<()> {
+        if !self.destroyed {
+            ffi::put_inode_handler(self.inode_handler)?;
+            self.destroyed = true;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
-        let _ = ffi::put_inode_handler(self.inode_handler);
+        if !self.destroyed {
+            let _ = self.destroy();
+            self.destroyed = true;
+        }
     }
 }

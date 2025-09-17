@@ -22,6 +22,7 @@ pub fn init() {
     println!("File system initialized and mounted successfully.");
 }
 
-pub fn deinit() {
+pub fn fini() {
+    vfs::fini();
     vfs::unmount_all().unwrap();
 }

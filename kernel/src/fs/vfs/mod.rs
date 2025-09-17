@@ -24,6 +24,6 @@ pub fn init() {
     VFS.init();
 }
 
-pub fn finit() {
+pub fn fini() {
     VFS.fini();
 }

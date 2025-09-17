@@ -46,10 +46,10 @@ fn init() {
     kinfo!("KernelX initialized successfully!");
 }
 
-pub fn deinit() {
+pub fn fini() {
     kinfo!("Deinitializing KernelX...");
     
-    fs::deinit();
+    fs::fini();
     
     kinfo!("KernelX deinitialized successfully!");
 }
