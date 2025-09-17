@@ -22,6 +22,19 @@ macro_rules! copy_to_user {
 }
 
 #[macro_export]
+macro_rules! copy_to_user_string {
+    ($uaddr:expr, $buf:expr, $size:expr) => {
+        {
+            let bytes = $buf.as_bytes();
+            let len = core::cmp::min(bytes.len(), $size - 1);
+            $crate::kernel::scheduler::current::copy_to_user($uaddr, bytes)?;
+            $crate::kernel::scheduler::current::copy_to_user($uaddr + len, &[0u8])?;
+            Ok(len)
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! copy_from_user {
     ($uaddr:expr, $data:expr) => {
         {
@@ -57,10 +70,10 @@ pub fn fdtable() -> &'static FDTable {
     tcb.get_fd_table()
 }
 
-pub fn with_pwd<F, R>(f: F) -> R 
+pub fn with_cwd<F, R>(f: F) -> R 
 where F: FnOnce(&Arc<Dentry>) -> R {
     let pcb = pcb();
-    pcb.with_pwd(f)
+    pcb.with_cwd(f)
 }
 
 pub fn copy_to_user(uaddr: usize, buf: &[u8]) -> Result<(), Errno> {

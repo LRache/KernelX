@@ -7,8 +7,10 @@ pub enum Errno {
     ECHILD  = 10,  // No child processes
     ENOMEM  = 12,  // Out of memory
     EFAULT  = 14,  // Bad address
+    EEXIST  = 17,  // File exists
     EINVAL  = 22,  // Invalid argument
     ENOSYS  = 38,  // Function not implemented
+    EOPNOTSUPP = 95, // Operation not supported on transport endpoint
 }
 
 impl From<i32> for Errno {
@@ -22,6 +24,7 @@ impl From<i32> for Errno {
             14 => Errno::EFAULT,
             22 => Errno::EINVAL,
             38 => Errno::ENOSYS,
+            95 => Errno::EOPNOTSUPP,
             _ => panic!("Unknown errno value: {}", value),
         }
     }

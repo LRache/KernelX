@@ -4,6 +4,7 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::LockedInode;
 use crate::fs::vfs::Dentry;
+use crate::ktrace;
 use super::FileStat;
 
 pub enum SeekWhence {
@@ -22,6 +23,7 @@ pub enum FileType {
     Socket,
 }
 
+#[derive(Clone, Copy)]
 pub struct FileFlags {
     pub writable: bool,
     pub cloexec: bool
@@ -35,6 +37,7 @@ impl FileFlags {
 
 pub struct File {
     inode: Arc<LockedInode>,
+    dentry: Arc<Dentry>,
     pos: Mutex<usize>,
     ftype: FileType,
     
@@ -45,6 +48,7 @@ impl File {
     pub fn new(dentry: &Arc<Dentry>, flags: FileFlags) -> Self {
         File {
             inode: dentry.get_inode().clone(),
+            dentry: dentry.clone(),
             pos: Mutex::new(0),
             ftype: FileType::Regular,
             flags
@@ -109,6 +113,7 @@ impl File {
 
     pub fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::new();
+        ktrace!("fstat: inode type={}", self.inode.type_name());
         kstat.st_ino = self.inode.get_ino() as u64;
         kstat.st_size = self.inode.size()? as i64;
         
@@ -117,5 +122,9 @@ impl File {
 
     pub fn get_inode(&self) -> &Arc<LockedInode> {
         &self.inode
+    }
+
+    pub fn get_dentry(&self) -> &Arc<Dentry> {
+        &self.dentry
     }
 }

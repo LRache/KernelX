@@ -7,7 +7,6 @@ pagetable:
         .dword 0
     .endr
     .dword (0x80000 << 10) | 0xcf // MAP 0xffffffff80000000 ~ 0xffffffffc0000000 to 0x80000000 ~ 0xc0000000
-    .byte 'A'
 
 #define PAGETABLE_ADDR 0x80201000
     
@@ -15,52 +14,11 @@ pagetable:
     .section .text.bootloader
     .align 12
 bootloader:
-    li a6, 0x0
-    li a7, 0x1
-    li a0, '0'
-    li a1, 0x0
-    ecall
-
-    li t0, (0x80000 << 10) | 0xcf
-
-    // map 0x80000000 ~ 0xc0000000 DIRECTLY
-    # li t1, PAGETABLE_ADDR + 2 * 8
-    # sd t0, 0x0(t1)
-
-    li a6, 0x0
-    li a7, 0x1
-    li a0, '1'
-    li a1, 0x0
-    ecall
-    
-    // map 0x80000000 ~ 0xc0000000 to 0xffffffff80000000
-    li t1, PAGETABLE_ADDR + 511 * 8
-    # sd t0, 0x0(t1)
-
-    li a6, 0x0
-    li a7, 0x1
-    # li a0, '2'
-    lbu a0, 0x0(t1)
-    li a1, 0x0
-    ecall
-
     li t0, (PAGETABLE_ADDR >> 12) | (8 << 60)
     
-    li a6, 0x0
-    li a7, 0x1
-    li a0, '3'
-    li a1, 0x0
-    ecall
-    
-    fence
+    sfence.vma
     csrw satp, t0
     sfence.vma
-
-    li a6, 0x0
-    li a7, 0x1
-    li a0, '4'
-    li a1, 0x0
-    ecall
 
     li t0, 0xffffffff80205000
     jr t0

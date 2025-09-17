@@ -13,14 +13,14 @@ use crate::ktrace;
 
 pub fn brk(brk: usize) -> Result<usize, Errno> {
     let r = current::addrspace().increase_userbrk(brk);
-    match r {
-        Ok(new_brk) => {
-            kinfo!("brk: set brk to {:#x}", new_brk);
-        },
-        Err(e) => {
-            kinfo!("brk: failed to set brk to {:#x}: {:?}", brk, e);
-        }
-    }
+    // match r {
+    //     Ok(new_brk) => {
+    //         kinfo!("brk: set brk to {:#x}", new_brk);
+    //     },
+    //     Err(e) => {
+    //         kinfo!("brk: failed to set brk to {:#x}: {:?}", brk, e);
+    //     }
+    // }
     
     r
 }

@@ -26,49 +26,49 @@ macro_rules! syscall_table {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[], tid={}", $num, $name, current::tid());
+            println!("[SYSCALL] {} ({}): args=[], tid={}", $num, $name, $crate::kernel::scheduler::current::tid());
         }
     };
     (@trace $num:expr, $name:expr, 1, $args:ident) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}], tid={}", $num, $name, $args[0], current::tid());
+            println!("[SYSCALL] {} ({}): args=[{:#x}], tid={}", $num, $name, $args[0], $crate::kernel::scheduler::current::tid());
         }
     };
     (@trace $num:expr, $name:expr, 2, $args:ident) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], current::tid());
+            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $crate::kernel::scheduler::current::tid());
         }
     };
     (@trace $num:expr, $name:expr, 3, $args:ident) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], current::tid());
+            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $crate::kernel::scheduler::current::tid());
         }
     };
     (@trace $num:expr, $name:expr, 4, $args:ident) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], current::tid());
+            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $crate::kernel::scheduler::current::tid());
         }
     };
     (@trace $num:expr, $name:expr, 5, $args:ident) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], current::tid());
+            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $crate::kernel::scheduler::current::tid());
         }
     };
     (@trace $num:expr, $name:expr, 6, $args:ident) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $args[5], current::tid());
+            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $args[5], $crate::kernel::scheduler::current::tid());
         }
     };
     
@@ -103,6 +103,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         23  => fs::dup(1),
         25  => fs::fcntl64(3),
         29  => fs::ioctl(3),
+        34  => fs::mkdirat(3),
         48  => fs::faccessat(3),
         56  => fs::openat(4),
         57  => fs::close(1),
@@ -112,6 +113,9 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         79  => fs::fstatat(4),
         80  => fs::newfstat(2),
         
+        // Task
+        17  => task::getcwd(2),
+        49  => task::chdir(1),
         93  => task::exit(1),
         94  => task::exit_group(1),
         96  => task::set_tid_address(1),
@@ -131,5 +135,10 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         // 99  => misc::set_robust_list(0),
         160 => misc::newuname(1),
         293 => misc::rseq(0),
+
+        174 => uid::getuid(0),
+        175 => uid::geteuid(0),
+        176 => uid::getgid(0),
+        177 => uid::getegid(0),
     }
 }

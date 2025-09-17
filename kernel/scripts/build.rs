@@ -17,6 +17,6 @@ fn main() {
 
     let linker = format!("scripts/linker/{}.ld", platform);
     println!("cargo:rustc-link-arg=-T{}", linker);
-    // println!("cargo:rustc-link-arg=-Map=link.map");
+    println!("cargo:rustc-link-arg=-Map=link.map");
     println!("cargo:rerun-if-changed=scripts/linker/{}", linker);
 }

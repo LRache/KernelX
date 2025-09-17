@@ -1,5 +1,3 @@
-use core::panic;
-
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::boxed::Box;

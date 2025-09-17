@@ -3,8 +3,9 @@ use alloc::string::String;
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 
+use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::inode::{Index, LockedInode};
-use crate::kernel::errno::SysResult;
+use crate::fs::file::FileFlags;
 
 use super::vfs;
 
@@ -81,6 +82,11 @@ impl Dentry {
         }
     }
 
+    pub fn get_parent(&self) -> Option<Arc<Dentry>> {
+        let inner = self.inner.lock();
+        inner.parent.clone()
+    }
+
     pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
         let mut inner = self.inner.lock();
         
@@ -127,5 +133,67 @@ impl Dentry {
                 })
             }
         ));
+    }
+
+    pub fn get_path(&self) -> String {
+        let inner = self.inner.lock();
+        if let Some(parent) = &inner.parent {
+            let mut path = parent.get_path();
+            if !path.ends_with('/') {
+                path.push('/');
+            }
+            if inner.name != "/" {
+                path.push_str(&inner.name);
+            }
+            path
+        } else {
+            inner.name.clone()
+        }
+    }
+
+    pub fn mkdir(self: &Arc<Self>, name: &str) -> SysResult<()> {
+        if let Ok(_) = self.lookup(name) {
+            return Err(Errno::EEXIST);
+        }
+
+        let mut inner = self.inner.lock();
+        
+        if let Some(mount_to) = &inner.mount_to {
+            return mount_to.mkdir(name);
+        }
+
+        let inode = match inner.inode.upgrade() {
+            None => {
+                let inode =  vfs().open_inode(&self.inode_index)?;
+                inner.inode = Arc::downgrade(&inode);
+                inode
+            }
+            Some(inode) => inode,
+        };
+
+        inode.mkdir(name)
+    }
+
+    pub fn create_file(self: &Arc<Self>, name: &str, flags: FileFlags) -> SysResult<()> {
+        if let Ok(_) = self.lookup(name) {
+            return Err(Errno::EEXIST);
+        }
+
+        let mut inner = self.inner.lock();
+        
+        if let Some(mount_to) = &inner.mount_to {
+            return mount_to.create_file(name, flags);
+        }
+
+        let inode = match inner.inode.upgrade() {
+            None => {
+                let inode =  vfs().open_inode(&self.inode_index)?;
+                inner.inode = Arc::downgrade(&inode);
+                inode
+            }
+            Some(inode) => inode,
+        };
+
+        inode.create(name, flags)
     }
 }

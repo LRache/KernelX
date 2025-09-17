@@ -27,6 +27,10 @@ impl Inode for RootInode {
         0
     }
 
+    fn type_name(&self) -> &'static str {
+        "rootfs"
+    }
+
     fn readat(&mut self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
         Ok(0)
     }

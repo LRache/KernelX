@@ -38,6 +38,7 @@ $(warning Invalid LOG_LEVEL: $(LOG_LEVEL). Valid values: trace, debug, info, war
 RUST_FEATURES += $(LOG_FEATURES_trace)
 endif
 
+RUST_FEATURES += log-trace-syscall
 
 all: $(KERNEL)
 

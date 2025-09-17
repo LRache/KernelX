@@ -4,6 +4,7 @@ mod fs;
 mod signal;
 mod misc;
 mod num;
+mod uid;
 mod def;
 
 pub use num::syscall;

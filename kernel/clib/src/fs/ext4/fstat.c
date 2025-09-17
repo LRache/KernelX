@@ -10,5 +10,6 @@ ssize_t kernelx_ext4_get_inode_size(struct ext4_inode_ref *inode_ref) {
     struct ext4_sblock *const sb = &fs->sb;
 
     ssize_t size = ext4_inode_get_size(sb, inode_ref->inode);
+    
     return size;
 }

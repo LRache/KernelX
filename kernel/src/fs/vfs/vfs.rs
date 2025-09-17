@@ -4,8 +4,10 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use spin::mutex::Mutex;
 
+use crate::kdebug;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::LockedInode;
 use crate::fs::filesystem::FileSystem;
@@ -48,15 +50,25 @@ impl VirtualFileSystem {
         
     }
 
+    pub fn fini(&self) {
+        self.cache.clear();
+    }
+
     pub fn get_root(&self) -> &Arc<Dentry> {
         unsafe { self.root.get().as_ref().unwrap().assume_init_ref() }
     }
 
     pub fn lookup_dentry(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
-        let mut current = dir.clone();
-        if path == "/" {
-            return Ok(current);
-        }
+        let mut current = match path.chars().next() {
+            Some('/') => {
+                kdebug!("lookup_dentry: absolute path {}", path);
+                self.get_root().clone()
+            },
+            _ => {
+                kdebug!("lookup_dentry: relative path {}, dir={}", path, dir.get_path());
+                dir.clone()
+            },
+        };
 
         for part in path.split('/').filter(|s| !s.is_empty()) {
             let next = current.lookup(part)?;
@@ -64,6 +76,28 @@ impl VirtualFileSystem {
         }
 
         Ok(current)
+    }
+
+    pub fn lookup_parent_dentry(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<(Arc<Dentry>, String)> {
+        let mut current = match path.chars().next() {
+            Some('/') => self.get_root().clone(),
+            _ => dir.clone(),
+        };
+
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        if parts.is_empty() {
+            return current.get_parent()
+                   .ok_or(Errno::ENOENT)
+                   .map(|p| (p, String::from("/")));
+        }
+
+        for part in &parts[0..parts.len()-1] {
+            let next = current.lookup(part)?;
+            current = next;
+        }
+
+        Ok((current, parts[parts.len()-1].into()))
     }
 
     pub fn open_inode(&self, index: &inode::Index) -> SysResult<Arc<LockedInode>> {
@@ -82,14 +116,4 @@ impl VirtualFileSystem {
 }
 
 unsafe impl Sync for VirtualFileSystem {}
-
-static VFS: VirtualFileSystem = VirtualFileSystem::new();
-
-pub fn init() {
-    VFS.init();
-}
-
-pub fn vfs() -> &'static VirtualFileSystem {
-    &VFS
-}
  

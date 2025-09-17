@@ -1,3 +1,4 @@
+#include "ext4.h"
 #include "ext4_blockdev.h"
 #include "ext4_super.h"
 #include "ext4_fs.h"
@@ -15,6 +16,7 @@ ssize_t kernelx_ext4_inode_writeat(
     size_t size,
     size_t fpos
 ) {
+	// ext4_fwrite(NULL, NULL, 0, NULL);
     uint32_t unalg;
 	uint32_t iblk_idx;
 	uint32_t iblock_last;
@@ -170,6 +172,7 @@ ssize_t kernelx_ext4_inode_writeat(
             return -r;
 
 		// file->fpos += size;
+		fpos += size;
 
 		// if (wcnt)
 		// 	*wcnt += size;

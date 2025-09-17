@@ -2,7 +2,7 @@ use core::ffi::c_void;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::SysResult;
 use crate::fs::ext4::inode::Ext4Inode;
 use crate::fs::filesystem::SuperBlock;
 use crate::fs::inode::Inode;
@@ -33,7 +33,7 @@ fn ffi_bclose(this: *mut c_void) -> i32 {
 }
 
 impl Ext4SuperBlock {
-    pub fn new(sno: u32, driver: Box<dyn BlockDriver>) -> Result<Arc<Self>, Errno> {
+    pub fn new(sno: u32, driver: Box<dyn BlockDriver>) -> SysResult<Arc<Self>> {
         let block_size = driver.get_block_size();
         let block_count = driver.get_block_count();
         
@@ -88,18 +88,16 @@ impl Ext4SuperBlock {
 unsafe impl Send for Ext4SuperBlock {}  
 unsafe impl Sync for Ext4SuperBlock {}
 
-impl SuperBlock for Ext4SuperBlock {  
-    fn get_inode(&self, ino: u32) -> Result<Box<dyn Inode>, Errno> {
+impl SuperBlock for Ext4SuperBlock {
+    fn get_inode(&self, ino: u32) -> SysResult<Box<dyn Inode>> {
         Ok(Box::new(Ext4Inode::new(ino as u32, self.sno, self.fs_handler)?))
     }
 
     fn get_root_ino(&self) -> u32 {
         2
     }
-}
 
-impl Drop for Ext4SuperBlock {
-    fn drop(&mut self) {
-        let _ = destroy_filesystem(self.fs_handler);
+    fn unmount(&self) -> SysResult<()> {
+        destroy_filesystem(self.fs_handler)
     }
 }

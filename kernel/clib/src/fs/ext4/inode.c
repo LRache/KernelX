@@ -1,4 +1,3 @@
-#include "ext4.h"
 #include "ext4_blockdev.h"
 #include "ext4_errno.h"
 #include "ext4_fs.h"
@@ -10,7 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-
 int kernelx_ext4_get_inode(
     struct ext4_fs *fs,
     uint32_t ino,
@@ -20,8 +18,6 @@ int kernelx_ext4_get_inode(
     if (inode_ref == NULL) {
         return -ENOMEM;
     }
-
-    // ext4_fwrite()
     
     int rc = ext4_fs_get_inode_ref(fs, ino, inode_ref);
     if (rc != EOK) {

@@ -121,3 +121,5 @@ asm_usertrap_return:
     LOAD(a0, 10)
 
     sret
+
+kerneltrap_handler:

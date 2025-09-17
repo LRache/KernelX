@@ -11,7 +11,7 @@ mod ext4;
 
 use inode::Inode;
 
-pub use init::init;
+pub use init::{init, deinit};
 pub use filestat::FileStat;
 pub use inode::LockedInode;
 pub use vfs::Dentry;

@@ -1,17 +1,18 @@
 use core::usize;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use bitflags::bitflags;
 
 use crate::fs::file::FileFlags;
 use crate::fs::vfs;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::{copy_to_user, ktrace};
+use crate::{copy_to_user, copy_to_user_string, kinfo, ktrace};
 
 pub fn sched_yield() -> Result<usize, Errno> {
-    // current::schedule();
+    current::schedule();
     Ok(0)
 }
 
@@ -59,7 +60,7 @@ pub fn clone(flags: usize, stack: usize, _uptr_parent_tid: usize, _tls: usize, u
 
 pub fn execve(user_path: usize, user_argv: usize, user_envp: usize) -> Result<usize, Errno> {
     let path = current::get_user_string(user_path)?;
-    let file = vfs::open_file(&path, FileFlags::dontcare())?;
+    let file = current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare()))?;
 
     let mut argv = Vec::new();
     let mut envp = Vec::new();
@@ -165,5 +166,18 @@ pub fn exit_group(code: usize) -> Result<usize, Errno> {
 pub fn set_tid_address(tid_address: usize) -> Result<usize, Errno> {
     let tcb = current::tcb();
     tcb.set_tid_address(tid_address);
+    Ok(0)
+}
+
+pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {
+    let cwd = current::with_cwd(|dentry| dentry.get_path());
+    copy_to_user_string!(ubuf, cwd, size)
+}
+
+pub fn chdir(user_path: usize) -> SysResult<usize> {
+    let path = current::get_user_string(user_path)?;
+    let dentry = current::with_cwd(|cwd| vfs::openat_dentry(&cwd, &path, FileFlags::dontcare()))?;
+    current::pcb().set_cwd(&dentry);
+    // kinfo!("Changed working directory to {}", dentry.get_path());
     Ok(0)
 }

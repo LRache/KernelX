@@ -4,26 +4,29 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode;
 use crate::fs::FileStat;
+use crate::fs::file::FileFlags;
 
 pub trait Inode: Send + Sync {
     fn get_ino(&self) -> u32;
 
     fn get_sno(&self) -> u32;
 
+    fn type_name(&self) -> &'static str;
+
     fn readat(&mut self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
-        panic!("readat not implemented for this inode type")
+        unimplemented!()
     }
     
     fn writeat(&mut self, _buf: &[u8], _offset: usize) -> Result<usize, Errno> {
-        panic!("writeat not implemented for this inode type")
+        unimplemented!()
     }
 
     fn lookup(&mut self, _name: &str) -> Result<u32, Errno> {
-        panic!("lookup not implemented for this inode type")
+        Err(Errno::ENOENT)
     }
 
     fn size(&self) -> Result<usize, Errno> {
-        panic!("size not implemented for this inode type")
+        unimplemented!()
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
@@ -32,6 +35,14 @@ pub trait Inode: Send + Sync {
         kstat.st_size = self.size()? as i64;
         
         Ok(kstat)
+    }
+
+    fn mkdir(&mut self, _name: &str) -> SysResult<()> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn create(&mut self, _name: &str, _flags: FileFlags) -> SysResult<()> {
+        Err(Errno::EOPNOTSUPP)
     }
 }
 
@@ -76,7 +87,19 @@ impl LockedInode {
         self.inner.lock().size()
     }
 
-    pub fn fstat(&self) -> SysResult<FileStat> {
-        self.inner.lock().fstat()
+    // pub fn fstat(&self) -> SysResult<FileStat> {
+    //     self.inner.lock().fstat()
+    // }
+
+    pub fn mkdir(&self, name: &str) -> SysResult<()> {
+        self.inner.lock().mkdir(name)
+    }
+
+    pub fn create(&self, name: &str, flags: FileFlags) -> SysResult<()> {
+        self.inner.lock().create(name, flags)
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        self.inner.lock().type_name()
     }
 }

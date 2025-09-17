@@ -38,11 +38,20 @@ fn init() {
     mm::page::init();
     arch::init();
     driver::init();
+    // kinfo!("Driver initialized successfully.");
     fs::init();
 
     task::init();
     
     kinfo!("KernelX initialized successfully!");
+}
+
+pub fn deinit() {
+    kinfo!("Deinitializing KernelX...");
+    
+    fs::deinit();
+    
+    kinfo!("KernelX deinitialized successfully!");
 }
 
 #[unsafe(no_mangle)]

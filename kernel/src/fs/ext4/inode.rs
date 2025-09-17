@@ -27,6 +27,10 @@ impl Inode for Ext4Inode {
         self.sno
     }
 
+    fn type_name(&self) -> &'static str {
+        "ext4"
+    }
+
     fn readat(&mut self, buf: &mut [u8], offset: usize) -> Result<usize, Errno> {
         Ok(ffi::inode_readat(self.inode_handler, buf, offset)? as usize)
     }
@@ -37,6 +41,14 @@ impl Inode for Ext4Inode {
 
     fn lookup(&mut self, name: &str) -> SysResult<u32> {
         ffi::inode_lookup(self.inode_handler, name)
+    }
+
+    fn mkdir(&mut self, name: &str) -> SysResult<()> {
+        ffi::inode_mkdir(self.inode_handler, name).map(|_| ())
+    }
+
+    fn create(&mut self, name: &str, _flags: crate::fs::file::FileFlags) -> SysResult<()> {
+        ffi::create_inode(self.inode_handler, name, 0644).map(|_| ())
     }
 
     fn size(&self) -> Result<usize, Errno> {

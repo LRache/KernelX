@@ -32,4 +32,8 @@ impl Cache {
         
         Ok(())
     }
+
+    pub fn clear(&self) {
+        self.cache.lock().clear();
+    }
 }

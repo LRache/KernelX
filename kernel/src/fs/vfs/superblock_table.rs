@@ -32,4 +32,13 @@ impl SuperBlockTable {
     pub fn is_empty(&self) -> bool {
         self.table.is_empty()
     }
+
+    pub fn unmount_all(&self) -> SysResult<()> {
+        for fs in &self.table {
+            if let Some(sb) = fs {
+                sb.unmount()?;
+            }
+        }
+        Ok(())
+    }
 }

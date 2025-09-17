@@ -110,6 +110,30 @@ unsafe extern "C" {
     fn kernelx_ext4_get_inode_size(
         inode_ref: *mut c_void
     ) -> isize;
+
+    /*
+    int kernelx_ext4_inode_mkdir(
+        struct ext4_inode_ref *parent,
+        const char *name
+    )
+     */
+    fn kernelx_ext4_inode_mkdir(
+        parent: *mut c_void,
+        name: *const c_char
+    ) -> i32;
+
+    /*
+    int kernelx_ext4_inode_create(
+        struct ext4_inode_ref *parent,
+        const char *name,
+        uint32_t mode
+    )
+     */
+    fn kernelx_ext4_create_inode(
+        parent: *mut c_void,
+        name: *const c_char,
+        mode: u32
+    ) -> i32;
 }
 
 pub enum Ext4Errno {
@@ -270,3 +294,46 @@ pub fn inode_get_size(
         Ok(r as usize)
     }
 }
+
+#[inline(always)]
+pub fn inode_mkdir(
+    parent_handler: usize,
+    name: &str
+) -> Result<(), Errno> {
+    let name = CString::new(name).unwrap();
+    let r = unsafe {
+        kernelx_ext4_inode_mkdir(
+            parent_handler as *mut c_void,
+            name.as_ptr()
+        )
+    };
+    
+    if r != Ext4Errno::EOK as i32 {
+        Err(Errno::from(-r))
+    } else {
+        Ok(())
+    }
+}
+
+#[inline(always)]
+pub fn create_inode(
+    parent_handler: usize,
+    name: &str,
+    mode: u32
+) -> Result<(), Errno> {
+    let name = CString::new(name).unwrap();
+    let r = unsafe {
+        kernelx_ext4_create_inode(
+            parent_handler as *mut c_void,
+            name.as_ptr(),
+            mode
+        )
+    };
+    
+    if r != Ext4Errno::EOK as i32 {
+        Err(Errno::from(-r))
+    } else {
+        Ok(())
+    }
+}
+

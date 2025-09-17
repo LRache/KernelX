@@ -3,7 +3,6 @@ use spin::Mutex;
 
 use crate::arch;
 
-
 struct PageAllocator {
     freed: VecDeque<usize>,
     bottom: usize,
@@ -25,13 +24,14 @@ impl PageAllocator {
     }
 
     pub fn alloc(&mut self) -> usize {
-        if let Some(page) = self.freed.pop_back() {
-            page
-        } else {
-            assert!(self.top < 0xffffffff88000000, "Page top overflow: {:#x}", self.top);
-            let page = self.top;
-            self.top += arch::PGSIZE;
-            page
+        match self.freed.pop_back() {
+            Some(page) => page,
+            None => {
+                assert!(self.top < 0xffffffff88000000, "Page top overflow: {:#x}", self.top);
+                let page = self.top;
+                self.top += arch::PGSIZE;
+                page
+            }
         }
     }
 

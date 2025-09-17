@@ -4,7 +4,7 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::fs::file::File;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 
 pub struct FDTable {
     pub table: Mutex<Vec<Option<Arc<File>>>>,
@@ -17,7 +17,7 @@ impl FDTable {
         }
     }
 
-    pub fn get(&self, fd: usize) -> Result<Arc<File>, Errno> {
+    pub fn get(&self, fd: usize) -> SysResult<Arc<File>> {
         let table = self.table.lock();
         if fd < table.len() {
             table[fd].clone().ok_or(Errno::EBADFD)

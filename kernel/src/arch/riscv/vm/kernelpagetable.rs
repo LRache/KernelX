@@ -93,7 +93,7 @@ pub fn init() {
 
     map_kernel_range(
         core::ptr::addr_of!(__data_start), 
-        core::ptr::addr_of!(__data_end), 
+        core::ptr::addr_of!(__bss_end), 
         MapPerm::R | MapPerm::W
     );
 

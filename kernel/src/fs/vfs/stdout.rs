@@ -20,6 +20,10 @@ impl Inode for StdoutInode {
     fn get_sno(&self) -> u32 {
         panic!("StdoutInode does not belong to a filesystem")
     }
+
+    fn type_name(&self) -> &'static str {
+        "stdout"
+    }
     
     fn readat(&mut self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
         Ok(0)

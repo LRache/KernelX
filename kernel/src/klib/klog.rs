@@ -1,5 +1,5 @@
 use core::panic::PanicInfo;
-use crate::{platform, println};
+use crate::{kernel, platform, println};
 
 pub const COLOR_RESET: &str = "\x1b[0m";
 pub const COLOR_RED: &str = "\x1b[31m";
@@ -118,6 +118,7 @@ macro_rules! ktrace {
 
 #[panic_handler]
 pub fn panic_handler(info: &PanicInfo) -> ! {
+    kernel::deinit();
     if let Some(location) = info.location() {
         println!(
             "{}{}[{}]{} {} @ {}:{}{}",

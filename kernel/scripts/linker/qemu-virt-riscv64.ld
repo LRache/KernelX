@@ -58,7 +58,7 @@ SECTIONS {
     . = ALIGN(4K); lma = ALIGN(lma, 4K);
 
     __stack_start = .;
-    . = . + 0x16000;
+    . = . + 0x8000;
     __stack_end = .;
 
     . = ALIGN(4K);

@@ -6,7 +6,7 @@ use crate::kernel::scheduler::*;
 use crate::fs::vfs;
 use crate::fs::file::FileFlags;
 use crate::fs::FileStat;
-use crate::{ktrace, kdebug};
+use crate::{copy_to_user, kdebug, kinfo, ktrace};
 
 use super::def::*;
 
@@ -44,23 +44,39 @@ pub fn fcntl64(_fd: usize, _cmd: usize, _arg: usize) -> Result<usize, Errno> {
     Ok(0)
 }
 
-pub fn openat(dirfd: usize, user_filename: usize, _flags: usize, _mode: usize) -> Result<usize, Errno> {
+pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, _mode: usize) -> Result<usize, Errno> {
     if dirfd as isize != AT_FDCWD {
         return Err(Errno::ENOSYS); // Currently only AT_FDCWD is supported
     }
 
-    let open_flags = OpenFlags::from_bits(_flags).ok_or(Errno::EINVAL)?;
+    let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let flags = FileFlags {
         writable: open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR),
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
-    let path = current::get_user_string(user_filename)?;
+    let path = current::get_user_string(uptr_filename)?;
 
-    kdebug!("openat called: path={}, flags={:?}", path, open_flags);
+    let file = match current::with_cwd(|cwd| vfs::openat_file(cwd, &path, flags)) {
+        Ok(file) => {file},
+        Err(e) => {
+            if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREAT) {
+                // Create the file
+                current::with_cwd(|cwd| {
+                    let (parent_dentry, child_name) = vfs::openat_parent_dentry(cwd, &path)?;
+                    parent_dentry.create_file(&child_name, flags)?;
+                    kinfo!("File created: {}", path);
+                    vfs::openat_file(&cwd, &path, flags)
+                })?
+            } else {
+                return Err(e);
+            }
+        }
+    };
 
-    let file = current::with_pwd(|pwd| vfs::openat_file(pwd, &path, flags))?;
     let fd = current::fdtable().push(Arc::new(file))?;
+
+    kdebug!("openat called: path={}, flags={:?}, new_fd={}", path, open_flags, fd);
 
     Ok(fd)
 }
@@ -174,20 +190,24 @@ pub fn faccessat(_dirfd: usize, _uptr_path: usize, _mode: usize) -> Result<usize
 pub fn fstatat(dirfd: usize, uptr_path: usize, uptr_statbuf: usize, _flags: usize) -> Result<usize, Errno> {
     let path = current::get_user_string(uptr_path)?;
 
+    ktrace!("fstatat: path={}, dirfd={}", path, dirfd);
+
     let kstat = if dirfd as isize == AT_FDCWD {
-        current::with_pwd(|pwd| vfs::openat_file(pwd, &path, FileFlags::dontcare()))?
+        current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare()))?
     } else {
-        vfs::open_file(&path, FileFlags::dontcare())?
+        vfs::openat_file(current::fdtable().get(dirfd)?.get_dentry(), &path, FileFlags::dontcare())?
     }.fstat()?;
 
-    let buffer = unsafe {
-        core::slice::from_raw_parts(
-            &kstat as *const _ as *const u8,
-            core::mem::size_of::<FileStat>()
-        )
-    };
+    // let buffer = unsafe {
+    //     core::slice::from_raw_parts(
+    //         &kstat as *const _ as *const u8,
+    //         core::mem::size_of::<FileStat>()
+    //     )
+    // };
 
-    current::copy_to_user(uptr_statbuf, buffer)?;
+    // current::copy_to_user(uptr_statbuf, buffer)?;
+
+    copy_to_user!(uptr_statbuf, kstat)?;
 
     ktrace!("fstatat: path={}, st_size={}, st_mode={:#o}", path, kstat.st_size, kstat.st_mode);
 
@@ -208,6 +228,25 @@ pub fn newfstat(fd: usize, uptr_statbuf: usize) -> Result<usize, Errno> {
     current::copy_to_user(uptr_statbuf, buffer)?;
 
     ktrace!("newfstat: fd={}, st_size={}, st_mode={:#o}", fd, kstat.st_size, kstat.st_mode);
+
+    Ok(0)
+}
+
+pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Errno> {
+    let path = current::get_user_string(user_path)?;
+
+    let parent_dentry = if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::openat_parent_dentry(cwd, &path))?
+    } else {
+        vfs::open_parent_dentry(&path)?
+    };
+
+    let parent = parent_dentry.0;
+    let name = &parent_dentry.1;
+
+    kinfo!("mkdirat: dirfd={}, path={}, name={}, mode={:#o}", dirfd, path, name, mode);
+
+    parent.mkdir(name)?;
 
     Ok(0)
 }

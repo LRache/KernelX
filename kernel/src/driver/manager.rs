@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::driver::block::{BlockDriver, VirtIOBlockDevice};
+use crate::driver::block::BlockDriver;
 
 use super::block::BlockDevice;
 
@@ -31,7 +31,3 @@ unsafe impl Sync for DriverManager {}
 unsafe impl Send for DriverManager {}
 
 pub static DEVICE_MANAGER: DriverManager = DriverManager::new();
-
-pub fn init() {
-    DEVICE_MANAGER.register_block_device("virtio_block0", Box::new(VirtIOBlockDevice::new(0x10001000)));
-}

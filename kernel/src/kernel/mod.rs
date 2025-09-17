@@ -6,3 +6,5 @@ pub mod errno;
 pub mod trap;
 pub mod syscall;
 pub mod config;
+
+pub use main::deinit;

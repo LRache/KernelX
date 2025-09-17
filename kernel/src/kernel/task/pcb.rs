@@ -22,20 +22,20 @@ pub struct PCB {
     exit_code: Mutex<u8>,
     
     tasks: Mutex<Vec<Arc<TCB>>>,
-    pwd: Mutex<Arc<Dentry>>,
+    cwd: Mutex<Arc<Dentry>>,
 
     children: Mutex<Vec<Arc<PCB>>>,
 }
 
 impl PCB {
-    pub fn new(pid: i32, pwd: &Arc<Dentry>) -> Arc<Self> {
+    pub fn new(pid: i32, cwd: &Arc<Dentry>) -> Arc<Self> {
         Arc::new(Self {
             pid,
             is_zombie: Mutex::new(false),
             exit_code: Mutex::new(0),
             
             tasks: Mutex::new(Vec::new()),
-            pwd: Mutex::new(pwd.clone()),
+            cwd: Mutex::new(cwd.clone()),
 
             children: Mutex::new(Vec::new()),
         })
@@ -77,14 +77,14 @@ impl PCB {
         *self.exit_code.lock()
     }
 
-    pub fn with_pwd<F, R>(&self, f: F) -> R 
+    pub fn with_cwd<F, R>(&self, f: F) -> R 
     where F: FnOnce(&Arc<Dentry>) -> R {
-        let pwd = self.pwd.lock();
-        f(&pwd)
+        let cwd = self.cwd.lock();
+        f(&cwd)
     }
 
-    pub fn set_pwd(&self, dentry: &Arc<Dentry>) {
-        *self.pwd.lock() = dentry.clone();
+    pub fn set_cwd(&self, dentry: &Arc<Dentry>) {
+        *self.cwd.lock() = dentry.clone();
     }
 
     pub fn clone_task(
@@ -100,7 +100,7 @@ impl PCB {
             new_tcb = tcb.new_clone(new_tid, self, userstack, flags);
             self.tasks.lock().push(new_tcb.clone());
         } else {
-            let new_parent = PCB::new(new_tid, &self.pwd.lock());
+            let new_parent = PCB::new(new_tid, &self.cwd.lock());
             new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags);
             new_parent.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_parent);

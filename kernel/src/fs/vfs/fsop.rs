@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 
 use crate::kernel::errno::Errno;
-use crate::driver::block::{BlockDevice, BlockDriver};
+use crate::driver::block::BlockDriver;
 use crate::fs::filesystem::FileSystem;
 use crate::fs::inode;
 
@@ -31,6 +31,13 @@ pub fn mount(path: &str, fstype_name: &str, device: Option<Box<dyn BlockDriver>>
     let root_inode = vfs().open_inode(&inode::Index { sno, ino: root_ino })?;
 
     dentry.mount(&root_inode);
+
+    Ok(())
+}
+
+pub fn unmount_all() -> Result<(), Errno> {
+    let superblock_table = vfs().superblock_table.lock();
+    superblock_table.unmount_all()?;
 
     Ok(())
 }

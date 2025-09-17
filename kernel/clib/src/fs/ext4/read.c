@@ -22,7 +22,7 @@ ssize_t kernelx_ext4_inode_readat(
 	uint32_t iblock_idx;
 	uint32_t iblock_last;
 	uint32_t block_size;
-
+	
 	ext4_fsblk_t fblock;
 	ext4_fsblk_t fblock_start;
 	uint32_t fblock_count;

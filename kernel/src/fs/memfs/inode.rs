@@ -25,6 +25,10 @@ impl Inode for MemoryFileSystemInode {
         self.superblock.upgrade().expect("MemoryFileSystemInode: superblock is gone").get_fsno()
     }
 
+    fn type_name(&self) -> &'static str {
+        "memfs"
+    }
+
     fn readat(&mut self, buf: &mut [u8], offset: usize) -> Result<usize, Errno>  {
         if self.size <= offset {
             return Ok(0);
