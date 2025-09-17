@@ -129,7 +129,7 @@ log_info "Creating ext4 image: $IMG_FILE"
 [ -f "$IMG_FILE" ] && rm -f "$IMG_FILE"
 
 dd if=/dev/zero of=$IMG_FILE bs=1M count=$IMG_SIZE 2>/dev/null
-mkfs.ext4 -F $IMG_FILE >/dev/null 2>&1
+/sbin/mkfs.ext4 -F $IMG_FILE >/dev/null 2>&1
 
 if sudo mount -o loop $IMG_FILE img/${ISA}; then
     sudo cp -r ${BUILD_DIR}/${ISA}/* img/${ISA}/ 2>/dev/null || true
