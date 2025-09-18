@@ -1,0 +1,185 @@
+#
+# KernelX Configuration
+#
+
+mainmenu "KernelX Kernel Configuration"
+
+config KERNELX_VERSION
+	string
+	default "5.0"
+
+menu "Platform Configuration"
+
+choice
+	prompt "Target Platform"
+	default PLATFORM_QEMU_VIRT_RISCV64
+	help
+	  Select the target platform for KernelX kernel.
+
+config PLATFORM_QEMU_VIRT_RISCV64
+	bool "QEMU RISC-V 64-bit Virtual Machine"
+	help
+	  Support for QEMU RISC-V 64-bit virtual machine platform.
+	  This is the primary development and testing platform.
+
+config PLATFORM_STARFIVE_JH7110_RISCV64
+	bool "StarFive JH7110 RISC-V 64-bit"
+	help
+	  Support for StarFive JH7110 RISC-V 64-bit platform.
+
+endchoice
+
+config PLATFORM
+	string
+	default "qemu-virt-riscv64" if PLATFORM_QEMU_VIRT_RISCV64
+	default "starfive-jh7110-riscv64" if PLATFORM_STARFIVE_JH7110_RISCV64
+
+config ARCH
+	string
+	default "riscv"
+	help
+	  Target architecture for the kernel.
+
+config CROSS_COMPILE
+	string "Cross-compiler prefix"
+	default "riscv64-unknown-elf-"
+	help
+	  Prefix for cross-compilation tools (e.g., riscv64-unknown-elf-).
+
+config RUST_TARGET
+	string
+	default "riscv64gc-unknown-none-elf"
+	help
+	  Rust target specification for compilation.
+
+endmenu
+
+menu "Build Configuration"
+
+choice
+	prompt "Compilation Mode"
+	default COMPILE_MODE_DEBUG
+	help
+	  Select the compilation mode for the kernel.
+
+config COMPILE_MODE_DEBUG
+	bool "Debug"
+	help
+	  Build kernel with debug information and no optimizations.
+	  Suitable for development and debugging.
+
+config COMPILE_MODE_RELEASE
+	bool "Release"
+	help
+	  Build kernel with optimizations enabled.
+	  Suitable for production use.
+
+endchoice
+
+config COMPILE_MODE
+	string
+	default "debug" if COMPILE_MODE_DEBUG
+	default "release" if COMPILE_MODE_RELEASE
+
+endmenu
+
+menu "Logging Configuration"
+
+choice
+	prompt "Log Level"
+	default LOG_LEVEL_TRACE
+	help
+	  Select the maximum log level for kernel messages.
+
+config LOG_LEVEL_TRACE
+	bool "Trace"
+	help
+	  Enable all log messages including trace level.
+	  Most verbose logging option.
+
+config LOG_LEVEL_DEBUG
+	bool "Debug"
+	help
+	  Enable debug, info, warn and error messages.
+
+config LOG_LEVEL_INFO
+	bool "Info"
+	help
+	  Enable info, warn and error messages.
+
+config LOG_LEVEL_WARN
+	bool "Warn"
+	help
+	  Enable warn and error messages only.
+
+config LOG_LEVEL_SYSCALL
+	bool "Syscall Trace"
+	help
+	  Enable trace level logging with syscall tracing.
+	  Very verbose, includes all system call traces.
+
+config LOG_LEVEL_NONE
+	bool "None"
+	help
+	  Disable all log messages.
+
+endchoice
+
+config LOG_LEVEL
+	string
+	default "trace" if LOG_LEVEL_TRACE
+	default "debug" if LOG_LEVEL_DEBUG
+	default "info" if LOG_LEVEL_INFO
+	default "warn" if LOG_LEVEL_WARN
+	default "syscall" if LOG_LEVEL_SYSCALL
+	default "none" if LOG_LEVEL_NONE
+
+endmenu
+
+menu "Init Process Configuration"
+
+config INITPATH
+	string "Init process path"
+	default "/init"
+	help
+	  Path to the init process executable.
+
+config INITPWD
+	string "Init process working directory"
+	default "/"
+	help
+	  Working directory for the init process.
+
+endmenu
+
+menu "QEMU Configuration"
+
+config QEMU_MACHINE
+	string "QEMU machine type"
+	default "virt"
+	depends on PLATFORM_QEMU_VIRT_RISCV64
+	help
+	  QEMU machine type for virtualization.
+
+config QEMU_MEMORY
+	string "QEMU memory size"
+	default "256M"
+	depends on PLATFORM_QEMU_VIRT_RISCV64
+	help
+	  Amount of memory to allocate for QEMU virtual machine.
+
+config QEMU_CPUS
+	int "Number of CPUs"
+	range 1 8
+	default 1
+	depends on PLATFORM_QEMU_VIRT_RISCV64
+	help
+	  Number of CPU cores for QEMU virtual machine.
+
+config DISK_IMAGE
+	string "Disk image path"
+	default "./sdcard-rv.img"
+	help
+	  Path to the disk image file used as storage.
+
+endmenu

@@ -1,11 +1,11 @@
 PLATFORM ?= qemu-virt-riscv64
 ARCH = riscv
-CROSS_COMPILE = riscv64-unknown-elf-
-RUST_TARGET = riscv64gc-unknown-none-elf
+CROSS_COMPILE ?= riscv64-unknown-elf-
+RUST_TARGET ?= riscv64gc-unknown-none-elf
 COMPILE_MODE ?= debug
 LOG_LEVEL ?= trace
-
 KERNELX_RELEASE ?= 5.0
+
 INITPATH ?= /init
 INITPWD ?= /
 
@@ -38,7 +38,7 @@ $(warning Invalid LOG_LEVEL: $(LOG_LEVEL). Valid values: trace, debug, info, war
 RUST_FEATURES += $(LOG_FEATURES_trace)
 endif
 
-RUST_FEATURES += log-trace-syscall
+# RUST_FEATURES += log-trace-syscall
 
 all: $(KERNEL)
 
