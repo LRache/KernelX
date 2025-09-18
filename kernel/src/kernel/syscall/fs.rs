@@ -40,6 +40,18 @@ pub fn dup(oldfd: usize) -> Result<usize, Errno> {
     Ok(newfd)
 }
 
+pub fn dup2(oldfd: usize, newfd: usize) -> Result<usize, Errno> {
+    if oldfd == newfd {
+        // If oldfd and newfd are the same, just return newfd
+        current::fdtable().get(oldfd)?; // Check if oldfd is valid
+        return Ok(newfd);
+    }
+
+    current::fdtable().dup2(oldfd, newfd)?;
+    
+    Ok(newfd)
+}
+
 pub fn fcntl64(_fd: usize, _cmd: usize, _arg: usize) -> Result<usize, Errno> {
     Ok(0)
 }

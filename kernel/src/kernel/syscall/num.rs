@@ -101,6 +101,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         // Filesystem
         23  => fs::dup(1),
+        24  => fs::dup2(2),
         25  => fs::fcntl64(3),
         29  => fs::ioctl(3),
         34  => fs::mkdirat(3),

@@ -4,6 +4,7 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::fs::file::File;
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 
 pub struct FDTable {
@@ -37,12 +38,31 @@ impl FDTable {
         }
     }
 
+    pub fn dup2(&self, oldfd: usize, newfd: usize) -> Result<(), Errno> {
+        let mut table = self.table.lock();
+
+        if newfd >= table.len() {
+            if newfd >= config::MAX_FD {
+                return Err(Errno::EBADFD);
+            }
+            table.resize(newfd + 1, None);
+        }
+        table[newfd] = None; // Close newfd if it was open
+        
+        let file = match table.get(oldfd) {
+            Some(Some(file)) => file.clone(),
+            _ => return Err(Errno::EBADFD),
+        };
+
+        table[newfd] = Some(file);
+        
+        Ok(())
+    }
+
     pub fn close(&self, fd: usize) -> Result<(), Errno> {
         let mut table = self.table.lock();
         if fd < table.len() {
-            if let Some(file) = table[fd].take() {
-                file.close()?;
-            }
+            table[fd] = None;
             Ok(())
         } else {
             Err(Errno::EBADFD)
