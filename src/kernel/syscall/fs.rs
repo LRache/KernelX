@@ -58,7 +58,7 @@ pub fn fcntl64(_fd: usize, _cmd: usize, _arg: usize) -> Result<usize, Errno> {
 
 pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, _mode: usize) -> Result<usize, Errno> {
     if dirfd as isize != AT_FDCWD {
-        return Err(Errno::ENOSYS); // Currently only AT_FDCWD is supported
+        return Err(Errno::EINVAL);
     }
 
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;

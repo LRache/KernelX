@@ -2,6 +2,9 @@
 CONFIG_FILE := config/.config
 -include $(CONFIG_FILE)
 
+COMPILE_MODE ?= $(CONFIG_COMPILE_MODE)
+COMPILE_MODE ?= debug
+
 # Default values with Kconfig support
 # INITPATH ?= $(CONFIG_INITPATH)
 INITPATH ?= /init

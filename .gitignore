@@ -60,8 +60,9 @@ compile_commands.json
 /sdcard-*
 
 # Kconfig generated files
-config/.config
+.config*
 
 # Added by cargo
 
 /target
+/build

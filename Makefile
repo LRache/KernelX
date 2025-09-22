@@ -1,6 +1,6 @@
 include config/config.mk
 
-KERNEL = kernel/build/$(PLATFORM)/kernelx
+KERNEL = target/$(RUST_TARGET)/$(COMPILE_MODE)/kernelx
 
 QEMU = qemu-system-riscv64
 QEMU_FLAGS += -M $(QEMU_MACHINE) -m $(QEMU_MEMORY) -nographic
@@ -9,13 +9,36 @@ QEMU_FLAGS += -drive file=$(DISK),if=none,id=x0,format=raw
 QEMU_FLAGS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 QEMU_FLAGS += -smp $(QEMU_CPUS)
 
-ENV = \
+BUILD_ENV = \
 	PLATFORM=$(PLATFORM) \
+	ARCH=$(ARCH) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
-	INITPATH=$(INITPATH) \
-	INITPWD=$(INITPWD) \
-	LOG_LEVEL=$(LOG_LEVEL) \
-	COMPILE_MODE=$(COMPILE_MODE)
+	KERNELX_INITPATH=$(INITPATH) \
+	KERNELX_INITPWD=$(INITPWD) \
+	KERNELX_RELEASE=$(KERNELX_RELEASE)
+
+RUST_TARGET=riscv64gc-unknown-none-elf
+
+RUST_FEATURES += platform-$(PLATFORM)
+
+# ------ Configure log level features using a more elegant lookup ------
+LOG_FEATURES_trace = log-trace
+LOG_FEATURES_debug = log-debug
+LOG_FEATURES_info = log-info
+LOG_FEATURES_warn = log-warn
+LOG_FEATURES_syscall = log-trace-syscall
+LOG_FEATURES_none = 
+
+ifneq ($(LOG_FEATURES_$(LOG_LEVEL)),)
+RUST_FEATURES += $(LOG_FEATURES_$(LOG_LEVEL))
+else ifeq ($(LOG_LEVEL),none)
+# none is valid, no features to add
+else
+$(warning Invalid LOG_LEVEL: $(LOG_LEVEL). Valid values: trace, debug, info, warn, syscall, none)
+RUST_FEATURES += $(LOG_FEATURES_trace)
+endif
+
+# RUST_FEATURES += log-trace-syscall
 
 all: $(KERNEL)
 
@@ -25,7 +48,19 @@ init:
 	# @ make -C ./lib/opensbi CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP=y FW_JUMP_ADDR=0x80200000 
 
 $(KERNEL):
-	@ make -C ./kernel all INITPATH=$(INITPATH) INITPWD=$(INITPWD) LOG_LEVEL=$(LOG_LEVEL) PLATFORM=$(PLATFORM)
+	@ $(BUILD_ENV) make -C ./clib all
+	@ $(BUILD_ENV) cargo build --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
+	@ mkdir -p build/$(PLATFORM)
+	@ cp $(KERNEL) build/$(PLATFORM)/kernelx
+
+clean:
+	@ cargo clean
+	@ make -C ./clib clean
+
+count:
+	@ find src c/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" | xargs wc -l
+
+.PHONY: $(KERNEL)
 
 run: $(KERNEL)
 	@ $(QEMU) $(QEMU_FLAGS)
