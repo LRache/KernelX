@@ -1,13 +1,14 @@
 use alloc::sync::Arc;
 use alloc::string::String;
 
-use crate::arch;
-use crate::fs::Dentry;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::task::fdtable::FDTable;
+use crate::kernel::scheduler::Processor;
 use crate::kernel::errno::Errno;
+use crate::arch;
+use crate::fs::Dentry;
 
 #[macro_export]
 macro_rules! copy_to_user {
@@ -24,13 +25,13 @@ macro_rules! copy_to_user {
 #[macro_export]
 macro_rules! copy_to_user_string {
     ($uaddr:expr, $buf:expr, $size:expr) => {
-        {
+        (|| -> $crate::kernel::errno::SysResult<usize> {
             let bytes = $buf.as_bytes();
             let len = core::cmp::min(bytes.len(), $size - 1);
             $crate::kernel::scheduler::current::copy_to_user($uaddr, bytes)?;
             $crate::kernel::scheduler::current::copy_to_user($uaddr + len, &[0u8])?;
             Ok(len)
-        }
+        })()
     };
 }
 
@@ -46,8 +47,28 @@ macro_rules! copy_from_user {
     };
 }
 
+pub fn processor() -> &'static mut Processor<'static> {
+    let p = arch::get_percpu_data() as *mut Processor;
+    
+    assert!(!p.is_null());
+    
+    unsafe { &mut *p }
+}
+
+pub fn set(p: *mut Processor) {
+    arch::set_percpu_data(p as usize);
+}
+
+pub fn clear() {
+    arch::set_percpu_data(0);
+}
+
+pub fn is_clear() -> bool {
+    arch::get_percpu_data() == 0
+}
+
 pub fn tcb() -> &'static Arc<TCB> {
-    let processor = arch::current_processor();
+    let processor = processor();
     processor.tcb
 }
 
@@ -56,7 +77,7 @@ pub fn tid() -> Tid {
 }
 
 pub fn pcb() -> &'static Arc<PCB> {
-    let processor = arch::current_processor();
+    let processor = processor();
     &processor.tcb.get_parent()
 }
 
@@ -89,5 +110,5 @@ pub fn get_user_string(uaddr: usize) -> Result<String, Errno> {
 }
 
 pub fn schedule() {
-    arch::current_processor().schedule();
+    processor().schedule();
 }

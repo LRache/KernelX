@@ -1,9 +1,9 @@
-use crate::arch::riscv::csr::*;
-use crate::arch::UserContext;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
 use crate::kernel::syscall;
+use crate::arch::riscv::csr::*;
+use crate::arch::UserContext;
 use crate::platform::config::TRAMPOLINE_BASE;
 use crate::{platform, println};
 
@@ -15,7 +15,7 @@ unsafe extern "C" {
 fn handle_syscall() {
     let tcb = current::tcb();
     
-    let user_entry = csrr_sepc() + 4;
+    let user_entry = sepc::read() + 4;
     tcb.set_user_entry(user_entry);
 
     tcb.with_user_context_mut(|user_context|{
@@ -32,41 +32,34 @@ fn handle_syscall() {
         let syscall_num = user_context.gpr[17]; // a7
 
         user_context.gpr[10] = trap::syscall(syscall_num, &syscall_args) as usize;
-
-        // println!("Syscall handled: num={}, args={:?}, returning to user entry at {:#x}", 
-        //      syscall_num, syscall_args, user_entry);
     });
 }
 
 pub fn usertrap_handler() -> ! {
-    csrw_stvec(kerneltrap_handler as usize);
-
-    // println!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}", csrr_scause(), csrr_sepc(), csrr_stval());
-
-    // current::tcb().set_user_entry(csrr_sepc());
+    stvec::write(kerneltrap_handler as usize);
     
     match scause::cause() {
         scause::Cause::Trap(trap) => {
             match trap {
                 scause::Trap::EcallU => handle_syscall(),
                 scause::Trap::InstPageFault => {
-                    let addr = csrr_stval();
+                    let addr = stval::read();
                     trap::memory_fault(addr, MemAccessType::Execute);
-                    current::tcb().set_user_entry(csrr_sepc());
+                    current::tcb().set_user_entry(sepc::read());
                 },
                 scause::Trap::LoadPageFault => {
-                    let addr = csrr_stval();
+                    let addr = stval::read();
                     trap::memory_fault(addr, MemAccessType::Read);
-                    current::tcb().set_user_entry(csrr_sepc());
+                    current::tcb().set_user_entry(sepc::read());
                 },
                 scause::Trap::StorePageFault => {
-                    let addr = csrr_stval();
+                    let addr = stval::read();
                     trap::memory_fault(addr, MemAccessType::Write);
-                    current::tcb().set_user_entry(csrr_sepc());
+                    current::tcb().set_user_entry(sepc::read());
                 },
                 _ => {
                     // Handle other traps
-                    println!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}", csrr_scause(), csrr_sepc(), csrr_stval());
+                    // println!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}", scause::read(), sepc::read(), stval::read());
                     platform::shutdown();
                 }
             }
@@ -113,9 +106,13 @@ fn usertrap_return(user_context: *const UserContext) -> ! {
 pub fn return_to_user() -> ! {
     let tcb = current::tcb();
 
-    csrw_sepc(tcb.get_user_entry());
-    csrw_stvec(TRAMPOLINE_BASE);
+    sepc::write(tcb.get_user_entry());
+    stvec::write(TRAMPOLINE_BASE);
     csrw_sscratch(tcb.get_user_context_uaddr());
+
+    Sstatus::read()
+        .set_spie(true) // Enable interrupts in user mode
+        .write();
 
     let user_context_ptr = tcb.get_user_context_ptr();
 
@@ -124,7 +121,7 @@ pub fn return_to_user() -> ! {
 
 pub fn kerneltrap_handler() -> ! {
     println!("Kerneltrap scause={:#x}, sepc={:#x}, stval={:#x}",
-             csrr_scause(), csrr_sepc(), csrr_stval());
+             scause::read(), sepc::read(), stval::read());
     
     // Handle kernel traps here
     // For now, we just shutdown the platform

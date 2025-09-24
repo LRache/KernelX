@@ -1,38 +1,14 @@
 use alloc::sync::Arc;
 use bitflags::bitflags;
 
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::*;
 use crate::fs::vfs;
-use crate::fs::file::FileFlags;
-use crate::fs::FileStat;
-use crate::{copy_to_user, kdebug, kinfo, ktrace};
+use crate::fs::file::{FileFlags, SeekWhence, FileType};
+use crate::fs::inode::Mode;
+use crate::{copy_to_user, copy_to_user_string, kdebug, kinfo, ktrace};
 
 use super::def::*;
-
-const BUFFER_SIZE: usize = 1024;
-
-bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct OpenFlags: usize {
-        const O_RDONLY    = 0x0000;
-        const O_WRONLY    = 0x0001;
-        const O_RDWR      = 0x0002;
-        const O_CREAT     = 0x0040;
-        const O_EXCL      = 0x0080;
-        const O_NOCTTY    = 0x0100;
-        const O_TRUNC     = 0x0200;
-        const O_APPEND    = 0x0400;
-        const O_NONBLOCK  = 0x0800;
-        const O_DSYNC     = 0x1000;
-        const FASYNC      = 0x2000;
-        const O_DIRECT    = 0x4000;
-        const O_LARGEFILE = 0x8000;
-        const O_DIRECTORY = 0x10000;
-        const O_NOFOLLOW  = 0x20000;
-        const O_CLOEXEC   = 0x80000;
-    }
-}
 
 pub fn dup(oldfd: usize) -> Result<usize, Errno> {
     let file = current::fdtable().get(oldfd)?;
@@ -56,7 +32,29 @@ pub fn fcntl64(_fd: usize, _cmd: usize, _arg: usize) -> Result<usize, Errno> {
     Ok(0)
 }
 
-pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, _mode: usize) -> Result<usize, Errno> {
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct OpenFlags: usize {
+        const O_RDONLY    = 0x0000;
+        const O_WRONLY    = 0x0001;
+        const O_RDWR      = 0x0002;
+        const O_CREAT     = 0x0040;
+        const O_EXCL      = 0x0080;
+        const O_NOCTTY    = 0x0100;
+        const O_TRUNC     = 0x0200;
+        const O_APPEND    = 0x0400;
+        const O_NONBLOCK  = 0x0800;
+        const O_DSYNC     = 0x1000;
+        const FASYNC      = 0x2000;
+        const O_DIRECT    = 0x4000;
+        const O_LARGEFILE = 0x8000;
+        const O_DIRECTORY = 0x10000;
+        const O_NOFOLLOW  = 0x20000;
+        const O_CLOEXEC   = 0x80000;
+    }
+}
+
+pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> Result<usize, Errno> {
     if dirfd as isize != AT_FDCWD {
         return Err(Errno::EINVAL);
     }
@@ -75,9 +73,13 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, _mode: usize) ->
             if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREAT) {
                 // Create the file
                 current::with_cwd(|cwd| {
+                    if mode > 0o7777 {
+                        return Err(Errno::EINVAL);
+                    }
+                    let mode = Mode::from_bits(mode as u16).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
+
                     let (parent_dentry, child_name) = vfs::openat_parent_dentry(cwd, &path)?;
-                    parent_dentry.create_file(&child_name, flags)?;
-                    kinfo!("File created: {}", path);
+                    parent_dentry.create(&child_name, mode)?;
                     vfs::openat_file(&cwd, &path, flags)
                 })?
             } else {
@@ -88,7 +90,7 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, _mode: usize) ->
 
     let fd = current::fdtable().push(Arc::new(file))?;
 
-    kdebug!("openat called: path={}, flags={:?}, new_fd={}", path, open_flags, fd);
+    ktrace!("openat called: path={}, flags={:?}, new_fd={}", path, open_flags, fd);
 
     Ok(fd)
 }
@@ -208,15 +210,6 @@ pub fn fstatat(dirfd: usize, uptr_path: usize, uptr_statbuf: usize, _flags: usiz
         vfs::openat_file(current::fdtable().get(dirfd)?.get_dentry(), &path, FileFlags::dontcare())?
     }.fstat()?;
 
-    // let buffer = unsafe {
-    //     core::slice::from_raw_parts(
-    //         &kstat as *const _ as *const u8,
-    //         core::mem::size_of::<FileStat>()
-    //     )
-    // };
-
-    // current::copy_to_user(uptr_statbuf, buffer)?;
-
     copy_to_user!(uptr_statbuf, kstat)?;
 
     ktrace!("fstatat: path={}, st_size={}, st_mode={:#o}", path, kstat.st_size, kstat.st_mode);
@@ -228,14 +221,8 @@ pub fn newfstat(fd: usize, uptr_statbuf: usize) -> Result<usize, Errno> {
     let file = current::fdtable().get(fd)?;
 
     let kstat = file.fstat()?;
-    let buffer = unsafe {
-        core::slice::from_raw_parts(
-            &kstat as *const _ as *const u8,
-            core::mem::size_of::<FileStat>()
-        )
-    };
 
-    current::copy_to_user(uptr_statbuf, buffer)?;
+    copy_to_user!(uptr_statbuf, kstat)?;
 
     ktrace!("newfstat: fd={}, st_size={}, st_mode={:#o}", fd, kstat.st_size, kstat.st_mode);
 
@@ -243,6 +230,11 @@ pub fn newfstat(fd: usize, uptr_statbuf: usize) -> Result<usize, Errno> {
 }
 
 pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Errno> {
+    if mode > 0o7777 {
+        return Err(Errno::EINVAL);
+    }
+    let mode = Mode::from_bits(mode as u16).ok_or(Errno::EINVAL)? | Mode::S_IFDIR;
+    
     let path = current::get_user_string(user_path)?;
 
     let parent_dentry = if dirfd as isize == AT_FDCWD {
@@ -256,7 +248,105 @@ pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Err
 
     kinfo!("mkdirat: dirfd={}, path={}, name={}, mode={:#o}", dirfd, path, name, mode);
 
-    parent.mkdir(name)?;
+    parent.create(name, mode)?;
 
     Ok(0)
+}
+
+#[repr(C)]
+struct Dirent {
+    d_ino: u64,
+    d_off: i64,
+    d_reclen: u16,
+    d_type: u8,
+}
+
+enum DirentType {
+    Unknown     = 0,
+    FIFO        = 1,
+    CharDevice  = 2,
+    Directory   = 4,
+    BlockDevice = 6,
+    RegularFile = 8,
+    Symlink     = 10,
+    Socket      = 12,
+}
+
+impl From<FileType> for DirentType {
+    fn from(ft: FileType) -> Self {
+        match ft {
+            FileType::Regular     => DirentType::RegularFile,
+            FileType::Directory   => DirentType::Directory,
+            FileType::CharDevice  => DirentType::CharDevice,
+            FileType::BlockDevice => DirentType::BlockDevice,
+            FileType::FIFO        => DirentType::FIFO,
+            FileType::Symlink     => DirentType::Symlink,
+            FileType::Socket      => DirentType::Socket,
+            FileType::Unknown     => DirentType::Unknown,
+        }
+    }
+}
+
+const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d_type
+
+pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usize> {
+    let file = current::fdtable().get(fd)?;
+
+    kdebug!("getdents64: fd={}, buf={:#x}, count={}", fd, uptr_dirent, count);
+
+    let mut total_copied = 0;
+    
+    loop {
+        let dent = match file.get_dent() {
+            Ok(Some(d)) => d,
+            Ok(None) => {
+                if total_copied == 0 {
+                    return Ok(0); // No more entries
+                } else {
+                    break;
+                }
+            },
+            Err(e) => {
+                kdebug!("getdents64: error getting dent: {:?}", e);
+                return Err(e)
+            },
+        };
+
+        // let name = "."
+        let name = &dent.name;
+        let name_bytes = name.as_bytes();
+        let name_len = core::cmp::min(name_bytes.len(), 255);
+        let reclen = DIRENT_NAME_OFFSET + name_len + 1;
+        let reclen_aligned = (reclen + 7) & !7; // Align to 8 bytes
+        kdebug!("getdents64: dent ino={}, name={}, reclen_aligned={}", dent.ino, name, reclen_aligned);
+
+        if total_copied + reclen_aligned > count {
+            kdebug!("getdents64: buffer full, total_copied={}, reclen_aligned={}, count={}", total_copied, reclen_aligned, count);
+            file.seek(-1, SeekWhence::CUR)?; // Rewind one entry
+            break; 
+        }
+
+        let dirent = Dirent {
+            d_ino: dent.ino as u64,
+            d_off: 0, // Not used
+            d_reclen: reclen_aligned as u16,
+            d_type: DirentType::from(dent.file_type) as u8,
+        };
+
+        // Copy dirent to user space
+        let dirent_ptr = uptr_dirent + total_copied;
+
+        copy_to_user!(dirent_ptr, dirent).unwrap();
+        kdebug!("getdents64: copied dirent d_ino={}, d_reclen={}, d_name={}", dirent.d_ino, dirent.d_reclen, name);
+        copy_to_user_string!(dirent_ptr + DIRENT_NAME_OFFSET, name, name_len + 1)?;
+
+        total_copied += reclen_aligned;
+    }
+
+    if total_copied == 0 {
+        kdebug!("getdents64: no entries copied, buffer too small");
+        Err(Errno::EINVAL)
+    } else {
+        Ok(total_copied)
+    }
 }

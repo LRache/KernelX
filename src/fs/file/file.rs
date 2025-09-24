@@ -1,10 +1,12 @@
 use alloc::sync::Arc;
 use spin::Mutex;
 
+use crate::fs::file::DirResult;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::LockedInode;
 use crate::fs::vfs::Dentry;
 use crate::ktrace;
+
 use super::FileStat;
 
 pub enum SeekWhence {
@@ -13,14 +15,16 @@ pub enum SeekWhence {
     END,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     Regular,
     Directory,
     Symlink,
     CharDevice,
     BlockDevice,
-    Pipe,
+    FIFO,
     Socket,
+    Unknown,
 }
 
 #[derive(Clone, Copy)]
@@ -39,7 +43,6 @@ pub struct File {
     inode: Arc<LockedInode>,
     dentry: Arc<Dentry>,
     pos: Mutex<usize>,
-    ftype: FileType,
     
     pub flags: FileFlags,
 }
@@ -50,7 +53,6 @@ impl File {
             inode: dentry.get_inode().clone(),
             dentry: dentry.clone(),
             pos: Mutex::new(0),
-            ftype: FileType::Regular,
             flags
         }
     }
@@ -116,8 +118,20 @@ impl File {
         ktrace!("fstat: inode type={}", self.inode.type_name());
         kstat.st_ino = self.inode.get_ino() as u64;
         kstat.st_size = self.inode.size()? as i64;
+        kstat.st_mode = self.inode.mode().bits() as u32;
         
         Ok(kstat)
+    }
+
+    pub fn get_dent(&self) -> SysResult<Option<DirResult>> {
+        let mut pos = self.pos.lock();
+        let dent = match self.inode.get_dent(*pos)? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        *pos += 1;
+        
+        Ok(Some(dent))
     }
 
     pub fn get_inode(&self) -> &Arc<LockedInode> {

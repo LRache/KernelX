@@ -36,7 +36,7 @@ pub fn load_elf(file: &Arc<File>, addrspace: &mut AddrSpace) -> Result<(usize, O
     let ehdr = read_ehdr(file)?;
     
     if !ehdr.is_valid_elf() {
-        println!("Invalid ELF header");
+        ktrace!("Invalid ELF header: {:?}", ehdr.e_ident);
         return Err(Errno::ENOEXEC);
     }
     

@@ -61,11 +61,9 @@ impl VirtualFileSystem {
     pub fn lookup_dentry(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
         let mut current = match path.chars().next() {
             Some('/') => {
-                kdebug!("lookup_dentry: absolute path {}", path);
                 self.get_root().clone()
             },
             _ => {
-                kdebug!("lookup_dentry: relative path {}, dir={}", path, dir.get_path());
                 dir.clone()
             },
         };

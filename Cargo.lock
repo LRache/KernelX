@@ -50,12 +50,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ext4_rs"
+version = "1.3.2"
+dependencies = [
+ "bitflags",
+ "log",
+]
+
+[[package]]
 name = "kernelx"
 version = "0.1.0"
 dependencies = [
  "bitflags",
  "buddy_system_allocator",
  "cc",
+ "ext4_rs",
  "spin",
  "virtio-drivers",
 ]

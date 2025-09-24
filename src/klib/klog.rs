@@ -118,7 +118,7 @@ macro_rules! ktrace {
 
 #[panic_handler]
 pub fn panic_handler(info: &PanicInfo) -> ! {
-    kernel::fini();
+    // kernel::fini();
     if let Some(location) = info.location() {
         println!(
             "{}{}[{}]{} {} @ {}:{}{}",

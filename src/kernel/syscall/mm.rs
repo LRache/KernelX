@@ -3,7 +3,7 @@ use core::usize;
 use alloc::boxed::Box;
 use bitflags::bitflags;
 
-use crate::{kdebug, kinfo};
+use crate::{kdebug};
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{Area, AnonymousArea, FileMapArea};
 use crate::kernel::scheduler::*;

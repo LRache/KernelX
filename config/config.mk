@@ -5,6 +5,9 @@ CONFIG_FILE := config/.config
 COMPILE_MODE ?= $(CONFIG_COMPILE_MODE)
 COMPILE_MODE ?= debug
 
+KERNELX_RELEASE ?= $(CONFIG_KERNELX_RELEASE)
+KERNELX_RELEASE ?= 5.0
+
 # Default values with Kconfig support
 # INITPATH ?= $(CONFIG_INITPATH)
 INITPATH ?= /init
@@ -19,7 +22,7 @@ CROSS_COMPILE ?= $(CONFIG_CROSS_COMPILE)
 CROSS_COMPILE ?= riscv64-unknown-elf-
 
 # Log level control: trace, debug, info, warn, none
-# LOG_LEVEL ?= $(CONFIG_LOG_LEVEL)
+LOG_LEVEL ?= $(CONFIG_LOG_LEVEL)
 LOG_LEVEL ?= trace
 
 # QEMU Configuration

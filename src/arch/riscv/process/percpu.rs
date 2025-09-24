@@ -1,19 +1,23 @@
-use crate::arch::riscv::csr::{csrr_sepc, csrr_tp, csrw_tp};
-use crate::kernel::scheduler::Processor;
-
 #[inline(always)]
-pub fn current_processor() -> &'static mut Processor<'static> {
-    let ptr = csrr_tp() as *mut Processor;
+pub fn set_percpu_data(ptr: usize) {
     unsafe {
-        &mut *ptr
+        core::arch::asm!("mv tp, {}", in(reg) ptr as usize);
     }
 }
 
 #[inline(always)]
-pub fn set_current_processor(ptr: *mut Processor) {
-    csrw_tp(ptr as usize);
+pub fn get_percpu_data() -> usize {
+    let ptr: usize;
+    unsafe {
+        core::arch::asm!("mv {}, tp", out(reg) ptr);
+    }
+    ptr
 }
 
 pub fn get_user_pc() -> usize {
-    csrr_sepc()
+    let sepc: usize;
+    unsafe {
+        core::arch::asm!("csrr {}, sepc", out(reg) sepc);
+    }
+    sepc
 }

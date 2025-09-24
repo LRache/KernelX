@@ -1,7 +1,6 @@
+use crate::kernel::scheduler::current;
 use crate::kernel::task::{ThreadState, TCB};
 use crate::{arch, kdebug};
-use crate::platform;
-use crate::println;
 use super::processor::Processor;
 
 use alloc::collections::vec_deque::VecDeque;
@@ -39,6 +38,7 @@ pub fn fetch_next_task() -> Option<Arc<TCB>> {
 }
 
 pub fn run_tasks() -> ! {
+    current::clear();
     loop {
         if let Some(mut tcb) = fetch_next_task() {
             if tcb.get_state() != ThreadState::Ready {
@@ -48,9 +48,11 @@ pub fn run_tasks() -> ! {
             tcb.set_state(ThreadState::Running);
             
             let mut processor = Processor::new(&mut tcb);
-            arch::set_current_processor(&mut processor);
+            current::set(&mut processor);
             
             processor.switch_to_task();
+
+            current::clear();
 
             if tcb.get_state() == ThreadState::Running {
                 tcb.set_state(ThreadState::Ready);
@@ -59,8 +61,7 @@ pub fn run_tasks() -> ! {
                 kdebug!("Task {} exited.", tcb.get_tid());
             }
         } else {
-            println!("No more process to run, exit.");
-            platform::shutdown();
+            arch::wait_for_interrupt();
         }
     }
 }

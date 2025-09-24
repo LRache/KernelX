@@ -1,45 +1,43 @@
 pub mod scause;
 
-pub fn csrr_tp() -> usize {
-    let value: usize;
-    unsafe {
-        core::arch::asm!("mv {}, tp", out(reg) value);
-    }
-    value
-}
+mod sstatus;
 
-pub fn csrw_tp(value: usize) {
-    unsafe {
-        core::arch::asm!("mv tp, {}", in(reg) value);
-    }
-}
+pub use sstatus::Sstatus;
 
-pub fn csrr_sepc() -> usize {
-    let value: usize;
-    unsafe {
-        core::arch::asm!("csrr {}, sepc", out(reg) value);
+pub mod sepc {
+    pub fn read() -> usize {
+        let value: usize;
+        unsafe { core::arch::asm!("csrr {}, sepc", out(reg) value); }
+        value
     }
-    value
-}
 
-pub fn csrw_sepc(value: usize) {
-    unsafe {
-        core::arch::asm!("csrw sepc, {}", in(reg) value);
+    pub fn write(value: usize) {
+        unsafe { core::arch::asm!("csrw sepc, {}", in(reg) value); }
     }
 }
 
-pub fn csrw_stvec(value: usize) {
-    unsafe {
-        core::arch::asm!("csrw stvec, {}", in(reg) value);
+pub mod stvec {
+    pub fn read() -> usize {
+        let value: usize;
+        unsafe { core::arch::asm!("csrr {}, stvec", out(reg) value); }
+        value
+    }
+
+    pub fn write(value: usize) {
+        unsafe { core::arch::asm!("csrw stvec, {}", in(reg) value); }
     }
 }
 
-pub fn csrr_stval() -> usize {
-    let value: usize;
-    unsafe {
-        core::arch::asm!("csrr {}, stval", out(reg) value);
+pub mod stval {
+    pub fn read() -> usize {
+        let value: usize;
+        unsafe { core::arch::asm!("csrr {}, stval", out(reg) value); }
+        value
     }
-    value
+
+    pub fn write(value: usize) {
+        unsafe { core::arch::asm!("csrw stval, {}", in(reg) value); }
+    }
 }
 
 pub fn csrw_sscratch(value: usize) {

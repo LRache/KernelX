@@ -4,6 +4,7 @@ mod fs;
 mod signal;
 mod misc;
 mod num;
+mod time;
 mod uid;
 mod def;
 

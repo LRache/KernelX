@@ -36,7 +36,8 @@ impl Utsname {
         let sysname = b"KernelX";
         ustname.sysname[..sysname.len()].copy_from_slice(sysname);
 
-        let release = option_env!("KERNELX_RELEASE").unwrap_or("0.1.0");
+        // let release = option_env!("KERNELX_RELEASE").unwrap_or("0.1.0");
+        let release = "5.0.0" ;
         ustname.release[..release.len()].copy_from_slice(release.as_bytes());
 
         let machine = b"riscv64";

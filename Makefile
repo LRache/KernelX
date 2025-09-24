@@ -48,7 +48,7 @@ init:
 	# @ make -C ./lib/opensbi CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP=y FW_JUMP_ADDR=0x80200000 
 
 $(KERNEL):
-	@ $(BUILD_ENV) make -C ./clib all
+	@ $(BUILD_ENV) make -C clib all
 	@ $(BUILD_ENV) cargo build --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
 	@ mkdir -p build/$(PLATFORM)
 	@ cp $(KERNEL) build/$(PLATFORM)/kernelx
@@ -63,7 +63,11 @@ count:
 .PHONY: $(KERNEL)
 
 run: $(KERNEL)
-	@ $(QEMU) $(QEMU_FLAGS)
+	$(QEMU) $(QEMU_FLAGS)
+
+qemu-dts:
+	@ $(QEMU) $(QEMU_FLAGS) -machine dumpdtb=qemu-virt-riscv64.dtb
+	@ dtc -I dtb -O dts qemu-virt-riscv64.dtb -o qemu-virt-riscv64.dts
 
 gdb: $(KERNEL)
 	@ $(QEMU) $(QEMU_FLAGS) -s -S
@@ -76,8 +80,5 @@ objcopy:
 objdump:
 	@ $(CROSS_COMPILE)objdump -d $(KERNEL) > kernel.asm
 	@ echo "Generated kernel.asm"
-
-clean:
-	@ make -C ./kernel clean
 
 .PHONY: all init run gdb clean count check menuconfig defconfig objcopy objdump help $(KERNEL)

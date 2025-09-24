@@ -1,6 +1,7 @@
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall;
+use crate::kernel::timer;
 use crate::kinfo;
 use crate::kwarn;
 
@@ -9,7 +10,12 @@ pub fn timer_interrupt() {
     // It can be used to handle periodic tasks or scheduling.
     // For now, we will just print a message.
     kinfo!("Timer interrupt occurred.");
-    current::schedule();
+
+    timer::interrupt();
+
+    if !current::is_clear() {
+        current::schedule();
+    }
 }
 
 pub fn syscall(num: usize, args: &syscall::Args) -> usize {

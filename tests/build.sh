@@ -10,6 +10,7 @@ TESTS=(
     "basic-ulib"
     "basic-musl"
     "basic-glibc"
+    "os-func"
 )
 
 RED='\033[0;31m'
@@ -129,7 +130,7 @@ log_info "Creating ext4 image: $IMG_FILE"
 [ -f "$IMG_FILE" ] && rm -f "$IMG_FILE"
 
 dd if=/dev/zero of=$IMG_FILE bs=1M count=$IMG_SIZE 2>/dev/null
-/sbin/mkfs.ext4 -F $IMG_FILE >/dev/null 2>&1
+/sbin/mkfs.ext4 -b 4096 -F $IMG_FILE >/dev/null 2>&1
 
 if sudo mount -o loop $IMG_FILE img/${ISA}; then
     sudo cp -r ${BUILD_DIR}/${ISA}/* img/${ISA}/ 2>/dev/null || true
@@ -150,6 +151,6 @@ echo "Contents of ${BUILD_DIR}/${ISA}/:"
 for test in "${TESTS[@]}"; do
     if [ -d "${BUILD_DIR}/${ISA}/$test" ]; then
         echo "  $test/:"
-        ls -la ${BUILD_DIR}/${ISA}/$test/ | sed 's/^/    /'
+        ls -lai ${BUILD_DIR}/${ISA}/$test/ | sed 's/^/    /'
     fi
 done

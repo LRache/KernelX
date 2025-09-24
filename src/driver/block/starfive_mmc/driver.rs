@@ -23,15 +23,15 @@ impl BlockDriver for EMMCDriver {
         Box::new(EMMCDriver::new(&self.inner))
     }
 
-    fn read_block(&mut self, _block: usize, _buf: &mut [u8]) -> Result<(), ()> {
+    fn read_block(&self, _block: usize, _buf: &mut [u8]) -> Result<(), ()> {
         unimplemented!()
     }
 
-    fn write_block(&mut self, _block: usize, _buf: &[u8]) -> Result<(), ()> {
+    fn write_block(&self, _block: usize, _buf: &[u8]) -> Result<(), ()> {
         unimplemented!()
     }
 
-    fn flush(&mut self) -> Result<(), ()> {
+    fn flush(&self) -> Result<(), ()> {
         Ok(())
     }
 

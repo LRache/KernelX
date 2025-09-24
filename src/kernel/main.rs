@@ -1,6 +1,7 @@
 use crate::driver;
 use crate::fs;
 use crate::arch;
+use crate::kernel::timer;
 use crate::klib::kalloc;
 use crate::kdebug;
 use crate::kinfo;
@@ -58,6 +59,8 @@ pub fn fini() {
 pub extern "C" fn main(_hartid: usize) -> ! {
     println!("Welcome to KernelX!");
     init();
+
+    timer::set_start_timer();
     
     scheduler::run_tasks();
 }

@@ -30,19 +30,17 @@ pub enum Cause {
     Interrupt(Interrupt),
 }
 
-fn read() -> usize {
-    let value: usize;
-    unsafe {
-        core::arch::asm!("csrr {}, scause", out(reg) value);
-    }
-    value
+pub fn read() -> usize {
+    let scause: usize;
+    unsafe { core::arch::asm!("csrr {}, scause", out(reg) scause); }
+    scause
 }
 
 pub fn cause() -> Cause {
-    let value = read();
-    if value & (1 << 63) == 0 {
+    let scause = read();
+    if scause & (1 << 63) == 0 {
         Cause::Trap(
-            match value & 0x7fffffffffffffff {
+            match scause & 0x7fffffffffffffff {
                 0  => Trap::InstAddrMisaligned,
                 1  => Trap::InstAccessFault,
                 2  => Trap::IllegalInst,
@@ -60,16 +58,16 @@ pub fn cause() -> Cause {
                 16 => Trap::DoubleTrap,
                 18 => Trap::SoftwareCheck,
                 19 => Trap::HardwareError,
-                _ => panic!("Unknown trap cause: {}", value),
+                _ => panic!("Unknown trap cause: {}", scause),
             })
     } else {
-        match value & 0x7fffffffffffffff {
+        match scause & 0x7fffffffffffffff {
              0 => Cause::Interrupt(Interrupt::Software),
              5 => Cause::Interrupt(Interrupt::Timer),
              9 => Cause::Interrupt(Interrupt::External),
             13 => Cause::Interrupt(Interrupt::Counter),
-             _ => panic!("Unknown interrupt cause: {}", value),
-            
+             _ => panic!("Unknown interrupt cause: {}", scause),
+                
         }
     }
 }
