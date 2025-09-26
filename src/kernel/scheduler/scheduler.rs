@@ -41,9 +41,7 @@ pub fn run_tasks() -> ! {
     current::clear();
     loop {
         if let Some(mut tcb) = fetch_next_task() {
-            if tcb.get_state() != ThreadState::Ready {
-                continue;
-            }
+            assert!(tcb.get_state() == ThreadState::Ready);
             
             tcb.set_state(ThreadState::Running);
             
@@ -57,10 +55,9 @@ pub fn run_tasks() -> ! {
             if tcb.get_state() == ThreadState::Running {
                 tcb.set_state(ThreadState::Ready);
                 push_task(tcb);
-            } else {
-                kdebug!("Task {} exited.", tcb.get_tid());
             }
         } else {
+            arch::enable_interrupt();
             arch::wait_for_interrupt();
         }
     }

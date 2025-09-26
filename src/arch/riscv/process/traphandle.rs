@@ -3,7 +3,9 @@ use crate::kernel::scheduler::current;
 use crate::kernel::trap;
 use crate::kernel::syscall;
 use crate::arch::riscv::csr::*;
-use crate::arch::UserContext;
+use crate::arch::riscv::asm_kerneltrap_entry;
+use crate::arch::riscv::UserContext;
+use crate::ktrace;
 use crate::platform::config::TRAMPOLINE_BASE;
 use crate::{platform, println};
 
@@ -15,8 +17,7 @@ unsafe extern "C" {
 fn handle_syscall() {
     let tcb = current::tcb();
     
-    let user_entry = sepc::read() + 4;
-    tcb.set_user_entry(user_entry);
+    tcb.set_user_entry(tcb.get_user_entry() + 4); // skip ecall instruction
 
     tcb.with_user_context_mut(|user_context|{
         let syscall_args: syscall::Args = [
@@ -36,7 +37,11 @@ fn handle_syscall() {
 }
 
 pub fn usertrap_handler() -> ! {
-    stvec::write(kerneltrap_handler as usize);
+    stvec::write(asm_kerneltrap_entry as usize);
+    current::tcb().set_user_entry(sepc::read());
+
+    ktrace!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}",
+             scause::read(), sepc::read(), stval::read());
     
     match scause::cause() {
         scause::Cause::Trap(trap) => {
@@ -45,17 +50,14 @@ pub fn usertrap_handler() -> ! {
                 scause::Trap::InstPageFault => {
                     let addr = stval::read();
                     trap::memory_fault(addr, MemAccessType::Execute);
-                    current::tcb().set_user_entry(sepc::read());
                 },
                 scause::Trap::LoadPageFault => {
                     let addr = stval::read();
                     trap::memory_fault(addr, MemAccessType::Read);
-                    current::tcb().set_user_entry(sepc::read());
                 },
                 scause::Trap::StorePageFault => {
                     let addr = stval::read();
                     trap::memory_fault(addr, MemAccessType::Write);
-                    current::tcb().set_user_entry(sepc::read());
                 },
                 _ => {
                     // Handle other traps
@@ -71,7 +73,7 @@ pub fn usertrap_handler() -> ! {
                     println!("Software interrupt occurred");
                 },
                 scause::Interrupt::Timer => {
-                    println!("Timer interrupt occurred");
+                    // println!("Timer interrupt occurred");
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
@@ -81,7 +83,7 @@ pub fn usertrap_handler() -> ! {
                     println!("Counter interrupt occurred");
                 },
             }
-            println!("Interrupt occurred, returning to user mode");
+            // println!("Interrupt occurred, returning to user mode");
         },
     }
     
@@ -108,22 +110,57 @@ pub fn return_to_user() -> ! {
 
     sepc::write(tcb.get_user_entry());
     stvec::write(TRAMPOLINE_BASE);
-    csrw_sscratch(tcb.get_user_context_uaddr());
+    sscratch::write(tcb.get_user_context_uaddr());
 
     Sstatus::read()
         .set_spie(true) // Enable interrupts in user mode
+        .set_spp(true) // Set previous mode to user
         .write();
 
     let user_context_ptr = tcb.get_user_context_ptr();
 
+    ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.get_user_entry(), user_context_ptr as usize);
+
     usertrap_return(user_context_ptr);
 }
 
-pub fn kerneltrap_handler() -> ! {
-    println!("Kerneltrap scause={:#x}, sepc={:#x}, stval={:#x}",
-             scause::read(), sepc::read(), stval::read());
-    
-    // Handle kernel traps here
-    // For now, we just shutdown the platform
-    platform::shutdown();
+#[unsafe(no_mangle)]
+pub fn kerneltrap_handler() {
+    // kdebug!("Kerneltrap scause={:#x}, sepc={:#x}, stval={:#x}",
+    //          scause::read(), sepc::read(), stval::read());
+
+    let sepc = sepc::read();
+
+    match scause::cause() {
+        scause::Cause::Trap(trap) => {
+            match trap {
+                _ => {
+                    panic!("Unhandled kernel trap: {:?}", trap);
+                }
+            }
+        },
+        
+        scause::Cause::Interrupt(interrupt) => {
+            match interrupt {
+                scause::Interrupt::Software => {
+                    println!("Kernel software interrupt occurred");
+                },
+                scause::Interrupt::Timer => {
+                    // println!("Kernel timer interrupt occurred");
+                    trap::timer_interrupt();
+                },
+                scause::Interrupt::External => {
+                    println!("Kernel external interrupt occurred");
+                },
+                scause::Interrupt::Counter => {
+                    println!("Kernel counter interrupt occurred");
+                },
+            }
+        },
+        
+    }
+
+    Sstatus::read().set_spp(false).write(); // Set previous mode to supervisor
+
+    sepc::write(sepc);
 }

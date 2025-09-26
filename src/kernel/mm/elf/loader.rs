@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use crate::fs::file::{File, SeekWhence};
 use crate::kernel::errno::Errno;
 use crate::kernel::mm::elf::loaddyn::DynInfo;
-use crate::kernel::mm::{maparea, page, AddrSpace, MapPerm};
+use crate::kernel::mm::{maparea, AddrSpace, MapPerm};
 use crate::{arch, ktrace};
 use crate::println;
 use super::def::*;

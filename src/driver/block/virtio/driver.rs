@@ -2,8 +2,6 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::driver::block::BlockDriver;
-use crate::{kinfo, print};
-use crate::klib::print;
 
 use super::inner::VirtIOBlockDriverInner;
 

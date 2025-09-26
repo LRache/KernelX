@@ -32,4 +32,13 @@ impl Sstatus {
         }
         self
     }
+
+    pub fn set_spp(&mut self, user: bool) -> &mut Self {
+        if user {
+            self.sstatus &= !(1 << 8);
+        } else {
+            self.sstatus |= 1 << 8;
+        }
+        self
+    }
 }

@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use core::ptr::NonNull;
 use core::fmt;
 
-use crate::arch::{PGBITS, PGMASK};
+use crate::arch::riscv::{PGBITS, PGMASK};
 use crate::kernel::mm;
 use crate::{platform, println};
 

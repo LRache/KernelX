@@ -9,15 +9,15 @@ use crate::fs::file::FileFlags;
 
 const INITPATH: &'static str = match option_env!("KERNELX_INITPATH") {
     Some(path) => path,
-    None => "/glibc/basic/brk",
+    None => "/init",
 };
 
-const INITPWD: &'static str = match option_env!("KERNELX_INITPWD") {
+const INITCWD: &'static str = match option_env!("KERNELX_INITCWD") {
     Some(path) => path,
     None => "/",
 };
 
-const INIT_ARGV: &[&str] = &[INITPATH];
+const INIT_ARGV: &[&str] = &[INITPATH, "sh", "busybox_testcode.sh"];
 const INIT_ENVP: &[&str] = &[
     // "LD_LIBRARY_PATH=/lib", 
     // "LD_SHOW_AUXV=1", 
@@ -39,7 +39,7 @@ pub fn create_initprocess() {
     
     let pcb = PCB::new_initprocess(
         initfile, 
-        INITPWD, 
+        INITCWD, 
         INIT_ARGV, 
         INIT_ENVP
     ).expect("Failed to initialize init process from ELF");

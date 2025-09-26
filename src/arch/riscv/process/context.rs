@@ -1,5 +1,5 @@
-use crate::arch::kernelpagetable::get_kernel_satp;
-use crate::arch::riscv::process::{usertrap_handler, return_to_user};
+use crate::arch::riscv::kernelpagetable::get_kernel_satp;
+use crate::arch::riscv::process::traphandle::{usertrap_handler, return_to_user};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::KernelStack;
 

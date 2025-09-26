@@ -2,18 +2,18 @@ use alloc::sync::Arc;
 use spin::{RwLock, Mutex};
 use core::cell::UnsafeCell;
 
-use crate::kernel::config;
+use crate::kernel::{config, scheduler};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::PCB;
-use crate::kernel::task::fdtable::FDTable;
+use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::mm::{AddrSpace, elf};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::errno::Errno;
 use crate::fs::file::File;
 use crate::fs::vfs;
 use crate::arch::{UserContext, KernelContext};
-use crate::{arch, kdebug, ktrace};
+use crate::{arch, kdebug, kinfo, ktrace};
 
 use super::kernelstack::KernelStack;
 
@@ -21,7 +21,7 @@ use super::kernelstack::KernelStack;
 pub enum ThreadState {
     Running,
     Ready,
-    // Blocked,
+    Blocked,
     Exited,
 }
 
@@ -38,7 +38,7 @@ pub struct TCB {
     _kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
-    fdtable: Arc<FDTable>,
+    fdtable: Arc<Mutex<FDTable>>,
 
     state: RwLock<ThreadState>,
 }
@@ -52,7 +52,7 @@ impl TCB {
         user_entry: usize,
         
         addrspace: Arc<AddrSpace>,
-        fdtable: Arc<FDTable>,
+        fdtable: Arc<Mutex<FDTable>>,
     ) -> Arc<Self> {
         let kernel_stack = KernelStack::new(); 
         user_context.set_kernel_stack_top(kernel_stack.get_top());
@@ -101,18 +101,21 @@ impl TCB {
             auxv.push(AuxKey::PHDR, dyn_info.phdr_addr);
             auxv.push(AuxKey::PHENT, dyn_info.phent as usize);
             auxv.push(AuxKey::PHNUM, dyn_info.phnum as usize);
-            auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
             auxv.push(AuxKey::FLAGS, 0);
             auxv.push(AuxKey::ENTRY, dyn_info.user_entry);
-            auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
             ktrace!("Dynamic linker info: {:?}", dyn_info);
         }
 
+        auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
+        auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
+
         let userstack_top = addrspace.create_user_stack(argv, envp, &auxv).expect("Failed to push args and envp to userstack");
 
-        let fdtable = FDTable::new();
+        kinfo!("Init task user entry at {:#x}, user stack top at {:#x}", user_entry, userstack_top);
+
+        let mut fdtable = FDTable::new();
         for _ in 0..3 {
-            fdtable.push(vfs::stdout::stdout()).expect("Failed to push stdout to FDTable");
+            fdtable.push(vfs::stdout::stdout(), FDFlags::empty()).expect("Failed to push stdout to FDTable");
         }
 
         let mut user_context = UserContext::new();
@@ -120,11 +123,11 @@ impl TCB {
         
         let tcb = Self::new(
             tid, 
-            parent, 
+            parent,
             user_context, 
             user_entry, 
             Arc::new(addrspace),
-            Arc::new(fdtable)
+            Arc::new(Mutex::new(fdtable))
         );
         
         tcb
@@ -162,7 +165,7 @@ impl TCB {
             new_user_context,
             self.get_user_entry(),
             new_addrspace,
-            Arc::new(self.fdtable.fork()),
+            Arc::new(Mutex::new(self.fdtable.lock().fork())),
         );
         
         new_tcb.set_state(ThreadState::Ready);
@@ -187,15 +190,18 @@ impl TCB {
             auxv.push(AuxKey::PHDR, dyn_info.phdr_addr);
             auxv.push(AuxKey::PHENT, dyn_info.phent as usize);
             auxv.push(AuxKey::PHNUM, dyn_info.phnum as usize);
-            auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
             auxv.push(AuxKey::ENTRY, dyn_info.user_entry);
-            auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
         }
+
+        auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
+        auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
 
         let usetstack_top = addrspace.create_user_stack(argv, envp, &auxv)?;
 
         let mut new_user_context = UserContext::new();
         new_user_context.set_user_stack_top(usetstack_top);
+
+        self.fdtable.lock().cloexec();
 
         let new_tcb = TCB::new(
             self.tid,
@@ -250,7 +256,7 @@ impl TCB {
         &self.addrspace
     }
 
-    pub fn get_fd_table(&self) -> &FDTable {
+    pub fn get_fd_table(&self) -> &Mutex<FDTable> {
         &self.fdtable
     }
 
@@ -272,6 +278,15 @@ impl TCB {
     
     pub fn set_state(&self, new_state: ThreadState) {
         *self.state.write() = new_state;
+    }
+
+    pub fn block(&self) {
+        self.set_state(ThreadState::Blocked);
+    }
+
+    pub fn wakeup(self: &Arc<Self>) {
+        self.set_state(ThreadState::Ready);
+        scheduler::push_task(self.clone());
     }
 
     pub fn get_exit_code(&self) -> u8 {

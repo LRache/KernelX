@@ -30,23 +30,6 @@ fn clean_bss() -> () {
              bss_start, bss_end, bss_size);
 }
 
-fn init() {
-    kinfo!("Initializing KernelX...");
-    
-    clean_bss();
-    
-    kalloc::init();
-    mm::page::init();
-    arch::init();
-    driver::init();
-    // kinfo!("Driver initialized successfully.");
-    fs::init();
-
-    task::init();
-    
-    kinfo!("KernelX initialized successfully!");
-}
-
 pub fn fini() {
     kinfo!("Deinitializing KernelX...");
     
@@ -58,9 +41,21 @@ pub fn fini() {
 #[unsafe(no_mangle)]
 pub extern "C" fn main(_hartid: usize) -> ! {
     println!("Welcome to KernelX!");
-    init();
+    
+    kinfo!("Initializing KernelX...");
+    
+    clean_bss();
+    
+    kalloc::init();
+    mm::page::init();
+    arch::init();
+    driver::init();
+    fs::init();
 
-    timer::set_start_timer();
+    task::init();
+    timer::init();
+    
+    kinfo!("KernelX initialized successfully!");
     
     scheduler::run_tasks();
 }

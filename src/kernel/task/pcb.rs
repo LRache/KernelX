@@ -5,14 +5,15 @@ use spin::Mutex;
 use crate::kernel::errno::Errno;
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::get_initprocess;
-use crate::kernel::task::fdtable::FDTable;
+use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::scheduler::{self, current};
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::tid;
 use crate::fs::file::{File, FileFlags};
 use crate::fs::vfs;
 use crate::fs::Dentry;
-use crate::{kdebug, ktrace};
+use crate::klib::klog;
+use crate::{kdebug, kinfo, ktrace};
 
 use super::tcb::{TCB, ThreadState};
 
@@ -41,21 +42,21 @@ impl PCB {
         })
     }
 
-    pub fn new_initprocess(file: File, pwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
+    pub fn new_initprocess(file: File, cwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
         let new_tid = tid::alloc();
         assert!(new_tid == 0);
         
         let file = Arc::new(file);
 
-        let fd_table = FDTable::new();
+        let mut fd_table = FDTable::new();
         for _ in 0..3 {
-            fd_table.push(vfs::stdout::stdout())?;
+            fd_table.push(vfs::stdout::stdout(), FDFlags::empty())?;
         }
-        fd_table.push(file.clone())?;
+        fd_table.push(file.clone(), FDFlags::empty())?;
 
-        let pwd = vfs::open_dentry(pwd, FileFlags::dontcare())?;
+        let cwd = vfs::open_dentry(cwd, FileFlags::dontcare())?;
 
-        let pcb = PCB::new(new_tid, &pwd);
+        let pcb = PCB::new(new_tid, &cwd);
 
         let first_task = TCB::new_inittask(new_tid, &pcb, &file, argv, envp);
         pcb.tasks.lock().push(first_task.clone());
@@ -134,7 +135,7 @@ impl PCB {
         *self.exit_code.lock() = code;
 
         if self.pid == 0 {
-            panic!("Init process exited, system will halt.");
+            panic!("Init process exited with code {}, system will halt.", code);
         }
 
         let mut children = self.children.lock();
@@ -188,6 +189,7 @@ impl PCB {
             loop {
                 {
                     let mut children = self.children.lock();
+                    // kinfo!("Waiting for any child process, current children count: {}", children.len());
                     if let Some(child) = children.iter().find(|c| c.is_zombie()) {
                         let pid = child.get_pid();
                         let exit_code = child.get_exit_code();
@@ -197,9 +199,7 @@ impl PCB {
                     }
                 }
                 
-                ktrace!("Waiting 0");
                 current::schedule();
-                ktrace!("Waiting 1");
             }
         } else {
             let children = self.children.lock();

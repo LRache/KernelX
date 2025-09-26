@@ -6,8 +6,6 @@ use crate::driver::block::{BlockDevice, BlockDriver};
 
 use super::{VirtIOBlockDriverInner, VirtIOBlockDriver};
 
-const BLOCK_SIZE: usize = 512;
-
 pub struct VirtIOBlockDevice {
     driver: Arc<VirtIOBlockDriverInner>,
 }

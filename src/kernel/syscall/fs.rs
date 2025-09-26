@@ -1,35 +1,55 @@
 use alloc::sync::Arc;
 use bitflags::bitflags;
+use num_enum::TryFromPrimitive;
 
+use crate::fs::vfs::vfs;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::*;
-use crate::fs::vfs;
-use crate::fs::file::{FileFlags, SeekWhence, FileType};
+use crate::kernel::task::fdtable::FDFlags;
+use crate::fs::{vfs, Dentry};
+use crate::fs::file::{FileFlags, SeekWhence, FileType, FileOps};
 use crate::fs::inode::Mode;
 use crate::{copy_to_user, copy_to_user_string, kdebug, kinfo, ktrace};
 
 use super::def::*;
 
 pub fn dup(oldfd: usize) -> Result<usize, Errno> {
-    let file = current::fdtable().get(oldfd)?;
-    let newfd = current::fdtable().push(file.clone())?;
+    let mut fdtable = current::fdtable().lock();
+    let file = fdtable.get(oldfd)?;
+    let newfd = fdtable.push(file.clone(), FDFlags::empty())?;
     Ok(newfd)
 }
 
 pub fn dup2(oldfd: usize, newfd: usize) -> Result<usize, Errno> {
+    let mut fdtable = current::fdtable().lock();
     if oldfd == newfd {
         // If oldfd and newfd are the same, just return newfd
-        current::fdtable().get(oldfd)?; // Check if oldfd is valid
+        fdtable.get(oldfd)?; // Check if oldfd is valid
         return Ok(newfd);
     }
 
-    current::fdtable().dup2(oldfd, newfd)?;
+    let file = fdtable.get(oldfd)?;
+    fdtable.set(newfd, file, FDFlags::empty())?;
     
     Ok(newfd)
 }
 
-pub fn fcntl64(_fd: usize, _cmd: usize, _arg: usize) -> Result<usize, Errno> {
-    Ok(0)
+#[allow(non_camel_case_types)]
+#[derive(TryFromPrimitive)]
+#[repr(usize)]
+enum FcntlCmd {
+    F_DUPFD_CLOEXEC = 1030,
+}
+
+pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> Result<usize, Errno> {
+    match FcntlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)? {
+        FcntlCmd::F_DUPFD_CLOEXEC => {
+            let mut fdtable = current::fdtable().lock();
+            let file = fdtable.get(fd)?;
+            let fd = fdtable.push(file, FDFlags { cloexec: true })?;
+            Ok(fd)
+        }
+    }
 }
 
 bitflags! {
@@ -55,40 +75,46 @@ bitflags! {
 }
 
 pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> Result<usize, Errno> {
-    if dirfd as isize != AT_FDCWD {
-        return Err(Errno::EINVAL);
-    }
-
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-    let flags = FileFlags {
+    let file_flags = FileFlags {
         writable: open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR),
+        cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
+    };
+    let fd_flags = FDFlags {
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
     let path = current::get_user_string(uptr_filename)?;
 
-    let file = match current::with_cwd(|cwd| vfs::openat_file(cwd, &path, flags)) {
-        Ok(file) => {file},
-        Err(e) => {
-            if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREAT) {
-                // Create the file
-                current::with_cwd(|cwd| {
+    let helper = |parent: &Arc<Dentry>| {
+        match vfs::openat_file(parent, &path, file_flags) {
+            Ok(file) => Ok(file),
+            Err(e) => {
+                if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREAT) {
+                    // Create the file
                     if mode > 0o7777 {
                         return Err(Errno::EINVAL);
                     }
                     let mode = Mode::from_bits(mode as u16).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
-
-                    let (parent_dentry, child_name) = vfs::openat_parent_dentry(cwd, &path)?;
-                    parent_dentry.create(&child_name, mode)?;
-                    vfs::openat_file(&cwd, &path, flags)
-                })?
-            } else {
-                return Err(e);
+                    kinfo!("openat: creating file {} with mode {:#o}", path, mode);
+                    let (parent_dentry, child_name) = vfs::openat_parent_dentry(parent, &path)?;
+                    parent_dentry.create(&child_name, mode)?;                    
+                    vfs::openat_file(parent, &path, file_flags)
+                } else {
+                    kinfo!("openat: failed to open file {}: {:?}", path, e);
+                    Err(e)
+                }
             }
         }
     };
 
-    let fd = current::fdtable().push(Arc::new(file))?;
+    let file = if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| helper(&cwd))?
+    } else {
+        helper(vfs().get_root())?
+    };
+
+    let fd = current::fdtable().lock().push(Arc::new(file), fd_flags)?;
 
     ktrace!("openat called: path={}, flags={:?}, new_fd={}", path, open_flags, fd);
 
@@ -96,7 +122,7 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
 }
 
 pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno> {
-    let file = current::fdtable().get(fd)?;
+    let file = current::fdtable().lock().get(fd)?;
 
     let addrspace = current::addrspace();
         
@@ -119,8 +145,24 @@ pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno>
     Ok(total_read)
 }
 
+pub fn readlinkat(dirfd: usize, uptr_path: usize, uptr_buf: usize, bufsize: usize) -> SysResult<usize> {
+    let path = current::get_user_string(uptr_path)?;
+    
+    let path = if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::openat_dentry(cwd, &path, FileFlags::dontcare()))?
+    } else {
+        vfs::openat_dentry(
+            current::fdtable().lock().get(dirfd)?.get_dentry(),
+            &path, 
+            FileFlags::dontcare()
+        )?
+    }.readlink()?;
+
+    copy_to_user_string!(uptr_buf, &path, bufsize)
+}
+
 pub fn write(fd: usize, uptr_buffer: usize, mut count: usize) -> Result<usize, Errno> {
-    let file = current::fdtable().get(fd)?;
+    let file = current::fdtable().lock().get(fd)?;
 
     let addrspace = current::addrspace();
     let mut written = 0;
@@ -147,7 +189,7 @@ pub struct IOVec {
 }
 
 pub fn writev(fd: usize, iov: usize, iovcnt: usize) -> Result<usize, Errno> {
-    let file = current::fdtable().get(fd)?;
+    let file = current::fdtable().lock().get(fd)?;
 
     let addrspace = current::addrspace();
 
@@ -183,13 +225,13 @@ pub fn writev(fd: usize, iov: usize, iovcnt: usize) -> Result<usize, Errno> {
 }
 
 pub fn close(fd: usize) -> Result<usize, Errno> {
-    current::fdtable().close(fd)?;
+    current::fdtable().lock().close(fd)?;
 
     Ok(0)
 }
 
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> Result<usize, Errno> {
-    let file = current::fdtable().get(fd)?;
+    let file = current::fdtable().lock().get(fd)?;
 
     file.ioctl(request, arg)
 }
@@ -207,7 +249,7 @@ pub fn fstatat(dirfd: usize, uptr_path: usize, uptr_statbuf: usize, _flags: usiz
     let kstat = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare()))?
     } else {
-        vfs::openat_file(current::fdtable().get(dirfd)?.get_dentry(), &path, FileFlags::dontcare())?
+        vfs::openat_file(current::fdtable().lock().get(dirfd)?.get_dentry(), &path, FileFlags::dontcare())?
     }.fstat()?;
 
     copy_to_user!(uptr_statbuf, kstat)?;
@@ -218,7 +260,7 @@ pub fn fstatat(dirfd: usize, uptr_path: usize, uptr_statbuf: usize, _flags: usiz
 }
 
 pub fn newfstat(fd: usize, uptr_statbuf: usize) -> Result<usize, Errno> {
-    let file = current::fdtable().get(fd)?;
+    let file = current::fdtable().lock().get(fd)?;
 
     let kstat = file.fstat()?;
 
@@ -227,6 +269,10 @@ pub fn newfstat(fd: usize, uptr_statbuf: usize) -> Result<usize, Errno> {
     ktrace!("newfstat: fd={}, st_size={}, st_mode={:#o}", fd, kstat.st_size, kstat.st_mode);
 
     Ok(0)
+}
+
+pub fn utimensat(_dirfd: usize, _uptr_path: usize, _uptr_times: usize, _flags: usize) -> Result<usize, Errno> {
+    Err(Errno::ENOENT)
 }
 
 pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Errno> {
@@ -290,7 +336,7 @@ impl From<FileType> for DirentType {
 const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d_type
 
 pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usize> {
-    let file = current::fdtable().get(fd)?;
+    let file = current::fdtable().lock().get(fd)?;
 
     kdebug!("getdents64: fd={}, buf={:#x}, count={}", fd, uptr_dirent, count);
 

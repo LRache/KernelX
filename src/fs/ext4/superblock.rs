@@ -1,18 +1,14 @@
-use core::ffi::c_void;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use ext4_rs::{BlockDevice, Ext4, Ext4DirSearchResult, BLOCK_SIZE};
+use ext4_rs::{BlockDevice, Ext4, BLOCK_SIZE};
 
 use crate::kernel::errno::SysResult;
 use crate::fs::ext4::inode::Ext4Inode;
 use crate::fs::filesystem::SuperBlock;
 use crate::fs::inode::Inode;
 use crate::driver::block::BlockDriver;
-use crate::{kinfo, print};
-
-use super::ffi::*;
 
 pub struct Ext4SuperBlock {
     // driver: Box<dyn BlockDriver>,
@@ -144,10 +140,6 @@ impl Ext4SuperBlock {
     // fn bclose(&mut self) -> i32  {
     //     self.driver.close().map(|_| 0).expect("Failed to close block")
     // }
-
-    pub fn get_superblock(&self) -> &Ext4 {
-        &self.superblock
-    }
 }
 
 unsafe impl Send for Ext4SuperBlock {}  

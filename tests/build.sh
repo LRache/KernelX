@@ -10,6 +10,7 @@ TESTS=(
     "basic-ulib"
     "basic-musl"
     "basic-glibc"
+    "basic-glibc-static"
     "os-func"
 )
 

@@ -16,7 +16,7 @@ macro_rules! syscall_table {
                 },
             )*
             _ => {
-                // crate::kwarn!("Unsupported syscall: {}, user_pc={:#x}, tid={}", $num_var, crate::arch::get_user_pc(), crate::kernel::scheduler::current::tid());
+                crate::kwarn!("Unsupported syscall: {}, user_pc={:#x}, tid={}", $num_var, crate::arch::get_user_pc(), crate::kernel::scheduler::current::tid());
                 Err(Errno::ENOSYS)
             }
         }
@@ -112,8 +112,10 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         63  => fs::read(3),
         64  => fs::write(3),
         66  => fs::writev(3),
+        78  => fs::readlinkat(4),
         79  => fs::fstatat(4),
         80  => fs::newfstat(2),
+        88  => fs::utimensat(4),
         
         // Task
         17  => task::getcwd(2),
@@ -134,7 +136,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         
         135 => signal::rt_sigprocmask(3),
 
-        // 99  => misc::set_robust_list(0),
+        99  => misc::set_robust_list(0),
         160 => misc::newuname(1),
         293 => misc::rseq(0),
 
@@ -144,6 +146,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         177 => uid::getegid(0),
 
         // Time
+        115 => time::clock_nanosleep(4),
         169 => time::gettimeofday(2),
     }
 }

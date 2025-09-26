@@ -7,7 +7,6 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use spin::mutex::Mutex;
 
-use crate::kdebug;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::LockedInode;
 use crate::fs::filesystem::FileSystem;

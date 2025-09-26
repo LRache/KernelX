@@ -1,3 +1,4 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trap {
     InstAddrMisaligned  =  0,
     InstAccessFault     =  1,

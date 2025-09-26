@@ -73,7 +73,6 @@ asm_usertrap_entry:
     # call the usertrap handler:
     jr t0
 
-.align 3
 asm_usertrap_return:     
     STORE(tp, 32)
     
@@ -121,5 +120,3 @@ asm_usertrap_return:
     LOAD(a0, 10)
 
     sret
-
-kerneltrap_handler:

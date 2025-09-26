@@ -6,6 +6,7 @@ pub mod errno;
 pub mod trap;
 pub mod syscall;
 pub mod timer;
+pub mod ipc;
 pub mod config;
 
 pub use main::fini;

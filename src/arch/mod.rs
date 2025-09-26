@@ -1,18 +1,48 @@
-#[cfg(target_arch = "riscv64")]
-mod riscv;
-#[cfg(target_arch = "riscv64")]
-pub use riscv::*;
+cfg_if::cfg_if! {
+    if #[cfg(target_arch = "riscv64")] {
+        mod riscv;
+        use riscv as arch_impl;
+    } else {
+        compile_error!("Unsupported architecture");
+    }
+}
 
-use crate::kernel::mm::MapPerm;
-use crate::kernel::errno::Errno;
+pub type UserContext = arch_impl::UserContext;
+pub type KernelContext = arch_impl::KernelContext;
+pub type PageTable = arch_impl::PageTable;
 
-pub trait PageTableTrait {
-    fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
-    fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm);
-    fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
-    fn munmap(&mut self, uaddr: usize);
-    fn munmap_if_mapped(&mut self, uaddr: usize) -> bool;
-    fn is_mapped(&self, uaddr: usize) -> bool;
-    fn translate(&self, uaddr: usize) -> Option<usize>;
-    fn mprotect(&mut self, uaddr: usize, perm: MapPerm) -> Result<(), Errno>;
+// pub const PGBITS: usize = arch_impl::PGBITS;
+pub const PGSIZE: usize = arch_impl::PGSIZE;
+pub const PGMASK: usize = arch_impl::PGMASK;
+
+mod arch;
+pub use arch::PageTableTrait;
+use arch::{Arch, ArchTrait};
+
+macro_rules! arch_export {
+    ($($func:ident($($arg:ident: $type:ty),*) -> $ret:ty);* $(;)?) => {
+        $(
+            pub fn $func($($arg: $type),*) -> $ret {
+                Arch::$func($($arg),*)
+            }
+        )*
+    };
+}
+
+arch_export! {
+    init() -> ();
+    
+    /* ----- Per-CPU Data ----- */
+    set_percpu_data(data: usize) -> ();
+    get_percpu_data() -> usize;
+
+    /* ----- Context Switching ----- */
+    kernel_switch(from: *mut KernelContext, to: *mut KernelContext) -> ();
+    get_user_pc() -> usize;
+    
+    /* ----- Interrupt ------ */
+    wait_for_interrupt() -> ();
+    enable_interrupt  () -> ();
+    disable_interrupt () -> ();
+    enable_timer_interrupt() -> ();
 }

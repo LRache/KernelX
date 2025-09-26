@@ -150,29 +150,6 @@ impl Dentry {
         }
     }
 
-    // pub fn mkdir(self: &Arc<Self>, name: &str) -> SysResult<()> {
-    //     if let Ok(_) = self.lookup(name) {
-    //         return Err(Errno::EEXIST);
-    //     }
-
-    //     let mut inner = self.inner.lock();
-        
-    //     if let Some(mount_to) = &inner.mount_to {
-    //         return mount_to.mkdir(name);
-    //     }
-
-    //     let inode = match inner.inode.upgrade() {
-    //         None => {
-    //             let inode =  vfs().open_inode(&self.inode_index)?;
-    //             inner.inode = Arc::downgrade(&inode);
-    //             inode
-    //         }
-    //         Some(inode) => inode,
-    //     };
-
-    //     // inode.mkdir(name)
-    // }
-
     pub fn create(self: &Arc<Self>, name: &str, mode: Mode) -> SysResult<()> {
         if let Ok(_) = self.lookup(name) {
             return Err(Errno::EEXIST);
@@ -194,5 +171,24 @@ impl Dentry {
         };
 
         inode.create(name, mode)
+    }
+
+    pub fn readlink(&self) -> SysResult<String> {
+        let mut inner = self.inner.lock();
+        
+        if let Some(mount_to) = &inner.mount_to {
+            return mount_to.readlink();
+        }
+
+        let inode = match inner.inode.upgrade() {
+            None => {
+                let inode =  vfs().open_inode(&self.inode_index)?;
+                inner.inode = Arc::downgrade(&inode);
+                inode
+            }
+            Some(inode) => inode,
+        };
+
+        inode.readlink()
     }
 }

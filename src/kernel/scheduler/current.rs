@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use alloc::string::String;
+use spin::Mutex;
 
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::tid::Tid;
@@ -39,8 +40,8 @@ macro_rules! copy_to_user_string {
 macro_rules! copy_from_user {
     ($uaddr:expr, $data:expr) => {
         {
-            let data_ptr = $data as *mut _ as *mut u8;
-            let data_size = core::mem::size_of_val($data);
+            let data_ptr = &$data as *const _ as *mut u8;
+            let data_size = core::mem::size_of_val(&$data);
             let data_slice = unsafe { core::slice::from_raw_parts_mut(data_ptr, data_size) };
             $crate::kernel::scheduler::current::copy_from_user($uaddr, data_slice)
         }
@@ -86,7 +87,7 @@ pub fn addrspace() -> &'static Arc<AddrSpace> {
     tcb.get_addrspace()
 }
 
-pub fn fdtable() -> &'static FDTable {
+pub fn fdtable() -> &'static Mutex<FDTable> {
     let tcb = tcb();
     tcb.get_fd_table()
 }

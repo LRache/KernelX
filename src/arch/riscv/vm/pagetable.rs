@@ -1,6 +1,6 @@
 use crate::arch::riscv::pte::{Addr, PTE, PTEFlags, PTETable};
-use crate::arch::{PageTableTrait, PGBITS};
-use crate::arch;
+use crate::arch::riscv::{PGBITS, PGMASK};
+use crate::arch::PageTableTrait;
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm;
 use crate::kernel::errno::Errno;
@@ -198,12 +198,12 @@ impl PageTableTrait for PageTable {
     }
 
     fn translate(&self, vaddr: usize) -> Option<usize> {
-        let pte = self.find_pte(vaddr & !arch::PGMASK)?;
+        let pte = self.find_pte(vaddr & !PGMASK)?;
         Some(pte.page() as usize + Addr::from_kaddr(vaddr).pgoff())
     }
 
     fn mprotect(&mut self, vaddr: usize, perm: MapPerm) -> Result<(), Errno> {
-        assert!(vaddr & arch::PGMASK == 0, "vaddr must be page-aligned");
+        assert!(vaddr & PGMASK == 0, "vaddr must be page-aligned");
 
         let mut pte = self.find_pte(vaddr).ok_or(Errno::EINVAL)?;
         

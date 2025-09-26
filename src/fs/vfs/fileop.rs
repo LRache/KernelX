@@ -32,9 +32,3 @@ pub fn openat_file(dir: &Arc<Dentry>, path: &str, flags: FileFlags) -> SysResult
     let dentry = vfs().lookup_dentry(dir, path)?;
     Ok(File::new(&dentry, flags))
 }
-
-pub fn create_file(dir: &Arc<Dentry>, name: &str, flags: FileFlags) -> SysResult<File> {
-    // let dentry = dir.mkdir(name)?;
-    // Ok(File::new(&dentry, flags))
-    Err(Errno::EOPNOTSUPP)
-}

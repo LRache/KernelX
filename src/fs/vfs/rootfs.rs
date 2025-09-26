@@ -66,7 +66,7 @@ impl SuperBlock for RootFileSystemSuperBlock {
     }
 
     fn get_inode(&self, _ino: u32) -> Result<Box<dyn Inode>, Errno> {
-        Ok(Box::new(RootInode {}))
+        Ok(Box::new(RootInode::new()))
     }
 }
 

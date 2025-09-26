@@ -1,19 +1,14 @@
 use alloc::sync::Arc;
+use core::any::Any;
 use spin::Mutex;
 
-use crate::fs::file::DirResult;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::fs::file::DirResult;
 use crate::fs::inode::LockedInode;
 use crate::fs::vfs::Dentry;
 use crate::ktrace;
 
-use super::FileStat;
-
-pub enum SeekWhence {
-    BEG,
-    CUR,
-    END,
-}
+use super::{FileOps, SeekWhence, FileStat};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
@@ -57,7 +52,14 @@ impl File {
         }
     }
 
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, Errno> {
+    pub fn read_at(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        let len = self.inode.readat(buf, offset)?;
+        Ok(len)
+    }
+}
+
+impl FileOps for File {
+    fn read(&self, buf: &mut [u8]) -> Result<usize, Errno> {
         let mut pos = self.pos.lock();
         let len = self.inode.readat(buf, *pos)?;
         *pos += len;
@@ -65,12 +67,7 @@ impl File {
         Ok(len)
     }
 
-    pub fn read_at(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        let len = self.inode.readat(buf, offset)?;
-        Ok(len)
-    }
-
-    pub fn write(&self, buf: &[u8]) -> Result<usize, Errno> {
+    fn write(&self, buf: &[u8]) -> Result<usize, Errno> {
         let mut pos = self.pos.lock();
         let len = self.inode.writeat(buf, *pos)?;
         *pos += len;
@@ -78,7 +75,7 @@ impl File {
         Ok(len)
     }
 
-    pub fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
+    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
         let mut pos = self.pos.lock();
         match whence {
             SeekWhence::BEG => {
@@ -104,16 +101,11 @@ impl File {
         Ok(*pos)
     }
 
-    pub fn close(&self) -> Result<(), Errno> {
-        // Placeholder for close logic, if needed
-        Ok(())
-    }
-
-    pub fn ioctl(&self, _request: usize, _arg: usize) -> SysResult<usize> {
+    fn ioctl(&self, _request: usize, _arg: usize) -> SysResult<usize> {
         Err(Errno::ENOSYS) // Placeholder for unimplemented ioctl commands
     }
 
-    pub fn fstat(&self) -> SysResult<FileStat> {
+    fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::new();
         ktrace!("fstat: inode type={}", self.inode.type_name());
         kstat.st_ino = self.inode.get_ino() as u64;
@@ -123,7 +115,7 @@ impl File {
         Ok(kstat)
     }
 
-    pub fn get_dent(&self) -> SysResult<Option<DirResult>> {
+    fn get_dent(&self) -> SysResult<Option<DirResult>> {
         let mut pos = self.pos.lock();
         let dent = match self.inode.get_dent(*pos)? {
             Some(d) => d,
@@ -134,11 +126,11 @@ impl File {
         Ok(Some(dent))
     }
 
-    pub fn get_inode(&self) -> &Arc<LockedInode> {
-        &self.inode
+    fn get_inode(&self) -> SysResult<&Arc<LockedInode>> {
+        Ok(&self.inode)
     }
 
-    pub fn get_dentry(&self) -> &Arc<Dentry> {
-        &self.dentry
+    fn get_dentry(&self) -> SysResult<&Arc<Dentry>> {
+        Ok(&self.dentry)
     }
 }

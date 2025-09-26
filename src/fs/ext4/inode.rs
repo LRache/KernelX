@@ -7,6 +7,15 @@ use crate::fs::inode::{Inode, Mode};
 use crate::fs::file::{DirResult, FileType};
 use crate::ktrace;
 
+fn error_map(e: ext4_rs::Ext4Error) -> Errno {
+    match e.error() {
+        ext4_rs::Errno::EIO    => Errno::EIO,
+        ext4_rs::Errno::EEXIST => Errno::EEXIST,
+        ext4_rs::Errno::ENOENT => Errno::ENOENT,
+        _ => Errno::EIO,
+    }
+}
+
 pub struct Ext4Inode {
     sno: u32,
     ino: u32,
@@ -114,7 +123,7 @@ impl Inode for Ext4Inode {
         // ffi::inode_lookup(self.inode_handler, name)
         let mut result = Ext4DirSearchResult::new(Ext4DirEntry::default());
         // kinfo!("lookup {} in inode {}", name, self.ino);
-        self.superblock.dir_find_entry(self.ino, name, &mut result).map_err(|_| Errno::EIO)?;
+        self.superblock.dir_find_entry(self.ino, name, &mut result).map_err(error_map)?;
         ktrace!("found inode {} for name {}", result.dentry.inode, name);
         Ok(result.dentry.inode as u32)
     }

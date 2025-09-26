@@ -144,7 +144,7 @@ config INITPATH
 	help
 	  Path to the init process executable.
 
-config INITPWD
+config INITCWD
 	string "Init process working directory"
 	default "/"
 	help

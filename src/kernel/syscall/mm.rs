@@ -3,11 +3,13 @@ use core::usize;
 use alloc::boxed::Box;
 use bitflags::bitflags;
 
+use crate::fs::file::File;
 use crate::{kdebug};
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{Area, AnonymousArea, FileMapArea};
 use crate::kernel::scheduler::*;
 use crate::kernel::errno::Errno;
+use crate::fs::file::FileOps;
 use crate::arch;
 use crate::ktrace;
 
@@ -89,7 +91,9 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
                 return Err(Errno::EINVAL);
             }
 
-            let file = current::fdtable().get(fd)?;
+            let file = current::fdtable().lock().get(fd)?;
+
+            let file = file.downcast_arc::<File>().map_err(|_| Errno::EINVAL)?;
 
             Box::new(FileMapArea::new(
                 ubase,

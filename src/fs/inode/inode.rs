@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::string::String;
 use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
@@ -49,6 +50,10 @@ pub trait Inode {
         Ok(kstat)
     }
 
+    fn readlink(&self) -> SysResult<String> {
+        Err(Errno::EINVAL)
+    }
+
     fn destroy(&mut self) -> SysResult<()> {
         Ok(())
     }
@@ -89,6 +94,10 @@ impl LockedInode {
 
     pub fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
         self.inner.lock().writeat(buf, offset)
+    }
+    
+    pub fn readlink(&self) -> SysResult<String> {
+        self.inner.lock().readlink()
     }
 
     pub fn lookup(&self, name: &str) -> Result<u32, Errno> {

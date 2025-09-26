@@ -1,10 +1,10 @@
-use crate::arch::pagetable::PageTable;
-use crate::arch::PageTableTrait;
-use crate::arch;
+use core::cell::UnsafeCell;
+
 use crate::kernel::mm::MapPerm;
+use crate::arch::riscv::{PageTable, PGSIZE};
+use crate::arch::PageTableTrait;
 use crate::platform::config::{KERNEL_PMEM_TOP, KERNEL_VADDR_OFFSET, TRAMPOLINE_BASE};
 use crate::println;
-use core::cell::UnsafeCell;
 
 unsafe extern "C" {
     static __text_start: u8;
@@ -70,7 +70,7 @@ fn map_kernel_range(start: *const u8, end: *const u8, perm: MapPerm) {
     while vaddr < end {
         let paddr = vaddr;
         pagetable.mmap(vaddr, paddr, perm);
-        vaddr += arch::PGSIZE;
+        vaddr += PGSIZE;
     }
 }
 

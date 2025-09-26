@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Mode: u16 {
         const S_IFMT   = 0o170000; // bit mask for the file type bit field
 

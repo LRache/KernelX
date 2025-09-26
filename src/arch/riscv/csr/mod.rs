@@ -1,8 +1,10 @@
 pub mod scause;
 
 mod sstatus;
+mod sie;
 
 pub use sstatus::Sstatus;
+pub use sie::SIE;
 
 pub mod sepc {
     pub fn read() -> usize {
@@ -40,16 +42,14 @@ pub mod stval {
     }
 }
 
-pub fn csrw_sscratch(value: usize) {
-    unsafe {
-        core::arch::asm!("csrw sscratch, {}", in(reg) value);
+pub mod sscratch {
+    pub fn read() -> usize {
+        let value: usize;
+        unsafe { core::arch::asm!("csrr {}, sscratch", out(reg) value); }
+        value
     }
-}
 
-pub fn csrr_scause() -> usize {
-    let value: usize;
-    unsafe {
-        core::arch::asm!("csrr {}, scause", out(reg) value);
+    pub fn write(value: usize) {
+        unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) value); }
     }
-    value
 }

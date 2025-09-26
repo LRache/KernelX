@@ -9,11 +9,11 @@ void init_heap(void *start, size_t size) {
     tlsf = tlsf_create_with_pool(start, size);
 }
 
-void* malloc(size_t size) {
+void *malloc(size_t size) {
     return tlsf_malloc(tlsf, size);
 }
 
-void* malloc_aligned(size_t align, size_t size) {
+void *malloc_aligned(size_t align, size_t size) {
     if (align <= 8) [[clang::likely]] {
         return tlsf_malloc(tlsf, size);
     } else {

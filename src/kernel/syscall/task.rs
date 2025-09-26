@@ -1,5 +1,4 @@
 use core::usize;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use bitflags::bitflags;
@@ -9,7 +8,7 @@ use crate::fs::vfs;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::{copy_to_user, copy_to_user_string, kinfo, ktrace};
+use crate::{copy_to_user, copy_to_user_string, ktrace};
 
 pub fn sched_yield() -> Result<usize, Errno> {
     current::schedule();
@@ -109,8 +108,8 @@ pub fn execve(user_path: usize, user_argv: usize, user_envp: usize) -> Result<us
 
 bitflags! {
     pub struct WaitOptions: usize {
-        const WNOHANG   = 1 << 1;
-        const WUNTRACED = 1 << 2;
+        const WNOHANG   = 1 << 0;
+        const WUNTRACED = 1 << 1;
     }
 }
 
