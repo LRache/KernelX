@@ -2,12 +2,13 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 
-use crate::fs::file::{File, FileFlags, SeekWhence};
+use crate::fs::file::{File, FileOps, FileFlags, SeekWhence};
 use crate::fs::vfs;
 use crate::kernel::errno::Errno;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::config;
 use crate::ktrace;
+
 use super::def::*;
 use super::loader::*;
 
@@ -77,8 +78,8 @@ pub fn load_dyn(ehdr: &Elf64Ehdr, file: &Arc<File>, addrspace: &mut AddrSpace) -
 
 fn load_interpreter(path: &str, addrspace: &mut AddrSpace) -> Result<(usize, usize), Errno> {
     let file_flags = FileFlags {
+        readable: true,
         writable: false,
-        cloexec: false,
     };
     let file = vfs::open_file(path, file_flags).map_err(|_| {
         Errno::ENOENT

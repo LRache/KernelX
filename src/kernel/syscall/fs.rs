@@ -7,7 +7,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::*;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::fs::{vfs, Dentry};
-use crate::fs::file::{FileFlags, SeekWhence, FileType, FileOps};
+use crate::fs::file::{FileFlags, FileOps, FileType, SeekWhence};
 use crate::fs::inode::Mode;
 use crate::{copy_to_user, copy_to_user_string, kdebug, kinfo, ktrace};
 
@@ -78,7 +78,7 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let file_flags = FileFlags {
         writable: open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR),
-        cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
+        readable: open_flags.contains(OpenFlags::O_RDONLY) || open_flags.contains(OpenFlags::O_RDWR),
     };
     let fd_flags = FDFlags {
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
@@ -109,7 +109,7 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
     };
 
     let file = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| helper(&cwd))?
+        current::with_cwd(|cwd| helper(cwd))?
     } else {
         helper(vfs().get_root())?
     };
@@ -124,6 +124,10 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
 pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno> {
     let file = current::fdtable().lock().get(fd)?;
 
+    if !file.readable() {
+        return Err(Errno::EBADF);
+    }
+
     let addrspace = current::addrspace();
         
     let mut buffer = [0u8; BUFFER_SIZE];
@@ -133,7 +137,7 @@ pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno>
     while left > 0 {
         let to_read = core::cmp::min(left, BUFFER_SIZE);
         let bytes_read = file.read(&mut buffer[..to_read])?;
-        if bytes_read == 0 {
+        if bytes_read < to_read{
             break; // EOF
         }
         addrspace.copy_to_user(user_buffer + total_read, &buffer[..bytes_read])
@@ -152,7 +156,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: usize, uptr_buf: usize, bufsize: usiz
         current::with_cwd(|cwd| vfs::openat_dentry(cwd, &path, FileFlags::dontcare()))?
     } else {
         vfs::openat_dentry(
-            current::fdtable().lock().get(dirfd)?.get_dentry(),
+            current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
             &path, 
             FileFlags::dontcare()
         )?
@@ -163,6 +167,9 @@ pub fn readlinkat(dirfd: usize, uptr_path: usize, uptr_buf: usize, bufsize: usiz
 
 pub fn write(fd: usize, uptr_buffer: usize, mut count: usize) -> Result<usize, Errno> {
     let file = current::fdtable().lock().get(fd)?;
+    if !file.writable() {
+        return Err(Errno::EBADF);
+    }
 
     let addrspace = current::addrspace();
     let mut written = 0;
@@ -249,7 +256,11 @@ pub fn fstatat(dirfd: usize, uptr_path: usize, uptr_statbuf: usize, _flags: usiz
     let kstat = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare()))?
     } else {
-        vfs::openat_file(current::fdtable().lock().get(dirfd)?.get_dentry(), &path, FileFlags::dontcare())?
+        vfs::openat_file(
+            current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
+            &path, 
+            FileFlags::dontcare()
+        )?
     }.fstat()?;
 
     copy_to_user!(uptr_statbuf, kstat)?;

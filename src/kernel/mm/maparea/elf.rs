@@ -8,7 +8,7 @@ use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::frame::PhysPageFrame;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
-use crate::fs::file::{File, FileOps};
+use crate::fs::file::File;
 
 use super::area::Frame;
 

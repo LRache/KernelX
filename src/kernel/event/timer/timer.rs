@@ -1,9 +1,12 @@
-use alloc::{collections::BinaryHeap, sync::Arc};
+use alloc::collections::BinaryHeap;
+use alloc::sync::Arc;
 use core::cmp::Reverse;
 use spin::Mutex;
 
+use crate::kernel::event::Event;
 use crate::kernel::task::TCB;
-use crate::{platform, arch};
+use crate::arch;
+use crate::platform;
 
 use super::event::TimerEvent;
 
@@ -18,9 +21,9 @@ impl Timer {
         }
     }
 
-    pub fn add_timer(&self, tcb: Arc<TCB>, time: u64) {
+    pub fn add_timer(&self, tcb: Arc<TCB>, time: u64, waker: Option<usize>) {
         let time = platform::get_time_us() + time;
-        self.wait_queue.lock().push(Reverse(TimerEvent { time, tcb }));
+        self.wait_queue.lock().push(Reverse(TimerEvent { time, tcb, waker }));
     } 
 
     pub fn wakeup_expired(&self, current_time: u64) {
@@ -28,7 +31,10 @@ impl Timer {
         while let Some(Reverse(event)) = wait_queue.peek() {
             if event.time <= current_time {
                 let event = wait_queue.pop().unwrap().0;
-                event.tcb.wakeup();
+                match event.waker {
+                    Some(waker) => event.tcb.wakeup_by_event(waker, Event::Timeout),
+                    None => event.tcb.wakeup(),
+                }
             } else {
                 break;
             }
@@ -39,17 +45,17 @@ impl Timer {
 static TIMER: Timer = Timer::new();
 
 pub fn init() {
-    // platform::set_next_timer_us(10000); // Set first timer interrupt in 10ms
-    // arch::enable_timer_interrupt();
+    platform::set_next_timer_us(10000); // Set first timer interrupt in 10ms
+    arch::enable_timer_interrupt();
 }
 
 pub fn add_timer(tcb: Arc<TCB>, time: u64) {
-    TIMER.add_timer(tcb, time);
+    TIMER.add_timer(tcb, time, None);
 }
 
 pub fn interrupt() {
     let current_time = platform::get_time_us();
     TIMER.wakeup_expired(current_time);
 
-    // platform::set_next_timer_us(10000); // Set next timer interrupt in 10ms
+    platform::set_next_timer_us(10000); // Set next timer interrupt in 10ms
 }

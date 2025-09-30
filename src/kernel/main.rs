@@ -1,12 +1,10 @@
+use crate::kernel::event::timer;
+use crate::kernel::{mm, task, scheduler};
 use crate::driver;
 use crate::fs;
 use crate::arch;
-use crate::kernel::timer;
 use crate::klib::kalloc;
-use crate::kdebug;
-use crate::kinfo;
-use crate::kernel::{mm, task, scheduler};
-use crate::println;
+use crate::{kdebug, kinfo};
 
 unsafe extern "C"{
     static __bss_start: u8;
@@ -40,7 +38,7 @@ pub fn fini() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main(_hartid: usize) -> ! {
-    println!("Welcome to KernelX!");
+    kinfo!("Welcome to KernelX!");
     
     kinfo!("Initializing KernelX...");
     

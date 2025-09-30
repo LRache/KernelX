@@ -1,5 +1,5 @@
 use crate::kernel::scheduler::current;
-use crate::kernel::timer;
+use crate::kernel::event::timer;
 use crate::{copy_from_user, copy_to_user, platform};
 use crate::kernel::errno::SysResult;
 

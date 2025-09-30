@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use crate::fs::file::{File, SeekWhence};
+use crate::fs::file::{File, FileOps, SeekWhence};
 use crate::kernel::errno::Errno;
 use crate::kernel::mm::elf::loaddyn::DynInfo;
 use crate::kernel::mm::{maparea, AddrSpace, MapPerm};

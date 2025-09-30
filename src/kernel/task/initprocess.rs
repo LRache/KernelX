@@ -6,6 +6,7 @@ use alloc::sync::Arc;
 use crate::kernel::task::pcb::PCB;
 use crate::fs::vfs;
 use crate::fs::file::FileFlags;
+use crate::kinfo;
 
 const INITPATH: &'static str = match option_env!("KERNELX_INITPATH") {
     Some(path) => path,
@@ -34,7 +35,8 @@ unsafe impl Sync for InitProcess {}
 static INIT_PROCESS: InitProcess = InitProcess(UnsafeCell::new(MaybeUninit::uninit()));
 
 pub fn create_initprocess() {
-    let initfile = vfs::open_file(INITPATH, FileFlags::dontcare())
+    kinfo!("Loading init process from ELF: {}", INITPATH);
+    let initfile = vfs::open_file(INITPATH, FileFlags { readable: true, writable: false })
                                     .expect("Failed to open init file");
     
     let pcb = PCB::new_initprocess(

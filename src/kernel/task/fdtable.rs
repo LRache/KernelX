@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::vec;
 
-use crate::fs::file::{File, FileOps};
+use crate::fs::file::FileOps;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 
@@ -19,7 +19,7 @@ impl FDFlags {
 
 #[derive(Clone)]
 struct FDItem {
-    pub file: Arc<File>,
+    pub file: Arc<dyn FileOps>,
     pub flags: FDFlags,
 }
 
@@ -36,16 +36,16 @@ impl FDTable {
 
     pub fn get(&mut self, fd: usize) -> SysResult<Arc<dyn FileOps>> {
         if fd < self.table.len() {
-            let item = self.table[fd].as_ref().ok_or(Errno::EBADFD)?;
+            let item = self.table[fd].as_ref().ok_or(Errno::EBADF)?;
             Ok(item.file.clone())
         } else {
-            Err(Errno::EBADFD)
+            Err(Errno::EBADF)
         }
     }
 
-    pub fn set(&mut self, fd: usize, file: Arc<File>, flags: FDFlags) -> SysResult<()> {
+    pub fn set(&mut self, fd: usize, file: Arc<dyn FileOps>, flags: FDFlags) -> SysResult<()> {
         if fd >= config::MAX_FD {
-            return Err(Errno::EBADFD);
+            return Err(Errno::EBADF);
         }
         if fd >= self.table.len() {
             self.table.resize(fd + 1, None);
@@ -54,7 +54,7 @@ impl FDTable {
         Ok(())
     }
 
-    pub fn push(&mut self, file: Arc<File>, flags: FDFlags) -> Result<usize, Errno> {
+    pub fn push(&mut self, file: Arc<dyn FileOps>, flags: FDFlags) -> Result<usize, Errno> {
         if let Some(pos) = self.table.iter().position(|f| f.is_none()) {
             self.table[pos] = Some(FDItem { file, flags });
             Ok(pos)
@@ -67,22 +67,26 @@ impl FDTable {
     pub fn close(&mut self, fd: usize) -> Result<(), Errno> {
         if fd < self.table.len() {
             if self.table[fd].is_none() {
-                return Err(Errno::EBADFD);
+                return Err(Errno::EBADF);
             }
             self.table[fd] = None;
             Ok(())
         } else {
-            Err(Errno::EBADFD)
+            Err(Errno::EBADF)
         }
     }
 
     pub fn fork(&self) -> Self {
-        let mut new_table = vec![None; self.table.len()];
-        for (i, file) in self.table.iter().enumerate() {
-            if let Some(file) = file {
-                new_table[i] = Some(file.clone());
-            }
-        }
+        // let mut new_table = vec![None; self.table.len()];
+        // for (i, file) in self.table.iter().enumerate() {
+        //     if let Some(file) = file {
+        //         new_table[i] = Some(file.clone());
+        //     }
+        // }
+
+        let new_table = self.table.iter().map(|item| {
+            item.as_ref().map(|fd_item| fd_item.clone())
+        }).collect();
         
         Self {
             table: new_table,
@@ -90,12 +94,12 @@ impl FDTable {
     }
 
     pub fn cloexec(&mut self) {
-        for item in self.table.iter_mut() {
+        self.table.iter_mut().for_each(|item| {
             if let Some(fd_item) = item {
                 if fd_item.flags.cloexec {
                     *item = None;
                 }
             }
-        }
+        });
     }
 }

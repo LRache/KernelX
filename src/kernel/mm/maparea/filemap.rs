@@ -137,7 +137,7 @@ impl FileMapArea {
                 
                 // For now, we use the inode's writeat method directly
                 // In a real implementation, you might want to add write_at to File
-                self.file.get_inode().writeat(buffer, file_offset)?;
+                self.file.write_at(buffer, file_offset)?;
                 ktrace!("Wrote back page {} to file at offset {:#x}, length: {}", page_index, file_offset, length);
             }
         }
@@ -216,7 +216,7 @@ impl Area for FileMapArea {
         }
     }
 
-    fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, _self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
         // Only remove write permission for actually writable mappings
         let child_perm = if self.perm.contains(MapPerm::W) {
             // For writable mappings, remove write permission to enable COW

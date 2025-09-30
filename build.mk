@@ -19,18 +19,19 @@ LOG_FEATURES_trace = log-trace
 LOG_FEATURES_debug = log-debug
 LOG_FEATURES_info = log-info
 LOG_FEATURES_warn = log-warn
-LOG_FEATURES_none = 
 
-ifneq ($(LOG_FEATURES_$(LOG_LEVEL)),)
+ifeq ($(LOG_LEVEL),)
+RUST_FEATURES += log-info
+else ifneq ($(LOG_FEATURES_$(LOG_LEVEL)),)
 RUST_FEATURES += $(LOG_FEATURES_$(LOG_LEVEL))
-else ifeq ($(LOG_LEVEL),none)
-# none is valid, no features to add
 else
 $(warning Invalid LOG_LEVEL: $(LOG_LEVEL). Valid values: trace, debug, info, warn)
 endif
 # ------ Configure log level features using a more elegant lookup ------ #
 
+ifeq ($(LOG_SYSCALL),y)
 RUST_FEATURES += log-trace-syscall
+endif
 
 kernel: $(KERNEL)
 	cp $(KERNEL) build/$(PLATFORM)/kernelx
@@ -41,4 +42,7 @@ $(KERNEL):
 	@ mkdir -p build/$(PLATFORM)
 	@ cp $(KERNEL) build/$(PLATFORM)/kernelx
 
-.PHONY: kernel $(KERNEL)
+check:
+	@ $(BUILD_ENV) cargo check --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
+
+.PHONY: $(KERNEL)

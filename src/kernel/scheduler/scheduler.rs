@@ -1,6 +1,6 @@
 use crate::kernel::scheduler::current;
-use crate::kernel::task::{ThreadState, TCB};
-use crate::{arch, kdebug};
+use crate::kernel::task::{TaskState, TCB};
+use crate::{arch, kinfo};
 use super::processor::Processor;
 
 use alloc::collections::vec_deque::VecDeque;
@@ -30,6 +30,7 @@ impl Scheduler {
 static SCHEDULER: Scheduler = Scheduler::new();
 
 pub fn push_task(tcb: Arc<TCB>) {
+    // kinfo!("Push task with TID {}", tcb.get_tid());
     SCHEDULER.push_task(tcb);
 }
 
@@ -41,10 +42,10 @@ pub fn run_tasks() -> ! {
     current::clear();
     loop {
         if let Some(mut tcb) = fetch_next_task() {
-            assert!(tcb.get_state() == ThreadState::Ready);
-            
-            tcb.set_state(ThreadState::Running);
-            
+            tcb.run();
+
+            // kinfo!("Switching to task with TID {}", tcb.get_tid());
+
             let mut processor = Processor::new(&mut tcb);
             current::set(&mut processor);
             
@@ -52,10 +53,14 @@ pub fn run_tasks() -> ! {
 
             current::clear();
 
-            if tcb.get_state() == ThreadState::Running {
-                tcb.set_state(ThreadState::Ready);
-                push_task(tcb);
-            }
+            tcb.with_state_mut(|state| {
+                if state.state == TaskState::Running {
+                    state.state = TaskState::Ready;
+                    push_task(tcb.clone());
+                } else {
+                    kinfo!("Task {} not ready to run, state: {:?}", tcb.get_tid(), state.state);
+                }
+            });
         } else {
             arch::enable_interrupt();
             arch::wait_for_interrupt();

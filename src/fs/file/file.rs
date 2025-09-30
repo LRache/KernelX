@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::any::Any;
 use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
@@ -24,13 +23,13 @@ pub enum FileType {
 
 #[derive(Clone, Copy)]
 pub struct FileFlags {
-    pub writable: bool,
-    pub cloexec: bool
+    pub readable: bool,
+    pub writable: bool
 }
 
 impl FileFlags {
     pub const fn dontcare() -> Self {
-        FileFlags { writable: false, cloexec: false }
+        FileFlags { readable: true, writable: true }
     }
 }
 
@@ -56,6 +55,14 @@ impl File {
         let len = self.inode.readat(buf, offset)?;
         Ok(len)
     }
+
+    pub fn write_at(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        if !self.flags.writable {
+            return Err(Errno::EPERM);
+        }
+        let len = self.inode.writeat(buf, offset)?;
+        Ok(len)
+    }
 }
 
 impl FileOps for File {
@@ -73,6 +80,14 @@ impl FileOps for File {
         *pos += len;
         
         Ok(len)
+    }
+
+    fn readable(&self) -> bool {
+        self.flags.readable
+    }
+
+    fn writable(&self) -> bool {
+        self.flags.writable
     }
 
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
@@ -126,11 +141,11 @@ impl FileOps for File {
         Ok(Some(dent))
     }
 
-    fn get_inode(&self) -> SysResult<&Arc<LockedInode>> {
-        Ok(&self.inode)
+    fn get_inode(&self) -> Option<&Arc<LockedInode>> {
+        Some(&self.inode)
     }
 
-    fn get_dentry(&self) -> SysResult<&Arc<Dentry>> {
-        Ok(&self.dentry)
+    fn get_dentry(&self) -> Option<&Arc<Dentry>> {
+        Some(&self.dentry)
     }
 }

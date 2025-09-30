@@ -5,6 +5,7 @@ use crate::kernel::task::TCB;
 pub struct TimerEvent {
     pub time: u64,
     pub tcb: Arc<TCB>,
+    pub waker: Option<usize>,
 }
 
 impl PartialEq for TimerEvent {

@@ -1,7 +1,7 @@
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall;
-use crate::kernel::timer;
+use crate::kernel::event::timer;
 use crate::kwarn;
 
 pub fn timer_interrupt() {

@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
-use spin::{RwLock, Mutex};
 use core::cell::UnsafeCell;
+use spin::Mutex;
 
+use crate::kernel::scheduler::current;
 use crate::kernel::{config, scheduler};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::tid::Tid;
@@ -9,6 +10,7 @@ use crate::kernel::task::PCB;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::mm::{AddrSpace, elf};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
+use crate::kernel::event::Event;
 use crate::kernel::errno::Errno;
 use crate::fs::file::File;
 use crate::fs::vfs;
@@ -18,17 +20,37 @@ use crate::{arch, kdebug, kinfo, ktrace};
 use super::kernelstack::KernelStack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThreadState {
+pub enum TaskState {
     Running,
     Ready,
     Blocked,
     Exited,
 }
 
+pub struct TaskEvent {
+    pub waker: usize,
+    pub event: Event,
+}
+
+pub struct TaskStateSet {
+    pub state: TaskState,
+    pub event: Option<TaskEvent>,
+    pub exit_code: u8,
+}
+
+impl TaskStateSet {
+    pub fn new() -> Self {
+        Self {
+            state: TaskState::Ready,
+            event: None,
+            exit_code: 0,
+        }
+    }
+}
+
 pub struct TCB {
     pub tid: Tid,
     pub parent: Arc<PCB>,
-    exit_code: Mutex<u8>,
     tid_address: Mutex<Option<usize>>,
     
     user_context_ptr: *mut UserContext,
@@ -40,7 +62,7 @@ pub struct TCB {
     addrspace: Arc<AddrSpace>,
     fdtable: Arc<Mutex<FDTable>>,
 
-    state: RwLock<ThreadState>,
+    state: Mutex<TaskStateSet>,
 }
 
 impl TCB {
@@ -67,7 +89,6 @@ impl TCB {
         let tcb = Arc::new(Self {
             tid,
             parent: parent.clone(),
-            exit_code: Mutex::new(0),
             tid_address: Mutex::new(None),
             
             user_context_ptr,
@@ -78,7 +99,8 @@ impl TCB {
 
             addrspace,
             fdtable,
-            state: RwLock::new(ThreadState::Ready),
+            
+            state: Mutex::new(TaskStateSet::new()),
         });
 
         tcb
@@ -167,8 +189,6 @@ impl TCB {
             new_addrspace,
             Arc::new(Mutex::new(self.fdtable.lock().fork())),
         );
-        
-        new_tcb.set_state(ThreadState::Ready);
 
         new_tcb
     }
@@ -272,29 +292,65 @@ impl TCB {
         *self.tid_address.lock() = Some(addr);
     }
 
-    pub fn get_state(&self) -> ThreadState {
-        *self.state.read()
-    }
-    
-    pub fn set_state(&self, new_state: ThreadState) {
-        *self.state.write() = new_state;
-    }
+    pub fn block(self: &Arc<Self>) -> bool {
+        assert!(Arc::ptr_eq(self, current::tcb()));
 
-    pub fn block(&self) {
-        self.set_state(ThreadState::Blocked);
+        kinfo!("Task {} blocking", self.tid);
+        
+        let mut state = self.state.lock();
+        if state.state != TaskState::Running {
+            false
+        } else {
+            state.state = TaskState::Blocked;
+            true
+        }
     }
 
     pub fn wakeup(self: &Arc<Self>) {
-        self.set_state(ThreadState::Ready);
+        let mut state = self.state.lock();
+        if state.state != TaskState::Blocked {
+            return;
+        }
+        state.state = TaskState::Ready;
+        state.event = None;
         scheduler::push_task(self.clone());
     }
 
-    pub fn get_exit_code(&self) -> u8 {
-        *self.exit_code.lock()
+    pub fn wakeup_by_event(self: &Arc<Self>, waker: usize, event: Event) {
+        let mut state = self.state.lock();
+        if state.state != TaskState::Blocked {
+            return;
+        }
+        state.state = TaskState::Ready;
+        state.event = Some(TaskEvent { waker, event });
+        scheduler::push_task(self.clone());
+
+        kinfo!("Task {} woken up by event {:?} from waker {:#x}", self.tid, event, waker);
+    }
+
+    pub fn run(&self) {
+        let mut state = self.state.lock();
+        assert!(state.state == TaskState::Ready);
+        state.state = TaskState::Running;
+    }
+
+    pub fn take_event(&self) -> Option<TaskEvent> {
+        let mut state = self.state.lock();
+        state.event.take()
+    }
+
+    pub fn with_state_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut TaskStateSet) -> R,
+    {
+        let mut state = self.state.lock();
+        f(&mut state)
     }
 
     pub fn exit(&self, code: u8) {
-        if *self.state.read() == ThreadState::Exited {
+        let mut state = self.state.lock();
+        if state.state == TaskState::Exited {
+            kdebug!("Task {} already exited", self.tid);
             return;
         }
 
@@ -303,10 +359,10 @@ impl TCB {
         //     self.addrspace.copy_to_user(tid_address, &(0 as Tid).to_le_bytes()).expect("Failed to clear TID address");
         // }
 
-        kdebug!("Task {} exited with code {}", self.tid, code);
+        kinfo!("Task {} exited with code {}", self.tid, code);
 
-        *self.exit_code.lock() = code;
-        self.set_state(ThreadState::Exited);
+        state.exit_code = code;
+        state.state = TaskState::Exited;
 
         if self.parent.get_pid() == self.tid {
             self.parent.exit(code);

@@ -22,6 +22,7 @@ impl<'a> Processor<'a> {
     }
 
     pub fn schedule(&mut self) {
+        arch::disable_interrupt();
         let kernel_context_ptr = self.tcb.get_kernel_context_ptr();
         arch::kernel_switch(kernel_context_ptr, &mut self.idle_kernel_context);
     }

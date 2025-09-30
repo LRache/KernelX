@@ -5,8 +5,8 @@ pub mod scheduler;
 pub mod errno;
 pub mod trap;
 pub mod syscall;
-pub mod timer;
 pub mod ipc;
+pub mod event;
 pub mod config;
 
 pub use main::fini;

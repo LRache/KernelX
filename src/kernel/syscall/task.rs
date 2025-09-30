@@ -8,7 +8,7 @@ use crate::fs::vfs;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::{copy_to_user, copy_to_user_string, ktrace};
+use crate::{copy_to_user, copy_to_user_string, kinfo, ktrace};
 
 pub fn sched_yield() -> Result<usize, Errno> {
     current::schedule();
@@ -156,6 +156,8 @@ pub fn exit(code: usize) -> Result<usize, Errno> {
 pub fn exit_group(code: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
     pcb.exit(code as u8);
+
+    kinfo!("Process group exit with code {}", code as u8);
     
     current::schedule();
     

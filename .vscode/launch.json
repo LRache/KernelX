@@ -6,7 +6,7 @@
         "type": "cppdbg",
         "request": "launch",
         "cwd": "${workspaceFolder}",
-        "program": "${workspaceFolder}/kernel/target/riscv64gc-unknown-none-elf/debug/kernelx",
+        "program": "${workspaceFolder}/build/qemu-virt-riscv64/kernelx",
         "MIMode": "gdb",
         "miDebuggerPath": "gdb-multiarch",
         "miDebuggerServerAddress": "127.0.0.1:1234",

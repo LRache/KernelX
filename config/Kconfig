@@ -118,11 +118,6 @@ config LOG_LEVEL_SYSCALL
 	  Enable trace level logging with syscall tracing.
 	  Very verbose, includes all system call traces.
 
-config LOG_LEVEL_NONE
-	bool "None"
-	help
-	  Disable all log messages.
-
 endchoice
 
 config LOG_LEVEL
@@ -131,8 +126,12 @@ config LOG_LEVEL
 	default "debug" if LOG_LEVEL_DEBUG
 	default "info" if LOG_LEVEL_INFO
 	default "warn" if LOG_LEVEL_WARN
-	default "syscall" if LOG_LEVEL_SYSCALL
-	default "none" if LOG_LEVEL_NONE
+
+config LOG_SYSCALL
+	bool "Enable Syscall Tracing"
+	default n
+	help
+	  Enable detailed tracing of all system calls.
 
 endmenu
 

@@ -9,20 +9,11 @@ use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{Area, AnonymousArea, FileMapArea};
 use crate::kernel::scheduler::*;
 use crate::kernel::errno::Errno;
-use crate::fs::file::FileOps;
 use crate::arch;
 use crate::ktrace;
 
 pub fn brk(brk: usize) -> Result<usize, Errno> {
     let r = current::addrspace().increase_userbrk(brk);
-    // match r {
-    //     Ok(new_brk) => {
-    //         kinfo!("brk: set brk to {:#x}", new_brk);
-    //     },
-    //     Err(e) => {
-    //         kinfo!("brk: failed to set brk to {:#x}: {:?}", brk, e);
-    //     }
-    // }
     
     r
 }
@@ -49,9 +40,6 @@ bitflags! {
 
 pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, offset: usize) -> Result<usize, Errno> {
     let flags = MMapFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-
-    // kdebug!("mmap called: addr={:#x}, length={}, prot={:#x}, flags={:#x}, fd={}, offset={:#x}", 
-    //         addr, length, prot, flags, fd, offset);
 
     if addr % arch::PGSIZE != 0 || length == 0 {
         return Err(Errno::EINVAL);

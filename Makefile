@@ -2,13 +2,15 @@ include config/config.mk
 
 KERNEL = build/$(PLATFORM)/kernelx
 
-KERNEL_CONFIG = \
-	PLATFORM=$(PLATFORM) \
-	ARCH=$(ARCH) \
-	CROSS_COMPILE=$(CROSS_COMPILE) \
-	INITPATH=$(INITPATH) \
-	INITCWD=$(INITCWD) \
-	RELEASE=$(KERNELX_RELEASE)
+# KERNEL_CONFIG = \
+# 	PLATFORM=$(PLATFORM) \
+# 	ARCH=$(ARCH) \
+# 	CROSS_COMPILE=$(CROSS_COMPILE) \
+# 	INITPATH=$(INITPATH) \
+# 	INITCWD=$(INITCWD) \
+# 	LOG_LEVEL=$(LOG_LEVEL) \
+# 	LOG_SYSCALL=$(LOG_SYSCALL) \
+# 	RELEASE=$(KERNELX_RELEASE)
 
 all: run
 
@@ -19,6 +21,9 @@ init:
 
 kernel:
 	make -f build.mk kernel $(KERNEL_CONFIG)
+
+check:
+	make -f build.mk check $(KERNEL_CONFIG)
 
 run: kernel
 	@ make -f scripts/qemu.mk qemu-run KERNEL=$(KERNEL)

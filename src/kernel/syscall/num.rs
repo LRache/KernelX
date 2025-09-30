@@ -145,8 +145,14 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         176 => uid::getgid(0),
         177 => uid::getegid(0),
 
+        // IPC
+        59  => ipc::pipe(2),
+
         // Time
         115 => time::clock_nanosleep(4),
         169 => time::gettimeofday(2),
+
+        // Event
+        73  => event::ppoll_time32(5),
     }
 }

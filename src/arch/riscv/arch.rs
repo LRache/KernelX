@@ -1,5 +1,3 @@
-use core::arch::asm;
-
 use crate::arch::{Arch, ArchTrait};
 use crate::kernel::scheduler::current;
 
@@ -19,13 +17,13 @@ impl ArchTrait for Arch {
     
     #[inline(always)]
     fn set_percpu_data(data: usize) {
-        unsafe { asm!("mv tp, {data}", data = in(reg) data) };
+        unsafe { core::arch::asm!("mv tp, {data}", data = in(reg) data) };
     }
 
     #[inline(always)]
     fn get_percpu_data() -> usize {
         let data: usize;
-        unsafe { asm!("mv {data}, tp", data = out(reg) data) };
+        unsafe { core::arch::asm!("mv {data}, tp", data = out(reg) data) };
         data
     }
 
@@ -39,7 +37,7 @@ impl ArchTrait for Arch {
     }
     
     fn wait_for_interrupt() {
-        unsafe { asm!("wfi") };
+        unsafe { core::arch::asm!("wfi") };
     }
     
     fn enable_interrupt() {

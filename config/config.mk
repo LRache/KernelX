@@ -25,6 +25,9 @@ CROSS_COMPILE ?= riscv64-unknown-elf-
 LOG_LEVEL ?= $(CONFIG_LOG_LEVEL)
 LOG_LEVEL ?= trace
 
+LOG_SYSCALL ?= $(CONFIG_LOG_SYSCALL)
+LOG_SYSCALL ?= n
+
 # QEMU Configuration
 QEMU_MACHINE ?= $(CONFIG_QEMU_MACHINE)
 QEMU_MACHINE ?= virt
@@ -41,6 +44,17 @@ DISK ?= ./sdcard-rv.img
 BIOS_FIRMWARE ?= $(CONFIG_BIOS_FIRMWARE)
 BIOS_FIRMWARE ?= ./lib/opensbi/build/platform/generic/firmware/fw_jump.bin
 
+KERNEL_CONFIG = \
+	PLATFORM=$(PLATFORM) \
+	ARCH=$(ARCH) \
+	CROSS_COMPILE=$(CROSS_COMPILE) \
+	INITPATH=$(INITPATH) \
+	INITCWD=$(INITCWD) \
+	KERNELX_RELEASE=$(KERNELX_RELEASE) \
+	LOG_LEVEL=$(LOG_LEVEL) \
+	LOG_SYSCALL=$(CONFIG_LOG_SYSCALL) \
+	COMPILE_MODE=$(COMPILE_MODE) \
+
 # Configuration targets
 menuconfig:
 	@if command -v kconfig-mconf >/dev/null 2>&1; then \
@@ -51,20 +65,4 @@ menuconfig:
 		echo "Error: menuconfig not found. Please install kconfig-frontends:"; \
 		echo "  Ubuntu/Debian: sudo apt-get install kconfig-frontends"; \
 		exit 1; \
-	fi
-
-defconfig:
-	@if command -v kconfig-conf >/dev/null 2>&1; then \
-		KCONFIG_CONFIG=config/.config kconfig-conf --defconfig=config/defconfig config/Kconfig; \
-	elif command -v conf >/dev/null 2>&1; then \
-		KCONFIG_CONFIG=config/.config conf --defconfig=config/defconfig config/Kconfig; \
-	else \
-		echo "Creating default config manually..."; \
-		echo "# Default KernelX Configuration" > config/.config; \
-		echo "CONFIG_PLATFORM=\"qemu-virt-riscv64\"" >> config/.config; \
-		echo "CONFIG_COMPILE_MODE=\"debug\"" >> config/.config; \
-		echo "CONFIG_LOG_LEVEL=\"trace\"" >> config/.config; \
-		echo "CONFIG_INITPATH=\"/init\"" >> config/.config; \
-		echo "CONFIG_INITPWD=\"/\"" >> config/.config; \
-		echo "CONFIG_ENABLE_GDB=y" >> config/.config; \
 	fi

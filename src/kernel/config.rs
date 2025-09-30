@@ -15,3 +15,5 @@ pub const KERNEL_STACK_PAGE_COUNT: usize = 12; // Kernel stack page count
 pub const INODE_CACHE_SIZE: usize = 512; // Inode cache size
 
 pub const MAX_FD: usize = 255; // Maximum number of file descriptors per process
+
+pub const PIPE_CAPACITY: usize = 4096; // Capacity of the pipe buffer
