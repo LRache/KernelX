@@ -20,5 +20,7 @@ bootloader:
     csrw satp, t0
     sfence.vma
 
+    li tp, 0
+
     li t0, 0xffffffff80205000
     jr t0

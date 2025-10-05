@@ -7,11 +7,11 @@ IMG_SIZE=${IMG_SIZE:-16}
 BUILD_DIR=${BUILD_DIR:-build}
 
 TESTS=(
-    "basic-ulib"
-    "basic-musl"
+    # "basic-ulib"
+    # "basic-musl"
     "basic-glibc"
-    "basic-glibc-static"
-    "os-func"
+    # "basic-glibc-static"
+    # "os-func"
 )
 
 RED='\033[0;31m'

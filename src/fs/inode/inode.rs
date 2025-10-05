@@ -18,6 +18,10 @@ pub trait Inode {
         Err(Errno::EOPNOTSUPP)
     }
 
+    fn unlink(&mut self, _name: &str) -> SysResult<()> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
     fn readat(&mut self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
         unimplemented!()
     }
@@ -54,7 +58,7 @@ pub trait Inode {
         Err(Errno::EINVAL)
     }
 
-    fn destroy(&mut self) -> SysResult<()> {
+    fn sync(&mut self) -> SysResult<()> {
         Ok(())
     }
 }
@@ -116,8 +120,8 @@ impl LockedInode {
         self.inner.lock().get_dent(index)
     }
 
-    pub fn destroy(&self) -> SysResult<()> {
-        self.inner.lock().destroy()
+    pub fn sync(&self) -> SysResult<()> {
+        self.inner.lock().sync()
     }
 
     pub fn type_name(&self) -> &'static str {

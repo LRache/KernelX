@@ -5,6 +5,7 @@ use alloc::vec;
 use crate::fs::file::FileOps;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kinfo;
 
 #[derive(Clone, Copy)]
 pub struct FDFlags {
@@ -64,7 +65,7 @@ impl FDTable {
         }
     }
 
-    pub fn close(&mut self, fd: usize) -> Result<(), Errno> {
+    pub fn close(&mut self, fd: usize) -> SysResult<()> {
         if fd < self.table.len() {
             if self.table[fd].is_none() {
                 return Err(Errno::EBADF);
@@ -77,20 +78,11 @@ impl FDTable {
     }
 
     pub fn fork(&self) -> Self {
-        // let mut new_table = vec![None; self.table.len()];
-        // for (i, file) in self.table.iter().enumerate() {
-        //     if let Some(file) = file {
-        //         new_table[i] = Some(file.clone());
-        //     }
-        // }
-
         let new_table = self.table.iter().map(|item| {
             item.as_ref().map(|fd_item| fd_item.clone())
         }).collect();
         
-        Self {
-            table: new_table,
-        }
+        Self { table: new_table }
     }
 
     pub fn cloexec(&mut self) {

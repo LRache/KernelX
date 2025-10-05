@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::{arch, ktrace};
+use crate::{arch, kinfo, ktrace};
 use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::frame::PhysPageFrame;
 use crate::kernel::mm::maparea::area::Area;
@@ -198,11 +198,16 @@ impl Area for AnonymousArea {
         }
     }
 
+    fn set_ubase(&mut self, ubase: usize) {
+        assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
+        self.ubase = ubase;
+    }
+
     fn page_count(&self) -> usize {
         self.frames.len()
     }
 
-    fn split(&mut self, uaddr: usize) -> Box<dyn Area> {
+    fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
         assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
         assert!(uaddr > self.ubase && uaddr < self.ubase + self.size(), "uaddr out of range for split");
 
@@ -210,16 +215,22 @@ impl Area for AnonymousArea {
         let new_ubase = self.ubase + split_index * arch::PGSIZE;
         
         let new_frames = self.frames.split_off(split_index);
-
-        Box::new(AnonymousArea {
+        let new_area = AnonymousArea {
             ubase: new_ubase,
             perm: self.perm,
             frames: new_frames,
-        })
+        };
+
+        (
+            self, 
+            Box::new(new_area)
+        )
     }
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
         self.perm = perm;
+
+        kinfo!("Setting permissions for AnonymousArea at {:#x} to {:?}", self.ubase, perm);
 
         let mut pagetable = pagetable.write();
         for (page_index, frame) in self.frames.iter().enumerate() {
@@ -227,10 +238,21 @@ impl Area for AnonymousArea {
                 let vaddr = self.ubase + page_index * arch::PGSIZE;
                 let paddr = frame.get_page();
                 pagetable.mmap_replace(vaddr, paddr, perm);
-                ktrace!("Updated page table permissions for anonymous page at {:#x} to {:?}", vaddr, perm);
+                kinfo!("Updated page table permissions for anonymous page at {:#x} to {:?}", vaddr, perm);
             }
             // Note: We don't update COW pages here as they should maintain
             // their current permission state until the next write access
+        }
+    }
+
+    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
+        let mut pagetable = pagetable.write();
+        for (page_index, frame) in self.frames.iter_mut().enumerate() {
+            if let Frame::Allocated(_) | Frame::Cow(_) = frame {
+                let uaddr = self.ubase + page_index * arch::PGSIZE;
+                pagetable.munmap(uaddr);
+            }
+            *frame = Frame::Unallocated;
         }
     }
 

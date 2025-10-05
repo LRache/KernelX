@@ -4,6 +4,7 @@ use crate::kernel::event::{Event, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::{Dentry, LockedInode};
 use crate::fs::file::{FileOps, FileStat, SeekWhence, DirResult};
+use crate::kinfo;
 
 use super::PipeInner;
 
@@ -85,6 +86,10 @@ impl FileOps for Pipe {
 
     fn poll(&self, waker: usize, event: PollEventSet) -> SysResult<Option<Event>> {
         self.inner.poll(waker, event, self.writable)
+    }
+
+    fn type_name(&self) -> &'static str {
+        "pipe"
     }
 }
 

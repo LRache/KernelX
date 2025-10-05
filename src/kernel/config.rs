@@ -12,7 +12,7 @@ pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 
 pub const KERNEL_STACK_PAGE_COUNT: usize = 12; // Kernel stack page count
 
-pub const INODE_CACHE_SIZE: usize = 512; // Inode cache size
+pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 
 pub const MAX_FD: usize = 255; // Maximum number of file descriptors per process
 

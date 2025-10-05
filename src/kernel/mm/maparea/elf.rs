@@ -3,11 +3,12 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::arch;
-use crate::arch::{PageTable, PageTableTrait};
+
 use crate::kernel::mm::frame::PhysPageFrame;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
+use crate::arch;
+use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::File;
 
 use super::area::Frame;
@@ -231,7 +232,7 @@ impl Area for ELFArea {
         self.frames.len()
     }
 
-    fn split(&mut self, uaddr: usize) -> Box<dyn Area> {
+    fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
         assert!(uaddr % arch::PGSIZE == 0, "Split address must be page-aligned");
         assert!(uaddr > self.ubase, "Split address must be greater than ubase");
         assert!(uaddr < self.ubase + self.size(), "Split address out of bounds");
@@ -263,18 +264,28 @@ impl Area for ELFArea {
             frames: remaining_frames,
         };
 
-        Box::new(new_area)
+        (self, Box::new(new_area))
     }
 
-    fn set_perm(&mut self, perm: MapPerm, _pagetable: &RwLock<PageTable>) {
+    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
+        let mut pagetable = pagetable.write();
+        for (page_index, frame) in self.frames.iter_mut().enumerate() {
+            if let Frame::Allocated(_) | Frame::Cow(_) = frame {
+                let uaddr = self.ubase + page_index * arch::PGSIZE;
+                pagetable.munmap(uaddr);
+            }
+            *frame = Frame::Unallocated;
+        }
+    }
+
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
         self.perm = perm;
-        // Note: This method only updates the internal permission field.
-        // The actual page table permissions are not updated here.
-        // Page table permissions will be updated when the pages are accessed again
-        // through translate_read/translate_write, or when a memory fault occurs.
-        // 
-        // For immediate page table update, the caller should use the page table's
-        // mprotect method for each allocated page.
+        self.frames.iter().enumerate().for_each(|(page_index, frame)| {
+            if let Frame::Allocated(frame) = frame {
+                let uaddr = self.ubase + page_index * arch::PGSIZE;
+                pagetable.write().mmap_replace(uaddr, frame.get_page(), perm);
+            }
+        });
     }
 
     fn type_name(&self) -> &'static str {

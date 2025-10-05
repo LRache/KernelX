@@ -13,7 +13,6 @@ use crate::kernel::event::Event;
 use crate::fs::file::{File, FileFlags};
 use crate::fs::vfs;
 use crate::fs::Dentry;
-use crate::kinfo;
 
 use super::tcb::{TCB, TaskState};
 
@@ -142,9 +141,13 @@ impl PCB {
     }
 
     pub fn exit(self: &Arc<Self>, code: u8) {
-        for child_task in self.tasks.lock().iter() {
-            child_task.with_state_mut(|state| state.state = TaskState::Exited );
-        }
+        let mut task = self.tasks.lock();
+        task.iter().for_each(|t| {
+            t.with_state_mut(|state| state.state = TaskState::Exited );
+        });
+        task.clear();
+
+        drop(task);
 
         *self.is_zombie.lock() = true;
         *self.exit_code.lock() = code;
@@ -154,9 +157,7 @@ impl PCB {
         }
         
         if let Some(parent) = self.parent.lock().as_ref() {
-            let ppid = parent.get_pid();
             parent.waiting_task.lock().drain(..).for_each(|t| {
-                kinfo!("Notifying waiting task of parent process {} with PID {}", ppid, t.get_tid());
                 t.wakeup_by_event(self.pid as usize, Event::Process);
             });
         }
@@ -169,6 +170,15 @@ impl PCB {
         get_initprocess().children.lock().append(&mut children);
     }
 
+    pub fn exit_task(self: &Arc<Self>, tcb: &Arc<TCB>, code: u8) {
+        let mut tasks = self.tasks.lock();
+        tasks.retain(|t| !Arc::ptr_eq(t, tcb));
+
+        if tasks.is_empty() {
+            self.exit(code);
+        }
+    }
+
     pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<u8>, Errno> {
         let child = {
             let children = self.children.lock();
@@ -178,14 +188,14 @@ impl PCB {
         if let Some(child) = child {
             if child.is_zombie() {
                 let exit_code = child.get_exit_code();
-                self.children.lock().retain(|c| c.get_pid() != pid);
+                // self.children.lock().retain(|c| c.get_pid() != pid);
                 return Ok(Some(exit_code));
             }
             
             if blocked {
                 loop {
                     self.waiting_task.lock().push(current::tcb().clone());
-                    current::tcb().block();
+                    current::tcb().block("wait_child");
                     current::schedule();
                     
                     if current::tcb().with_state_mut(|state| {
@@ -243,8 +253,8 @@ impl PCB {
 
         loop {
             self.waiting_task.lock().push(current::tcb().clone());
-            current::tcb().block();
-            kinfo!("Waiting for child process of PID {} to exit", self.pid);
+            current::tcb().block("wait_any_child");
+            // kinfo!("Waiting for child process of PID {} to exit", self.pid);
             current::schedule();
 
             let mut pid = 0;

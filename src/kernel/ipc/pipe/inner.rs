@@ -30,7 +30,7 @@ impl PipeInner {
             return Ok(0);
         }
         
-        // kinfo!("Pipe read: buffer size {}, capacity {}", self.buffer.len(), self.capacity);
+        // kinfo!("Pipe read: buffer size {}", self.buffer.lock().len());
         let mut total_read = 0;
 
         {
@@ -40,7 +40,7 @@ impl PipeInner {
                     buf[0] = byte;
                     total_read += 1;
                 },
-                None => { 
+                None => {
                     if *self.writer_count.lock() == 0 {
                         return Ok(0); // No writers left, return 0 to indicate EOF
                     } else {
@@ -66,10 +66,9 @@ impl PipeInner {
                 }
             }
             
-            self.write_waiter.lock().wake_all(Event::ReadReady); // Wake up writers waiting for space
+            self.write_waiter.lock().wake_all(Event::WriteReady); // Wake up writers waiting for space
         }
 
-        kinfo!("Pipe read: read {} bytes", total_read);
         Ok(total_read)
     }
 
@@ -93,11 +92,9 @@ impl PipeInner {
                     fifo.push_back(buf[total_written + i]);
                 }
                 total_written += to_write;
-                self.read_waiter.lock().wake_all(Event::WriteReady); // Wake up readers waiting for data
+                self.read_waiter.lock().wake_all(Event::ReadReady); // Wake up readers waiting for data
             }
         }
-
-        kinfo!("Pipe write: wrote {} bytes", total_written);
         
         Ok(total_written)
     }
@@ -116,6 +113,9 @@ impl PipeInner {
             if buffer.len() > 0 && !writable {
                 return Ok(Some(Event::ReadReady));
             } else {
+                if *self.writer_count.lock() == 0 {
+                    return Ok(Some(Event::HangUp)); // No writers left, indicate EOF
+                }
                 self.read_waiter.lock().wait(current::tcb().clone(), Some(waker));
             }
         }
@@ -143,4 +143,4 @@ impl PipeInner {
             self.read_waiter.lock().wake_all(Event::HangUp); // Wake up readers to notify them of EOF
         }
     }
-}
+}  

@@ -5,7 +5,6 @@ use ext4_rs::{Ext4, Ext4DirEntry, Ext4DirSearchResult, InodeFileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::{Inode, Mode};
 use crate::fs::file::{DirResult, FileType};
-use crate::ktrace;
 
 fn error_map(e: ext4_rs::Ext4Error) -> Errno {
     match e.error() {
@@ -21,21 +20,9 @@ pub struct Ext4Inode {
     ino: u32,
     superblock: Arc<Ext4>,
     dents_cache: Option<Vec<DirResult>>,
-    // pub ino: u32,
-    // sno: u32,
-    // inode_handler: usize,
-    // destroyed: bool
 }
 
 impl Ext4Inode {
-    // pub fn new(ino: u32, sno: u32, fs_handler: usize) -> Result<Self, Errno> {
-    //     Ok(Self {
-    //         ino,
-    //         sno,
-    //         inode_handler: ffi::get_inode_handler(fs_handler, ino)?,
-    //         destroyed: false
-    //     })
-    // }
     pub fn new(sno: u32, ino: u32, superblock: &Arc<Ext4>) -> Self {
         Self {
             sno,
@@ -60,20 +47,20 @@ impl Inode for Ext4Inode {
     }
 
     fn create(&mut self, name: &str, mode: Mode) -> SysResult<()> {
-        // ffi::create_inode(self.inode_handler, name, 0644).map(|_| ())
         self.superblock.create(self.ino, name, mode.bits()).unwrap();
         self.dents_cache = None; // Invalidate cache
         Ok(())
     }
 
-    fn readat(&mut self, buf: &mut [u8], offset: usize) -> Result<usize, Errno> {
-        // Ok(ffi::inode_readat(self.inode_handler, buf, offset)? as usize)
-        // ktrace!("readat ino={} offset={} size={}", self.ino, offset, buf.len());
+    fn unlink(&mut self, _name: &str) -> SysResult<()> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn readat(&mut self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
         self.superblock.read_at(self.ino, offset, buf).map_err(|_| Errno::EIO)
     }
 
-    fn writeat(&mut self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
-        // ffi::inode_writeat(self.inode_handler, buf, offset)
+    fn writeat(&mut self, buf: &[u8], offset: usize) -> SysResult<usize> {
         self.superblock.write_at(self.ino, offset, buf).map_err(|_| Errno::EIO)
     }
 
@@ -120,18 +107,10 @@ impl Inode for Ext4Inode {
     }
 
     fn lookup(&mut self, name: &str) -> SysResult<u32> {
-        // ffi::inode_lookup(self.inode_handler, name)
         let mut result = Ext4DirSearchResult::new(Ext4DirEntry::default());
-        // kinfo!("lookup {} in inode {}", name, self.ino);
         self.superblock.dir_find_entry(self.ino, name, &mut result).map_err(error_map)?;
-        ktrace!("found inode {} for name {}", result.dentry.inode, name);
         Ok(result.dentry.inode as u32)
     }
-
-    // fn mkdir(&mut self, name: &str) -> SysResult<()> {
-    //     // ffi::inode_mkdir(self.inode_handler, name).map(|_| ())
-    //     self.superblock.dir_mk()
-    // }
 
     fn size(&self) -> Result<usize, Errno> {
         // ffi::inode_get_size(self.inode_handler)
@@ -141,23 +120,9 @@ impl Inode for Ext4Inode {
     fn mode(&self) -> Mode {
         Mode::from_bits_truncate(self.superblock.get_inode_ref(self.ino).inode.mode())
     }
-
-    // fn destroy(&mut self) -> SysResult<()> {
-    //     if !self.destroyed {
-    //         ffi::put_inode_handler(self.inode_handler)?;
-    //         self.destroyed = true;
-    //     }
-    //     Ok(())
-    // }
 }
 
 impl Drop for Ext4Inode {
-    // fn drop(&mut self) {
-    //     if !self.destroyed {
-    //         let _ = self.destroy();
-    //         self.destroyed = true;
-    //     }
-    // }
     fn drop(&mut self) {
         
     }

@@ -58,10 +58,11 @@ pub fn run_tasks() -> ! {
                     state.state = TaskState::Ready;
                     push_task(tcb.clone());
                 } else {
-                    kinfo!("Task {} not ready to run, state: {:?}", tcb.get_tid(), state.state);
+                    // kinfo!("Task {} not ready to run, state: {:?}", tcb.get_tid(), state.state);
                 }
             });
         } else {
+            // kinfo!("Waiting for interrupt...");
             arch::enable_interrupt();
             arch::wait_for_interrupt();
         }

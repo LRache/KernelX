@@ -181,6 +181,10 @@ impl AddrSpace {
         f(&self.pagetable.read())
     }
 
+    pub fn pagetable(&self) -> &RwLock<PageTable> {
+        &self.pagetable
+    }
+
     pub fn with_map_manager_mut<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut maparea::Manager) -> R,

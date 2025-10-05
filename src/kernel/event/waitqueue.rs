@@ -43,7 +43,7 @@ impl WaitQueue {
 
     pub fn wait_current(&mut self, waker: Option<usize>) {
         let current = current::tcb();
-        current.block();
+        current.block("waitqueue");
         self.wait(current.clone(), waker);
     }
 

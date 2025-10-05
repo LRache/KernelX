@@ -32,13 +32,25 @@ pub trait Area {
         false
     }
 
+    fn set_ubase(&mut self, _ubase: usize) {
+        unimplemented!("set_ubase not implemented for the area type: {}", self.type_name());
+    }
     fn page_count(&self) -> usize;
     fn size(&self) -> usize {
         self.page_count() * crate::arch::PGSIZE
     }
 
-    fn split(&mut self, uaddr: usize) -> Box<dyn Area>;
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>);
+    fn split(self: Box<Self>, _uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
+        unimplemented!("split not implemented for the area type: {}", self.type_name());
+    }
+    
+    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &RwLock<PageTable>) {
+        unimplemented!("set_perm not implemented for the area type: {}", self.type_name());
+    }  
+    
+    fn unmap(&mut self, _pagetable: &RwLock<PageTable>) {
+        unimplemented!("unmap not implemented for the area type: {}", self.type_name());
+    }
 
     fn type_name(&self) -> &'static str {
         "Area"

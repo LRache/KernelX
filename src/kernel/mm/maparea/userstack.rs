@@ -324,7 +324,7 @@ impl Area for UserStack {
             return false;
         }
 
-        let page_index = (config::USER_STACK_TOP - addr) / arch::PGSIZE;
+        let page_index = (config::USER_STACK_TOP - addr - 1) / arch::PGSIZE;
 
         if page_index >= self.get_max_page_count() {
             return false;
@@ -332,7 +332,7 @@ impl Area for UserStack {
 
         match &self.frames[page_index] {
             Frame::Allocated(_) => {
-                panic!("Page at index {} is already allocated", page_index);
+                panic!("Page at index {} is already allocated, addr={:#x}", page_index, addr);
             }
             Frame::Cow(_) => {
                 let mut pagetable = pagetable.write();
@@ -349,25 +349,6 @@ impl Area for UserStack {
 
     fn page_count(&self) -> usize {
         self.get_max_page_count()
-    }
-
-    fn split(&mut self, uaddr: usize) -> Box<dyn Area> {
-        assert!(uaddr < config::USER_STACK_TOP, "Split address out of bounds: {:#x}", uaddr);
-        
-        let split_index = (config::USER_STACK_TOP - uaddr + arch::PGSIZE - 1) / arch::PGSIZE;
-        assert!(split_index <= self.get_max_page_count(), "Split index out of bounds: {}", split_index);
-
-        let new_frames = self.frames.split_off(split_index);
-        Box::new(UserStack {
-            frames: new_frames,
-        })
-    }
-
-    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &RwLock<PageTable>) {
-        // UserStack has fixed permissions (read and write)
-        // Permission changes are not allowed for user stack
-        // This is a no-op to satisfy the trait requirement
-        ktrace!("Attempted to change permissions on user stack - ignored");
     }
 
     fn type_name(&self) -> &'static str {

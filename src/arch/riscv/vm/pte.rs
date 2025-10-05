@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use core::fmt;
 
 use crate::arch::riscv::{PGBITS, PGMASK};
-use crate::kernel::mm;
+use crate::kernel::mm::{self, MapPerm};
 use crate::{platform, println};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -133,6 +133,17 @@ bitflags! {
         const A = 1 << 6; // Accessed bit
         const D = 1 << 7; // Dirty bit
         const N = 1 << 8; // Don't Clone
+    }
+}
+
+impl From<MapPerm> for PTEFlags {
+    fn from(perm: MapPerm) -> Self {
+        let mut flags = PTEFlags::V | PTEFlags::A | PTEFlags::D;
+        if perm.contains(MapPerm::R) { flags |= PTEFlags::R; }
+        if perm.contains(MapPerm::W) { flags |= PTEFlags::W; }
+        if perm.contains(MapPerm::X) { flags |= PTEFlags::X; }
+        if perm.contains(MapPerm::U) { flags |= PTEFlags::U; }
+        flags
     }
 }
 

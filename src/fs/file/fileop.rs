@@ -31,6 +31,10 @@ pub trait FileOps: DowncastSync {
     fn poll(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<Event>> {
         Ok(None)
     }
+
+    fn type_name(&self) -> &'static str {
+        "unknown"
+    }
 }
 
 impl_downcast!(sync FileOps);

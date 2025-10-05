@@ -36,7 +36,7 @@ impl FileFlags {
 pub struct File {
     inode: Arc<LockedInode>,
     dentry: Arc<Dentry>,
-    pos: Mutex<usize>,
+    pos: Mutex<usize>, 
     
     pub flags: FileFlags,
 }

@@ -1,5 +1,5 @@
 use core::panic::PanicInfo;
-use crate::{kernel, platform, println};
+use crate::{platform, println};
 
 pub const COLOR_RESET: &str = "\x1b[0m";
 pub const COLOR_RED: &str = "\x1b[31m";
@@ -9,22 +9,18 @@ pub const COLOR_GREEN: &str = "\x1b[32m";
 pub const COLOR_CYAN: &str = "\x1b[36m";
 pub const COLOR_BOLD: &str = "\x1b[1m";
 
-pub const PANIC_TAG: &str = "PANIC";
-pub const INFO_TAG: &str = "INFO";
-pub const DEBUG_TAG: &str = "DEBUG";
-pub const TRACE_TAG: &str = "TRACE";
-
 #[cfg(feature = "log-warn")]
 #[macro_export]
 macro_rules! kwarn {
     ($($arg:tt)*) => {
         $crate::println!(
-            "{}{}[{}]{} {} @ {}:{}:{}{}",
+            "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_YELLOW,
             "WARN",
             $crate::klib::klog::COLOR_RESET,
             format_args!($($arg)*),
+            $crate::kernel::scheduler::current::tid(),
             file!(),
             line!(),
             column!(),
@@ -45,12 +41,13 @@ macro_rules! kwarn {
 macro_rules! kinfo {
     ($($arg:tt)*) => {
         $crate::println!(
-            "{}{}[{}]{} {} @ {}:{}:{}{}",
+            "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_BLUE,
-            $crate::klib::klog::INFO_TAG,
+            "INFO",
             $crate::klib::klog::COLOR_RESET,
             format_args!($($arg)*),
+            $crate::kernel::scheduler::current::tid(),
             file!(),
             line!(),
             column!(),
@@ -71,11 +68,12 @@ macro_rules! kinfo {
 macro_rules! kdebug {
     ($($arg:tt)*) => {
         $crate::println!(
-            "{}{}[{}]{} {} @ {}:{}:{}{}",
+            "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_CYAN,
-            $crate::klib::klog::DEBUG_TAG,
+            "DEBUG",
             $crate::klib::klog::COLOR_RESET,
+            $crate::kernel::scheduler::current::tid(),
             format_args!($($arg)*),
             file!(),
             line!(),
@@ -96,12 +94,13 @@ macro_rules! kdebug {
 macro_rules! ktrace {
     ($($arg:tt)*) => {
         $crate::println!(
-            "{}{}[{}]{} {} @ {}:{}:{}{}",
+            "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_GREEN,
-            $crate::klib::klog::TRACE_TAG,
+            "TRACE",
             $crate::klib::klog::COLOR_RESET,
             format_args!($($arg)*),
+            $crate::kernel::scheduler::current::tid(),
             file!(),
             line!(),
             column!(),
@@ -121,12 +120,13 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
     // kernel::fini();
     if let Some(location) = info.location() {
         println!(
-            "{}{}[{}]{} {} @ {}:{}{}",
+            "{}{}[{}]{} {} (tid={}) @ {}:{}{}",
             COLOR_BOLD,
             COLOR_RED,
-            PANIC_TAG,
+            "PANIC",
             COLOR_RESET,
             info.message(),
+            crate::kernel::scheduler::current::tid(),
             location.file(),
             location.line(),
             COLOR_RESET
@@ -136,7 +136,7 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
             "{}{}[{}]{} Unknown location - {}{}",
             COLOR_BOLD,
             COLOR_RED,
-            PANIC_TAG,
+            "PANIC",
             COLOR_RESET,
             info.message(),
             COLOR_RESET

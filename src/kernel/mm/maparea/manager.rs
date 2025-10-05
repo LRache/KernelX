@@ -3,12 +3,13 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use spin::RwLock;
 
-use crate::{ktrace, print};
 use crate::kernel::config;
-use crate::kernel::errno::Errno;
-use crate::arch::{self, PageTable};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::AnonymousArea;
 use crate::kernel::mm::{MapPerm, MemAccessType};
+use crate::arch::{self, PageTable};
+use crate::{kinfo, ktrace, print};
+
 use super::area::Area;
 use super::userstack::{UserStack, Auxv};
 use super::userbrk::UserBrk;
@@ -121,8 +122,22 @@ impl Manager {
     pub fn map_area(&mut self, uaddr: usize, area: Box<dyn Area>) {
         assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
         assert!(!self.is_map_range_overlapped(uaddr, area.page_count()), "Address range is not free");
-        ktrace!("Mapping area at address: {:#x}", uaddr);
         self.areas.insert(uaddr, area);
+    }
+
+    fn find_overlapped_areas(&self, start: usize, end: usize) -> Vec<usize> {
+        let mut overlapped_areas = Vec::new();
+        let iter_start = self.areas.range(..=start).next_back().map(|(k, _)| *k).unwrap_or(0);
+
+        for (&area_base, _) in self.areas.range(iter_start..) {
+            if end < area_base {
+                break;
+            }
+
+            overlapped_areas.push(area_base);
+        }
+
+        overlapped_areas
     }
 
     /// Map an area at a fixed address, handling any overlapping areas
@@ -151,70 +166,122 @@ impl Manager {
     /// manager.map_area_fixed(addr, new_area)?;
     /// ```
     #[allow(dead_code)]
-    pub fn map_area_fixed(&mut self, uaddr: usize, area: Box<dyn Area>) {
+    pub fn map_area_fixed(&mut self, uaddr: usize, area: Box<dyn Area>, pagetable: &RwLock<PageTable>) {
         assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
         
-        let new_area_size = area.size();
-        let new_area_end = uaddr + new_area_size;
-        
-        ktrace!("map_area_fixed: mapping area at {:#x}, size: {:#x}", uaddr, new_area_size);
+        let new_area_end = uaddr + area.size();
         
         // Find all areas that overlap with the new area's range
-        let mut overlapping_areas = Vec::new();
+        // let mut overlapping_areas = Vec::new();
         
-        for (&area_base, existing_area) in &self.areas {
-            let area_end = area_base + existing_area.size();
+        // for (&area_base, existing_area) in &self.areas {
+        //     let area_end = area_base + existing_area.size();
             
-            // Check if this area overlaps with the new area's range
-            if area_base < new_area_end && area_end > uaddr {
-                overlapping_areas.push(area_base);
-                ktrace!("Found overlapping area at {:#x}-{:#x}", area_base, area_end);
-            }
-        }
-        
-        // Handle each overlapping area directly
-        for overlapping_base in overlapping_areas {
-            // Remove the overlapping area from the map
-            let mut overlapping_area = self.areas.remove(&overlapping_base).unwrap();
-            
-            let overlapping_end = overlapping_base + overlapping_area.size();
-            
-            // ktrace!("Handling overlap: existing area {:#x}-{:#x}, new area {:#x}-{:#x}", 
-            //        overlapping_base, overlapping_end, uaddr, new_area_end);
-            
-            // Case 1: New area completely covers the existing area
-            if uaddr <= overlapping_base && new_area_end >= overlapping_end {
-                ktrace!("New area completely covers existing area - removing entirely");
-                // The existing area is completely covered, so we just discard it
-                continue;
-            }
-            
-            // Case 2: Need to preserve left part [overlapping_base, uaddr)
+        //     // Check if this area overlaps with the new area's range
+        //     if area_base < new_area_end && area_end > uaddr {
+        //         overlapping_areas.push(area_base);
+        //         ktrace!("Found overlapping area at {:#x}-{:#x}", area_base, area_end);
+        //     }
+        // }
+
+        // let iter_start = self.areas.range(..uaddr).next_back().map(|(k, _)| *k).unwrap_or(0);
+        // let mut area_to_process = Vec::new();
+
+        // for (&area_base, area) in self.areas.range(iter_start..) {
+        //     let area_end = area_base + area.size();
+
+        //     // If the current area starts after the new area ends, we can stop.
+        //     if area_base >= new_area_end {
+        //         break;
+        //     }
+
+        //     // Check for intersection.
+        //     if area_end > uaddr {
+        //         area_to_process.push(area_base);
+        //     }
+        // }
+
+        for overlapping_base in self.find_overlapped_areas(uaddr, new_area_end) {
+            let mut middle = self.areas.remove(&overlapping_base).unwrap();
+            let overlapping_end = overlapping_base + middle.size();
+
+            // KEEP Left part [overlapping_base, uaddr)
             if overlapping_base < uaddr {
-                // ktrace!("Preserving left part: {:#x}-{:#x}", overlapping_base, uaddr);
-                // Split at uaddr to separate left part from the rest
-                let right_part = overlapping_area.split(uaddr);
-                // overlapping_area now contains [overlapping_base, uaddr)
-                self.areas.insert(overlapping_base, overlapping_area);
-                overlapping_area = right_part; // Continue with the right part
+                let left;
+                (left, middle) = middle.split(uaddr);
+                self.areas.insert(overlapping_base, left);
             }
-            
-            // Case 3: Need to preserve right part [new_area_end, overlapping_end)
+
+            // KEEP Right part [new_area_end, overlapping_end)
             if new_area_end < overlapping_end {
-                // ktrace!("Preserving right part: {:#x}-{:#x}", new_area_end, overlapping_end);
-                // Split at new_area_end to separate the part we want to keep
-                let right_part = overlapping_area.split(new_area_end);
-                // overlapping_area now contains the overlapped part (discard it)
-                // right_part contains [new_area_end, overlapping_end) - keep this
-                self.areas.insert(new_area_end, right_part);
+                let right;
+                (middle, right) = middle.split(new_area_end);
+                self.areas.insert(new_area_end, right);
             }
-            
-            // Any remaining part of overlapping_area that wasn't preserved is discarded
+
+            // UNMAP Middle part [max(overlapping_base, uaddr), min(overlapping_end, new_area_end))
+            middle.unmap(pagetable);
         }
         
         // Now we can safely insert the new area
-        ktrace!("Inserting new area at address: {:#x}", uaddr);
         self.areas.insert(uaddr, area);
+    }
+
+    pub fn unmap_area(&mut self, uaddr: usize, page_count: usize, pagetable: &RwLock<PageTable>) -> SysResult<()> {
+        assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
+        assert!(page_count > 0, "page_count should be greater than 0");
+
+        // Start iterating from our candidate, or from the beginning of the map if no such candidate exists.
+        let iter_start = self.areas.range(..=uaddr).next_back().map(|(k, _)| *k).unwrap_or(0);
+        let mut overlapped_areas = Vec::new();
+
+        let end_addr = uaddr + page_count * arch::PGSIZE;
+        let mut last_area_end = usize::MAX;
+        for (&area_base, area) in self.areas.range(iter_start..) {
+            // If the current area starts after the unmap range ends, we can stop.
+            if area_base >= end_addr {
+                break;
+            }
+            
+            if last_area_end < area_base {
+                // unreachable!("last_area_end < area_base in unmap_area, last_area_end: {:#x}, area_base: {:#x}", last_area_end, area_base);
+                return Err(Errno::EINVAL);
+            }
+            
+            let area_end = area_base + area.size();
+
+            overlapped_areas.push(area_base);
+
+            last_area_end = area_end;
+        }
+
+        // Process each intersecting area
+        for area_base in overlapped_areas {
+            // Remove the area from the map
+            let mut middle = self.areas.remove(&area_base).unwrap();
+            let area_end = area_base +  middle.size();
+
+            // kinfo!("area_base: {:#x}, area_end: {:#x}, uaddr: {:#x}", area_base, area_end, uaddr);
+
+            // KEEP Left part [area_base, uaddr)
+            if area_base < uaddr {
+                let left;
+                (left, middle) = middle.split(uaddr);
+                self.areas.insert(area_base, left);
+            }
+
+            // KEEP Right part [end_addr, area_end)
+            if end_addr < area_end {
+                let right;
+                (middle, right) = middle.split(end_addr);
+                self.areas.insert(end_addr, right);
+            }
+
+            // UNMAP Middle part [max(area_base, uaddr), min(area_end, end_addr))
+            middle.unmap(pagetable);
+        }
+
+        Ok(())
     }
 
     /// Set permissions for a specific range of pages
@@ -239,98 +306,91 @@ impl Manager {
             return Ok(());
         }
         
-        let end_addr = uaddr + page_count * arch::PGSIZE;
+        let end_uaddr = uaddr + page_count * arch::PGSIZE;
 
-        // Find all areas that intersect with the target range
-        let mut areas_to_modify = Vec::new();
-        
-        for (&area_base, area) in &self.areas {
-            let area_end = area_base + area.size();
-            
-            // Check if this area intersects with our target range
-            if area_base < end_addr && area_end > uaddr {
-                let intersection_start = core::cmp::max(area_base, uaddr);
-                let intersection_end = core::cmp::min(area_end, end_addr);
-                
-                areas_to_modify.push((area_base, intersection_start, intersection_end));
-                ktrace!("Found intersecting area at {:#x}-{:#x}, intersection: {:#x}-{:#x}", 
-                       area_base, area_end, intersection_start, intersection_end);
+        for overlapped_base in self.find_overlapped_areas(uaddr, end_uaddr) {
+            let mut middle = self.areas.remove(&overlapped_base).unwrap();
+            let overlapped_end = overlapped_base + middle.size();
+
+            if overlapped_base < uaddr {
+                let left;
+                (left, middle) = middle.split(uaddr);
+                self.areas.insert(overlapped_base, left);
             }
-        }
 
-        if areas_to_modify.is_empty() {
-            ktrace!("No mapped areas found in range [{:#x}, {:#x})", uaddr, end_addr);
-            return Err(Errno::ENOMEM); // No mapping found in the specified range
-        }
+            if end_uaddr < overlapped_end {
+                let right;
+                (middle, right) = middle.split(end_uaddr);
+                self.areas.insert(end_uaddr, right);
+            }
 
-        // Process each intersecting area
-        for (area_base, intersection_start, intersection_end) in areas_to_modify {
-            self.split_and_set_perm(area_base, intersection_start, intersection_end, perm, pagetable)?;
+            middle.set_perm(perm, pagetable);
+            self.areas.insert(core::cmp::max(overlapped_base, uaddr), middle);
         }
 
         Ok(())
     }
 
     /// Split an area and set permissions for the specified range
-    fn split_and_set_perm(&mut self, area_base: usize, range_start: usize, range_end: usize, perm: MapPerm, pagetable: &RwLock<PageTable>) -> Result<(), Errno> {
-        // Remove the original area from the map
-        let mut original_area = self.areas.remove(&area_base)
-            .ok_or(Errno::EFAULT)?;
+    // fn split_and_set_perm(&mut self, area_base: usize, range_start: usize, range_end: usize, perm: MapPerm, pagetable: &RwLock<PageTable>) -> Result<(), Errno> {
+    //     // Remove the original area from the map
+    //     let mut original_area = self.areas.remove(&area_base)
+    //         .ok_or(Errno::EFAULT)?;
 
-        let area_end = area_base + original_area.size();
+    //     let area_end = area_base + original_area.size();
 
-        // Special case: if the range covers the entire area, just change permissions
-        if range_start == area_base && range_end == area_end {
-            ktrace!("Range covers entire area, just changing permissions");
-            original_area.set_perm(perm, pagetable);
-            self.areas.insert(area_base, original_area);
-            return Ok(());
-        }
+    //     // Special case: if the range covers the entire area, just change permissions
+    //     if range_start == area_base && range_end == area_end {
+    //         ktrace!("Range covers entire area, just changing permissions");
+    //         original_area.set_perm(perm, pagetable);
+    //         self.areas.insert(area_base, original_area);
+    //         return Ok(());
+    //     }
 
-        // Case 1: Range starts at area beginning but doesn't cover the whole area
-        if range_start == area_base && range_end < area_end {
-            ktrace!("Range starts at area beginning, splitting at end");
-            let right_area = original_area.split(range_end);
-            // original_area now covers [area_base, range_end)
-            original_area.set_perm(perm, pagetable);
-            self.areas.insert(area_base, original_area);
-            self.areas.insert(range_end, right_area);
-            return Ok(());
-        }
+    //     // Case 1: Range starts at area beginning but doesn't cover the whole area
+    //     if range_start == area_base && range_end < area_end {
+    //         ktrace!("Range starts at area beginning, splitting at end");
+    //         let right_area = original_area.split(range_end);
+    //         // original_area now covers [area_base, range_end)
+    //         original_area.set_perm(perm, pagetable);
+    //         self.areas.insert(area_base, original_area);
+    //         self.areas.insert(range_end, right_area);
+    //         return Ok(());
+    //     }
 
-        // Case 2: Range ends at area end but doesn't start at area beginning  
-        if range_start > area_base && range_end == area_end {
-            ktrace!("Range ends at area end, splitting at start");
-            let mut right_area = original_area.split(range_start);
-            // original_area now covers [area_base, range_start)
-            // right_area covers [range_start, area_end)
-            right_area.set_perm(perm, pagetable);
-            self.areas.insert(area_base, original_area);
-            self.areas.insert(range_start, right_area);
-            return Ok(());
-        }
+    //     // Case 2: Range ends at area end but doesn't start at area beginning  
+    //     if range_start > area_base && range_end == area_end {
+    //         ktrace!("Range ends at area end, splitting at start");
+    //         let mut right_area = original_area.split(range_start);
+    //         // original_area now covers [area_base, range_start)
+    //         // right_area covers [range_start, area_end)
+    //         right_area.set_perm(perm, pagetable);
+    //         self.areas.insert(area_base, original_area);
+    //         self.areas.insert(range_start, right_area);
+    //         return Ok(());
+    //     }
 
-        // Case 3: Range is in the middle of the area - need two splits
-        if range_start > area_base && range_end < area_end {
-            ktrace!("Range is in middle, need two splits");
-            // First split at range_end to get the right part
-            let right_area = original_area.split(range_end);
-            // Now original_area covers [area_base, range_end)
+    //     // Case 3: Range is in the middle of the area - need two splits
+    //     if range_start > area_base && range_end < area_end {
+    //         ktrace!("Range is in middle, need two splits");
+    //         // First split at range_end to get the right part
+    //         let right_area = original_area.split(range_end);
+    //         // Now original_area covers [area_base, range_end)
             
-            // Second split at range_start to get the middle part  
-            let mut middle_area = original_area.split(range_start);
-            // Now original_area covers [area_base, range_start)
-            // middle_area covers [range_start, range_end)
+    //         // Second split at range_start to get the middle part  
+    //         let mut middle_area = original_area.split(range_start);
+    //         // Now original_area covers [area_base, range_start)
+    //         // middle_area covers [range_start, range_end)
             
-            middle_area.set_perm(perm, pagetable);
-            self.areas.insert(area_base, original_area);           // left part
-            self.areas.insert(range_start, middle_area);           // middle part (new perms)
-            self.areas.insert(range_end, right_area);             // right part
-            return Ok(());
-        }
+    //         middle_area.set_perm(perm, pagetable);
+    //         self.areas.insert(area_base, original_area);           // left part
+    //         self.areas.insert(range_start, middle_area);           // middle part (new perms)
+    //         self.areas.insert(range_end, right_area);             // right part
+    //         return Ok(());
+    //     }
 
-        unreachable!();
-    }
+    //     unreachable!();
+    // }
 
     pub fn create_user_stack(&mut self, argv: &[&str], envp: &[&str], auxv: &Auxv, pagetable: &RwLock<PageTable>) -> Result<usize, Errno> {
         assert!(self.userstack_ubase == 0, "User stack already created");
@@ -455,30 +515,3 @@ impl Manager {
         false
     }
 }
-
-/*
-// Example usage of map_area_fixed:
-//
-// use crate::kernel::mm::maparea::anonymous::AnonymousArea;
-// use crate::kernel::mm::Permission;
-// 
-// let mut manager = MapAreaManager::new();
-// 
-// // Example 1: Map at a clean address (no overlap)
-// let area1 = Box::new(AnonymousArea::new(0x1000, Permission::ReadWrite, 4));
-// manager.map_area_fixed(0x1000, area1)?;
-// 
-// // Example 2: Map with partial overlap (will split existing area)
-// let area2 = Box::new(AnonymousArea::new(0x2000, Permission::ReadOnly, 4));
-// manager.map_area_fixed(0x2000, area2)?;
-// 
-// // After this operation:
-// // - Original area [0x1000-0x5000) becomes [0x1000-0x2000)
-// // - New area [0x2000-0x6000) is mapped
-// 
-// // Example 3: Complete overlap replacement
-// let area3 = Box::new(AnonymousArea::new(0x3000, Permission::Execute, 2));
-// manager.map_area_fixed(0x3000, area3)?;
-// 
-// // This would further split areas as needed to accommodate the new mapping
-*/

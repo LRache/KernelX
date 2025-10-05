@@ -1,4 +1,7 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use num_enum::TryFromPrimitive;
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 pub enum Errno {
     EPERM   =  1,  // Operation not permitted
     ENOENT  =  2,  // No such file or directory
@@ -15,23 +18,6 @@ pub enum Errno {
     EPIPE   = 32,  // Broken pipe
     ENOSYS  = 38,  // Function not implemented
     EOPNOTSUPP = 95, // Operation not supported on transport endpoint
-}
-
-impl From<i32> for Errno {
-    fn from(value: i32) -> Self {
-        match value {
-            2  => Errno::ENOENT,
-            5  => Errno::EIO,
-            8  => Errno::ENOEXEC,
-            9  => Errno::EBADF, 
-            10 => Errno::ECHILD,
-            14 => Errno::EFAULT,
-            22 => Errno::EINVAL,
-            38 => Errno::ENOSYS,
-            95 => Errno::EOPNOTSUPP,
-            _ => panic!("Unknown errno value: {}", value),
-        }
-    }
 }
 
 pub type SysResult<T> = Result<T, Errno>;

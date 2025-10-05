@@ -3,7 +3,8 @@ use alloc::boxed::Box;
 use crate::fs::vfs;
 use crate::fs::memfs::MemoryFileSystem;
 use crate::fs::ext4::Ext4FileSystem;
-use crate::{driver, kinfo, println};
+use crate::driver;
+use crate::kinfo;
 
 pub fn init() {
     kinfo!("Initializing file system...");
@@ -19,7 +20,7 @@ pub fn init() {
     
     vfs::mount("/", "ext4", Some(virtio_blk)).unwrap();
 
-    println!("File system initialized and mounted successfully.");
+    kinfo!("File system initialized and mounted successfully.");
 }
 
 pub fn fini() {

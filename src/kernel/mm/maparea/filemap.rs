@@ -305,11 +305,15 @@ impl Area for FileMapArea {
         }
     }
 
+    fn set_ubase(&mut self, ubase: usize) {
+        self.ubase = ubase;
+    }
+
     fn page_count(&self) -> usize {
         self.frames.len()
     }
 
-    fn split(&mut self, uaddr: usize) -> Box<dyn Area> {
+    fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
         assert!(uaddr % arch::PGSIZE == 0, "Split address must be page-aligned");
         assert!(uaddr > self.ubase, "Split address must be greater than ubase");
         assert!(uaddr < self.ubase + self.size(), "Split address out of bounds");
@@ -337,7 +341,7 @@ impl Area for FileMapArea {
             frames: remaining_frames,
         };
 
-        Box::new(new_area)
+        (self, Box::new(new_area))
     }
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
@@ -352,6 +356,17 @@ impl Area for FileMapArea {
                 pagetable.mmap_replace(vaddr, paddr, perm);
                 ktrace!("Updated page table permissions for file mapping page at {:#x} to {:?}", vaddr, perm);
             }
+        }
+    }
+
+    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
+        let mut pagetable = pagetable.write();
+        for (page_index, frame) in self.frames.iter_mut().enumerate() {
+            if let Frame::Allocated(_) | Frame::Cow(_) = frame {
+                let uaddr = self.ubase + page_index * arch::PGSIZE;
+                pagetable.munmap(uaddr);
+            }
+            *frame = Frame::Unallocated;
         }
     }
 

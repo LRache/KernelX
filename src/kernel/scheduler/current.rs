@@ -24,6 +24,35 @@ macro_rules! copy_to_user {
 }
 
 #[macro_export]
+macro_rules! copy_to_user_ref {
+    ($uaddr:expr, $data_ref:expr) => {
+        {
+            let data_ptr = $data_ref as *const _ as *const u8;
+            let data_size = core::mem::size_of_val($data_ref);
+            let data_slice = unsafe { core::slice::from_raw_parts(data_ptr, data_size) };
+            $crate::kernel::scheduler::current::copy_to_user($uaddr, data_slice)
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! copy_slice_to_user {
+    ($uaddr:expr, $slice:expr) => {
+        {
+            let slice = $slice;
+            let byte_slice = unsafe {
+                core::slice::from_raw_parts(
+                    slice.as_ptr() as *const u8,
+                    core::mem::size_of_val(slice),
+                )
+            };
+            $crate::kernel::scheduler::current::copy_to_user($uaddr, byte_slice)
+        }
+    };
+}
+
+
+#[macro_export]
 macro_rules! copy_to_user_string {
     ($uaddr:expr, $buf:expr, $size:expr) => {
         (|| -> $crate::kernel::errno::SysResult<usize> {
@@ -74,7 +103,11 @@ pub fn tcb() -> &'static Arc<TCB> {
 }
 
 pub fn tid() -> Tid {
-    tcb().get_tid()
+    if is_clear() {
+        -1
+    } else {
+        tcb().get_tid()
+    }
 }
 
 pub fn pcb() -> &'static Arc<PCB> {
@@ -89,7 +122,7 @@ pub fn addrspace() -> &'static Arc<AddrSpace> {
 
 pub fn fdtable() -> &'static Mutex<FDTable> {
     let tcb = tcb();
-    tcb.get_fd_table()
+    tcb.get_fdtable()
 }
 
 pub fn with_cwd<F, R>(f: F) -> R 

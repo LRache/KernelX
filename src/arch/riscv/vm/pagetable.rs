@@ -1,24 +1,15 @@
-use crate::arch::riscv::pte::{Addr, PTE, PTEFlags, PTETable};
-use crate::arch::riscv::{PGBITS, PGMASK};
-use crate::arch::PageTableTrait;
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm;
-use crate::kernel::errno::Errno;
+use crate::arch::riscv::PGBITS;
+use crate::arch::PageTableTrait;
+
+use super::pte::{Addr, PTE, PTEFlags, PTETable};
 
 const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
 
 unsafe extern "C"{
     static __trampoline_start: usize;
-}
-
-fn perm2flag(perm: MapPerm) -> PTEFlags {
-    let mut flags = PTEFlags::V | PTEFlags::A | PTEFlags::D;
-    if perm.contains(MapPerm::R) { flags.insert(PTEFlags::R); }
-    if perm.contains(MapPerm::W) { flags.insert(PTEFlags::W); }
-    if perm.contains(MapPerm::X) { flags.insert(PTEFlags::X); }
-    if perm.contains(MapPerm::U) { flags.insert(PTEFlags::U); }
-    flags
 }
 
 pub struct PageTable {
@@ -101,7 +92,7 @@ impl PageTable {
                 let paddr = Addr::from_kaddr(page);
                 pte.set_ppn(paddr.ppn());
                 pte.set_flags(PTEFlags::V);
-                pte.write_back().expect("Failed to write back PTE");
+                ptetable.set(vpn[level], pte);
             }
 
             ptetable = pte.next_level();
@@ -144,7 +135,7 @@ unsafe impl Sync for PageTable {}
 
 impl PageTableTrait for PageTable {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
-        let flags = perm2flag(perm);
+        let flags = perm.into();
 
         let mut pte = self.find_pte_or_create(uaddr);
         assert!(!pte.is_valid(), "PTE should NOT be valid before mmap, uaddr= {:#x}, kaddr = {:#x}", uaddr, kaddr);
@@ -155,7 +146,7 @@ impl PageTableTrait for PageTable {
     }
 
     fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
-        let flags = perm2flag(perm);
+        let flags = perm.into();
 
         let mut pte = self.find_pte_or_create(kaddr);
         pte.set_flags(flags);
@@ -164,7 +155,7 @@ impl PageTableTrait for PageTable {
     }
 
     fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
-        let flags = perm2flag(perm);
+        let flags = perm.into();
 
         let mut pte = self.find_pte_or_create(uaddr);
         pte.set_flags(flags);
@@ -176,46 +167,23 @@ impl PageTableTrait for PageTable {
         let mut pte = self.find_pte(vaddr).expect("PTE not found for munmap");
         pte.set_flags(PTEFlags::empty());
         pte.write_back().expect("Failed to write back PTE for munmap");
-        mm::page::free(pte.page() as usize);
     }
 
-    fn munmap_if_mapped(&mut self, uaddr: usize) -> bool {
-        if let Some(mut pte) = self.find_pte(uaddr) {
-            pte.set_flags(PTEFlags::empty());
-            pte.write_back().expect("Failed to write back PTE for munmap_if_mapped");
-            mm::page::free(pte.page() as usize);
-            return true;
-        }
-        false
-    }
+    // fn munmap_if_mapped(&mut self, uaddr: usize) -> bool {
+    //     if let Some(mut pte) = self.find_pte(uaddr) {
+    //         pte.set_flags(PTEFlags::empty());
+    //         pte.write_back().expect("Failed to write back PTE for munmap_if_mapped");
+    //         mm::page::free(pte.page() as usize);
+    //         return true;
+    //     }
+    //     false
+    // }
 
-    fn is_mapped(&self, vaddr: usize) -> bool {
-        if let Some(pte) = self.find_pte(vaddr) {
-            pte.is_valid()
-        } else {
-            false
-        }
-    }
-
-    fn translate(&self, vaddr: usize) -> Option<usize> {
-        let pte = self.find_pte(vaddr & !PGMASK)?;
-        Some(pte.page() as usize + Addr::from_kaddr(vaddr).pgoff())
-    }
-
-    fn mprotect(&mut self, vaddr: usize, perm: MapPerm) -> Result<(), Errno> {
-        assert!(vaddr & PGMASK == 0, "vaddr must be page-aligned");
-
-        let mut pte = self.find_pte(vaddr).ok_or(Errno::EINVAL)?;
-        
-        if !pte.is_valid() {
-            return Err(Errno::EINVAL);
-        }
-
-        let flags = perm2flag(perm);
-
-        pte.set_flags(flags);
-        pte.write_back().map_err(|_| Errno::EIO)?;
-
-        Ok(())
-    }
+    // fn is_mapped(&self, vaddr: usize) -> bool {
+    //     if let Some(pte) = self.find_pte(vaddr) {
+    //         pte.is_valid()
+    //     } else {
+    //         false
+    //     }
+    // }
 }

@@ -35,11 +35,11 @@ pub fn pipe(uptr_pipefd: usize, flags: usize) -> SyscallRet {
     }
 
     copy_to_user!(
-        uptr_pipefd, 
-        PipeFD { 
-            read_fd: read_fd as i32, 
-            write_fd: write_fd as i32
-        }
+        uptr_pipefd, [read_fd as i32, write_fd as i32]
+        // PipeFD { 
+        //     read_fd: read_fd as i32, 
+        //     write_fd: write_fd as i32
+        // }
     )?;
 
     Ok(0)

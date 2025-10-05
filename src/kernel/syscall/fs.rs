@@ -7,9 +7,10 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::*;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::fs::{vfs, Dentry};
-use crate::fs::file::{FileFlags, FileOps, FileType, SeekWhence};
+use crate::fs::file::{File, FileFlags, FileOps, FileType, SeekWhence};
 use crate::fs::inode::Mode;
-use crate::{copy_to_user, copy_to_user_string, kdebug, kinfo, ktrace};
+use crate::{copy_from_user, copy_to_user, copy_to_user_string};
+use crate::{kdebug, kinfo, ktrace};
 
 use super::def::*;
 
@@ -101,7 +102,7 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
                     parent_dentry.create(&child_name, mode)?;                    
                     vfs::openat_file(parent, &path, file_flags)
                 } else {
-                    kinfo!("openat: failed to open file {}: {:?}", path, e);
+                    // kinfo!("openat: failed to open file {}: {:?}", path, e);
                     Err(e)
                 }
             }
@@ -116,7 +117,7 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
 
     let fd = current::fdtable().lock().push(Arc::new(file), fd_flags)?;
 
-    ktrace!("openat called: path={}, flags={:?}, new_fd={}", path, open_flags, fd);
+    kdebug!("openat called: path={}, flags={:?}, new_fd={}", path, open_flags, fd);
 
     Ok(fd)
 }
@@ -137,14 +138,21 @@ pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno>
     while left > 0 {
         let to_read = core::cmp::min(left, BUFFER_SIZE);
         let bytes_read = file.read(&mut buffer[..to_read])?;
-        if bytes_read < to_read{
+        if bytes_read == 0 {
             break; // EOF
         }
+        
         addrspace.copy_to_user(user_buffer + total_read, &buffer[..bytes_read])
             .map_err(|_| Errno::EFAULT)?;
         total_read += bytes_read;
         left -= bytes_read;
+
+        if bytes_read < to_read {
+            break; // EOF
+        }
     }
+
+    // kinfo!("read: fd={}, requested={}, read={}, buf[0]={}", fd, count, total_read, buffer[0] as char);
 
     Ok(total_read)
 }
@@ -237,6 +245,67 @@ pub fn close(fd: usize) -> Result<usize, Errno> {
     Ok(0)
 }
 
+ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: usize, count: usize) -> Result<usize, Errno> {
+    let mut fdtable = current::fdtable().lock();
+    let out_file = fdtable.get(out_fd)?;
+    let in_file = fdtable.get(in_fd)?.downcast_arc::<File>().map_err(|_| Errno::EINVAL)?;
+    drop(fdtable); // Release lock early
+
+    if !out_file.writable() {
+        return Err(Errno::EBADF);
+    }
+    if !in_file.readable() {
+        return Err(Errno::EBADF);
+    }
+    
+    let in_file_offset = in_file.seek(0, SeekWhence::CUR)?;
+    let mut local_offset = if uptr_offset != 0 {
+        let t = 0;
+        copy_from_user!(uptr_offset, t)?;
+        t
+    } else {
+        in_file_offset
+    };  
+
+    let mut total_sent = 0;
+    let mut left = count;
+
+    let mut buffer = [0u8; BUFFER_SIZE]; 
+
+    while left > 0 {
+        let to_read = core::cmp::min(left, BUFFER_SIZE);
+        let bytes_read = in_file.read_at(&mut buffer[..to_read], local_offset)?;
+        if bytes_read == 0 {
+        break; // EOF
+        }
+
+        let bytes_written = out_file.write(&buffer[..bytes_read])?;
+        if bytes_written == 0 {
+            break; // Can't write more
+        }
+
+        local_offset += bytes_read;
+        total_sent += bytes_written;
+        left -= bytes_written;
+
+        if bytes_read < to_read {
+            break; // EOF
+        }
+
+        if bytes_written < bytes_read {
+            break; // Can't write more
+        }
+    }
+
+    if uptr_offset != 0 {
+        copy_to_user!(uptr_offset, local_offset)?;
+    } else {
+        in_file.seek(local_offset as isize, SeekWhence::BEG)?;
+    }
+
+    Ok(total_sent)
+}
+
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> Result<usize, Errno> {
     let file = current::fdtable().lock().get(fd)?;
 
@@ -303,8 +372,6 @@ pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Err
     let parent = parent_dentry.0;
     let name = &parent_dentry.1;
 
-    kinfo!("mkdirat: dirfd={}, path={}, name={}, mode={:#o}", dirfd, path, name, mode);
-
     parent.create(name, mode)?;
 
     Ok(0)
@@ -368,8 +435,7 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usiz
                 return Err(e)
             },
         };
-
-        // let name = "."
+        
         let name = &dent.name;
         let name_bytes = name.as_bytes();
         let name_len = core::cmp::min(name_bytes.len(), 255);

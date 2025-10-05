@@ -8,7 +8,8 @@ use crate::fs::vfs;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::{copy_to_user, copy_to_user_string, kinfo, ktrace};
+use crate::{copy_to_user, copy_to_user_string};
+use crate::kinfo;
 
 pub fn sched_yield() -> Result<usize, Errno> {
     current::schedule();
@@ -26,6 +27,7 @@ pub fn gettid() -> Result<usize, Errno> {
 }
 
 bitflags! {
+    #[derive(Debug)]
     struct CloneFlags: i32 {
         const CLONE_VM      = 0x00000100;
         const CLONE_FS      = 0x00000200;
@@ -38,8 +40,6 @@ bitflags! {
 }
 
 pub fn clone(flags: usize, stack: usize, _uptr_parent_tid: usize, _tls: usize, uptr_child_tid: usize) -> Result<usize, Errno> {
-    ktrace!("sys_clone: flags: {:#x}, stack: {:#x}, uptr_parent_id: {:#x}, tls: {:#x}, uptr_child_tid: {:#x}", flags, stack, _uptr_parent_tid, _tls, uptr_child_tid);
-
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
 
     let task_flags = TaskCloneFlags {
@@ -99,6 +99,9 @@ pub fn execve(user_path: usize, user_argv: usize, user_envp: usize) -> Result<us
     let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
     let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
 
+    // print argv
+    // kinfo!("execve: path='{}', argv={:?}, envp={:?}", path, argv_ref, envp_ref);
+
     current::pcb().exec(&current::tcb(), file, &argv_ref, &envp_ref)?;
 
     current::schedule();
@@ -138,14 +141,15 @@ pub fn wait4(pid: usize, user_status: usize, options: usize, _user_rusages: usiz
     }
 
     if user_status != 0 {
-        copy_to_user!(user_status, exit_code)?;
+        let status: u32 = (exit_code as u32 & 0xff) << 8; // WEXITSTATUS
+        copy_to_user!(user_status, status)?;
     }
 
     Ok(wait_pid as usize)
 }
 
 pub fn exit(code: usize) -> Result<usize, Errno> {
-    let tcb =current::tcb();
+    let tcb = current::tcb();
     tcb.exit(code as u8);
     
     current::schedule();
@@ -156,8 +160,6 @@ pub fn exit(code: usize) -> Result<usize, Errno> {
 pub fn exit_group(code: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
     pcb.exit(code as u8);
-
-    kinfo!("Process group exit with code {}", code as u8);
     
     current::schedule();
     

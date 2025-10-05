@@ -39,7 +39,7 @@ pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: usize, _uptr_re
     let sleep_time = req.tv_sec * 1000000 + req.tv_nsec / 1000;
 
     let tcb = current::tcb().clone();
-    tcb.block();
+    tcb.block("timer nanosleep");
     timer::add_timer(tcb, sleep_time);
 
     current::schedule();

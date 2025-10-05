@@ -5,10 +5,10 @@ use crate::kernel::scheduler::current;
 use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
 use crate::kernel::task::TaskState;
-use crate::{copy_from_user, copy_to_user, kinfo};
+use crate::{copy_from_user, copy_slice_to_user, copy_to_user_ref, kinfo};
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Pollfd {
     pub fd:     i32,
     pub events: i16,
@@ -36,12 +36,14 @@ fn poll(pollfds: &mut [Pollfd], _timeout: Option<u64>) -> SysResult<usize> {
             count += 1;
             continue;
         }
+
+        // kinfo!("Poll: fd={}, events={:x}", pfd.fd, pfd.events);
             
         let file = match fdtable.get(pfd.fd as usize) {
             Ok(f) => f,
             Err(_) => {
                 pfd.revents = PollEventSet::POLLNVAL.bits();
-                count += 1;
+                count += 1; 
                 continue;
             }
         };
@@ -59,7 +61,7 @@ fn poll(pollfds: &mut [Pollfd], _timeout: Option<u64>) -> SysResult<usize> {
         }
     }
 
-    kinfo!("Poll: {} fds ready", count);
+    // kinfo!("Poll: {} fds ready", count);
 
     if count != 0 {
         return Ok(count as usize);
@@ -111,9 +113,7 @@ pub fn ppoll_time32(uptr_ufds: usize, nfds: usize, uptr_timeout: usize, _uptr_si
 
     let r = poll(&mut pollfds, timeout)?;
 
-    pollfds.iter().enumerate().try_for_each(|(i, pfd)| {
-        copy_to_user!(uptr_ufds + i * core::mem::size_of::<Pollfd>(), pfd)
-    })?;
+    copy_to_user_ref!(uptr_ufds, pollfds.as_slice())?;
 
     Ok(r)
 }

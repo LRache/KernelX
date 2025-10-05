@@ -60,7 +60,7 @@ pub struct TCB {
     _kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
-    fdtable: Arc<Mutex<FDTable>>,
+    fdtable: Option<Arc<Mutex<FDTable>>>,
 
     state: Mutex<TaskStateSet>,
 }
@@ -98,7 +98,7 @@ impl TCB {
             _kernel_stack: kernel_stack,
 
             addrspace,
-            fdtable,
+            fdtable: Some(fdtable),
             
             state: Mutex::new(TaskStateSet::new()),
         });
@@ -187,7 +187,7 @@ impl TCB {
             new_user_context,
             self.get_user_entry(),
             new_addrspace,
-            Arc::new(Mutex::new(self.fdtable.lock().fork())),
+            Arc::new(Mutex::new(self.fdtable.as_ref().unwrap().lock().fork())),
         );
 
         new_tcb
@@ -221,7 +221,7 @@ impl TCB {
         let mut new_user_context = UserContext::new();
         new_user_context.set_user_stack_top(usetstack_top);
 
-        self.fdtable.lock().cloexec();
+        self.get_fdtable().lock().cloexec();
 
         let new_tcb = TCB::new(
             self.tid,
@@ -229,7 +229,7 @@ impl TCB {
             new_user_context,
             user_entry,
             Arc::new(addrspace),
-            self.fdtable.clone(),
+            self.fdtable().clone(),
         );
 
         Ok(new_tcb)
@@ -276,8 +276,12 @@ impl TCB {
         &self.addrspace
     }
 
-    pub fn get_fd_table(&self) -> &Mutex<FDTable> {
-        &self.fdtable
+    pub fn get_fdtable(&self) -> &Mutex<FDTable> {
+        self.fdtable.as_ref().unwrap()
+    }
+
+    pub fn fdtable(&self) -> &Arc<Mutex<FDTable>> {
+        self.fdtable.as_ref().unwrap()
     }
 
     pub fn get_user_entry(&self) -> usize {
@@ -292,10 +296,8 @@ impl TCB {
         *self.tid_address.lock() = Some(addr);
     }
 
-    pub fn block(self: &Arc<Self>) -> bool {
+    pub fn block(self: &Arc<Self>, reason: &str) -> bool {
         assert!(Arc::ptr_eq(self, current::tcb()));
-
-        kinfo!("Task {} blocking", self.tid);
         
         let mut state = self.state.lock();
         if state.state != TaskState::Running {
@@ -324,8 +326,6 @@ impl TCB {
         state.state = TaskState::Ready;
         state.event = Some(TaskEvent { waker, event });
         scheduler::push_task(self.clone());
-
-        kinfo!("Task {} woken up by event {:?} from waker {:#x}", self.tid, event, waker);
     }
 
     pub fn run(&self) {
@@ -364,9 +364,17 @@ impl TCB {
         state.exit_code = code;
         state.state = TaskState::Exited;
 
+        drop(state);
+
         if self.parent.get_pid() == self.tid {
             self.parent.exit(code);
         }
+    }
+}
+
+impl Drop for TCB {
+    fn drop(&mut self) {
+        // kinfo!("Dropping TCB of task {}", self.tid);
     }
 }
 

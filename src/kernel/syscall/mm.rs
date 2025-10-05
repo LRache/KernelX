@@ -8,7 +8,7 @@ use crate::{kdebug};
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{Area, AnonymousArea, FileMapArea};
 use crate::kernel::scheduler::*;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::arch;
 use crate::ktrace;
 
@@ -24,6 +24,16 @@ bitflags! {
         const READ  = 0x1;
         const WRITE = 0x2;
         const EXEC  = 0x4;
+    }
+}
+
+impl Into<MapPerm> for MMapProt {
+    fn into(self) -> MapPerm {
+        let mut perm = MapPerm::U;
+        if self.contains(MMapProt::READ ) { perm |= MapPerm::R; }
+        if self.contains(MMapProt::WRITE) { perm |= MapPerm::W; }
+        if self.contains(MMapProt::EXEC ) { perm |= MapPerm::X; }
+        perm
     }
 }
 
@@ -45,6 +55,40 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         return Err(Errno::EINVAL);
     }
 
+    let prot = MMapProt::from_bits(prot).ok_or(Errno::EINVAL)?;
+        
+    let mut perm = MapPerm::U;
+    if prot.contains(MMapProt::READ ) { perm |= MapPerm::R; }
+    if prot.contains(MMapProt::WRITE) { perm |= MapPerm::W; }
+    if prot.contains(MMapProt::EXEC ) { perm |= MapPerm::X; }
+
+    let mut area: Box<dyn Area> = if flags.contains(MMapFlags::ANONYMOUS) {
+        if fd != usize::MAX {
+            return Err(Errno::EINVAL);
+        }
+
+        let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
+        Box::new(AnonymousArea::new(0, perm, page_count))
+    } else {
+        if offset % arch::PGSIZE != 0 {
+            return Err(Errno::EINVAL);
+        }
+
+        let file = current::fdtable()
+                                        .lock()
+                                        .get(fd)?
+                                        .downcast_arc::<File>()
+                                        .map_err(|_| Errno::EINVAL)?;
+
+        Box::new(FileMapArea::new(
+            0,
+            perm,
+            file,
+            offset,
+            length
+        ))
+    };
+
     current::addrspace().with_map_manager_mut(|map_manager| {
         let fixed = flags.contains(MMapFlags::FIXED);
         
@@ -56,50 +100,32 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
             ubase = addr;
         }
 
-        let prot = MMapProt::from_bits(prot).ok_or(Errno::EINVAL)?;
-        
-        let mut perm = MapPerm::U;
-        if prot.contains(MMapProt::READ ) { perm |= MapPerm::R; }
-        if prot.contains(MMapProt::WRITE) { perm |= MapPerm::W; }
-        if prot.contains(MMapProt::EXEC ) { perm |= MapPerm::X; }
+        area.set_ubase(ubase);
 
         kdebug!("mmap: ubase={:#x}, length={:#x}, perm={:?}, flags={:?}, fd={}", ubase, length, perm, flags, fd);
 
-        let area: Box<dyn Area> = if flags.contains(MMapFlags::ANONYMOUS) {
-            if fd != usize::MAX {
-                return Err(Errno::EINVAL);
-            }
-
-            let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
-            Box::new(AnonymousArea::new(
-                ubase, perm, page_count
-            ))
-        } else {
-            if offset % arch::PGSIZE != 0 || offset % arch::PGSIZE != 0 {
-                return Err(Errno::EINVAL);
-            }
-
-            let file = current::fdtable().lock().get(fd)?;
-
-            let file = file.downcast_arc::<File>().map_err(|_| Errno::EINVAL)?;
-
-            Box::new(FileMapArea::new(
-                ubase,
-                perm,
-                file,
-                offset,
-                length
-            ))
-        };
-
         if fixed {
-            map_manager.map_area_fixed(ubase, area);
+            map_manager.map_area_fixed(ubase, area, current::addrspace().pagetable());
         } else {
             map_manager.map_area(ubase, area);
         }
 
         Ok(ubase)
     })
+}
+
+pub fn munmap(addr: usize, length: usize) -> SysResult<usize> {
+    if addr % arch::PGSIZE != 0 || length == 0 || length % arch::PGSIZE != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
+
+    current::addrspace().with_map_manager_mut(|map_manager| {
+        map_manager.unmap_area(addr, page_count, current::addrspace().pagetable())
+    })?;
+
+    Ok(0)
 }
 
 pub fn mprotect(addr: usize, length: usize, prot: usize) -> Result<usize, Errno> {
@@ -111,20 +137,10 @@ pub fn mprotect(addr: usize, length: usize, prot: usize) -> Result<usize, Errno>
         return Err(Errno::EINVAL);
     }
 
-    let mut perm = MapPerm::U;
-    if prot.contains(MMapProt::READ ) { perm |= MapPerm::R; }
-    if prot.contains(MMapProt::WRITE) { perm |= MapPerm::W; }
-    if prot.contains(MMapProt::EXEC ) { perm |= MapPerm::X; }
+    // Align up length to page size
+    let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
 
-    // current::addrspace().with_map_manager_mut(|map_manager| {
-    //     map_manager.print_all_areas();
-    // });
-
-    current::addrspace().set_area_perm(addr, length / arch::PGSIZE, perm)?;
-
-    // current::addrspace().with_map_manager_mut(|map_manager| {
-    //     map_manager.print_all_areas();
-    // });
+    current::addrspace().set_area_perm(addr, page_count, prot.into())?;
 
     Ok(0)
 }

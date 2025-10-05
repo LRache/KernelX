@@ -48,7 +48,7 @@ impl PageAllocator {
 
         // fill freed page with 0xff in debug mode
         if cfg!(debug_assertions) {
-            unsafe { core::ptr::write_bytes(addr as *mut u8, 0xff, arch::PGSIZE); }
+            unsafe { core::ptr::write_bytes(addr as *mut u8, 'A' as u8, arch::PGSIZE); }
         }
         
         self.freed.push_back(addr);

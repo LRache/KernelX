@@ -4,6 +4,7 @@ use spin::Mutex;
 
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kinfo;
 
 use super::{Index, LockedInode};
 
@@ -24,8 +25,16 @@ impl Cache {
 
     pub fn insert(&self, index: &Index, inode: Arc<LockedInode>) -> SysResult<()> {
         let mut cache = self.cache.lock();
+        
         if cache.len() >= config::INODE_CACHE_SIZE {
-            return Err(Errno::ENOMEM);
+            let initial_size = cache.len();
+            cache.retain(|_, inode| Arc::strong_count(inode) > 1);
+            let final_size = cache.len();
+            kinfo!("Uncached {} unused inodes, {} remaining", initial_size - final_size, final_size);
+
+            if final_size >= config::INODE_CACHE_SIZE {
+                return Err(Errno::ENOMEM);
+            }
         }
         
         cache.insert(*index, inode);
@@ -34,9 +43,9 @@ impl Cache {
     }
 
     pub fn clear(&self) {
-        for (_, inode) in self.cache.lock().iter() {
-            inode.destroy().unwrap();
-        }
-        self.cache.lock().clear();
+        // for (_, inode) in self.cache.lock().iter() {
+        //     inode.destroy().unwrap();
+        // }
+        // self.cache.lock().clear();
     }
 }
