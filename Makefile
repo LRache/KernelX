@@ -2,16 +2,6 @@ include config/config.mk
 
 KERNEL = build/$(PLATFORM)/kernelx
 
-# KERNEL_CONFIG = \
-# 	PLATFORM=$(PLATFORM) \
-# 	ARCH=$(ARCH) \
-# 	CROSS_COMPILE=$(CROSS_COMPILE) \
-# 	INITPATH=$(INITPATH) \
-# 	INITCWD=$(INITCWD) \
-# 	LOG_LEVEL=$(LOG_LEVEL) \
-# 	LOG_SYSCALL=$(LOG_SYSCALL) \
-# 	RELEASE=$(KERNELX_RELEASE)
-
 all: run
 
 init:
@@ -20,10 +10,10 @@ init:
 	# @ make -C ./lib/opensbi CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP=y FW_JUMP_ADDR=0x80200000
 
 kernel:
-	make -f build.mk kernel $(KERNEL_CONFIG)
+	@ make -f build.mk kernel $(KERNEL_CONFIG)
 
 check:
-	make -f build.mk check $(KERNEL_CONFIG)
+	@ make -f build.mk check $(KERNEL_CONFIG)
 
 run: kernel
 	@ make -f scripts/qemu.mk qemu-run KERNEL=$(KERNEL)

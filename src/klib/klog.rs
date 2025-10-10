@@ -1,5 +1,8 @@
 use core::panic::PanicInfo;
-use crate::{platform, println};
+
+use crate::fs::vfs;
+use crate::platform;
+use crate::println;
 
 pub const COLOR_RESET: &str = "\x1b[0m";
 pub const COLOR_RED: &str = "\x1b[31m";
@@ -73,8 +76,8 @@ macro_rules! kdebug {
             $crate::klib::klog::COLOR_CYAN,
             "DEBUG",
             $crate::klib::klog::COLOR_RESET,
-            $crate::kernel::scheduler::current::tid(),
             format_args!($($arg)*),
+            $crate::kernel::scheduler::current::tid(),
             file!(),
             line!(),
             column!(),
@@ -117,7 +120,6 @@ macro_rules! ktrace {
 
 #[panic_handler]
 pub fn panic_handler(info: &PanicInfo) -> ! {
-    // kernel::fini();
     if let Some(location) = info.location() {
         println!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}{}",
@@ -142,6 +144,10 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
             COLOR_RESET
         );
     }
+
+    vfs::sync().unwrap_or_else(|e| {
+        println!("Failed to sync filesystem: {:?}", e);
+    });
 
     platform::shutdown();
 }

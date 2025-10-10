@@ -23,12 +23,8 @@ $(OUTPUT_DIR)/%: $(BUILD_DIR)/%.o
 	@ $(CC) $(CFLAGS) $< -o $@
 
 all: $(TEST_TARGETS)
+	@ echo "File to unlink" > $(OUTPUT_DIR)/to_unlink.txt
 
 clean:
 	$(info + CLEAN)
 	@ rm -rf $(BUILD_DIR)
-
-show-tests:
-	@echo "Auto-discovered tests:"
-	@for test in $(TESTS); do echo "  - $$test"; done
-	@for test in $(TESTS); do echo "  - $$test"; done

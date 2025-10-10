@@ -1,44 +1,48 @@
-use alloc::boxed::Box;
 use alloc::string::String;
-use spin::Mutex;
+use alloc::sync::Arc;
+use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::file::{FileStat, DirResult};
+use crate::fs::file::DirResult;
 
-use super::{Mode, Index};
+use super::{Mode, FileType};
 
-pub trait Inode {
+pub trait Inode: DowncastSync {
     fn get_ino(&self) -> u32;
 
     fn get_sno(&self) -> u32;
 
     fn type_name(&self) -> &'static str;
 
-    fn create(&mut self, _name: &str, _mode: Mode) -> SysResult<()> {
+    fn create(&self, _name: &str, _mode: Mode) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
 
-    fn unlink(&mut self, _name: &str) -> SysResult<()> {
+    fn unlink(&self, _name: &str) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
 
-    fn readat(&mut self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
         unimplemented!()
     }
     
-    fn writeat(&mut self, _buf: &[u8], _offset: usize) -> Result<usize, Errno> {
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> Result<usize, Errno> {
         unimplemented!()
     }
 
-    fn get_dent(&mut self, _index: usize) -> SysResult<Option<DirResult>> {
+    fn get_dent(&self, _index: usize) -> SysResult<Option<DirResult>> {
         Err(Errno::ENOSYS)
     }
 
-    fn lookup(&mut self, _name: &str) -> Result<u32, Errno> {
+    fn lookup(&self, _name: &str) -> SysResult<u32> {
         Err(Errno::ENOENT)
     }
 
-    fn size(&self) -> Result<usize, Errno> {
+    fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn Inode>, _new_name: &str) -> SysResult<()> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn size(&self) -> SysResult<u64> {
         unimplemented!()
     }
     
@@ -46,88 +50,17 @@ pub trait Inode {
         Mode::empty()
     }
 
-    fn fstat(&self) -> SysResult<FileStat> {
-        let mut kstat = FileStat::new();
-        kstat.st_ino = self.get_ino() as u64;
-        kstat.st_size = self.size()? as i64;
-        
-        Ok(kstat)
+    fn inode_type(&self) -> FileType {
+        self.mode().into()
     }
 
     fn readlink(&self) -> SysResult<String> {
         Err(Errno::EINVAL)
     }
 
-    fn sync(&mut self) -> SysResult<()> {
+    fn sync(&self) -> SysResult<()> {
         Ok(())
     }
 }
 
-pub struct LockedInode {
-    index: Index,
-    inner: Mutex<Box<dyn Inode>>,
-}
-
-impl LockedInode {
-    pub const fn new(index: &Index, inode: Box<dyn Inode>) -> Self {
-        Self {
-            index: *index,
-            inner: Mutex::new(inode),
-        }
-    }
-
-    pub fn get_index(&self) -> Index {
-        self.index
-    }
-
-    pub fn get_sno(&self) -> u32 {
-        self.index.sno
-    }
-
-    pub fn get_ino(&self) -> u32 {
-        self.index.ino
-    }
-
-    pub fn create(&self, name: &str, mode: Mode) -> SysResult<()> {
-        self.inner.lock().create(name, mode)
-    }
-
-    pub fn readat(&self, buf: &mut [u8], offset: usize) -> Result<usize, Errno> {
-        self.inner.lock().readat(buf, offset)
-    }
-
-    pub fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
-        self.inner.lock().writeat(buf, offset)
-    }
-    
-    pub fn readlink(&self) -> SysResult<String> {
-        self.inner.lock().readlink()
-    }
-
-    pub fn lookup(&self, name: &str) -> Result<u32, Errno> {
-        self.inner.lock().lookup(name)
-    }
-
-    pub fn size(&self) -> Result<usize, Errno> {
-        self.inner.lock().size()
-    }
-
-    pub fn mode(&self) -> Mode {
-        self.inner.lock().mode()
-    }
-
-    pub fn get_dent(&self, index: usize) -> SysResult<Option<DirResult>> {
-        self.inner.lock().get_dent(index)
-    }
-
-    pub fn sync(&self) -> SysResult<()> {
-        self.inner.lock().sync()
-    }
-
-    pub fn type_name(&self) -> &'static str {
-        self.inner.lock().type_name()
-    }
-}
-
-unsafe impl Send for LockedInode {}
-unsafe impl Sync for LockedInode {}
+impl_downcast!(sync Inode);

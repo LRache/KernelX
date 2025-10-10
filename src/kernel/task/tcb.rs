@@ -11,10 +11,11 @@ use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::mm::{AddrSpace, elf};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::event::Event;
+use crate::kernel::ipc::SignalSet;
 use crate::kernel::errno::Errno;
 use crate::fs::file::File;
 use crate::fs::vfs;
-use crate::arch::{UserContext, KernelContext};
+use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::{arch, kdebug, kinfo, ktrace};
 
 use super::kernelstack::KernelStack;
@@ -60,7 +61,9 @@ pub struct TCB {
     _kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
-    fdtable: Option<Arc<Mutex<FDTable>>>,
+    fdtable: Arc<Mutex<FDTable>>,
+
+    signal_mask: Mutex<SignalSet>,
 
     state: Mutex<TaskStateSet>,
 }
@@ -98,7 +101,9 @@ impl TCB {
             _kernel_stack: kernel_stack,
 
             addrspace,
-            fdtable: Some(fdtable),
+            fdtable: fdtable,
+
+            signal_mask: Mutex::new(0),
             
             state: Mutex::new(TaskStateSet::new()),
         });
@@ -132,8 +137,6 @@ impl TCB {
         auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
 
         let userstack_top = addrspace.create_user_stack(argv, envp, &auxv).expect("Failed to push args and envp to userstack");
-
-        kinfo!("Init task user entry at {:#x}, user stack top at {:#x}", user_entry, userstack_top);
 
         let mut fdtable = FDTable::new();
         for _ in 0..3 {
@@ -187,7 +190,7 @@ impl TCB {
             new_user_context,
             self.get_user_entry(),
             new_addrspace,
-            Arc::new(Mutex::new(self.fdtable.as_ref().unwrap().lock().fork())),
+            Arc::new(Mutex::new(self.fdtable.lock().fork())),
         );
 
         new_tcb
@@ -221,7 +224,7 @@ impl TCB {
         let mut new_user_context = UserContext::new();
         new_user_context.set_user_stack_top(usetstack_top);
 
-        self.get_fdtable().lock().cloexec();
+        self.fdtable().lock().cloexec();
 
         let new_tcb = TCB::new(
             self.tid,
@@ -276,12 +279,12 @@ impl TCB {
         &self.addrspace
     }
 
-    pub fn get_fdtable(&self) -> &Mutex<FDTable> {
-        self.fdtable.as_ref().unwrap()
+    pub fn fdtable(&self) -> &Arc<Mutex<FDTable>> {
+        &self.fdtable
     }
 
-    pub fn fdtable(&self) -> &Arc<Mutex<FDTable>> {
-        self.fdtable.as_ref().unwrap()
+    pub fn get_signal_mask(&self) -> SignalSet {
+        *self.signal_mask.lock()
     }
 
     pub fn get_user_entry(&self) -> usize {
@@ -296,7 +299,7 @@ impl TCB {
         *self.tid_address.lock() = Some(addr);
     }
 
-    pub fn block(self: &Arc<Self>, reason: &str) -> bool {
+    pub fn block(self: &Arc<Self>, _reason: &str) -> bool {
         assert!(Arc::ptr_eq(self, current::tcb()));
         
         let mut state = self.state.lock();

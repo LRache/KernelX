@@ -1,6 +1,6 @@
 use crate::kernel::mm::MapPerm;
 
-use super::KernelContext;
+use super::{KernelContext, SigContext};
 
 pub trait PageTableTrait {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
@@ -27,6 +27,23 @@ pub trait ArchTrait {
     fn enable_interrupt();
     fn disable_interrupt();
     fn enable_timer_interrupt();
+}
+
+pub trait UserContextTrait: Clone {
+    fn new() -> Self;
+    
+    /// Create a clone of the current context for fork. The returned context
+    /// will return 0 in the user program.
+    fn new_clone(&self) -> Self;
+
+    fn get_user_stack_top(&self) -> usize;
+    fn set_user_stack_top(&mut self, user_stack_top: usize);
+    fn set_kernel_stack_top(&mut self, kernel_stack_top: usize);
+
+    fn set_addrspace(&mut self, addrspace: &crate::kernel::mm::AddrSpace);
+
+    fn set_sigaction_restorer(&mut self, uptr_restorer: usize);
+    fn restore_from_signal(&mut self, sigcontext: &SigContext);
 }
 
 pub struct Arch;

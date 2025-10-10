@@ -9,6 +9,7 @@ cfg_if::cfg_if! {
 
 pub type UserContext = arch_impl::UserContext;
 pub type KernelContext = arch_impl::KernelContext;
+pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
 
 // pub const PGBITS: usize = arch_impl::PGBITS;
@@ -16,7 +17,7 @@ pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;
 
 mod arch;
-pub use arch::PageTableTrait;
+pub use arch::{PageTableTrait, UserContextTrait};
 use arch::{Arch, ArchTrait};
 
 macro_rules! arch_export {

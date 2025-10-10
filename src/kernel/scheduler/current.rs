@@ -7,6 +7,7 @@ use crate::kernel::task::tid::Tid;
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::task::fdtable::FDTable;
 use crate::kernel::scheduler::Processor;
+use crate::kernel::ipc::SignalHandler;
 use crate::kernel::errno::Errno;
 use crate::arch;
 use crate::fs::Dentry;
@@ -115,6 +116,11 @@ pub fn pcb() -> &'static Arc<PCB> {
     &processor.tcb.get_parent()
 }
 
+pub fn signal_handler() -> &'static Mutex<SignalHandler> {
+    let pcb = pcb();
+    pcb.signal_handler()
+}
+
 pub fn addrspace() -> &'static Arc<AddrSpace> {
     let tcb = tcb();
     tcb.get_addrspace()
@@ -122,7 +128,7 @@ pub fn addrspace() -> &'static Arc<AddrSpace> {
 
 pub fn fdtable() -> &'static Mutex<FDTable> {
     let tcb = tcb();
-    tcb.get_fdtable()
+    tcb.fdtable()
 }
 
 pub fn with_cwd<F, R>(f: F) -> R 

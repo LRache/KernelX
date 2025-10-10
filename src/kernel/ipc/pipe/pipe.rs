@@ -2,14 +2,13 @@ use alloc::sync::Arc;
 
 use crate::kernel::event::{Event, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::{Dentry, LockedInode};
+use crate::fs::{Dentry, Inode};
 use crate::fs::file::{FileOps, FileStat, SeekWhence, DirResult};
-use crate::kinfo;
 
 use super::PipeInner;
 
 struct Meta {
-    inode: Arc<LockedInode>,
+    inode: Arc<dyn Inode>,
     dentry: Arc<Dentry>,
 }
 
@@ -61,7 +60,7 @@ impl FileOps for Pipe {
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
-        let mut kstat = FileStat::new();
+        let mut kstat = FileStat::empty();
         kstat.st_mode = 0o100666; // Regular file with rw-rw-rw- permissions
         kstat.st_nlink = 1;
 
@@ -76,7 +75,7 @@ impl FileOps for Pipe {
         Err(Errno::ENOTDIR)
     }
 
-    fn get_inode(&self) -> Option<&Arc<LockedInode>> {
+    fn get_inode(&self) -> Option<&Arc<dyn Inode>> {
         self.meta.as_ref().map(|m| &m.inode)
     }
 

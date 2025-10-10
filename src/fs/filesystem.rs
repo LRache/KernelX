@@ -11,14 +11,9 @@ pub trait FileSystem: Send + Sync {
 }
 
 pub trait SuperBlock: Send + Sync {
-    fn get_root_ino(&self) -> u32 {
-        panic!("get_root_inode not implemented for this filesystem");
-    }
+    fn get_root_ino(&self) -> u32;
 
-    fn get_inode(&self, _ino: u32) -> SysResult<Box<dyn Inode>> {
-        // Default implementation returns None, can be overridden by specific filesystems
-        unimplemented!();
-    }
+    fn get_inode(&self, ino: u32) -> SysResult<Box<dyn Inode>>;
 
     fn unmount(&self) -> SysResult<()> {
         // Default implementation does nothing, can be overridden by specific filesystems

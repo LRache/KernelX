@@ -1,6 +1,6 @@
 use alloc::string::String;
 
-use crate::fs::file::file::FileType;
+use crate::fs::FileType;
 
 #[derive(Clone)]
 pub struct DirResult {

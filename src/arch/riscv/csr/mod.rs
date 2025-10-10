@@ -19,12 +19,6 @@ pub mod sepc {
 }
 
 pub mod stvec {
-    pub fn read() -> usize {
-        let value: usize;
-        unsafe { core::arch::asm!("csrr {}, stvec", out(reg) value); }
-        value
-    }
-
     pub fn write(value: usize) {
         unsafe { core::arch::asm!("csrw stvec, {}", in(reg) value); }
     }
@@ -36,19 +30,9 @@ pub mod stval {
         unsafe { core::arch::asm!("csrr {}, stval", out(reg) value); }
         value
     }
-
-    pub fn write(value: usize) {
-        unsafe { core::arch::asm!("csrw stval, {}", in(reg) value); }
-    }
 }
 
 pub mod sscratch {
-    pub fn read() -> usize {
-        let value: usize;
-        unsafe { core::arch::asm!("csrr {}, sscratch", out(reg) value); }
-        value
-    }
-
     pub fn write(value: usize) {
         unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) value); }
     }

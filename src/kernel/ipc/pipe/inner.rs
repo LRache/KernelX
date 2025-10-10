@@ -4,7 +4,6 @@ use spin::Mutex;
 use crate::kernel::errno::SysResult;
 use crate::kernel::event::{Event, PollEventSet, WaitQueue};
 use crate::kernel::scheduler::current;
-use crate::kinfo;
 
 pub struct PipeInner {
     buffer: Mutex<VecDeque<u8>>,

@@ -2,15 +2,15 @@ use alloc::sync::Arc;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
-use crate::fs::vfs::vfs;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::*;
 use crate::kernel::task::fdtable::FDFlags;
-use crate::fs::{vfs, Dentry};
-use crate::fs::file::{File, FileFlags, FileOps, FileType, SeekWhence};
-use crate::fs::inode::Mode;
+use crate::kernel::api::{OpenFlags, Dirent, DirentType};
+use crate::fs::{Dentry, Mode};
+use crate::fs::vfs;
+use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
 use crate::{copy_from_user, copy_to_user, copy_to_user_string};
-use crate::{kdebug, kinfo, ktrace};
+use crate::{kdebug, ktrace};
 
 use super::def::*;
 
@@ -38,7 +38,12 @@ pub fn dup2(oldfd: usize, newfd: usize) -> Result<usize, Errno> {
 #[allow(non_camel_case_types)]
 #[derive(TryFromPrimitive)]
 #[repr(usize)]
-enum FcntlCmd {
+pub enum FcntlCmd {
+    F_DUPFD = 0,
+    F_GETFD = 1,
+    F_SETFD = 2,
+    F_GETFL = 3,
+    F_SETFL = 4,
     F_DUPFD_CLOEXEC = 1030,
 }
 
@@ -50,28 +55,19 @@ pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> Result<usize, Errno> {
             let fd = fdtable.push(file, FDFlags { cloexec: true })?;
             Ok(fd)
         }
-    }
-}
 
-bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct OpenFlags: usize {
-        const O_RDONLY    = 0x0000;
-        const O_WRONLY    = 0x0001;
-        const O_RDWR      = 0x0002;
-        const O_CREAT     = 0x0040;
-        const O_EXCL      = 0x0080;
-        const O_NOCTTY    = 0x0100;
-        const O_TRUNC     = 0x0200;
-        const O_APPEND    = 0x0400;
-        const O_NONBLOCK  = 0x0800;
-        const O_DSYNC     = 0x1000;
-        const FASYNC      = 0x2000;
-        const O_DIRECT    = 0x4000;
-        const O_LARGEFILE = 0x8000;
-        const O_DIRECTORY = 0x10000;
-        const O_NOFOLLOW  = 0x20000;
-        const O_CLOEXEC   = 0x80000;
+        FcntlCmd::F_GETFL => {
+            let file = current::fdtable().lock().get(fd)?;
+            let mut open_flags = OpenFlags::O_RDONLY;
+            if file.readable() && file.writable() {
+                open_flags = OpenFlags::O_RDWR;
+            } else if file.writable() {
+                open_flags = OpenFlags::O_WRONLY;
+            }
+            Ok(open_flags.bits())
+        }
+
+        _ => Err(Errno::EINVAL),
     }
 }
 
@@ -93,16 +89,11 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
             Err(e) => {
                 if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREAT) {
                     // Create the file
-                    if mode > 0o7777 {
-                        return Err(Errno::EINVAL);
-                    }
-                    let mode = Mode::from_bits(mode as u16).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
-                    kinfo!("openat: creating file {} with mode {:#o}", path, mode);
-                    let (parent_dentry, child_name) = vfs::openat_parent_dentry(parent, &path)?;
+                    let mode = Mode::from_bits(mode as u16 & 0o777).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
+                    let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?;
                     parent_dentry.create(&child_name, mode)?;                    
                     vfs::openat_file(parent, &path, file_flags)
                 } else {
-                    // kinfo!("openat: failed to open file {}: {:?}", path, e);
                     Err(e)
                 }
             }
@@ -112,12 +103,10 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
     let file = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| helper(cwd))?
     } else {
-        helper(vfs().get_root())?
+        helper(vfs::get_root_dentry())?
     };
 
     let fd = current::fdtable().lock().push(Arc::new(file), fd_flags)?;
-
-    kdebug!("openat called: path={}, flags={:?}, new_fd={}", path, open_flags, fd);
 
     Ok(fd)
 }
@@ -152,8 +141,6 @@ pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno>
         }
     }
 
-    // kinfo!("read: fd={}, requested={}, read={}, buf[0]={}", fd, count, total_read, buffer[0] as char);
-
     Ok(total_read)
 }
 
@@ -161,16 +148,17 @@ pub fn readlinkat(dirfd: usize, uptr_path: usize, uptr_buf: usize, bufsize: usiz
     let path = current::get_user_string(uptr_path)?;
     
     let path = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::openat_dentry(cwd, &path, FileFlags::dontcare()))?
+        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
     } else {
-        vfs::openat_dentry(
+        vfs::load_dentry_at(
             current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
-            &path, 
-            FileFlags::dontcare()
+            &path
         )?
     }.readlink()?;
 
-    copy_to_user_string!(uptr_buf, &path, bufsize)
+    copy_to_user_string!(uptr_buf, &path, bufsize)?;
+
+    Ok(0)
 }
 
 pub fn write(fd: usize, uptr_buffer: usize, mut count: usize) -> Result<usize, Errno> {
@@ -364,9 +352,9 @@ pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Err
     let path = current::get_user_string(user_path)?;
 
     let parent_dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::openat_parent_dentry(cwd, &path))?
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?
     } else {
-        vfs::open_parent_dentry(&path)?
+        vfs::load_parent_dentry(&path)?
     };
 
     let parent = parent_dentry.0;
@@ -375,40 +363,6 @@ pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Err
     parent.create(name, mode)?;
 
     Ok(0)
-}
-
-#[repr(C)]
-struct Dirent {
-    d_ino: u64,
-    d_off: i64,
-    d_reclen: u16,
-    d_type: u8,
-}
-
-enum DirentType {
-    Unknown     = 0,
-    FIFO        = 1,
-    CharDevice  = 2,
-    Directory   = 4,
-    BlockDevice = 6,
-    RegularFile = 8,
-    Symlink     = 10,
-    Socket      = 12,
-}
-
-impl From<FileType> for DirentType {
-    fn from(ft: FileType) -> Self {
-        match ft {
-            FileType::Regular     => DirentType::RegularFile,
-            FileType::Directory   => DirentType::Directory,
-            FileType::CharDevice  => DirentType::CharDevice,
-            FileType::BlockDevice => DirentType::BlockDevice,
-            FileType::FIFO        => DirentType::FIFO,
-            FileType::Symlink     => DirentType::Symlink,
-            FileType::Socket      => DirentType::Socket,
-            FileType::Unknown     => DirentType::Unknown,
-        }
-    }
 }
 
 const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d_type
@@ -431,7 +385,6 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usiz
                 }
             },
             Err(e) => {
-                kdebug!("getdents64: error getting dent: {:?}", e);
                 return Err(e)
             },
         };
@@ -460,7 +413,6 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usiz
         let dirent_ptr = uptr_dirent + total_copied;
 
         copy_to_user!(dirent_ptr, dirent).unwrap();
-        kdebug!("getdents64: copied dirent d_ino={}, d_reclen={}, d_name={}", dirent.d_ino, dirent.d_reclen, name);
         copy_to_user_string!(dirent_ptr + DIRENT_NAME_OFFSET, name, name_len + 1)?;
 
         total_copied += reclen_aligned;
@@ -472,4 +424,59 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usiz
     } else {
         Ok(total_copied)
     }
+}
+
+pub fn unlinkat(dirfd: usize, uptr_path: usize, _flags: usize) -> SysResult<usize> {
+    let path = current::get_user_string(uptr_path)?;
+
+    let parent_dentry = if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?
+    } else {
+        vfs::load_parent_dentry(&path)?
+    };
+
+    let parent = parent_dentry.0;
+    let name = &parent_dentry.1;
+
+    parent.unlink(name)?;
+
+    Ok(0)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct RenameFlags: usize {
+        const RENAME_NOREPLACE = 1;
+        const RENAME_EXCHANGE  = 2;
+        const RENAME_WHITEOUT  = 4;
+    }
+}
+
+pub fn renameat2(olddirfd: usize, uptr_oldpath: usize, newdirfd: usize, uptr_newpath: usize, _flags: usize) -> SysResult<usize> {
+    let old_path = current::get_user_string(uptr_oldpath)?;
+    let new_path = current::get_user_string(uptr_newpath)?;
+
+    let old_parent_dentry = if olddirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &old_path))?
+    } else {
+        vfs::load_parent_dentry(&old_path)?
+    };
+    let new_parent_dentry = if newdirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &new_path))?
+    } else {
+        vfs::load_parent_dentry(&new_path)?
+    };
+
+    let old_parent = old_parent_dentry.0;
+    let old_name = old_parent_dentry.1;
+    let new_parent = new_parent_dentry.0;
+    let new_name = new_parent_dentry.1;
+
+    if old_parent.sno() != new_parent.sno() {
+        return Err(Errno::EXDEV); // Cross-device link
+    }
+
+    old_parent.rename(&old_name, &new_parent, &new_name)?;
+
+    Ok(0)
 }

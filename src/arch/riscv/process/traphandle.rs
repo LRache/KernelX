@@ -86,6 +86,8 @@ pub fn usertrap_handler() -> ! {
             // println!("Interrupt occurred, returning to user mode");
         },
     }
+
+    trap::trap_return();
     
     return_to_user();
 }

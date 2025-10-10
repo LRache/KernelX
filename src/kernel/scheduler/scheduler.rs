@@ -1,11 +1,12 @@
-use crate::kernel::scheduler::current;
-use crate::kernel::task::{TaskState, TCB};
-use crate::{arch, kinfo};
-use super::processor::Processor;
-
 use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
 use spin::Mutex;
+
+use crate::kernel::scheduler::current;
+use crate::kernel::task::{TaskState, TCB};
+use crate::arch;
+
+use super::processor::Processor;
 
 pub struct Scheduler {
     ready_queue: Mutex<VecDeque<Arc<TCB>>>,

@@ -10,11 +10,16 @@ use crate::utils::path_check;
 // export some definitions
 pub use crate::ext4_defs::Ext4;
 pub use crate::ext4_defs::BLOCK_SIZE;
+pub use crate::ext4_defs::EXT4_MAX_FILE_SIZE;
+pub use crate::ext4_defs::Block;
 pub use crate::ext4_defs::BlockDevice;
 pub use crate::ext4_defs::InodeFileType;
 pub use crate::ext4_defs::Ext4InodeRef;
+pub use crate::ext4_defs::Ext4Inode;
 pub use crate::ext4_defs::Ext4DirEntry;
+pub use crate::ext4_defs::Ext4DirEntryTail;
 pub use crate::ext4_defs::Ext4DirSearchResult;
+pub use crate::ext4_defs::Ext4Fsblk;
 
 
 /// simple interface for ext4

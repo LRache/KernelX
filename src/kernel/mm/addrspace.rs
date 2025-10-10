@@ -200,9 +200,4 @@ impl AddrSpace {
             true
         }
     }
-
-    pub fn set_map_area_perm(&self, uaddr: usize, page_count: usize, perm: MapPerm) -> Result<(), Errno> {
-        let mut map_manager = self.map_manager.lock();
-        map_manager.set_map_area_perm(uaddr, page_count, perm, &self.pagetable)
-    }
 }

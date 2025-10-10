@@ -42,13 +42,20 @@ int main() {
         printf("after sleep\n");
         fflush(stdout);
 
+        dup2(pipefd[0], 100); // Redirect stdin to read end of pipe
+
         struct pollfd pfd;
-        pfd.fd = pipefd[0];
+        pfd.fd = 100;
         pfd.events = POLLIN;
 
         // Should return immediately
         if (ppoll_time32(&pfd, 1, NULL) == -1) {
             perror("ppoll_time32");
+        }
+
+        if (pfd.fd != 100 || !(pfd.revents & POLLIN)) {
+            fprintf(stderr, "Unexpected poll result: fd=%d, revents=%d\n", pfd.fd, pfd.revents);
+            return 1;
         }
         
         char buffer[100];

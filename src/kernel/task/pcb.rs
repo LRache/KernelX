@@ -4,13 +4,14 @@ use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::get_initprocess;
+use crate::kernel::task::{get_initprocess, manager};
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::scheduler::{self, current};
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::tid;
 use crate::kernel::event::Event;
-use crate::fs::file::{File, FileFlags};
+use crate::kernel::ipc::SignalHandler;
+use crate::fs::file::File;
 use crate::fs::vfs;
 use crate::fs::Dentry;
 
@@ -26,6 +27,8 @@ pub struct PCB {
     cwd: Mutex<Arc<Dentry>>,
     waiting_task: Mutex<Vec<Arc<TCB>>>,
 
+    signal_handler: Mutex<SignalHandler>,
+
     children: Mutex<Vec<Arc<PCB>>>,
 }
 
@@ -40,6 +43,8 @@ impl PCB {
             tasks: Mutex::new(Vec::new()),
             cwd: Mutex::new(cwd.clone()),
             waiting_task: Mutex::new(Vec::new()),
+
+            signal_handler: Mutex::new(SignalHandler::new()),
 
             children: Mutex::new(Vec::new()),
         })
@@ -57,7 +62,7 @@ impl PCB {
         }
         fd_table.push(file.clone(), FDFlags::empty())?;
 
-        let cwd = vfs::open_dentry(cwd, FileFlags::dontcare())?;
+        let cwd = vfs::load_dentry(cwd)?;
 
         let pcb = Arc::new(Self {
             pid: 0,
@@ -68,6 +73,8 @@ impl PCB {
             tasks: Mutex::new(Vec::new()),
             cwd: Mutex::new(cwd.clone()),
             waiting_task: Mutex::new(Vec::new()),
+
+            signal_handler: Mutex::new(SignalHandler::new()),
 
             children: Mutex::new(Vec::new()),
         });
@@ -118,7 +125,8 @@ impl PCB {
             let new_parent = PCB::new(new_tid, self, &self.cwd.lock());
             new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags);
             new_parent.tasks.lock().push(new_tcb.clone());
-            self.children.lock().push(new_parent);
+            self.children.lock().push(new_parent.clone());
+            manager::insert(new_parent);
         }
         
         scheduler::push_task(new_tcb.clone());
@@ -167,16 +175,9 @@ impl PCB {
             *c.parent.lock() = Some(get_initprocess().clone());
         });
 
+        manager::remove(self.pid);
+
         get_initprocess().children.lock().append(&mut children);
-    }
-
-    pub fn exit_task(self: &Arc<Self>, tcb: &Arc<TCB>, code: u8) {
-        let mut tasks = self.tasks.lock();
-        tasks.retain(|t| !Arc::ptr_eq(t, tcb));
-
-        if tasks.is_empty() {
-            self.exit(code);
-        }
     }
 
     pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<u8>, Errno> {
@@ -254,7 +255,6 @@ impl PCB {
         loop {
             self.waiting_task.lock().push(current::tcb().clone());
             current::tcb().block("wait_any_child");
-            // kinfo!("Waiting for child process of PID {} to exit", self.pid);
             current::schedule();
 
             let mut pid = 0;
@@ -288,6 +288,10 @@ impl PCB {
                 return Ok(Some((pid, exit_code)))
             }
         }
+    }
+
+    pub fn signal_handler(&self) -> &Mutex<SignalHandler> {
+        &self.signal_handler
     }
 }
 

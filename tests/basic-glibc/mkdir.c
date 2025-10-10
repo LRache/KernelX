@@ -10,6 +10,15 @@ int main() {
         if (f) {
             fclose(f);
             printf("Directory '%s' opened successfully.\n", dirname);
+
+            FILE *f = fopen("testdir/file.txt", "w");
+            if (f) {
+                fprintf(f, "Hello, World!\n");
+                fclose(f);
+                printf("File 'testdir/file.txt' created and written successfully.\n");
+            } else {
+                perror("Failed to create file in directory");
+            }
         } else {
             perror("Failed to open the directory");
         }

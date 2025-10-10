@@ -13,13 +13,3 @@ impl Ord for Index {
         }
     }
 }
-
-impl Index {
-    pub fn root() -> Self {
-        Index { sno: 0, ino: 0 }
-    }
-
-    pub fn dontcare() -> Self {
-        Index { sno: u32::MAX, ino: u32::MAX }
-    }
-}

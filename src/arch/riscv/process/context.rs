@@ -1,8 +1,8 @@
+use crate::arch::arch::UserContextTrait;
 use crate::arch::riscv::kernelpagetable::get_kernel_satp;
 use crate::arch::riscv::process::traphandle::{usertrap_handler, return_to_user};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::KernelStack;
-
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -15,8 +15,8 @@ pub struct UserContext {
     /* 36 */ pub usertrap_handler: usize,
 }
 
-impl UserContext {
-    pub fn new() -> Self {
+impl UserContextTrait for UserContext {
+    fn new() -> Self {
         let kernel_satp = get_kernel_satp();
         
         UserContext {
@@ -29,7 +29,7 @@ impl UserContext {
         }
     }
 
-    pub fn new_clone(&self) -> Self {
+    fn new_clone(&self) -> Self {
         let mut new_context = self.clone();
         new_context.kernel_sp = 0; // Reset kernel stack pointer
         new_context.user_satp = 0; // Reset user address space pointer
@@ -40,18 +40,30 @@ impl UserContext {
         new_context
     }
 
-    pub fn set_user_stack_top(&mut self, user_stack_top: usize) {
+    fn get_user_stack_top(&self) -> usize {
+        self.gpr[2] // sp
+    }
+
+    fn set_user_stack_top(&mut self, user_stack_top: usize) {
         self.gpr[2] = user_stack_top;
     }
 
-    pub fn set_kernel_stack_top(&mut self, kernel_stack_top: usize) {
+    fn set_kernel_stack_top(&mut self, kernel_stack_top: usize) {
         self.kernel_sp = kernel_stack_top;
     }
 
-    pub fn set_addrspace(&mut self, addrspace: &AddrSpace) {
+    fn set_addrspace(&mut self, addrspace: &AddrSpace) {
         addrspace.with_pagetable(|pagetable| {
             self.user_satp = pagetable.get_satp();
         });
+    }
+
+    fn set_sigaction_restorer(&mut self, uptr_restorer: usize) {
+        self.gpr[1] = uptr_restorer; // ra
+    }
+
+    fn restore_from_signal(&mut self, sigcontext: &crate::arch::SigContext) {
+        self.gpr.copy_from_slice(&sigcontext.gregs);
     }
 }
 
@@ -80,6 +92,29 @@ impl KernelContext {
             sp: 0,
             s : [0; 12],
             a0: 0,
+        }
+    }
+}
+
+pub struct SigContext {
+    pub gregs:  [usize; 32], // General registers
+    pub fpregs: [u64; 66]   // Floating point registers
+}
+
+impl SigContext {
+    pub fn empty() -> Self {
+        SigContext {
+            gregs: [0; 32],
+            fpregs: [0; 66],
+        }
+    }
+}
+
+impl Into<SigContext> for UserContext {
+    fn into(self) -> SigContext {
+        SigContext {
+            gregs: self.gpr,
+            fpregs: [0; 66], // Placeholder, actual FPU state handling needed
         }
     }
 }

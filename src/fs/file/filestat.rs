@@ -22,7 +22,7 @@ pub struct FileStat {
 }
 
 impl FileStat {
-    pub fn new() -> Self {
+    pub fn empty() -> Self {
         FileStat {
             st_dev: 0,
             st_ino: 0,

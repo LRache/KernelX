@@ -2,14 +2,15 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use spin::Mutex;
 
+use crate::fs::inode::Inode;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kinfo;
 
-use super::{Index, LockedInode};
+use super::Index;
 
 pub struct Cache {
-    cache: Mutex<BTreeMap<Index, Arc<LockedInode>>>,
+    cache: Mutex<BTreeMap<Index, Arc<dyn Inode>>>,
 }
 
 impl Cache {
@@ -19,11 +20,11 @@ impl Cache {
         }
     }
 
-    pub fn find(&self, index: &Index) -> Option<Arc<LockedInode>> {
+    pub fn find(&self, index: &Index) -> Option<Arc<dyn Inode>> {
         self.cache.lock().get(index).cloned()
     }
 
-    pub fn insert(&self, index: &Index, inode: Arc<LockedInode>) -> SysResult<()> {
+    pub fn insert(&self, index: &Index, inode: Arc<dyn Inode>) -> SysResult<()> {
         let mut cache = self.cache.lock();
         
         if cache.len() >= config::INODE_CACHE_SIZE {
@@ -42,10 +43,11 @@ impl Cache {
         Ok(())
     }
 
-    pub fn clear(&self) {
-        // for (_, inode) in self.cache.lock().iter() {
-        //     inode.destroy().unwrap();
-        // }
-        // self.cache.lock().clear();
+    pub fn sync(&self) -> SysResult<()> {
+        let cache = self.cache.lock();
+        for (_, inode) in cache.iter() {
+            inode.sync()?;
+        }
+        Ok(())
     }
 }

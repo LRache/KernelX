@@ -31,15 +31,15 @@ impl Inode for RootInode {
         "rootfs"
     }
 
-    fn readat(&mut self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
         Ok(0)
     }
 
-    fn writeat(&mut self, _buf: &[u8], _offset: usize) -> Result<usize, Errno> {
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> Result<usize, Errno> {
         Ok(0)
     }
 
-    fn lookup(&mut self, _name: &str) -> Result<u32, Errno> {
+    fn lookup(&self, _name: &str) -> Result<u32, Errno> {
         Err(Errno::ENOENT)
     }
 }

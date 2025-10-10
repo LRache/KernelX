@@ -9,7 +9,6 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::{copy_to_user, copy_to_user_string};
-use crate::kinfo;
 
 pub fn sched_yield() -> Result<usize, Errno> {
     current::schedule();
@@ -179,7 +178,7 @@ pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {
 
 pub fn chdir(user_path: usize) -> SysResult<usize> {
     let path = current::get_user_string(user_path)?;
-    let dentry = current::with_cwd(|cwd| vfs::openat_dentry(&cwd, &path, FileFlags::dontcare()))?;
+    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
     current::pcb().set_cwd(&dentry);
     // kinfo!("Changed working directory to {}", dentry.get_path());
     Ok(0)

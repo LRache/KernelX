@@ -12,8 +12,11 @@ pub enum Errno {
     ENOMEM  = 12,  // Out of memory
     EFAULT  = 14,  // Bad address
     EEXIST  = 17,  // File exists
+    EXDEV   = 18,  // Cross-device link
     ENOTDIR = 20,  // Not a directory
     EINVAL  = 22,  // Invalid argument
+    EFBIG   = 27,  // File too large
+    ENOSPC  = 28,  // No space left on device
     ESPIPE  = 29,  // Illegal seek
     EPIPE   = 32,  // Broken pipe
     ENOSYS  = 38,  // Function not implemented

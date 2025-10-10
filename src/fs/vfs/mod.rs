@@ -16,7 +16,7 @@ use vfs::VirtualFileSystem;
 
 static VFS: VirtualFileSystem = VirtualFileSystem::new();
 
-pub fn vfs() -> &'static VirtualFileSystem {
+pub(super) fn vfs() -> &'static VirtualFileSystem {
     &VFS
 }
 
@@ -25,5 +25,5 @@ pub fn init() {
 }
 
 pub fn fini() {
-    VFS.fini();
+    // VFS.fini();
 }

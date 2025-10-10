@@ -5,7 +5,6 @@ use alloc::vec;
 use crate::fs::file::FileOps;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kinfo;
 
 #[derive(Clone, Copy)]
 pub struct FDFlags {

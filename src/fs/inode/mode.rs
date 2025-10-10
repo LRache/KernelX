@@ -30,3 +30,31 @@ bitflags! {
         const S_IXOTH  = 0o0001;   // others have execute permission
     }
 }
+
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FileType {
+    Regular,
+    Directory,
+    Symlink,
+    CharDevice,
+    BlockDevice,
+    FIFO,
+    Socket,
+    Unknown,
+}
+
+impl Into<FileType> for Mode {
+    fn into(self) -> FileType {
+        match self & Mode::S_IFMT {
+            Mode::S_IFREG  => FileType::Regular,
+            Mode::S_IFDIR  => FileType::Directory,
+            Mode::S_IFLNK  => FileType::Symlink,
+            Mode::S_IFCHR  => FileType::CharDevice,
+            Mode::S_IFBLK  => FileType::BlockDevice,
+            Mode::S_IFIFO  => FileType::FIFO,
+            Mode::S_IFSOCK => FileType::Socket,
+            _              => FileType::Unknown,
+        }
+    }
+}

@@ -18,7 +18,12 @@ const INITCWD: &'static str = match option_env!("KERNELX_INITCWD") {
     None => "/",
 };
 
-const INIT_ARGV: &[&str] = &[INITPATH, "sh", "busybox_testcode.sh"];
+const INIT_ARGV: &[&str] = &[
+    INITPATH, 
+    "sh", 
+    "busybox_testcode.sh"
+];
+
 const INIT_ENVP: &[&str] = &[
     // "LD_LIBRARY_PATH=/lib", 
     // "LD_SHOW_AUXV=1", 

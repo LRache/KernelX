@@ -3,7 +3,7 @@ mod process;
 mod csr;
 mod arch;
 
-pub use context::{UserContext, KernelContext};
+pub use context::{UserContext, KernelContext, SigContext};
 pub use switch::kernel_switch;
 pub use vm::*;
 pub use process::*;

@@ -28,10 +28,10 @@ buddy_system_allocator = { version = "0.9", default-features = false, features =
 spin = "0.9"
 bitflags = "2.0"
 virtio-drivers = "0.7.5"
-ext4_rs = { path = "./lib/ext4_rs"}
 cfg-if = "1.0"
 num_enum = { version = "0.5", default-features = false}
 downcast-rs = { version = "2.0.1", default-features = false , features = ["sync"]}
+ext4_rs = { path = "./lib/ext4_rs"}
 
 [build-dependencies]
 cc = "1.0"

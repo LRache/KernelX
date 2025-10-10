@@ -3,23 +3,10 @@ use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::file::DirResult;
-use crate::fs::inode::LockedInode;
+use crate::fs::inode::Inode;
 use crate::fs::vfs::Dentry;
-use crate::ktrace;
 
 use super::{FileOps, SeekWhence, FileStat};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FileType {
-    Regular,
-    Directory,
-    Symlink,
-    CharDevice,
-    BlockDevice,
-    FIFO,
-    Socket,
-    Unknown,
-}
 
 #[derive(Clone, Copy)]
 pub struct FileFlags {
@@ -34,7 +21,7 @@ impl FileFlags {
 }
 
 pub struct File {
-    inode: Arc<LockedInode>,
+    inode: Arc<dyn Inode>,
     dentry: Arc<Dentry>,
     pos: Mutex<usize>, 
     
@@ -121,8 +108,8 @@ impl FileOps for File {
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
-        let mut kstat = FileStat::new();
-        ktrace!("fstat: inode type={}", self.inode.type_name());
+        let mut kstat = FileStat::empty();
+        
         kstat.st_ino = self.inode.get_ino() as u64;
         kstat.st_size = self.inode.size()? as i64;
         kstat.st_mode = self.inode.mode().bits() as u32;
@@ -141,7 +128,7 @@ impl FileOps for File {
         Ok(Some(dent))
     }
 
-    fn get_inode(&self) -> Option<&Arc<LockedInode>> {
+    fn get_inode(&self) -> Option<&Arc<dyn Inode>> {
         Some(&self.inode)
     }
 

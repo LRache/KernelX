@@ -11,8 +11,9 @@ macro_rules! syscall_table {
         match $num_var {
             $(
                 $num => {
-                    syscall_table!(@trace $num, stringify!($func), $arg_count, $args_var);
-                    syscall_table!(@call $handler :: $func, $arg_count, $args_var)
+                    let result = syscall_table!(@call $handler :: $func, $arg_count, $args_var);
+                    syscall_table!(@trace_result $num, stringify!($func), $arg_count, $args_var, &result);
+                    result
                 },
             )*
             _ => {
@@ -22,53 +23,76 @@ macro_rules! syscall_table {
         }
     };
 
-    (@trace $num:expr, $name:expr, 0, $args:ident) => {
+
+
+    (@trace_result $num:expr, $name:expr, 0, $args:ident, $result:expr) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[], tid={}", $num, $name, $crate::kernel::scheduler::current::tid());
+            match $result {
+                Ok(value) => println!("[SYSCALL] {} ({}): args=[] -> Ok({:#x}), tid={}", $num, $name, value, $crate::kernel::scheduler::current::tid()),
+                Err(errno) => println!("[SYSCALL] {} ({}): args=[] -> Err({:?}), tid={}", $num, $name, errno, $crate::kernel::scheduler::current::tid()),
+            }
         }
     };
-    (@trace $num:expr, $name:expr, 1, $args:ident) => {
+    (@trace_result $num:expr, $name:expr, 1, $args:ident, $result:expr) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}], tid={}", $num, $name, $args[0], $crate::kernel::scheduler::current::tid());
+            match $result {
+                Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], value, $crate::kernel::scheduler::current::tid()),
+                Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], errno, $crate::kernel::scheduler::current::tid()),
+            }
         }
     };
-    (@trace $num:expr, $name:expr, 2, $args:ident) => {
+    (@trace_result $num:expr, $name:expr, 2, $args:ident, $result:expr) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $crate::kernel::scheduler::current::tid());
+            match $result {
+                Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], value, $crate::kernel::scheduler::current::tid()),
+                Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], errno, $crate::kernel::scheduler::current::tid()),
+            }
         }
     };
-    (@trace $num:expr, $name:expr, 3, $args:ident) => {
+    (@trace_result $num:expr, $name:expr, 3, $args:ident, $result:expr) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $crate::kernel::scheduler::current::tid());
+            match $result {
+                Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], $args[2], value, $crate::kernel::scheduler::current::tid()),
+                Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], $args[2], errno, $crate::kernel::scheduler::current::tid()),
+            }
         }
     };
-    (@trace $num:expr, $name:expr, 4, $args:ident) => {
+    (@trace_result $num:expr, $name:expr, 4, $args:ident, $result:expr) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $crate::kernel::scheduler::current::tid());
+            match $result {
+                Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], value, $crate::kernel::scheduler::current::tid()),
+                Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], errno, $crate::kernel::scheduler::current::tid()),
+            }
         }
     };
-    (@trace $num:expr, $name:expr, 5, $args:ident) => {
+    (@trace_result $num:expr, $name:expr, 5, $args:ident, $result:expr) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $crate::kernel::scheduler::current::tid());
+            match $result {
+                Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], value, $crate::kernel::scheduler::current::tid()),
+                Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], errno, $crate::kernel::scheduler::current::tid()),
+            }
         }
     };
-    (@trace $num:expr, $name:expr, 6, $args:ident) => {
+    (@trace_result $num:expr, $name:expr, 6, $args:ident, $result:expr) => {
         #[cfg(feature = "log-trace-syscall")]
         {
             use crate::println;
-            println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $args[5], $crate::kernel::scheduler::current::tid());
+            match $result {
+                Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $args[5], value, $crate::kernel::scheduler::current::tid()),
+                Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $args[5], errno, $crate::kernel::scheduler::current::tid()),
+            }
         }
     };
     
@@ -105,6 +129,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         25  => fs::fcntl64(3),
         29  => fs::ioctl(3),
         34  => fs::mkdirat(3),
+        35  => fs::unlinkat(3),
         48  => fs::faccessat(3),
         56  => fs::openat(4),
         57  => fs::close(1),
@@ -117,6 +142,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         79  => fs::fstatat(4),
         80  => fs::newfstat(2),
         88  => fs::utimensat(4),
+        276 => fs::renameat2(5),
         
         // Task
         17  => task::getcwd(2),
@@ -136,8 +162,6 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         222 => mm::mmap(6),
         226 => mm::mprotect(3),
         
-        135 => signal::rt_sigprocmask(3),
-
         99  => misc::set_robust_list(0),
         160 => misc::newuname(1),
         293 => misc::rseq(0),
@@ -149,6 +173,9 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         // IPC
         59  => ipc::pipe(2),
+        134 => ipc::rt_sigaction(4),
+        135 => ipc::rt_sigprocmask(3),
+        139 => ipc::rt_sig_return(0),
 
         // Time
         115 => time::clock_nanosleep(4),

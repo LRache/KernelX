@@ -3,7 +3,7 @@
 set -e
 
 ISA=${1:-riscv64}
-IMG_SIZE=${IMG_SIZE:-16}
+IMG_SIZE=${IMG_SIZE:-256}
 BUILD_DIR=${BUILD_DIR:-build}
 
 TESTS=(

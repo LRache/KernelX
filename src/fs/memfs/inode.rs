@@ -29,7 +29,7 @@ impl Inode for MemoryFileSystemInode {
         "memfs"
     }
 
-    fn readat(&mut self, buf: &mut [u8], offset: usize) -> Result<usize, Errno>  {
+    fn readat(&self, buf: &mut [u8], offset: usize) -> Result<usize, Errno>  {
         if self.size <= offset {
             return Ok(0);
         }
@@ -40,11 +40,11 @@ impl Inode for MemoryFileSystemInode {
         Ok(len)
     }
 
-    fn writeat(&mut self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
         Ok(0)
     }
 
-    fn lookup(&mut self, name: &str) -> SysResult<u32> {
+    fn lookup(&self, name: &str) -> SysResult<u32> {
         let superblock = self.superblock.upgrade().ok_or(Errno::ENOENT)?;
         superblock.lookup(self.ino, name).ok_or(Errno::ENOENT)
     }

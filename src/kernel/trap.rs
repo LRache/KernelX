@@ -4,6 +4,10 @@ use crate::kernel::syscall;
 use crate::kernel::event::timer;
 use crate::kwarn;
 
+pub fn trap_return() {
+    // current::tcb().handle_signal();
+}
+
 pub fn timer_interrupt() {
     timer::interrupt();
 

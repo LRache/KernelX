@@ -5,7 +5,7 @@ use crate::kernel::scheduler::current;
 use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
 use crate::kernel::task::TaskState;
-use crate::{copy_from_user, copy_slice_to_user, copy_to_user_ref, kinfo};
+use crate::{copy_from_user, copy_to_user_ref};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
