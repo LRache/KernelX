@@ -10,12 +10,17 @@ use crate::kernel::scheduler::{self, current};
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::tid;
 use crate::kernel::event::Event;
-use crate::kernel::ipc::SignalHandler;
+use crate::kernel::ipc::{SignalActionTable, PendingSignalQueue};
 use crate::fs::file::File;
 use crate::fs::vfs;
 use crate::fs::Dentry;
 
 use super::tcb::{TCB, TaskState};
+
+struct Signal {
+    actions: Mutex<SignalActionTable>,
+    pending: Mutex<PendingSignalQueue>,
+}
 
 pub struct PCB {
     pid: Tid,
@@ -23,11 +28,11 @@ pub struct PCB {
     is_zombie: Mutex<bool>,
     exit_code: Mutex<u8>,
     
-    tasks: Mutex<Vec<Arc<TCB>>>,
+    pub tasks: Mutex<Vec<Arc<TCB>>>,
     cwd: Mutex<Arc<Dentry>>,
     waiting_task: Mutex<Vec<Arc<TCB>>>,
 
-    signal_handler: Mutex<SignalHandler>,
+    signal: Signal,
 
     children: Mutex<Vec<Arc<PCB>>>,
 }
@@ -44,7 +49,10 @@ impl PCB {
             cwd: Mutex::new(cwd.clone()),
             waiting_task: Mutex::new(Vec::new()),
 
-            signal_handler: Mutex::new(SignalHandler::new()),
+            signal: Signal {
+                actions: Mutex::new(SignalActionTable::new()),
+                pending: Mutex::new(PendingSignalQueue::new()),
+            },
 
             children: Mutex::new(Vec::new()),
         })
@@ -74,7 +82,10 @@ impl PCB {
             cwd: Mutex::new(cwd.clone()),
             waiting_task: Mutex::new(Vec::new()),
 
-            signal_handler: Mutex::new(SignalHandler::new()),
+            signal: Signal {
+                actions: Mutex::new(SignalActionTable::new()),
+                pending: Mutex::new(PendingSignalQueue::new()),
+            },
 
             children: Mutex::new(Vec::new()),
         });
@@ -166,7 +177,9 @@ impl PCB {
         
         if let Some(parent) = self.parent.lock().as_ref() {
             parent.waiting_task.lock().drain(..).for_each(|t| {
-                t.wakeup_by_event(self.pid as usize, Event::Process);
+                // t.wakeup_by_event(self.pid as usize, Event::Process);
+                // t.wakeup_by_event(Event::Process, self.pid as usize);
+                t.wakeup_by_event(Event::Process { child: self.pid });
             });
         }
         
@@ -196,19 +209,20 @@ impl PCB {
             if blocked {
                 loop {
                     self.waiting_task.lock().push(current::tcb().clone());
+                    
                     current::tcb().block("wait_child");
                     current::schedule();
                     
                     if current::tcb().with_state_mut(|state| {
-                        match state.event.as_ref() {
-                            None => return false,
-                            Some(event) => {
-                                if event.event == Event::Process && event.waker == pid as usize {
+                        match state.event {
+                            Some(Event::Process { child }) => {
+                                if child == pid {
                                     state.event = None;
                                 } else {
                                     return false;
                                 }
-                            }
+                            },
+                            _ => return false,
                         };
                         state.event = None;
                         return true;
@@ -260,27 +274,22 @@ impl PCB {
             let mut pid = 0;
             let mut exit_code = 0;
             if current::tcb().with_state_mut(|state| {
-                match state.event.as_ref() {
-                    None => return false,
-                    Some(event) => {
-                        if event.event == Event::Process {
-                            let mut children = self.children.lock();
-                            
-                            let child = children.iter().find(|c| c.get_pid() == event.waker as i32);
-                            match child {
-                                Some(c) => {
-                                    pid = c.get_pid();
-                                    exit_code = c.get_exit_code();
-                                },
-                                None => {
-                                    return false;
-                                }
-                            }
-                            children.retain(|c| c.get_pid() != event.waker as i32);
-                        } else {
-                            return false;
+                match state.event {
+                    Some(Event::Process { child }) => {
+                        pid = child;
+                        let mut children = self.children.lock();
+
+                        match children.iter().find(|c| c.get_pid() == child){
+                            Some(child_pcb) => {
+                                pid = child_pcb.get_pid();
+                                exit_code = child_pcb.get_exit_code();
+                            },
+                            None => unreachable!(), // The child must exist
                         }
-                    }
+
+                        children.retain(|c| c.get_pid() != pid);
+                    },
+                    _ => return false, // Wakeup by other event
                 };
                 state.event = None;
                 return true;
@@ -290,8 +299,12 @@ impl PCB {
         }
     }
 
-    pub fn signal_handler(&self) -> &Mutex<SignalHandler> {
-        &self.signal_handler
+    pub fn signal_actions(&self) -> &Mutex<SignalActionTable> {
+        &self.signal.actions
+    }
+
+    pub fn pending_signals(&self) -> &Mutex<PendingSignalQueue> {
+        &self.signal.pending
     }
 }
 

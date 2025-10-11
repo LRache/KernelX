@@ -2,13 +2,13 @@ use alloc::collections::VecDeque;
 use spin::Mutex;
 
 use crate::kernel::errno::SysResult;
-use crate::kernel::event::{Event, PollEventSet, WaitQueue};
+use crate::kernel::event::{Event, PollEvent, PollEventSet, WaitQueue};
 use crate::kernel::scheduler::current;
 
 pub struct PipeInner {
     buffer: Mutex<VecDeque<u8>>,
-    read_waiter: Mutex<WaitQueue>,
-    write_waiter: Mutex<WaitQueue>,
+    read_waiter: Mutex<WaitQueue<Event>>,
+    write_waiter: Mutex<WaitQueue<Event>>,
     capacity: Mutex<usize>,
     writer_count: Mutex<u32>,
 }
@@ -29,7 +29,6 @@ impl PipeInner {
             return Ok(0);
         }
         
-        // kinfo!("Pipe read: buffer size {}", self.buffer.lock().len());
         let mut total_read = 0;
 
         {
@@ -44,7 +43,7 @@ impl PipeInner {
                         return Ok(0); // No writers left, return 0 to indicate EOF
                     } else {
                         drop(fifo);
-                        self.read_waiter.lock().wait_current(None);
+                        self.read_waiter.lock().wait_current(Event::PipeReadReady);
                         current::schedule();
                     }
                 }
@@ -64,8 +63,8 @@ impl PipeInner {
                     total_read += 1;
                 }
             }
-            
-            self.write_waiter.lock().wake_all(Event::WriteReady); // Wake up writers waiting for space
+
+            self.write_waiter.lock().wake_all(|e| e); // Wake up writers waiting for space
         }
 
         Ok(total_read)
@@ -83,7 +82,7 @@ impl PipeInner {
                 drop(fifo);
                 
                 // If buffer is full, wait for space
-                self.write_waiter.lock().wait_current(None);
+                self.write_waiter.lock().wait_current(Event::PipeWriteReady);
                 current::schedule();
             } else {
                 let to_write = core::cmp::min(buf.len() - total_written, *capacity - fifo.len());
@@ -91,14 +90,14 @@ impl PipeInner {
                     fifo.push_back(buf[total_written + i]);
                 }
                 total_written += to_write;
-                self.read_waiter.lock().wake_all(Event::ReadReady); // Wake up readers waiting for data
+                self.read_waiter.lock().wake_all(|e| e); // Wake up readers waiting for data
             }
         }
         
         Ok(total_written)
     }
 
-    pub fn poll(&self, waker: usize, event: PollEventSet, writable: bool) -> SysResult<Option<Event>> {
+    pub fn poll(&self, waker: usize, event: PollEventSet, writable: bool) -> SysResult<Option<PollEvent>> {
         if event.contains(PollEventSet::POLLIN) && writable {
             return Ok(None);
         }
@@ -110,20 +109,20 @@ impl PipeInner {
         let buffer = self.buffer.lock();
         if event.contains(PollEventSet::POLLIN) {
             if buffer.len() > 0 && !writable {
-                return Ok(Some(Event::ReadReady));
+                return Ok(Some(PollEvent::ReadReady));
             } else {
                 if *self.writer_count.lock() == 0 {
-                    return Ok(Some(Event::HangUp)); // No writers left, indicate EOF
+                    return Ok(Some(PollEvent::HangUp)); // No writers left, indicate EOF
                 }
-                self.read_waiter.lock().wait(current::tcb().clone(), Some(waker));
+                self.read_waiter.lock().wait(current::tcb().clone(), Event::Poll{event: PollEvent::ReadReady, waker});
             }
         }
 
         if event.contains(PollEventSet::POLLOUT) {
             if buffer.len() < *self.capacity.lock() {
-                return Ok(Some(Event::WriteReady));
+                return Ok(Some(PollEvent::WriteReady));
             } else {
-                self.write_waiter.lock().wait(current::tcb().clone(), Some(waker));
+                self.write_waiter.lock().wait(current::tcb().clone(), Event::Poll{event: PollEvent::WriteReady, waker});
             }
         }
 
@@ -139,7 +138,12 @@ impl PipeInner {
         assert!(*writer_count > 0);
         *writer_count -= 1;
         if *writer_count == 0 {
-            self.read_waiter.lock().wake_all(Event::HangUp); // Wake up readers to notify them of EOF
+            self.read_waiter.lock().wake_all(|e| {
+                match e {
+                    Event::Poll{ event: PollEvent::ReadReady, waker } => {Event::Poll{event: PollEvent::HangUp, waker} },
+                    _ => e
+                }
+            }); // Wake up readers to notify them of EOF
         }
     }
 }  

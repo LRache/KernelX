@@ -24,4 +24,18 @@ pub enum SignalNum {
     SIGTTOU = 22,
 }
 
-pub const SIGMAX: u32 = core::mem::size_of::<usize>() as u32 * 8;
+impl SignalNum {
+    pub fn is_unignorable(num: u32) -> bool {
+        num == SignalNum::SIGKILL as u32 || num == SignalNum::SIGSTOP as u32
+    }
+
+    pub fn to_mask(num: u32) -> usize {
+        1 << (num - 1)
+    }
+
+    pub fn is_masked(num: u32, mask: usize) -> bool {
+        (mask & Self::to_mask(num)) != 0
+    }
+}
+
+pub type SignalSet = usize;

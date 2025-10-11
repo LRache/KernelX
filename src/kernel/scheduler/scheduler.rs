@@ -45,8 +45,6 @@ pub fn run_tasks() -> ! {
         if let Some(mut tcb) = fetch_next_task() {
             tcb.run();
 
-            // kinfo!("Switching to task with TID {}", tcb.get_tid());
-
             let mut processor = Processor::new(&mut tcb);
             current::set(&mut processor);
             

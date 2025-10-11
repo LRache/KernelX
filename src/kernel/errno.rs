@@ -5,6 +5,8 @@ use num_enum::TryFromPrimitive;
 pub enum Errno {
     EPERM   =  1,  // Operation not permitted
     ENOENT  =  2,  // No such file or directory
+    ESRCH   =  3,  // No such process
+    EINTR   =  4,  // Interrupted system call
     EIO     =  5,  // Input/output error
     ENOEXEC =  8,  // Exec format error
     EBADF   =  9,  // Bad file descriptor

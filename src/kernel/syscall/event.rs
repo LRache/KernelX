@@ -1,10 +1,9 @@
 use alloc::vec;
 
-use crate::kernel::event::{self, Event, PollEventSet};
+use crate::kernel::event::{Event, PollEvent, PollEventSet};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
-use crate::kernel::task::TaskState;
 use crate::{copy_from_user, copy_to_user_ref};
 
 #[repr(C)]
@@ -51,43 +50,39 @@ fn poll(pollfds: &mut [Pollfd], _timeout: Option<u64>) -> SysResult<usize> {
         let poll_set = PollEventSet::from_bits_truncate(pfd.events);
         if let Some(event) = file.poll(i, poll_set)? {
             pfd.revents = match event {
-                event::Event::ReadReady => PollEventSet::POLLIN.bits(),
-                event::Event::WriteReady => PollEventSet::POLLOUT.bits(),
-                event::Event::Priority => PollEventSet::POLLPRI.bits(),
-                event::Event::HangUp => PollEventSet::POLLHUP.bits(),
+                PollEvent::ReadReady  => PollEventSet::POLLIN.bits(),
+                PollEvent::WriteReady => PollEventSet::POLLOUT.bits(),
+                PollEvent::Priority   => PollEventSet::POLLPRI.bits(),
+                PollEvent::HangUp     => PollEventSet::POLLHUP.bits(),
                 _ => unreachable!(),
             };
             count += 1;
         }
     }
 
-    // kinfo!("Poll: {} fds ready", count);
-
     if count != 0 {
         return Ok(count as usize);
     }
     
     // start polling
-    current::tcb().with_state_mut(|state| {
-        state.state = TaskState::Blocked;
-    });
-
+    current::tcb().block("poll");
     current::schedule();
 
-    let event = current::tcb().take_event().unwrap();
-    if event.event == Event::Timeout {
-        return Ok(0);
-    }
+    let event = current::tcb().state().lock().event.unwrap();
 
-    let waker = event.waker;
+    let (poll_event, waker) = match event.event {
+        Event::Poll(event, waker) => (event, waker),
+        Event::Timeout => return Ok(0), // Timeout occurred
+        _ => return Err(Errno::EINTR),  // Interrupted by other events
+    };
+
     assert!(waker < pollfds.len());
     let pfd = &mut pollfds[waker];
-    pfd.revents = match event.event {
-        Event::ReadReady => PollEventSet::POLLIN.bits(),
-        Event::WriteReady => PollEventSet::POLLOUT.bits(),
-        Event::Priority => PollEventSet::POLLPRI.bits(),
-        Event::HangUp => PollEventSet::POLLHUP.bits(),
-        _ => unreachable!(),
+    pfd.revents = match poll_event {
+        PollEvent::ReadReady  => PollEventSet::POLLIN.bits(),
+        PollEvent::WriteReady => PollEventSet::POLLOUT.bits(),
+        PollEvent::Priority   => PollEventSet::POLLPRI.bits(),
+        PollEvent::HangUp     => PollEventSet::POLLHUP.bits(),
     };
 
     Ok(1)

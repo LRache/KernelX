@@ -11,7 +11,7 @@ use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::mm::{AddrSpace, elf};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::event::Event;
-use crate::kernel::ipc::SignalSet;
+use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
 use crate::fs::file::File;
 use crate::fs::vfs;
@@ -28,14 +28,10 @@ pub enum TaskState {
     Exited,
 }
 
-pub struct TaskEvent {
-    pub waker: usize,
-    pub event: Event,
-}
-
+#[derive(Debug, Clone, Copy)]
 pub struct TaskStateSet {
     pub state: TaskState,
-    pub event: Option<TaskEvent>,
+    pub event: Option<Event>,
     pub exit_code: u8,
 }
 
@@ -63,7 +59,8 @@ pub struct TCB {
     addrspace: Arc<AddrSpace>,
     fdtable: Arc<Mutex<FDTable>>,
 
-    signal_mask: Mutex<SignalSet>,
+    pub signal_mask: Mutex<SignalSet>,
+    pub pending_signal: Mutex<Option<PendingSignal>>,
 
     state: Mutex<TaskStateSet>,
 }
@@ -104,6 +101,7 @@ impl TCB {
             fdtable: fdtable,
 
             signal_mask: Mutex::new(0),
+            pending_signal: Mutex::new(None),
             
             state: Mutex::new(TaskStateSet::new()),
         });
@@ -321,13 +319,14 @@ impl TCB {
         scheduler::push_task(self.clone());
     }
 
-    pub fn wakeup_by_event(self: &Arc<Self>, waker: usize, event: Event) {
+    pub fn wakeup_by_event(self: &Arc<Self>, event: Event) {
         let mut state = self.state.lock();
         if state.state != TaskState::Blocked {
             return;
         }
         state.state = TaskState::Ready;
-        state.event = Some(TaskEvent { waker, event });
+        state.event = Some(event);
+        
         scheduler::push_task(self.clone());
     }
 
@@ -337,9 +336,8 @@ impl TCB {
         state.state = TaskState::Running;
     }
 
-    pub fn take_event(&self) -> Option<TaskEvent> {
-        let mut state = self.state.lock();
-        state.event.take()
+    pub fn state(&self) -> &Mutex<TaskStateSet> {
+        &self.state
     }
 
     pub fn with_state_mut<F, R>(&self, f: F) -> R

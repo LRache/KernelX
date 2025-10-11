@@ -2,12 +2,12 @@ use alloc::sync::Arc;
 use alloc::string::String;
 use spin::Mutex;
 
+use crate::kernel::ipc::{PendingSignalQueue, SignalActionTable};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::task::fdtable::FDTable;
 use crate::kernel::scheduler::Processor;
-use crate::kernel::ipc::SignalHandler;
 use crate::kernel::errno::Errno;
 use crate::arch;
 use crate::fs::Dentry;
@@ -116,9 +116,14 @@ pub fn pcb() -> &'static Arc<PCB> {
     &processor.tcb.get_parent()
 }
 
-pub fn signal_handler() -> &'static Mutex<SignalHandler> {
+pub fn signal_actions() -> &'static Mutex<SignalActionTable> {
     let pcb = pcb();
-    pcb.signal_handler()
+    pcb.signal_actions()
+}
+
+pub fn pending_signals() -> &'static Mutex<PendingSignalQueue> {
+    let pcb = pcb();
+    pcb.pending_signals()
 }
 
 pub fn addrspace() -> &'static Arc<AddrSpace> {

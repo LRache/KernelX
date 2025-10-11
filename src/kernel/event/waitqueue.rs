@@ -8,43 +8,40 @@ use crate::kernel::task::TCB;
 
 use super::Event;
 
-struct WaitQueueItem {
+struct WaitQueueItem<T: Copy> {
     tcb: Arc<TCB>,
-    waker: Option<usize>,
+    arg: T,
 }
 
-pub struct WaitQueue {
-    waiters: VecDeque<WaitQueueItem>,
+pub struct WaitQueue<T: Copy> {
+    waiters: VecDeque<WaitQueueItem<T>>,
 }
 
-impl WaitQueueItem {
-    fn new(tcb: Arc<TCB>, waker: Option<usize>) -> Self {
-        Self { tcb, waker: waker }
+impl<T: Copy> WaitQueueItem<T> {
+    fn new(tcb: Arc<TCB>, arg: T) -> Self {
+        Self { tcb, arg }
     }
 
     fn wakeup(&self, e: Event) {
-        match self.waker {
-            None => self.tcb.wakeup(),
-            Some(waker) => self.tcb.wakeup_by_event(waker, e),
-        }
+        self.tcb.wakeup_by_event(e);
     }
 }
 
-impl WaitQueue {
+impl<T: Copy> WaitQueue<T> {
     pub fn new() -> Self {
         Self {
             waiters: VecDeque::new(),
         }
     }
 
-    pub fn wait(&mut self, tcb: Arc<TCB>, waker: Option<usize>) {
-        self.waiters.push_back(WaitQueueItem::new(tcb, waker));
+    pub fn wait(&mut self, tcb: Arc<TCB>, arg: T) {
+        self.waiters.push_back(WaitQueueItem::new(tcb, arg));
     }
 
-    pub fn wait_current(&mut self, waker: Option<usize>) {
+    pub fn wait_current(&mut self, arg: T) {
         let current = current::tcb();
         current.block("waitqueue");
-        self.wait(current.clone(), waker);
+        self.wait(current.clone(), arg);
     }
 
     pub fn wake_one(&mut self, e: Event) -> Option<Arc<TCB>> {
@@ -58,8 +55,8 @@ impl WaitQueue {
         }
     }
 
-    pub fn wake_all(&mut self, e: Event) -> Vec<Arc<TCB>> {
-        self.waiters.iter().for_each(|t| t.wakeup(e));
+    pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) -> Vec<Arc<TCB>> {
+        self.waiters.iter().for_each(|i| i.wakeup(map_arg_to_event(i.arg)));
         self.waiters.drain(..).map(|item| item.tcb).collect()
     }
 }

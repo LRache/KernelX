@@ -10,3 +10,11 @@ bitflags! {
         const POLLNVAL = 0x0020; // Invalid request: fd not open.
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollEvent {
+    ReadReady,
+    WriteReady,
+    Priority,
+    HangUp,
+}

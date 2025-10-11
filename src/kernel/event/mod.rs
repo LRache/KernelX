@@ -1,8 +1,8 @@
 mod waitqueue;
-mod def;
 mod poll;
+mod event;
 pub mod timer;
 
 pub use waitqueue::WaitQueue;
-pub use def::Event;
-pub use poll::PollEventSet;
+pub use poll::*;
+pub use event::*;

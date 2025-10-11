@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::kernel::event::{Event, PollEventSet};
+use crate::kernel::event::{PollEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::{Dentry, Inode};
 use crate::fs::file::{FileOps, FileStat, SeekWhence, DirResult};
@@ -83,7 +83,7 @@ impl FileOps for Pipe {
         self.meta.as_ref().map(|m| &m.dentry)
     }
 
-    fn poll(&self, waker: usize, event: PollEventSet) -> SysResult<Option<Event>> {
+    fn poll(&self, waker: usize, event: PollEventSet) -> SysResult<Option<PollEvent>> {
         self.inner.poll(waker, event, self.writable)
     }
 

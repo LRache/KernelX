@@ -31,10 +31,7 @@ impl Timer {
         while let Some(Reverse(event)) = wait_queue.peek() {
             if event.time <= current_time {
                 let event = wait_queue.pop().unwrap().0;
-                match event.waker {
-                    Some(waker) => event.tcb.wakeup_by_event(waker, Event::Timeout),
-                    None => event.tcb.wakeup(),
-                }
+                event.tcb.wakeup_by_event(Event::Timeout);
             } else {
                 break;
             }

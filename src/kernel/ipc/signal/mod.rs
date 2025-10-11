@@ -1,7 +1,11 @@
-mod signalset;
+mod action;
+mod pending;
 mod signalnum;
-mod signalhandler;
+mod handler;
 
-pub use signalset::*;
+pub mod send;
+
+pub use action::*;
 pub use signalnum::*;
-pub use signalhandler::*;
+pub use handler::*;
+pub use pending::*;

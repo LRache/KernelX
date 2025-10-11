@@ -1,11 +1,12 @@
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
+use crate::kernel::ipc::handle_signals;
 use crate::kernel::syscall;
 use crate::kernel::event::timer;
 use crate::kwarn;
 
 pub fn trap_return() {
-    // current::tcb().handle_signal();
+    handle_signals();
 }
 
 pub fn timer_interrupt() {

@@ -5,7 +5,9 @@ use crate::kernel::config;
 use crate::kernel::ipc::Pipe;
 use crate::kernel::scheduler::current;
 use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::errno::Errno;
 use crate::kernel::api;
+use crate::kernel::task::manager;
 use crate::{copy_from_user, copy_to_user};
 
 use super::SyscallRet;
@@ -40,6 +42,18 @@ pub fn pipe(uptr_pipefd: usize, flags: usize) -> SyscallRet {
     Ok(0)
 }
 
+pub fn kill(pid: usize, signum: usize) -> SyscallRet {
+    let pid = pid as i32;
+    let signum = signum as u32;
+    
+    if pid > 0 {
+        let pcb = manager::get(pid).ok_or(Errno::ESRCH)?;
+        pcb.send_signal(signum, current::tid(), None)?;
+    }
+
+    Ok(0)
+}
+
 pub fn rt_sigprocmask(_how: usize, _set: usize, _oldset: usize) -> SyscallRet {
     Ok(0)
 }
@@ -49,9 +63,9 @@ pub fn rt_sigaction(signum: usize, uptr_act: usize, uptr_oldact: usize, sigsetsi
 
     let signum = signum as u32;
 
-    let mut signal_handler = current::signal_handler().lock();
+    let mut signal_actions = current::signal_actions().lock();
     if uptr_oldact != 0 {
-        let old_action = signal_handler.get_sigaction(signum)?;
+        let old_action = signal_actions.get(signum)?;
         let old_action: api::Sigaction = old_action.into();
         copy_to_user!(uptr_oldact, old_action)?;
     }
@@ -59,7 +73,7 @@ pub fn rt_sigaction(signum: usize, uptr_act: usize, uptr_oldact: usize, sigsetsi
     if uptr_act != 0 {
         let new_action = api::Sigaction::empty();
         copy_from_user!(uptr_act, new_action)?;
-        signal_handler.set_sigaction(signum, &new_action.into())?;
+        signal_actions.set(signum, &new_action.into())?;
     }
 
     Ok(0)

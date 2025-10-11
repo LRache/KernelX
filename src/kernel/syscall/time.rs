@@ -1,7 +1,8 @@
 use crate::kernel::scheduler::current;
-use crate::kernel::event::timer;
-use crate::{copy_from_user, copy_to_user, platform};
-use crate::kernel::errno::SysResult;
+use crate::kernel::event::{timer, Event};
+use crate::kernel::errno::{SysResult, Errno};
+use crate::platform;
+use crate::{copy_from_user, copy_to_user};
 
 #[repr(C)]
 struct Timeval {
@@ -44,5 +45,14 @@ pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: usize, _uptr_re
 
     current::schedule();
 
-    Ok(0)
+    let state = current::tcb().state().lock();
+    match state.event {
+        Some(evnet) => {
+            match evnet.event {
+                Event::Timeout => Ok(0),
+                _ => Err(Errno::EINTR),
+            }
+        },
+        None => unreachable!(),
+    }
 }
