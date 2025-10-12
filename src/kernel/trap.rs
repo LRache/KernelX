@@ -1,3 +1,4 @@
+use crate::arch::UserContextTrait;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::ipc::handle_signals;
@@ -26,6 +27,8 @@ pub fn syscall(num: usize, args: &syscall::Args) -> usize {
     };
 
     current::schedule();
+
+    current::tcb().user_context().skip_syscall_instruction();
 
     ret
 }

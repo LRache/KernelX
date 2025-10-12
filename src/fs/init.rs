@@ -27,8 +27,6 @@ pub fn init() {
     let _ = vfs::load_dentry("/").unwrap().create("dev", Mode::S_IFDIR);
     vfs::mount("/dev", "devfs", None).unwrap();
 
-    kinfo!("{:?}", vfs::load_dentry("/dev").unwrap().get_mount_to());
-
     // Try to access /dev/null and /dev/zero to ensure they are working
     vfs::load_dentry("/dev/null").unwrap();
     vfs::load_dentry("/dev/zero").unwrap();

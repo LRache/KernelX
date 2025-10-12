@@ -121,11 +121,6 @@ pub fn signal_actions() -> &'static Mutex<SignalActionTable> {
     pcb.signal_actions()
 }
 
-pub fn pending_signals() -> &'static Mutex<PendingSignalQueue> {
-    let pcb = pcb();
-    pcb.pending_signals()
-}
-
 pub fn addrspace() -> &'static Arc<AddrSpace> {
     let tcb = tcb();
     tcb.get_addrspace()

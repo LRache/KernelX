@@ -52,7 +52,6 @@ pub struct TCB {
     
     user_context_ptr: *mut UserContext,
     user_context_uaddr: usize,
-    user_entry: UnsafeCell<usize>,
     kernel_context: KernelContext,
     _kernel_stack: KernelStack,
 
@@ -71,7 +70,6 @@ impl TCB {
         parent: &Arc<PCB>, 
         
         mut user_context: UserContext,
-        user_entry: usize,
         
         addrspace: Arc<AddrSpace>,
         fdtable: Arc<Mutex<FDTable>>,
@@ -93,7 +91,6 @@ impl TCB {
             
             user_context_ptr,
             user_context_uaddr,
-            user_entry: UnsafeCell::new(user_entry),
             kernel_context: KernelContext::new(&kernel_stack),
             _kernel_stack: kernel_stack,
 
@@ -143,12 +140,12 @@ impl TCB {
 
         let mut user_context = UserContext::new();
         user_context.set_user_stack_top(userstack_top);
+        user_context.set_user_entry(user_entry);
         
         let tcb = Self::new(
             tid, 
             parent,
             user_context, 
-            user_entry, 
             Arc::new(addrspace),
             Arc::new(Mutex::new(fdtable))
         );
@@ -182,11 +179,12 @@ impl TCB {
             new_addrspace = Arc::new(addrspace);
         }
 
+        new_user_context.skip_syscall_instruction();
+
         let new_tcb = Self::new(
             tid,
             parent,
             new_user_context,
-            self.get_user_entry(),
             new_addrspace,
             Arc::new(Mutex::new(self.fdtable.lock().fork())),
         );
@@ -221,6 +219,7 @@ impl TCB {
 
         let mut new_user_context = UserContext::new();
         new_user_context.set_user_stack_top(usetstack_top);
+        new_user_context.set_user_entry(user_entry);
 
         self.fdtable().lock().cloexec();
 
@@ -228,7 +227,6 @@ impl TCB {
             self.tid,
             &self.parent,
             new_user_context,
-            user_entry,
             Arc::new(addrspace),
             self.fdtable().clone(),
         );
@@ -273,6 +271,10 @@ impl TCB {
         f(user_context)
     }
 
+    pub fn user_context(&self) -> &mut UserContext {
+        unsafe { self.user_context_ptr.as_mut().unwrap() }
+    }
+
     pub fn get_addrspace(&self) -> &Arc<AddrSpace> {
         &self.addrspace
     }
@@ -283,14 +285,6 @@ impl TCB {
 
     pub fn get_signal_mask(&self) -> SignalSet {
         *self.signal_mask.lock()
-    }
-
-    pub fn get_user_entry(&self) -> usize {
-        unsafe { *self.user_entry.get() }
-    }
-
-    pub fn set_user_entry(&self, entry: usize) {
-        unsafe { self.user_entry.get().write(entry); }
     }
 
     pub fn set_tid_address(&self, addr: usize) {

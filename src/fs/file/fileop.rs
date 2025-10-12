@@ -4,6 +4,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::kernel::event::{Event, PollEvent, PollEventSet};
 use crate::kernel::errno::SysResult;
 use crate::fs::{Dentry, Inode};
+use crate::kernel::task::TCB;
 
 use super::{FileStat, DirResult};
 
@@ -31,6 +32,8 @@ pub trait FileOps: DowncastSync {
     fn poll(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<PollEvent>> {
         Ok(None)
     }
+
+    fn poll_cancel(&self) {}
 
     fn type_name(&self) -> &'static str {
         "unknown"

@@ -1,3 +1,4 @@
+use crate::arch::UserContextTrait;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -16,8 +17,6 @@ unsafe extern "C" {
 
 fn handle_syscall() {
     let tcb = current::tcb();
-    
-    tcb.set_user_entry(tcb.get_user_entry() + 4); // skip ecall instruction
 
     tcb.with_user_context_mut(|user_context|{
         let syscall_args: syscall::Args = [
@@ -38,7 +37,7 @@ fn handle_syscall() {
 
 pub fn usertrap_handler() -> ! {
     stvec::write(asm_kerneltrap_entry as usize);
-    current::tcb().set_user_entry(sepc::read());
+    current::tcb().user_context().set_user_entry(sepc::read());
 
     ktrace!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}",
              scause::read(), sepc::read(), stval::read());
@@ -110,7 +109,7 @@ fn usertrap_return(user_context: *const UserContext) -> ! {
 pub fn return_to_user() -> ! {
     let tcb = current::tcb();
 
-    sepc::write(tcb.get_user_entry());
+    sepc::write(tcb.user_context().get_user_entry());
     stvec::write(TRAMPOLINE_BASE);
     sscratch::write(tcb.get_user_context_uaddr());
 
@@ -121,16 +120,13 @@ pub fn return_to_user() -> ! {
 
     let user_context_ptr = tcb.get_user_context_ptr();
 
-    ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.get_user_entry(), user_context_ptr as usize);
+    ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.user_context().get_user_entry(), user_context_ptr as usize);
 
     usertrap_return(user_context_ptr);
 }
 
 #[unsafe(no_mangle)]
 pub fn kerneltrap_handler() {
-    // kdebug!("Kerneltrap scause={:#x}, sepc={:#x}, stval={:#x}",
-    //          scause::read(), sepc::read(), stval::read());
-
     let sepc = sepc::read();
 
     match scause::cause() {

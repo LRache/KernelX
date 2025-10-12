@@ -1,5 +1,8 @@
 use alloc::vec;
+use alloc::vec::Vec;
+use alloc::sync::Arc;
 
+use crate::fs::file::FileOps;
 use crate::kernel::event::{Event, PollEvent, PollEventSet};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::SysResult;
@@ -30,35 +33,38 @@ fn poll(pollfds: &mut [Pollfd], _timeout: Option<u64>) -> SysResult<usize> {
     let mut fdtable = current::fdtable().lock();
 
     let mut count = 0u32;
-    for (i, pfd) in pollfds.iter_mut().enumerate() {
-        if pfd.fd < 0 {
-            count += 1;
-            continue;
-        }
+    let mut i = 0;
 
-        // kinfo!("Poll: fd={}, events={:x}", pfd.fd, pfd.events);
-            
-        let file = match fdtable.get(pfd.fd as usize) {
-            Ok(f) => f,
-            Err(_) => {
-                pfd.revents = PollEventSet::POLLNVAL.bits();
-                count += 1; 
-                continue;
+    let mut poll_files: Vec<(Arc<dyn FileOps>, &mut Pollfd)> = pollfds.iter_mut()
+        .filter_map(|pfd| {
+            if pfd.fd < 0 {
+                count += 1;
+                return None;
             }
-        };
-            
-        let poll_set = PollEventSet::from_bits_truncate(pfd.events);
-        if let Some(event) = file.poll(i, poll_set)? {
-            pfd.revents = match event {
-                PollEvent::ReadReady  => PollEventSet::POLLIN.bits(),
-                PollEvent::WriteReady => PollEventSet::POLLOUT.bits(),
-                PollEvent::Priority   => PollEventSet::POLLPRI.bits(),
-                PollEvent::HangUp     => PollEventSet::POLLHUP.bits(),
-                _ => unreachable!(),
+
+            let file = match fdtable.get(pfd.fd as usize) {
+                Ok(f) => f,
+                Err(_) => {
+                    count += 1; 
+                    return None;
+                }
             };
-            count += 1;
-        }
-    }
+
+            let poll_set = PollEventSet::from_bits_truncate(pfd.events);
+            if let Some(event) = file.poll(i, poll_set).unwrap() {
+                pfd.revents = match event {
+                    PollEvent::ReadReady  => PollEventSet::POLLIN.bits(),
+                    PollEvent::WriteReady => PollEventSet::POLLOUT.bits(),
+                    PollEvent::Priority   => PollEventSet::POLLPRI.bits(),
+                    PollEvent::HangUp     => PollEventSet::POLLHUP.bits(),
+                };
+                count += 1;
+            }
+
+            i += 1;
+            Some((file, pfd))
+        })
+        .collect();
 
     if count != 0 {
         return Ok(count as usize);
@@ -70,21 +76,29 @@ fn poll(pollfds: &mut [Pollfd], _timeout: Option<u64>) -> SysResult<usize> {
 
     let event = current::tcb().state().lock().event.unwrap();
 
-    let (poll_event, waker) = match event.event {
-        Event::Poll(event, waker) => (event, waker),
+    let (poll_event, waker) = match event {
+        Event::Poll{ event, waker} => (event, waker),
         Event::Timeout => return Ok(0), // Timeout occurred
-        _ => return Err(Errno::EINTR),  // Interrupted by other events
+        Event::Signal => return Err(Errno::EINTR),  // Interrupted by other events
+        _ => unreachable!("Invalid event type in poll: {:?}", event),
     };
 
-    assert!(waker < pollfds.len());
-    let pfd = &mut pollfds[waker];
-    pfd.revents = match poll_event {
+    assert!(waker < poll_files.len());
+
+    poll_files.iter_mut().enumerate().for_each(|(i, (file, pfd))| {
+        if i != waker {
+            file.poll_cancel();
+            pfd.revents = 0;
+        }
+    });
+
+    poll_files[waker].1.revents = match poll_event {
         PollEvent::ReadReady  => PollEventSet::POLLIN.bits(),
         PollEvent::WriteReady => PollEventSet::POLLOUT.bits(),
         PollEvent::Priority   => PollEventSet::POLLPRI.bits(),
         PollEvent::HangUp     => PollEventSet::POLLHUP.bits(),
     };
-
+    
     Ok(1)
 }
 

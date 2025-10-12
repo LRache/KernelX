@@ -2,6 +2,7 @@ use crate::arch::arch::UserContextTrait;
 use crate::arch::riscv::kernelpagetable::get_kernel_satp;
 use crate::arch::riscv::process::traphandle::{usertrap_handler, return_to_user};
 use crate::kernel::mm::AddrSpace;
+use crate::kernel::scheduler::current;
 use crate::kernel::task::KernelStack;
 
 #[repr(C)]
@@ -13,6 +14,7 @@ pub struct UserContext {
     /* 34 */ pub user_satp: usize,
     /* 35 */ pub kernel_satp: usize,
     /* 36 */ pub usertrap_handler: usize,
+    user_entry: usize, // User program entry point
 }
 
 impl UserContextTrait for UserContext {
@@ -26,6 +28,7 @@ impl UserContextTrait for UserContext {
             user_satp: 0,
             kernel_satp,
             usertrap_handler: usertrap_handler as usize,
+            user_entry: 0,
         }
     }
 
@@ -64,6 +67,18 @@ impl UserContextTrait for UserContext {
 
     fn restore_from_signal(&mut self, sigcontext: &crate::arch::SigContext) {
         self.gpr.copy_from_slice(&sigcontext.gregs);
+    }
+
+    fn get_user_entry(&self) -> usize {
+        self.user_entry
+    }
+    
+    fn set_user_entry(&mut self, entry: usize) {
+        self.user_entry = entry;
+    }
+
+    fn skip_syscall_instruction(&mut self) {
+        self.user_entry += 4; // Skip ecall instruction
     }
 }
 

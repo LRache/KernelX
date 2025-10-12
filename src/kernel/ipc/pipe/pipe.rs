@@ -87,6 +87,10 @@ impl FileOps for Pipe {
         self.inner.poll(waker, event, self.writable)
     }
 
+    fn poll_cancel(&self) {
+        self.inner.poll_cancel();
+    }
+
     fn type_name(&self) -> &'static str {
         "pipe"
     }

@@ -45,7 +45,9 @@ pub trait UserContextTrait: Clone {
     fn set_sigaction_restorer(&mut self, uptr_restorer: usize);
     fn restore_from_signal(&mut self, sigcontext: &SigContext);
 
-    fn jump_syscall_instruction(&mut self);
+    fn set_user_entry(&mut self, entry: usize);
+    fn get_user_entry(&self) -> usize;
+    fn skip_syscall_instruction(&mut self);
 }
 
 pub struct Arch;

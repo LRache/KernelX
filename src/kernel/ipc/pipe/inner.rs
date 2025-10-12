@@ -129,6 +129,11 @@ impl PipeInner {
         Ok(None)
     }
 
+    pub fn poll_cancel(&self) {
+        self.read_waiter.lock().remove(current::tcb());
+        self.write_waiter.lock().remove(current::tcb());
+    }
+
     pub fn increment_writer_count(&self) {
         *self.writer_count.lock() += 1;
     }

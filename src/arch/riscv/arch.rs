@@ -1,4 +1,4 @@
-use crate::arch::{Arch, ArchTrait};
+use crate::arch::{Arch, ArchTrait, UserContextTrait};
 use crate::kernel::scheduler::current;
 
 use super::kernel_switch;
@@ -28,7 +28,7 @@ impl ArchTrait for Arch {
     }
 
     fn get_user_pc() -> usize {
-        current::tcb().get_user_entry()
+        current::tcb().user_context().get_user_entry()
     }
 
     #[inline(always)]

@@ -47,10 +47,13 @@ pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: usize, _uptr_re
 
     let state = current::tcb().state().lock();
     match state.event {
-        Some(evnet) => {
-            match evnet.event {
+        Some(event) => {
+            match event {
                 Event::Timeout => Ok(0),
-                _ => Err(Errno::EINTR),
+                Event::Signal => Err(Errno::EINTR),
+                _ => {
+                    panic!("Invalid event type in clock_nanosleep: {:?}", event);
+                },
             }
         },
         None => unreachable!(),

@@ -1,4 +1,3 @@
-use core::usize;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
@@ -58,5 +57,11 @@ impl<T: Copy> WaitQueue<T> {
     pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) -> Vec<Arc<TCB>> {
         self.waiters.iter().for_each(|i| i.wakeup(map_arg_to_event(i.arg)));
         self.waiters.drain(..).map(|item| item.tcb).collect()
+    }
+
+    pub fn remove(&mut self, tcb: &Arc<TCB>) {
+        if let Some(pos) = self.waiters.iter().position(|item| Arc::ptr_eq(&item.tcb, tcb)) {
+            self.waiters.remove(pos);
+        }
     }
 }
