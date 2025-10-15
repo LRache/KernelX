@@ -36,9 +36,19 @@ config PLATFORM
 
 config ARCH
 	string
-	default "riscv"
+	default "riscv" if PLATFORM_QEMU_VIRT_RISCV64
+	default "riscv" if PLATFORM_STARFIVE_JH7110_RISCV64
 	help
 	  Target architecture for the kernel.
+	  Automatically selected based on the chosen platform.
+
+config ARCH_BITS
+	int
+	default 64 if PLATFORM_QEMU_VIRT_RISCV64
+	default 64 if PLATFORM_STARFIVE_JH7110_RISCV64
+	help
+	  Architecture bit width (32 or 64).
+	  Automatically selected based on the chosen platform.
 
 config CROSS_COMPILE
 	string "Cross-compiler prefix"

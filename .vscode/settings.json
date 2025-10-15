@@ -4,7 +4,13 @@
         "riscv64gc-unknown-none-elf",
     ],
     "rust-analyzer.cargo.features": [
-        "platform-qemu-virt-riscv64"
+        "platform-qemu-virt-riscv64",
+        "log-trace"
     ],
-    "cmake.sourceDirectory": "/home/rache/code/KernelX/c"
+    "rust-analyzer.server.extraEnv": {
+        "KERNELX_HOME": "${workspaceFolder}",
+        "ARCH": "riscv",
+        "ARCH_BITS": "64"
+    },
+    "cmake.sourceDirectory": "/home/rache/code/KernelX/clib/lib/lwext4/fs_test"
 }

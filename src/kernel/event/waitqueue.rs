@@ -22,7 +22,7 @@ impl<T: Copy> WaitQueueItem<T> {
     }
 
     fn wakeup(&self, e: Event) {
-        self.tcb.wakeup_by_event(e);
+        self.tcb.wakeup(e);
     }
 }
 

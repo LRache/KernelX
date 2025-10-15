@@ -12,6 +12,12 @@ init:
 kernel:
 	@ make -f build.mk kernel $(KERNEL_CONFIG)
 
+vdso:
+	@ make -f build.mk vdso $(KERNEL_CONFIG)
+
+clib:
+	@ make -f build.mk clib $(KERNEL_CONFIG)
+
 check:
 	@ make -f build.mk check $(KERNEL_CONFIG)
 
@@ -19,7 +25,7 @@ run: kernel
 	@ make -f scripts/qemu.mk qemu-run KERNEL=$(KERNEL)
 
 clean:
-	make -f build.mk clean
+	@ make -f build.mk clean
 
 qemu-dts:
 	@ make -f scripts/qemu.mk qemu-dts KERNEL=$(KERNEL)
@@ -38,4 +44,4 @@ objdump:
 count:
 	@ find src c/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" | xargs wc -l
 
-.PHONY: all init run gdb clean count check menuconfig objcopy objdump kernel
+.PHONY: all init run gdb clean count check menuconfig objcopy objdump kernel vdso clib

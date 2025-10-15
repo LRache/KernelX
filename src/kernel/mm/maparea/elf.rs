@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-
 use crate::kernel::mm::frame::PhysPageFrame;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
@@ -59,13 +58,14 @@ impl ELFArea {
         let area_offset = page_index * arch::PGSIZE;
         let file_offset = self.file_offset + area_offset;
         
-        let frame = PhysPageFrame::new_zeroed();
+        let frame = PhysPageFrame::alloc_zeroed();
         if area_offset < self.file_length {
-            let mut buffer = [0u8; arch::PGSIZE];
+            // let mut buffer = [0u8; arch::PGSIZE];
             // Read up to a page, but not beyond the file length for this segment.
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
-            self.file.read_at(&mut buffer[..length], file_offset).expect("Failed to read file");
-            frame.copy_from_slice(0, &buffer[..length]);
+            // self.file.read_at(&mut buffer[..length], file_offset).expect("Failed to read file");
+            // frame.copy_from_slice(0, &buffer[..length]);
+            self.file.read_at(&mut frame.slice()[..length], file_offset).expect("Failed to read file");
         }
 
         let page = frame.get_page();

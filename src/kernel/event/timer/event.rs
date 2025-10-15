@@ -1,18 +1,17 @@
 use alloc::sync::Arc;
  
-use crate::kernel::task::TCB;
+use crate::kernel::{event::Event, task::TCB};
 
 pub struct TimerEvent {
     pub time: u64,
     pub tcb: Arc<TCB>,
-    pub waker: Option<usize>,
+    pub event: Event,
 }
 
 impl PartialEq for TimerEvent {
     fn eq(&self, other: &Self) -> bool {
         self.time == other.time && Arc::ptr_eq(&self.tcb, &other.tcb)
     }
-    
 }
 
 impl Eq for TimerEvent {}

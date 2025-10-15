@@ -66,13 +66,14 @@ fn poll(pollfds: &mut [Pollfd], _timeout: Option<u64>) -> SysResult<usize> {
         })
         .collect();
 
+    drop(fdtable);
+
     if count != 0 {
         return Ok(count as usize);
     }
     
     // start polling
-    current::tcb().block("poll");
-    current::schedule();
+    current::block("poll");
 
     let event = current::tcb().state().lock().event.unwrap();
 

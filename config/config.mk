@@ -2,6 +2,9 @@
 CONFIG_FILE := config/.config
 -include $(CONFIG_FILE)
 
+ARCH = $(CONFIG_ARCH)
+ARCH_BITS = $(CONFIG_ARCH_BITS)
+
 COMPILE_MODE ?= $(CONFIG_COMPILE_MODE)
 COMPILE_MODE ?= debug
 
@@ -47,6 +50,7 @@ BIOS_FIRMWARE ?= ./lib/opensbi/build/platform/generic/firmware/fw_jump.bin
 KERNEL_CONFIG = \
 	PLATFORM=$(PLATFORM) \
 	ARCH=$(ARCH) \
+	ARCH_BITS=$(ARCH_BITS) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
 	INITPATH=$(INITPATH) \
 	INITCWD=$(INITCWD) \

@@ -1,7 +1,7 @@
 use crate::kernel::scheduler::current;
 use crate::kernel::event::{timer, Event};
 use crate::kernel::errno::{SysResult, Errno};
-use crate::platform;
+use crate::{kinfo, platform};
 use crate::{copy_from_user, copy_to_user};
 
 #[repr(C)]
@@ -41,21 +41,17 @@ pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: usize, _uptr_re
 
     let tcb = current::tcb().clone();
     tcb.block("timer nanosleep");
+    kinfo!("current::state={:?}", tcb.state().lock().state);
     timer::add_timer(tcb, sleep_time);
 
     current::schedule();
 
-    let state = current::tcb().state().lock();
-    match state.event {
-        Some(event) => {
-            match event {
-                Event::Timeout => Ok(0),
-                Event::Signal => Err(Errno::EINTR),
-                _ => {
-                    panic!("Invalid event type in clock_nanosleep: {:?}", event);
-                },
-            }
-        },
-        None => unreachable!(),
+    kinfo!("Wakeup");
+
+    let event = current::tcb().state().lock().event.unwrap();
+    match event {
+        Event::Timeout => Ok(0),
+        Event::Signal => Err(Errno::EINTR),
+        _ => unreachable!(),
     }
 }

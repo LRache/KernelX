@@ -21,9 +21,9 @@ impl Timer {
         }
     }
 
-    pub fn add_timer(&self, tcb: Arc<TCB>, time: u64, waker: Option<usize>) {
+    pub fn add_timer(&self, tcb: Arc<TCB>, time: u64, event: Event) {
         let time = platform::get_time_us() + time;
-        self.wait_queue.lock().push(Reverse(TimerEvent { time, tcb, waker }));
+        self.wait_queue.lock().push(Reverse(TimerEvent { time, tcb, event }));
     } 
 
     pub fn wakeup_expired(&self, current_time: u64) {
@@ -31,7 +31,7 @@ impl Timer {
         while let Some(Reverse(event)) = wait_queue.peek() {
             if event.time <= current_time {
                 let event = wait_queue.pop().unwrap().0;
-                event.tcb.wakeup_by_event(Event::Timeout);
+                event.tcb.wakeup(Event::Timeout);
             } else {
                 break;
             }
@@ -47,7 +47,7 @@ pub fn init() {
 }
 
 pub fn add_timer(tcb: Arc<TCB>, time: u64) {
-    TIMER.add_timer(tcb, time, None);
+    TIMER.add_timer(tcb, time, Event::Timeout);
 }
 
 pub fn interrupt() {

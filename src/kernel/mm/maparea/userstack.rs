@@ -76,7 +76,7 @@ impl UserStack {
         
         assert!(self.frames[page_index].is_unallocated(), "Page at index {} is already allocated", page_index);
         
-        let new_frame = PhysPageFrame::new();
+        let new_frame = PhysPageFrame::alloc();
         pagetable.mmap(
             config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE,
             new_frame.get_page(),

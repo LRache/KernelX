@@ -37,7 +37,7 @@ impl AnonymousArea {
         let area_offset = page_index * arch::PGSIZE;
         
         // Create a new zeroed page for anonymous memory
-        let frame = PhysPageFrame::new_zeroed();
+        let frame = PhysPageFrame::alloc_zeroed();
         let page = frame.get_page();
 
         pagetable.write().mmap(self.ubase + area_offset, page, self.perm);

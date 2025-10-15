@@ -1,3 +1,3 @@
-mod def;
+pub mod def;
 mod loaddyn;
 pub mod loader;

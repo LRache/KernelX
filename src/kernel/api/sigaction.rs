@@ -1,24 +1,24 @@
 use crate::kernel::api;
 use crate::kernel::ipc::SignalAction;
+use crate::kernel::ipc::SignalActionFlags;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Sigaction {
-    pub sa_handler:   usize,
-    pub sa_sigaction: usize,
+    pub sa_handler: usize,
+    pub sa_flags: usize,
+    // pub sa_restorer: usize,
     pub sa_mask: api::sigset_t,
-    pub sa_flags: i32,
-    pub sa_restorer: usize,
 }
 
 impl Sigaction {
     pub fn empty() -> Self {
         Sigaction {
             sa_handler: 0,
-            sa_sigaction: 0,
+            // sa_sigaction: 0,
             sa_mask: 0,
             sa_flags: 0,
-            sa_restorer: 0,
+            // sa_restorer: 0,
         }
     }
 }
@@ -27,8 +27,9 @@ impl Into<SignalAction> for Sigaction {
     fn into(self) -> SignalAction {
         SignalAction {
             handler: self.sa_handler,
-            restorer: self.sa_restorer,
+            // restorer: self.sa_restorer,
             mask: self.sa_mask,
+            flags: SignalActionFlags::from_bits_truncate(self.sa_flags as u32),
         }
     }
 }
@@ -37,10 +38,10 @@ impl From<SignalAction> for Sigaction {
     fn from(item: SignalAction) -> Self {
         Sigaction {
             sa_handler: item.handler,
-            sa_sigaction: item.handler,
+            // sa_sigaction: item.handler,
             sa_mask: item.mask,
             sa_flags: 0,
-            sa_restorer: item.restorer,
+            // sa_restorer: item.restorer,
         }
     }
 }

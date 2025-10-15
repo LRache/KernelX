@@ -19,7 +19,7 @@ unsafe extern "C"{
 }
 
 static RANDOM_PAGE: Lazy<PhysPageFrame> = Lazy::new(|| {
-    PhysPageFrame::new()
+    PhysPageFrame::alloc()
 });
 
 fn create_pagetable() -> PageTable {
@@ -68,7 +68,7 @@ impl AddrSpace {
 
     pub fn alloc_usercontext_page(&self) -> (usize, *mut UserContext) {
         let mut frames = self.usercontext_frames.lock();
-        let frame = PhysPageFrame::new();
+        let frame = PhysPageFrame::alloc();
         
         let uaddr = TRAMPOLINE_BASE - (frames.len() + 1) * arch::PGSIZE;
         let kaddr = frame.get_page();
@@ -148,6 +148,15 @@ impl AddrSpace {
         }
 
         Ok(())
+    }
+
+    pub fn copy_from_user_type<T: Copy>(&self, uaddr: usize) -> Result<T, Errno> {
+        let mut value: T = unsafe { core::mem::zeroed() };
+        let buffer = unsafe {
+            core::slice::from_raw_parts_mut((&mut value as *mut T) as *mut u8, core::mem::size_of::<T>())
+        };
+        self.copy_from_user(uaddr, buffer)?;
+        Ok(value)
     }
 
     pub fn get_user_string(&self, mut uaddr: usize) -> Result<String, Errno> {

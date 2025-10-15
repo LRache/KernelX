@@ -287,6 +287,10 @@ impl TCB {
         *self.signal_mask.lock()
     }
 
+    pub fn set_signal_mask(&self, mask: SignalSet) {
+        *self.signal_mask.lock() = mask;
+    }
+
     pub fn set_tid_address(&self, addr: usize) {
         *self.tid_address.lock() = Some(addr);
     }
@@ -295,25 +299,15 @@ impl TCB {
         assert!(Arc::ptr_eq(self, current::tcb()));
         
         let mut state = self.state.lock();
-        if state.state != TaskState::Running {
-            false
-        } else {
-            state.state = TaskState::Blocked;
-            true
+        match state.state {
+            TaskState::Ready | TaskState::Running => {},
+            _ => return false,
         }
+        state.state = TaskState::Blocked;
+        true
     }
 
-    pub fn wakeup(self: &Arc<Self>) {
-        let mut state = self.state.lock();
-        if state.state != TaskState::Blocked {
-            return;
-        }
-        state.state = TaskState::Ready;
-        state.event = None;
-        scheduler::push_task(self.clone());
-    }
-
-    pub fn wakeup_by_event(self: &Arc<Self>, event: Event) {
+    pub fn wakeup(self: &Arc<Self>, event: Event) {
         let mut state = self.state.lock();
         if state.state != TaskState::Blocked {
             return;

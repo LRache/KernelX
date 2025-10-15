@@ -2,8 +2,7 @@ mod action;
 mod pending;
 mod signalnum;
 mod handler;
-
-pub mod send;
+mod frame;
 
 pub use action::*;
 pub use signalnum::*;

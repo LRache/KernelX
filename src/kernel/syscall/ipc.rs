@@ -8,7 +8,7 @@ use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
 use crate::kernel::api;
 use crate::kernel::task::manager;
-use crate::{copy_from_user, copy_to_user};
+use crate::{copy_to_user, kinfo};
 
 use super::SyscallRet;
 
@@ -65,14 +65,13 @@ pub fn rt_sigaction(signum: usize, uptr_act: usize, uptr_oldact: usize, sigsetsi
 
     let mut signal_actions = current::signal_actions().lock();
     if uptr_oldact != 0 {
-        let old_action = signal_actions.get(signum)?;
+        let old_action = signal_actions.get(signum);
         let old_action: api::Sigaction = old_action.into();
         copy_to_user!(uptr_oldact, old_action)?;
     }
 
     if uptr_act != 0 {
-        let new_action = api::Sigaction::empty();
-        copy_from_user!(uptr_act, new_action)?;
+        let new_action = current::copy_from_user_type::<api::Sigaction>(uptr_act)?;
         signal_actions.set(signum, &new_action.into())?;
     }
 
@@ -80,6 +79,7 @@ pub fn rt_sigaction(signum: usize, uptr_act: usize, uptr_oldact: usize, sigsetsi
 }
 
 pub fn rt_sig_return() -> SyscallRet {
-    // current::tcb().signal_return();
+    current::tcb().return_from_signal();
+    kinfo!("rt_sig_return called");
     Ok(0)
 }

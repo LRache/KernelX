@@ -1,23 +1,25 @@
 use crate::kernel::mm::page;
-use crate::safe_page_write;
+use crate::{arch, safe_page_write};
 
 pub struct PhysPageFrame {
     page: usize,
 }
 
 impl PhysPageFrame {
-    pub fn new() -> Self {
-        let page = page::alloc();
+    pub fn new(page: usize) -> Self {
         Self { page }
     }
 
-    pub fn new_zeroed() -> Self {
-        let page = page::alloc_zero();
-        Self { page }
+    pub fn alloc() -> Self {
+        Self::new(page::alloc())
+    }
+
+    pub fn alloc_zeroed() -> Self {
+        Self::new(page::alloc_zero())
     }
 
     pub fn copy(&self) -> PhysPageFrame {
-        let new_frame = PhysPageFrame::new();
+        let new_frame = PhysPageFrame::alloc();
         page::copy(self.page, new_frame.page);
         new_frame
     }
@@ -26,8 +28,16 @@ impl PhysPageFrame {
         safe_page_write!(self.page + offset, src);
     }
 
+    pub fn slice(&self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.page as *mut u8, arch::PGSIZE) }
+    }
+
     pub fn get_page(&self) -> usize {
         self.page
+    }
+
+    pub fn ptr(&self) -> *mut u8 {
+        self.page as *mut u8
     }
 }
 

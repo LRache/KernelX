@@ -1,14 +1,17 @@
 COMPILE_MODE ?= debug
 
 KERNEL = target/$(RUST_TARGET)/$(COMPILE_MODE)/kernelx
+KERNELX_HOME = $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 BUILD_ENV = \
 	PLATFORM=$(PLATFORM) \
 	ARCH=$(ARCH) \
+	ARCH_BITS=$(ARCH_BITS) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
 	KERNELX_INITPATH=$(INITPATH) \
 	KERNELX_INITCWD=$(INITCWD) \
-	KERNELX_RELEASE=$(KERNELX_RELEASE)
+	KERNELX_RELEASE=$(KERNELX_RELEASE) \
+	KERNELX_HOME=$(KERNELX_HOME)
 
 RUST_TARGET = riscv64gc-unknown-none-elf
 
@@ -33,11 +36,18 @@ ifeq ($(LOG_SYSCALL),y)
 RUST_FEATURES += log-trace-syscall
 endif
 
-kernel: $(KERNEL)
-	cp $(KERNEL) build/$(PLATFORM)/kernelx
+all: kernel
 
-$(KERNEL):
+kernel: $(KERNEL)
+	@ cp $(KERNEL) build/$(PLATFORM)/kernelx
+
+clib: 
 	@ $(BUILD_ENV) make -C clib all
+
+vdso:
+	@ $(BUILD_ENV) make -C vdso all
+
+$(KERNEL): clib
 	@ $(BUILD_ENV) cargo build --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
 	@ mkdir -p build/$(PLATFORM)
 	@ cp $(KERNEL) build/$(PLATFORM)/kernelx
@@ -45,4 +55,8 @@ $(KERNEL):
 check:
 	@ $(BUILD_ENV) cargo check --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
 
-.PHONY: $(KERNEL)
+clean:
+	@ make -C clib clean
+	@ cargo clean
+
+.PHONY: all $(KERNEL) clib vdso

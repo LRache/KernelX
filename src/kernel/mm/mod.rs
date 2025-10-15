@@ -2,6 +2,7 @@ pub mod page;
 pub mod elf;
 mod frame;
 mod addrspace;
+mod vdso;
 pub mod maparea;
 
 pub use addrspace::*;

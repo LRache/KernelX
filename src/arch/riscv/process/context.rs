@@ -2,7 +2,6 @@ use crate::arch::arch::UserContextTrait;
 use crate::arch::riscv::kernelpagetable::get_kernel_satp;
 use crate::arch::riscv::process::traphandle::{usertrap_handler, return_to_user};
 use crate::kernel::mm::AddrSpace;
-use crate::kernel::scheduler::current;
 use crate::kernel::task::KernelStack;
 
 #[repr(C)]
@@ -61,11 +60,12 @@ impl UserContextTrait for UserContext {
         });
     }
 
-    fn set_sigaction_restorer(&mut self, uptr_restorer: usize) {
+    fn set_sigaction_restorer(&mut self, uptr_restorer: usize) -> &mut Self {
         self.gpr[1] = uptr_restorer; // ra
+        self
     }
 
-    fn restore_from_signal(&mut self, sigcontext: &crate::arch::SigContext) {
+    fn restore_from_signal(&mut self, sigcontext: &SigContext) {
         self.gpr.copy_from_slice(&sigcontext.gregs);
     }
 
@@ -73,8 +73,9 @@ impl UserContextTrait for UserContext {
         self.user_entry
     }
     
-    fn set_user_entry(&mut self, entry: usize) {
+    fn set_user_entry(&mut self, entry: usize) -> &mut Self {
         self.user_entry = entry;
+        self
     }
 
     fn skip_syscall_instruction(&mut self) {
@@ -111,6 +112,8 @@ impl KernelContext {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SigContext {
     pub gregs:  [usize; 32], // General registers
     pub fpregs: [u64; 66]   // Floating point registers

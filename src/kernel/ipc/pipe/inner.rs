@@ -10,6 +10,7 @@ pub struct PipeInner {
     read_waiter: Mutex<WaitQueue<Event>>,
     write_waiter: Mutex<WaitQueue<Event>>,
     capacity: Mutex<usize>,
+    reader_count: Mutex<u32>,
     writer_count: Mutex<u32>,
 }
 
@@ -20,6 +21,7 @@ impl PipeInner {
             read_waiter: Mutex::new(WaitQueue::new()),
             write_waiter: Mutex::new(WaitQueue::new()),
             capacity: Mutex::new(capacity),
+            reader_count: Mutex::new(0),
             writer_count: Mutex::new(0),
         }
     }
@@ -132,6 +134,10 @@ impl PipeInner {
     pub fn poll_cancel(&self) {
         self.read_waiter.lock().remove(current::tcb());
         self.write_waiter.lock().remove(current::tcb());
+    }
+
+    pub fn increment_reader_count(&self) {
+        *self.reader_count.lock() += 1;
     }
 
     pub fn increment_writer_count(&self) {

@@ -176,10 +176,9 @@ impl PCB {
         }
         
         if let Some(parent) = self.parent.lock().as_ref() {
+            // parent.send_signal(SignalNum::SIGCHLD as u32, self.pid, None).unwrap();
             parent.waiting_task.lock().drain(..).for_each(|t| {
-                // t.wakeup_by_event(self.pid as usize, Event::Process);
-                // t.wakeup_by_event(Event::Process, self.pid as usize);
-                t.wakeup_by_event(Event::Process { child: self.pid });
+                t.wakeup(Event::Process { child: self.pid });
             });
         }
         

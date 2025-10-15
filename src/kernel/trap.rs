@@ -1,13 +1,13 @@
 use crate::arch::UserContextTrait;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
-use crate::kernel::ipc::handle_signals;
+use crate::kernel::ipc::SignalNum;
 use crate::kernel::syscall;
 use crate::kernel::event::timer;
 use crate::kwarn;
 
 pub fn trap_return() {
-    handle_signals();
+    current::tcb().handle_signal();
 }
 
 pub fn timer_interrupt() {
@@ -38,7 +38,7 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
 
     if !fixed {
         kwarn!("Failed to fix memory fault at address: {:#x}, access_type={:?}, pc={:#x}, tid={}, KILLED", addr, access_type, crate::arch::get_user_pc(), current::tid());
-        current::tcb().exit(255);
+        current::pcb().send_signal(SignalNum::SIGSEGV as u32, current::tid(), None).unwrap();
         current::schedule();
     }
 }

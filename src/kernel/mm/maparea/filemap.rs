@@ -66,7 +66,7 @@ impl FileMapArea {
         let area_offset = page_index * arch::PGSIZE;
         let file_offset = self.file_offset + area_offset;
         
-        let frame = PhysPageFrame::new_zeroed();
+        let frame = PhysPageFrame::alloc_zeroed();
         
         // Try to read from file, but only within the specified file_length
         if area_offset < self.file_length {

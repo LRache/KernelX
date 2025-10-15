@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::string::String;
 use spin::Mutex;
 
-use crate::kernel::ipc::{PendingSignalQueue, SignalActionTable};
+use crate::kernel::ipc::SignalActionTable;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::{PCB, TCB};
@@ -145,10 +145,19 @@ pub fn copy_from_user(uaddr: usize, buf: &mut [u8]) -> Result<(), Errno> {
     addrspace().copy_from_user(uaddr, buf)
 }
 
+pub fn copy_from_user_type<T: Copy>(uaddr: usize) -> Result<T, Errno> {
+    addrspace().copy_from_user_type::<T>(uaddr)
+}
+
 pub fn get_user_string(uaddr: usize) -> Result<String, Errno> {
     addrspace().get_user_string(uaddr)
 }
 
 pub fn schedule() {
     processor().schedule();
+}
+
+pub fn block(reason: &'static str) {
+    tcb().block(reason);
+    schedule();
 }

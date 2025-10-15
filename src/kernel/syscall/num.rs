@@ -17,7 +17,7 @@ macro_rules! syscall_table {
                 },
             )*
             _ => {
-                // crate::kwarn!("Unsupported syscall: {}, user_pc={:#x}, tid={}", $num_var, crate::arch::get_user_pc(), crate::kernel::scheduler::current::tid());
+                crate::kwarn!("Unsupported syscall: {}, user_pc={:#x}, tid={}", $num_var, crate::arch::get_user_pc(), crate::kernel::scheduler::current::tid());
                 Err(Errno::ENOSYS)
             }
         }
