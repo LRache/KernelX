@@ -1,5 +1,5 @@
 PHYS_BASE = 0x80200000;
-VIRT_BASE = 0xffffffff80200000;
+VIRT_BASE = 0xffffffc080200000;
 
 ENTRY(bootloader)
 

@@ -1,12 +1,12 @@
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::kernel::event::{Event, PollEvent, PollEventSet};
+use crate::kernel::event::{PollEvent, PollEventSet};
 use crate::kernel::errno::SysResult;
+use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, Inode};
-use crate::kernel::task::TCB;
 
-use super::{FileStat, DirResult};
+use super::DirResult;
 
 pub enum SeekWhence {
     BEG,

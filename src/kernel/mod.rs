@@ -8,6 +8,6 @@ pub mod syscall;
 pub mod ipc;
 pub mod event;
 pub mod config;
-pub mod api;
+pub mod uapi;
 
 pub use main::fini;

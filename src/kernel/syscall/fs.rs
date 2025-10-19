@@ -3,25 +3,28 @@ use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
+use crate::kernel::syscall::uptr::{UBuffer, UString, UserPointer};
+use crate::kernel::syscall::SyscallRet;
 use crate::kernel::task::fdtable::FDFlags;
-use crate::kernel::api::{OpenFlags, Dirent, DirentType};
+use crate::kernel::uapi::{OpenFlags, Dirent, DirentType, FileStat};
 use crate::fs::{Dentry, Mode};
 use crate::fs::vfs;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::{copy_from_user, copy_to_user, copy_to_user_string};
-use crate::{kdebug, ktrace};
+use crate::kdebug;
 
 use super::def::*;
+use super::uptr::UPtr;
 
-pub fn dup(oldfd: usize) -> Result<usize, Errno> {
+pub fn dup(oldfd: usize) -> SyscallRet {
     let mut fdtable = current::fdtable().lock();
     let file = fdtable.get(oldfd)?;
     let newfd = fdtable.push(file.clone(), FDFlags::empty())?;
     Ok(newfd)
 }
 
-pub fn dup2(oldfd: usize, newfd: usize) -> Result<usize, Errno> {
+pub fn dup2(oldfd: usize, newfd: usize) -> SyscallRet {
     let mut fdtable = current::fdtable().lock();
     if oldfd == newfd {
         // If oldfd and newfd are the same, just return newfd
@@ -47,7 +50,7 @@ pub enum FcntlCmd {
     F_DUPFD_CLOEXEC = 1030,
 }
 
-pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> Result<usize, Errno> {
+pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> SyscallRet {
     match FcntlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)? {
         FcntlCmd::F_DUPFD_CLOEXEC => {
             let mut fdtable = current::fdtable().lock();
@@ -71,7 +74,9 @@ pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> Result<usize, Errno> {
     }
 }
 
-pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> Result<usize, Errno> {
+pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -> SyscallRet {
+    uptr_filename.should_not_null()?;
+    
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let file_flags = FileFlags {
         writable: open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR),
@@ -81,7 +86,8 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
-    let path = current::get_user_string(uptr_filename)?;
+    // let path = copy_from_user::string(uptr_filename)?;
+    let path = uptr_filename.read()?;
 
     let helper = |parent: &Arc<Dentry>| {
         match vfs::openat_file(parent, &path, file_flags) {
@@ -111,14 +117,18 @@ pub fn openat(dirfd: usize, uptr_filename: usize, flags: usize, mode: usize) -> 
     Ok(fd)
 }
 
-pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno> {
+pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     if !file.readable() {
         return Err(Errno::EBADF);
     }
 
-    let addrspace = current::addrspace();
+    if count == 0 {
+        return Ok(0);
+    }
+
+    ubuf.should_not_null()?;
         
     let mut buffer = [0u8; BUFFER_SIZE];
     let mut total_read = 0;
@@ -131,8 +141,11 @@ pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno>
             break; // EOF
         }
         
-        addrspace.copy_to_user(user_buffer + total_read, &buffer[..bytes_read])
-            .map_err(|_| Errno::EFAULT)?;
+        // addrspace.copy_to_user(user_buffer + total_read, &buffer[..bytes_read])
+        //     .map_err(|_| Errno::EFAULT)?;
+        // copy_to_user::buffer(user_buffer + total_read, &buffer[..bytes_read])?;
+        ubuf.write(total_read, &buffer[..bytes_read])?;
+
         total_read += bytes_read;
         left -= bytes_read;
 
@@ -144,8 +157,13 @@ pub fn read(fd: usize, user_buffer: usize, count: usize) -> Result<usize, Errno>
     Ok(total_read)
 }
 
-pub fn readlinkat(dirfd: usize, uptr_path: usize, uptr_buf: usize, bufsize: usize) -> SysResult<usize> {
-    let path = current::get_user_string(uptr_path)?;
+pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UString, bufsize: usize) -> SyscallRet {
+    // let path = current::get_user_string(uptr_path)?;
+    // let path = copy_from_user::string(uptr_path)?;
+    uptr_path.should_not_null()?;
+    ubuf.should_not_null()?;
+
+    let path = uptr_path.read()?;
     
     let path = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
@@ -156,25 +174,35 @@ pub fn readlinkat(dirfd: usize, uptr_path: usize, uptr_buf: usize, bufsize: usiz
         )?
     }.readlink()?;
 
-    copy_to_user_string!(uptr_buf, &path, bufsize)?;
+    // copy_to_user_string!(uptr_buf, &path, bufsize)?;
+    // current::copy_to_user_string(uptr_buf, &path, bufsize)?;
+    // copy_to_user::string(uptr_buf, &path, bufsize)?;
+    ubuf.write(&path, bufsize)?;
 
     Ok(0)
 }
 
-pub fn write(fd: usize, uptr_buffer: usize, mut count: usize) -> Result<usize, Errno> {
+pub fn write(fd: usize, ubuf: UBuffer, mut count: usize) -> SyscallRet {
+    if count == 0 {
+        return Ok(0);
+    }
+    
+    ubuf.should_not_null()?;
+    
     let file = current::fdtable().lock().get(fd)?;
     if !file.writable() {
         return Err(Errno::EBADF);
     }
 
-    let addrspace = current::addrspace();
     let mut written = 0;
 
+    let mut buffer = [0u8; BUFFER_SIZE];
     while count != 0 {
-        let mut buffer = [0u8; BUFFER_SIZE];
         let to_write = core::cmp::min(count, BUFFER_SIZE);
-        addrspace.copy_from_user(uptr_buffer + written, &mut buffer[..to_write])
-            .map_err(|_| Errno::EFAULT)?;
+        // addrspace.copy_from_user(uptr_buffer + written, &mut buffer[..to_write])
+            // .map_err(|_| Errno::EFAULT)?;
+        // copy_from_user::buffer(uptr_buffer + written, &mut buffer[..to_write])?;
+        ubuf.read(written, &mut buffer[..to_write])?;
         
         file.write(&buffer[..to_write]).map_err(|_| Errno::EIO)?;
 
@@ -186,30 +214,83 @@ pub fn write(fd: usize, uptr_buffer: usize, mut count: usize) -> Result<usize, E
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct IOVec {
     pub base: usize,
     pub len: usize,
 }
 
-pub fn writev(fd: usize, iov: usize, iovcnt: usize) -> Result<usize, Errno> {
+pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
-    let addrspace = current::addrspace();
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+
+    uptr_iov.should_not_null()?;
+
+    let mut total_read = 0;
+
+    for i in 0..iovcnt {
+        // let mut iov_buf = [0u8; core::mem::size_of::<IOVec>()];
+        // addrspace.copy_from_user(iov + i * core::mem::size_of::<IOVec>(), &mut iov_buf)
+        //     .map_err(|_| Errno::EFAULT)?;
+        // current::copy_from_user(uaddr, buf)
+        // let iov = unsafe { &*(iov_buf.as_ptr() as *const IOVec) };
+        // let iov: IOVec = copy_from_user::object(iov + i * core::mem::size_of::<IOVec>())?;
+        let iov = uptr_iov.index(i).read()?;
+
+        let mut read = 0usize;
+        let mut remaining = iov.len;
+        let mut buffer = [0u8; BUFFER_SIZE];
+        while remaining != 0 {
+            let to_read = core::cmp::min(remaining, BUFFER_SIZE);
+            let bytes_read = file.read(&mut buffer[..to_read]).map_err(|_| Errno::EIO)?;
+            if bytes_read == 0 {
+                break; // EOF
+            }
+
+            // addrspace.copy_to_user(iov.base + read, &buffer[..bytes_read])
+            //     .map_err(|_| Errno::EFAULT)?;
+            copy_to_user::buffer(iov.base + read, &buffer[..bytes_read])?;
+
+            remaining -= bytes_read;
+            read += bytes_read;
+        }
+
+        total_read += read;
+    }
+
+    Ok(total_read)
+}
+
+pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+
+    uptr_iov.should_not_null()?;
 
     let mut total_written = 0;
 
     for i in 0..iovcnt {
-        let mut iov_buf = [0u8; core::mem::size_of::<IOVec>()];
-        addrspace.copy_from_user(iov + i * core::mem::size_of::<IOVec>(), &mut iov_buf)
-            .map_err(|_| Errno::EFAULT)?;
-        let iov = unsafe { &*(iov_buf.as_ptr() as *const IOVec) };
+        // let mut iov_buf = [0u8; core::mem::size_of::<IOVec>()];
+        // addrspace.copy_from_user(iov + i * core::mem::size_of::<IOVec>(), &mut iov_buf)
+        //     .map_err(|_| Errno::EFAULT)?;
+        // let iov = unsafe { &*(iov_buf.as_ptr() as *const IOVec) };
+        // let iov: IOVec = copy_from_user::object(iov + i * core::mem::size_of::<IOVec>())?;
+        let iov = uptr_iov.index(i).read()?;
 
         let mut written = 0usize;
         let mut remaining = iov.len;
         let mut buffer = [0u8; BUFFER_SIZE];
         while remaining != 0 {
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
-            addrspace.copy_from_user(iov.base + written, &mut buffer[..to_write])
+            // addrspace.copy_from_user(iov.base + written, &mut buffer[..to_write])
+            //     .map_err(|_| Errno::EFAULT)?;
+            copy_from_user::buffer(iov.base + written, &mut buffer[..to_write])
                 .map_err(|_| Errno::EFAULT)?;
 
             let bytes_written = file.write(&buffer[..to_write]).map_err(|_| Errno::EIO)?;
@@ -233,7 +314,7 @@ pub fn close(fd: usize) -> Result<usize, Errno> {
     Ok(0)
 }
 
- pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: usize, count: usize) -> Result<usize, Errno> {
+pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: usize) -> SyscallRet {
     let mut fdtable = current::fdtable().lock();
     let out_file = fdtable.get(out_fd)?;
     let in_file = fdtable.get(in_fd)?.downcast_arc::<File>().map_err(|_| Errno::EINVAL)?;
@@ -247,12 +328,10 @@ pub fn close(fd: usize) -> Result<usize, Errno> {
     }
     
     let in_file_offset = in_file.seek(0, SeekWhence::CUR)?;
-    let mut local_offset = if uptr_offset != 0 {
-        let t = 0;
-        copy_from_user!(uptr_offset, t)?;
-        t
-    } else {
+    let mut local_offset = if uptr_offset.is_null() {
         in_file_offset
+    } else {
+        uptr_offset.read()?
     };  
 
     let mut total_sent = 0;
@@ -285,32 +364,39 @@ pub fn close(fd: usize) -> Result<usize, Errno> {
         }
     }
 
-    if uptr_offset != 0 {
-        copy_to_user!(uptr_offset, local_offset)?;
-    } else {
+    // if uptr_offset != 0 {
+    //     // copy_to_user!(uptr_offset, local_offset)?;
+    //     copy_to_user::object(uptr_offset, local_offset)?;
+    // } else {
+    //     in_file.seek(local_offset as isize, SeekWhence::BEG)?;
+    // }
+    if uptr_offset.is_null() {
         in_file.seek(local_offset as isize, SeekWhence::BEG)?;
+    } else {
+        uptr_offset.write(local_offset)?;
     }
 
     Ok(total_sent)
 }
 
-pub fn ioctl(fd: usize, request: usize, arg: usize) -> Result<usize, Errno> {
+pub fn ioctl(fd: usize, request: usize, arg: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     file.ioctl(request, arg)
 }
 
 // TODO: Implement faccessat
-pub fn faccessat(_dirfd: usize, _uptr_path: usize, _mode: usize) -> Result<usize, Errno> {
+pub fn faccessat(_dirfd: usize, _uptr_path: usize, _mode: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn fstatat(dirfd: usize, uptr_path: usize, uptr_statbuf: usize, _flags: usize) -> Result<usize, Errno> {
-    let path = current::get_user_string(uptr_path)?;
+pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, _flags: usize) -> SyscallRet {
+    uptr_path.should_not_null()?;
+    uptr_stat.should_not_null()?;
+    
+    let path = uptr_path.read()?;
 
-    ktrace!("fstatat: path={}, dirfd={}", path, dirfd);
-
-    let kstat = if dirfd as isize == AT_FDCWD {
+    let fstat = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare()))?
     } else {
         vfs::openat_file(
@@ -320,21 +406,21 @@ pub fn fstatat(dirfd: usize, uptr_path: usize, uptr_statbuf: usize, _flags: usiz
         )?
     }.fstat()?;
 
-    copy_to_user!(uptr_statbuf, kstat)?;
-
-    ktrace!("fstatat: path={}, st_size={}, st_mode={:#o}", path, kstat.st_size, kstat.st_mode);
+    uptr_stat.write(fstat)?;
 
     Ok(0)
 }
 
-pub fn newfstat(fd: usize, uptr_statbuf: usize) -> Result<usize, Errno> {
+pub fn newfstat(fd: usize, uptr_stat: UPtr<FileStat>) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
-    let kstat = file.fstat()?;
+    let fstat = file.fstat()?;
 
-    copy_to_user!(uptr_statbuf, kstat)?;
+    // copy_to_user!(uptr_statbuf, kstat)?;
+    // copy_to_user::object(uptr_statbuf, fstat)?;
+    uptr_stat.write(fstat)?;
 
-    ktrace!("newfstat: fd={}, st_size={}, st_mode={:#o}", fd, kstat.st_size, kstat.st_mode);
+    // ktrace!("newfstat: fd={}, st_size={}, st_mode={:#o}", fd, fstat.st_size, fstat.st_mode);
 
     Ok(0)
 }
@@ -343,13 +429,17 @@ pub fn utimensat(_dirfd: usize, _uptr_path: usize, _uptr_times: usize, _flags: u
     Err(Errno::ENOENT)
 }
 
-pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Errno> {
+pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     if mode > 0o7777 {
         return Err(Errno::EINVAL);
     }
     let mode = Mode::from_bits(mode as u16).ok_or(Errno::EINVAL)? | Mode::S_IFDIR;
+
+    uptr_path.should_not_null()?;
     
-    let path = current::get_user_string(user_path)?;
+    // let path = current::get_user_string(user_path)?;
+    // let path = copy_from_user::string(user_path)?;
+    let path = uptr_path.read()?;
 
     let parent_dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?
@@ -367,10 +457,12 @@ pub fn mkdirat(dirfd: usize, user_path: usize, mode: usize) -> Result<usize, Err
 
 const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d_type
 
-pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usize> {
+pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
-    kdebug!("getdents64: fd={}, buf={:#x}, count={}", fd, uptr_dirent, count);
+    if uptr_dirent == 0 {
+        return Err(Errno::EINVAL);
+    }
 
     let mut total_copied = 0;
     
@@ -412,8 +504,10 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usiz
         // Copy dirent to user space
         let dirent_ptr = uptr_dirent + total_copied;
 
-        copy_to_user!(dirent_ptr, dirent).unwrap();
-        copy_to_user_string!(dirent_ptr + DIRENT_NAME_OFFSET, name, name_len + 1)?;
+        // copy_to_user!(dirent_ptr, dirent).unwrap();
+        // copy_to_user_string!(dirent_ptr + DIRENT_NAME_OFFSET, name, name_len + 1)?;
+        copy_to_user::object(dirent_ptr, dirent)?;
+        copy_to_user::string(dirent_ptr + DIRENT_NAME_OFFSET, name, name_len + 1)?;
 
         total_copied += reclen_aligned;
     }
@@ -426,8 +520,10 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SysResult<usiz
     }
 }
 
-pub fn unlinkat(dirfd: usize, uptr_path: usize, _flags: usize) -> SysResult<usize> {
-    let path = current::get_user_string(uptr_path)?;
+pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
+    uptr_path.should_not_null()?;
+    
+    let path = uptr_path.read()?;
 
     let parent_dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?
@@ -452,9 +548,12 @@ bitflags! {
     }
 }
 
-pub fn renameat2(olddirfd: usize, uptr_oldpath: usize, newdirfd: usize, uptr_newpath: usize, _flags: usize) -> SysResult<usize> {
-    let old_path = current::get_user_string(uptr_oldpath)?;
-    let new_path = current::get_user_string(uptr_newpath)?;
+pub fn renameat2(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newpath: UString, _flags: usize) -> SysResult<usize> {
+    uptr_oldpath.should_not_null()?;
+    uptr_newpath.should_not_null()?;
+    
+    let old_path = uptr_oldpath.read()?;
+    let new_path = uptr_newpath.read()?;
 
     let old_parent_dentry = if olddirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &old_path))?

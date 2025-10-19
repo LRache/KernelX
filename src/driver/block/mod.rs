@@ -7,12 +7,16 @@ use alloc::boxed::Box;
 pub use virtio::*;
 pub use starfive_mmc::*;
 
+use crate::driver::DriverOps;
+
+use downcast_rs::{impl_downcast, Downcast};
+
 pub trait BlockDevice {
-    fn name(&self) -> String;
+    fn name(&self) -> &str;
     fn driver(&self) -> Box<dyn BlockDriver>;
 }
 
-pub trait BlockDriver {
+pub trait BlockDriver: DriverOps + Downcast {
     fn clone_boxed(&self) -> Box<dyn BlockDriver>;
     
     fn open(&mut self) -> Result<(), ()> {
@@ -38,3 +42,5 @@ pub trait BlockDriver {
 
     fn get_block_count(&self) -> u64;
 }
+
+impl_downcast!(BlockDriver);

@@ -2,7 +2,7 @@ include(${KERNELX_HOME}/scripts/cmake/parse_config.cmake)
 
 if(ARCH STREQUAL "riscv")
     if (ARCH_BITS STREQUAL "64")
-        parse_config(${KERNELX_HOME}/scripts/flags/riscv64.env)
+        parse_config(${KERNELX_HOME}/scripts/env/riscv64.env)
         message("ARCH_COMMON_FLAGS=${ARCH_COMMON_FLAGS}")
     else()
         message(FATAL_ERROR "Unsupported riscv architecture bits: ${ARCH_BITS}")

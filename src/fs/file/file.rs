@@ -2,11 +2,12 @@ use alloc::sync::Arc;
 use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::FileStat;
 use crate::fs::file::DirResult;
 use crate::fs::inode::Inode;
 use crate::fs::vfs::Dentry;
 
-use super::{FileOps, SeekWhence, FileStat};
+use super::{FileOps, SeekWhence};
 
 #[derive(Clone, Copy)]
 pub struct FileFlags {

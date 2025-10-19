@@ -5,13 +5,14 @@ use alloc::sync::Arc;
 use crate::fs::file::FileOps;
 use crate::kernel::event::{Event, PollEvent, PollEventSet};
 use crate::kernel::scheduler::current;
+use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
-use crate::{copy_from_user, copy_to_user_ref};
+// use crate::{copy_from_user, copy_to_user_ref};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct Pollfd {
+pub struct Pollfd {
     pub fd:     i32,
     pub events: i16,
     pub revents: i16,
@@ -24,7 +25,8 @@ impl Pollfd {
 }
 
 #[repr(C)]
-struct Timespec32 {
+#[derive(Clone, Copy)]
+pub struct Timespec32 {
     pub tv_sec:  i32,     // seconds
     pub tv_nsec: i32,     // nanoseconds
 }
@@ -103,16 +105,18 @@ fn poll(pollfds: &mut [Pollfd], _timeout: Option<u64>) -> SysResult<usize> {
     Ok(1)
 }
 
-pub fn ppoll_time32(uptr_ufds: usize, nfds: usize, uptr_timeout: usize, _uptr_sigmask: usize, _sigmask_size: usize) -> SysResult<usize> {
+pub fn ppoll_time32(uptr_ufds: UArray<Pollfd>, nfds: usize, uptr_timeout: UPtr<Timespec32>, _uptr_sigmask: usize, _sigmask_size: usize) -> SysResult<usize> {
+    if nfds == 0 {
+        return Ok(0);
+    }
+
+    uptr_ufds.should_not_null()?;
+    
     let mut pollfds = vec![Pollfd::default(); nfds];
+    uptr_ufds.read(0, &mut pollfds)?;
 
-    pollfds.iter_mut().enumerate().for_each(|(i, pfd)| {
-        copy_from_user!(uptr_ufds + i * core::mem::size_of::<Pollfd>(), *pfd).unwrap();
-    });
-
-    let timeout = if uptr_timeout != 0 {
-        let ts: Timespec32 = Timespec32 { tv_sec: 0, tv_nsec: 0 };
-        copy_from_user!(uptr_timeout, ts)?;
+    let timeout = if !uptr_timeout.is_null() {
+        let ts: Timespec32 = uptr_timeout.read()?;
         if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
             return Err(Errno::EINVAL);
         }
@@ -122,8 +126,8 @@ pub fn ppoll_time32(uptr_ufds: usize, nfds: usize, uptr_timeout: usize, _uptr_si
     };
 
     let r = poll(&mut pollfds, timeout)?;
-
-    copy_to_user_ref!(uptr_ufds, pollfds.as_slice())?;
+    
+    uptr_ufds.write(0, &pollfds)?;
 
     Ok(r)
 }

@@ -1,3 +1,4 @@
+use crate::arch::riscv::process;
 use crate::arch::{Arch, ArchTrait, UserContextTrait};
 use crate::kernel::scheduler::current;
 
@@ -29,6 +30,11 @@ impl ArchTrait for Arch {
 
     fn get_user_pc() -> usize {
         current::tcb().user_context().get_user_entry()
+    }
+
+    #[inline(always)]
+    fn return_to_user() -> ! {
+        process::traphandle::return_to_user();
     }
 
     #[inline(always)]

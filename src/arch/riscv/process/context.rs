@@ -13,7 +13,7 @@ pub struct UserContext {
     /* 34 */ pub user_satp: usize,
     /* 35 */ pub kernel_satp: usize,
     /* 36 */ pub usertrap_handler: usize,
-    user_entry: usize, // User program entry point
+    pub user_entry: usize, // User program entry point
 }
 
 impl UserContextTrait for UserContext {
@@ -65,8 +65,10 @@ impl UserContextTrait for UserContext {
         self
     }
 
-    fn restore_from_signal(&mut self, sigcontext: &SigContext) {
-        self.gpr.copy_from_slice(&sigcontext.gregs);
+    fn restore_from_signal(&mut self, sigcontext: &SigContext) -> &mut Self {
+        self.gpr[1..32].copy_from_slice(&sigcontext.gregs);
+        self.user_entry = sigcontext.pc;
+        self
     }
 
     fn get_user_entry(&self) -> usize {
@@ -113,16 +115,18 @@ impl KernelContext {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SigContext {
-    pub gregs:  [usize; 32], // General registers
-    pub fpregs: [u64; 66]   // Floating point registers
+    pub pc: usize,
+    pub gregs:  [usize; 31], // General registers
+    pub fpregs: [u64; 66]    // Floating point registers
 }
 
 impl SigContext {
     pub fn empty() -> Self {
         SigContext {
-            gregs: [0; 32],
+            pc: 0,
+            gregs: [0; 31],
             fpregs: [0; 66],
         }
     }
@@ -130,8 +134,11 @@ impl SigContext {
 
 impl Into<SigContext> for UserContext {
     fn into(self) -> SigContext {
+        let mut gregs: [usize; 31] = [0; 31];
+        gregs.copy_from_slice(&self.gpr[1..32]);
         SigContext {
-            gregs: self.gpr,
+            pc: self.user_entry,
+            gregs,
             fpregs: [0; 66], // Placeholder, actual FPU state handling needed
         }
     }

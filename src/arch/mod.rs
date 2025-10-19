@@ -12,9 +12,9 @@ pub type KernelContext = arch_impl::KernelContext;
 pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
 
-// pub const PGBITS: usize = arch_impl::PGBITS;
 pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;
+pub const KADDR_OFFSET: usize = arch_impl::KADDR_OFFSET;
 
 mod arch;
 pub use arch::{PageTableTrait, UserContextTrait};
@@ -40,6 +40,7 @@ arch_export! {
     /* ----- Context Switching ----- */
     kernel_switch(from: *mut KernelContext, to: *mut KernelContext) -> ();
     get_user_pc() -> usize;
+    return_to_user() -> !;
     
     /* ----- Interrupt ------ */
     wait_for_interrupt() -> ();

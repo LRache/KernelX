@@ -1,69 +1,10 @@
-use crate::kernel::api::uid_t;
 use crate::kernel::ipc::SignalSet;
-use crate::kernel::task::Pid;
 use crate::arch::SigContext;
 
-const SI_PAD_SIZE: usize = 128 - 3 * core::mem::size_of::<i32>();
+use super::siginfo::SigInfo;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SiKill {
-    pub si_pid: Pid,        // Sending process ID
-    pub si_uid: uid_t, // Real user ID of sending process
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SiTimer {
-    pub si_tid: i32,       // Timer ID
-    pub si_overrun: i32,   // Overrun count
-    pub si_sigval: usize,  // Signal value
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SiSigChld {
-    pub si_pid: Pid,     // Child process ID
-    pub si_uid: uid_t,   // Real user ID of sending process
-    pub si_status: i32,  // Exit value or signal
-    pub si_utime: usize, // User time consumed
-    pub si_stime: usize, // System time consumed
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SiSigFault {
-    pub si_addr: usize,    // Faulting instruction/memory reference
-    pub si_addr_lsb: i16,  // Valid LSBs of si_addr
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub union SiFields {
-    _pad: [i32; SI_PAD_SIZE / core::mem::size_of::<i32>()],
-    _kill: SiKill,
-    _timer: SiTimer,
-    _sigchld: SiSigChld,
-    _sigfault: SiSigFault,
-}
-
-impl SiFields {
-    pub fn zero() -> Self {
-        SiFields { _pad: [0; SI_PAD_SIZE / core::mem::size_of::<i32>()] }
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SigInfo {
-    pub si_signo: i32,   // Signal number
-    pub si_errno: i32,   // An errno value
-    pub si_code: i32,    // Signal code
-    pub _fields: SiFields,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SignalStack {
     pub ss_sp: usize,
     pub ss_flags: i32,
@@ -71,7 +12,7 @@ pub struct SignalStack {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SignalUContext {
     pub _uc_flags: usize,
     pub _uc_link:  usize,
@@ -91,12 +32,7 @@ pub struct SigFrame {
 impl SigFrame {
     pub fn empty() -> Self {
         SigFrame {
-            info: SigInfo {
-                si_signo: 0,
-                si_errno: 0,
-                si_code: 0,
-                _fields: SiFields::zero(),
-            },
+            info: SigInfo::empty(),
             ucontext: SignalUContext {
                 _uc_flags: 0,
                 _uc_link: 0,

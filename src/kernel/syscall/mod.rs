@@ -2,12 +2,14 @@ mod task;
 mod mm;
 mod fs;
 mod misc;
-mod num;
 mod time;
 mod event;
 mod ipc;
 mod uid;
 mod def;
+
+mod num;
+mod uptr;
 
 pub use num::syscall;
 

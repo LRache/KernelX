@@ -15,14 +15,8 @@ fn clean_bss() -> () {
     let bss_start = core::ptr::addr_of!(__bss_start) as usize;
     let bss_end = core::ptr::addr_of!(__bss_end) as usize;
     let bss_size = bss_end - bss_start;
-    
-    unsafe {
-        let bss_slice = core::slice::from_raw_parts_mut(
-            bss_start as *mut u8, 
-            bss_size
-        );
-        bss_slice.fill(0);
-    }
+
+    unsafe { core::slice::from_raw_parts_mut(bss_start as *mut u8, bss_size) }.fill(0);
 
     kdebug!("Clean BSS: 0x{:x} - 0x{:x} (size: {} bytes) successfully initialized", 
              bss_start, bss_end, bss_size);
@@ -37,7 +31,7 @@ pub fn fini() {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn main(_hartid: usize) -> ! {
+pub extern "C" fn main(hartid: usize) -> ! {
     kinfo!("Welcome to KernelX!");
     
     kinfo!("Initializing KernelX...");
@@ -45,15 +39,17 @@ pub extern "C" fn main(_hartid: usize) -> ! {
     clean_bss();
     
     kalloc::init();
-    mm::page::init();
+    mm::init();
     arch::init();
     driver::init();
     fs::init();
+
+    panic!();
 
     task::init();
     timer::init();
     
     kinfo!("KernelX initialized successfully!");
     
-    scheduler::run_tasks();
+    scheduler::run_tasks(hartid as u8);
 }

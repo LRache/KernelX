@@ -5,7 +5,7 @@ edition = "2024"
 build = "scripts/build.rs"
 
 [features]
-default = ["platform-qemu-virt-riscv64"]
+default = ["platform-qemu-virt-riscv64", "deadlock-detect", "log-info"]
 
 platform-riscv-common = []
 platform-qemu-virt-riscv64=["platform-riscv-common"]
@@ -16,6 +16,9 @@ log-info  = ["log-warn"]
 log-debug = ["log-info"]
 log-trace = ["log-debug"]
 log-trace-syscall = []
+warn-unimplemented-syscall = []
+
+deadlock-detect = []
 
 [profile.dev]
 panic = "abort"

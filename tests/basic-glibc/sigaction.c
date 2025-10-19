@@ -62,10 +62,8 @@ int main() {
     pid = Fork();
 
     if (pid == 0) {
-        printf("%p\n", sigaction_usr1);
         struct sigaction act;
         act.sa_handler = sigaction_usr1;
-        act.sa_restorer = NULL;
         sigemptyset(&act.sa_mask);
         sigaddset(&act.sa_mask, SIGUSR1);
         act.sa_flags = 0;

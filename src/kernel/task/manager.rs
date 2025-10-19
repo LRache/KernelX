@@ -36,7 +36,7 @@ impl Manager {
         const INIT_ARGV: &[&str] = &[
             INITPATH, 
             "sh", 
-            "busybox_testcode.sh"
+            "busybox_testcode.sh",
         ];
 
         const INIT_ENVP: &[&str] = &[];

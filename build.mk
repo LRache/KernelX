@@ -36,6 +36,10 @@ ifeq ($(LOG_SYSCALL),y)
 RUST_FEATURES += log-trace-syscall
 endif
 
+ifeq ($(CONFIG_WARN_UNIMPLEMENTED_SYSCALL),y)
+RUST_FEATURES += warn-unimplemented-syscall
+endif
+
 all: kernel
 
 kernel: $(KERNEL)
@@ -54,6 +58,10 @@ $(KERNEL): clib
 
 check:
 	@ $(BUILD_ENV) cargo check --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
+
+objcopy:
+	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) build/$(PLATFORM)/kernel.bin
+	@ echo "Generated kernel.bin"
 
 clean:
 	@ make -C clib clean

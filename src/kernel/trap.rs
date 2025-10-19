@@ -25,10 +25,10 @@ pub fn syscall(num: usize, args: &syscall::Args) -> usize {
             -(errno as isize) as usize
         }
     };
+    
+    current::tcb().user_context().skip_syscall_instruction();
 
     current::schedule();
-
-    current::tcb().user_context().skip_syscall_instruction();
 
     ret
 }

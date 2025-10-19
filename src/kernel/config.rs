@@ -11,7 +11,6 @@ pub const USER_LINKER_ADDR_BASE: usize = 0x4000_0000; // Base address for the dy
 pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 
 pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
-pub const VDSO_EHDR_OFFSET: usize = 0x0; // Offset of ELF header in vDSO
 
 pub const KERNEL_STACK_PAGE_COUNT: usize = 12; // Kernel stack page count
 

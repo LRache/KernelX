@@ -5,14 +5,14 @@ use crate::kernel::task::TCB;
 
 pub struct Processor<'a> {
     pub idle_kernel_context: arch::KernelContext,
-    pub tcb: &'a mut Arc<TCB>
+    pub tcb: &'a mut Arc<TCB>,
 }
 
 impl<'a> Processor<'a> {
     pub fn new(tcb: &'a mut Arc<TCB>) -> Self {
-        Self { 
+        Self {
             idle_kernel_context: arch::KernelContext::new_idle(),
-            tcb
+            tcb,
         }
     }
 

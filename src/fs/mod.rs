@@ -5,7 +5,7 @@ pub mod inode;
 mod init;
 
 mod filesystem;
-mod memfs;
+// mod memfs;
 mod ext4;
 mod devfs;
 

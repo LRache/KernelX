@@ -1,5 +1,5 @@
 use crate::kernel::errno::Errno;
-use crate::copy_to_user;
+use crate::kernel::syscall::uptr::UPtr;
 
 pub fn set_robust_list() -> Result<usize, Errno> {
     // This syscall is a no-op in the current implementation.
@@ -14,6 +14,7 @@ pub fn rseq() -> Result<usize, Errno> {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Utsname {
     pub sysname: [u8; 65],
     pub nodename: [u8; 65],
@@ -47,10 +48,8 @@ impl Utsname {
     }
 }
 
-pub fn newuname(uptr_uname: usize) -> Result<usize, Errno> {
-    let ustname = Utsname::new();
-
-    copy_to_user!(uptr_uname, ustname)?;
+pub fn newuname(uptr_uname: UPtr<Utsname>) -> Result<usize, Errno> {
+    uptr_uname.write(Utsname::new())?;
 
     Ok(0)
 }

@@ -29,8 +29,8 @@ pub struct EMMCDevice {
 }
 
 impl BlockDevice for EMMCDevice {
-    fn name(&self) -> String {
-        "emmc".into()
+    fn name(&self) -> &str {
+        "emmc"
     }
 
     fn driver(&self) -> Box<dyn BlockDriver> {

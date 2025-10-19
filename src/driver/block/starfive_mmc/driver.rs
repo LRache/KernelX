@@ -3,6 +3,7 @@ use alloc::boxed::Box;
 use spin::Mutex;
 
 use crate::driver::block::BlockDriver;
+use crate::driver::{DriverOps, DeviceType};
 
 use super::EMMCDeviceInner;
 
@@ -15,6 +16,16 @@ impl EMMCDriver {
         Self { 
             inner: inner.clone(),
         } 
+    }
+}
+
+impl DriverOps for EMMCDriver {
+    fn name(&self) -> &str {
+        "emmc_driver"
+    }
+
+    fn device_type(&self) -> DeviceType {
+        crate::driver::DeviceType::Block
     }
 }
 

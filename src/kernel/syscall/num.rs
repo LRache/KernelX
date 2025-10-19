@@ -11,19 +11,69 @@ macro_rules! syscall_table {
         match $num_var {
             $(
                 $num => {
+                    syscall_table!(@trace_enter $num, stringify!($func), $arg_count, $args_var);
                     let result = syscall_table!(@call $handler :: $func, $arg_count, $args_var);
                     syscall_table!(@trace_result $num, stringify!($func), $arg_count, $args_var, &result);
                     result
                 },
             )*
             _ => {
+                #[cfg(feature = "warn-unimplemented-syscall")]
                 crate::kwarn!("Unsupported syscall: {}, user_pc={:#x}, tid={}", $num_var, crate::arch::get_user_pc(), crate::kernel::scheduler::current::tid());
                 Err(Errno::ENOSYS)
             }
         }
     };
 
-
+    (@trace_enter $num:expr, $name:expr, 0, $args:ident) => {
+        #[cfg(feature = "log-trace-syscall")]
+        {
+            use crate::println;
+            println!("[SYSCALL] {} ({}): ENTER args=[], tid={}", $num, $name, $crate::kernel::scheduler::current::tid());
+        }
+    };
+    (@trace_enter $num:expr, $name:expr, 1, $args:ident) => {
+        #[cfg(feature = "log-trace-syscall")]
+        {
+            use crate::println;
+            println!("[SYSCALL] {} ({}): ENTER args=[{:#x}], tid={}", $num, $name, $args[0], $crate::kernel::scheduler::current::tid());
+        }
+    };
+    (@trace_enter $num:expr, $name:expr, 2, $args:ident) => {
+        #[cfg(feature = "log-trace-syscall")]
+        {
+            use crate::println;
+            println!("[SYSCALL] {} ({}): ENTER args=[{:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $crate::kernel::scheduler::current::tid());
+        }
+    };
+    (@trace_enter $num:expr, $name:expr, 3, $args:ident) => {
+        #[cfg(feature = "log-trace-syscall")]
+        {
+            use crate::println;
+            println!("[SYSCALL] {} ({}): ENTER args=[{:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $crate::kernel::scheduler::current::tid());
+        }
+    };
+    (@trace_enter $num:expr, $name:expr, 4, $args:ident) => {
+        #[cfg(feature = "log-trace-syscall")]
+        {
+            use crate::println;
+            println!("[SYSCALL] {} ({}): ENTER args=[{:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $crate::kernel::scheduler::current::tid());
+        }
+    };
+    (@trace_enter $num:expr, $name:expr, 5, $args:ident) => {
+        #[cfg(feature = "log-trace-syscall")]
+        {
+            use crate::println;
+            println!("[SYSCALL] {} ({}): ENTER args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $crate::kernel::scheduler::current::tid());
+        }
+    };
+    (@trace_enter $num:expr, $name:expr, 6, $args:ident) => {
+        #[cfg(feature = "log-trace-syscall")]
+        {
+            use crate::println;
+            println!("[SYSCALL] {} ({}): ENTER args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}], tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], $args[5], $crate::kernel::scheduler::current::tid());
+        }
+    };
 
     (@trace_result $num:expr, $name:expr, 0, $args:ident, $result:expr) => {
         #[cfg(feature = "log-trace-syscall")]
@@ -100,22 +150,22 @@ macro_rules! syscall_table {
         $handler::$func()
     };
     (@call $handler:ident :: $func:ident, 1, $args:ident) => {
-        $handler::$func($args[0])
+        $handler::$func($args[0].into())
     };
     (@call $handler:ident :: $func:ident, 2, $args:ident) => {
-        $handler::$func($args[0], $args[1])
+        $handler::$func($args[0].into(), $args[1].into())
     };
     (@call $handler:ident :: $func:ident, 3, $args:ident) => {
-        $handler::$func($args[0], $args[1], $args[2])
+        $handler::$func($args[0].into(), $args[1].into(), $args[2].into())
     };
     (@call $handler:ident :: $func:ident, 4, $args:ident) => {
-        $handler::$func($args[0], $args[1], $args[2], $args[3])
+        $handler::$func($args[0].into(), $args[1].into(), $args[2].into(), $args[3].into())
     };
     (@call $handler:ident :: $func:ident, 5, $args:ident) => {
-        $handler::$func($args[0], $args[1], $args[2], $args[3], $args[4])
+        $handler::$func($args[0].into(), $args[1].into(), $args[2].into(), $args[3].into(), $args[4].into())
     };
     (@call $handler:ident :: $func:ident, 6, $args:ident) => {
-        $handler::$func($args[0], $args[1], $args[2], $args[3], $args[4], $args[5])
+        $handler::$func($args[0].into(), $args[1].into(), $args[2].into(), $args[3].into(), $args[4].into(), $args[5].into())
     };
 }
 
@@ -136,6 +186,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         61  => fs::getdents64(3),
         63  => fs::read(3),
         64  => fs::write(3),
+        65  => fs::readv(3),
         66  => fs::writev(3),
         71  => fs::sendfile(4),
         78  => fs::readlinkat(4),

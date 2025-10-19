@@ -2,13 +2,17 @@
     .align 12
 pagetable:
     .dword 0, 0
-    .dword (0x80000 << 10) | 0xcf // MAP 0x80000000 ~ 0xc0000000 DIRECTLY
-    .rept 512 - 3 - 2
+    .dword (0x80000 << 10) | 0xcf // 2: VA 0x8000_0000 ~ 0xc000_0000 -> PA 0x8000_0000 ~ 0xc000_0000
+    .rept 258 - 2 - 1
         .dword 0
     .endr
-    .dword (0x80000 << 10) | 0xcf // MAP 0xffffffff80000000 ~ 0xffffffffc0000000 to 0x80000000 ~ 0xc0000000
+    .dword (0x80000 << 10) | 0xcf // 258: VA 0xffff_ffc0_8000_0000 ~ 0xffff_ffc0_c000_0000 to 0x8000_0000 ~ 0xc000_0000
+    .rept 512 - 258 - 1
+        .dword 0
+    .endr
 
 #define PAGETABLE_ADDR 0x80201000
+#define ENTRY_ADDR     0xffffffc080205000
     
     .global bootloader
     .section .text.bootloader
@@ -22,5 +26,5 @@ bootloader:
 
     li tp, 0
 
-    li t0, 0xffffffff80205000
+    li t0, ENTRY_ADDR
     jr t0

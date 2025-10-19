@@ -1,8 +1,9 @@
-include config/config.mk
-
 KERNEL = build/$(PLATFORM)/kernelx
+KERNEL_BIN = build/$(PLATFORM)/kernel.bin
 
-all: run
+all: kernel
+
+include config/config.mk
 
 init:
 	@ git submodule init
@@ -33,13 +34,22 @@ qemu-dts:
 gdb: kernel
 	@ make -f scripts/qemu.mk qemu-gdb KERNEL=$(KERNEL)
 
+objdump: kernel
+	@ $(CROSS_COMPILE)objdump -d $(KERNEL) > kernel.asm
+	@ echo "Generated kernel.asm"
+
 objcopy:
+	@ make -f build.mk objcopy $(KERNEL_CONFIG)
 	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) kernel.bin
 	@ echo "Generated kernel.bin"
 
-objdump:
-	@ $(CROSS_COMPILE)objdump -d $(KERNEL) > kernel.asm
-	@ echo "Generated kernel.asm"
+$(KERNEL_BIN): kernel
+	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) $(KERNEL_BIN)
+	@ echo "Generated $(KERNEL_BIN)"
+
+package: $(KERNEL_BIN)
+	@ KERNEL_IMAGE=$(KERNEL_BIN) IMAGE=$(IMAGE) scripts/package.sh
+	@ echo "Packaged image: $(IMAGE)"
 
 count:
 	@ find src c/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" | xargs wc -l

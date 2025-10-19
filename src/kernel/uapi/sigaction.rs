@@ -1,6 +1,6 @@
-use crate::kernel::api;
 use crate::kernel::ipc::SignalAction;
 use crate::kernel::ipc::SignalActionFlags;
+use crate::kernel::ipc::SignalSet;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -8,19 +8,7 @@ pub struct Sigaction {
     pub sa_handler: usize,
     pub sa_flags: usize,
     // pub sa_restorer: usize,
-    pub sa_mask: api::sigset_t,
-}
-
-impl Sigaction {
-    pub fn empty() -> Self {
-        Sigaction {
-            sa_handler: 0,
-            // sa_sigaction: 0,
-            sa_mask: 0,
-            sa_flags: 0,
-            // sa_restorer: 0,
-        }
-    }
+    pub sa_mask: SignalSet,
 }
 
 impl Into<SignalAction> for Sigaction {

@@ -1,1 +1,0 @@
-set(ARCH_COMMON_FLAGS "--target=riscv64-linux-gnu -mabi=lp64d -march=rv64gc")

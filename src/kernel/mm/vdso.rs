@@ -1,8 +1,10 @@
 use alloc::vec::Vec;
 use alloc::vec;
 
+use crate::kernel::config;
 use crate::kernel::mm::elf::def::{Elf64Ehdr, Elf64Phdr};
-use crate::arch;
+use crate::arch::{self, PageTableTrait};
+use crate::kernel::mm::MapPerm;
 use crate::klib::initcell::InitedCell;
 
 use super::PhysPageFrame;
@@ -13,6 +15,8 @@ unsafe extern "C" {
 }
 
 mod addr {
+    // include!("/home/rache/code/KernelX/./vdso/build/riscv64/symbols.inc");
+    // include!(concat!(env!("OUT_DIR"), "/symbols.inc"));
     include!(concat!(env!("KERNELX_HOME"), "/vdso/build/", env!("ARCH"), env!("ARCH_BITS"), "/symbols.inc"));
 }
 
@@ -20,10 +24,7 @@ fn vdso_start() -> usize {
     core::ptr::addr_of!(__vdso_start) as usize
 }
 
-fn vdso_end() -> usize {
-    core::ptr::addr_of!(__vdso_end) as usize
-}
-
+#[inline(always)]
 pub fn addr_of(symbol: &str) -> usize {
     match symbol {
         "sigreturn_trampoline" => addr::__vdso_sigreturn_trampoline,
@@ -118,7 +119,15 @@ pub fn init() {
     // load VDSO's program to memory
     let loaded_programs = load_programs(ehdr);
 
-    
+    VDSO.init(VDSOInfo { programs: loaded_programs });
 }
 
-
+pub fn map_to_pagetale(pagetable: &mut arch::PageTable) {
+    for program in &VDSO.programs {
+        let mut uaddr = program.ubase + config::VDSO_BASE;
+        for page in program.pages.iter() {
+            pagetable.mmap(uaddr, page.get_page(), MapPerm::R | MapPerm::X | MapPerm::U);
+            uaddr += arch::PGSIZE;
+        }
+    }
+}

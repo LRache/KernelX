@@ -6,13 +6,14 @@ use spin::{Lazy, Mutex, RwLock};
 use crate::arch::{PageTable, PageTableTrait, UserContext};
 use crate::arch;
 use crate::safe_page_write;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{maparea, PhysPageFrame};
 use crate::kernel::mm::maparea::Auxv;
 use crate::kernel::config::USER_RANDOM_ADDR_BASE;
 use crate::platform::config::TRAMPOLINE_BASE;
 
 use super::{MemAccessType, MapPerm};
+use super::vdso;
 
 unsafe extern "C"{
     static __trampoline_start: u8;
@@ -35,6 +36,9 @@ fn create_pagetable() -> PageTable {
         RANDOM_PAGE.get_page(),
         MapPerm::R | MapPerm::U
     );
+
+    vdso::map_to_pagetale(&mut pagetable);
+
     pagetable
 }
 
@@ -105,7 +109,7 @@ impl AddrSpace {
         map_manager.increase_userbrk(ubrk)
     }
 
-    pub fn copy_to_user(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
+    pub fn copy_to_user_buffer(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
         let mut left = buffer.len();
         let mut copied: usize = 0;
 
@@ -127,7 +131,36 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn copy_from_user(&self, mut uaddr: usize, buffer: &mut [u8]) -> Result<(), Errno> {
+    pub fn copy_to_user_object<T: Copy>(&self, uaddr: usize, value: T) -> Result<(), Errno> {
+        let buffer = unsafe {
+            core::slice::from_raw_parts((&value as *const T) as *const u8, core::mem::size_of::<T>())
+        };
+        self.copy_to_user_buffer(uaddr, buffer)
+    }
+
+    /// Copy a slice to user space
+    pub fn copy_to_user_slice<T>(&self, uaddr: usize, slice: &[T]) -> SysResult<()> {
+        let buffer = unsafe {
+            core::slice::from_raw_parts(
+                slice.as_ptr() as *const u8, 
+                slice.len() * core::mem::size_of::<T>()
+            )
+        };
+        self.copy_to_user_buffer(uaddr, buffer)
+    }
+
+    /// Copy a fixed-size array to user space
+    pub fn copy_to_user_array<T, const N: usize>(&self, uaddr: usize, array: &[T; N]) -> SysResult<()> {
+        let buffer = unsafe {
+            core::slice::from_raw_parts(
+                array.as_ptr() as *const u8, 
+                N * core::mem::size_of::<T>()
+            )
+        };
+        self.copy_to_user_buffer(uaddr, buffer)
+    }
+
+    pub fn copy_from_user_buffer(&self, mut uaddr: usize, buffer: &mut [u8]) -> Result<(), Errno> {
         let mut left = buffer.len();
         let mut copied: usize = 0;
 
@@ -150,19 +183,32 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn copy_from_user_type<T: Copy>(&self, uaddr: usize) -> Result<T, Errno> {
+    pub fn copy_from_user<T: Copy>(&self, uaddr: usize) -> Result<T, Errno> {
         let mut value: T = unsafe { core::mem::zeroed() };
         let buffer = unsafe {
             core::slice::from_raw_parts_mut((&mut value as *mut T) as *mut u8, core::mem::size_of::<T>())
         };
-        self.copy_from_user(uaddr, buffer)?;
+        self.copy_from_user_buffer(uaddr, buffer)?;
         Ok(value)
+    }
+
+    /// Copy data from user space to a fixed-size array
+    pub fn copy_from_user_array<T, const N: usize>(&self, uaddr: usize, array: &mut [T; N]) -> SysResult<()> {
+        let buffer = unsafe {
+            core::slice::from_raw_parts_mut(
+                array.as_mut_ptr() as *mut u8, 
+                N * core::mem::size_of::<T>()
+            )
+        };
+        self.copy_from_user_buffer(uaddr, buffer)
     }
 
     pub fn get_user_string(&self, mut uaddr: usize) -> Result<String, Errno> {
         let mut map_manager = self.map_manager.lock();
 
         let mut result = String::new();
+
+        const MAXSIZE: usize = 255;
 
         loop {
             let page_offset = uaddr & arch::PGMASK;
@@ -175,12 +221,25 @@ impl AddrSpace {
                 break;
             } else {
                 result.push_str(&String::from_utf8(slice.to_vec()).map_err(|_| Errno::EINVAL)?);
+                if result.len() > MAXSIZE {
+                    return Err(Errno::EINVAL);
+                }
             }
 
             uaddr += to_read;
         }
 
         Ok(result)
+    }
+
+    pub fn copy_from_user_slice<T: Copy>(&self, uaddr: usize, slice: &mut [T]) -> SysResult<()> {
+        let buffer = unsafe {
+            core::slice::from_raw_parts_mut(
+                slice.as_mut_ptr() as *mut u8, 
+                slice.len() * core::mem::size_of::<T>()
+            )
+        };
+        self.copy_from_user_buffer(uaddr, buffer)
     }
 
     pub fn with_pagetable<F, R>(&self, f: F) -> R

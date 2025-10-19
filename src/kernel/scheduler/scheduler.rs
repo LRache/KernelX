@@ -39,9 +39,10 @@ pub fn fetch_next_task() -> Option<Arc<TCB>> {
     SCHEDULER.fetch_next_task()
 }
 
-pub fn run_tasks() -> ! {
+pub fn run_tasks(_hartid: u8) -> ! {
     current::clear();
     loop {
+        arch::disable_interrupt();
         if let Some(mut tcb) = fetch_next_task() {
             tcb.run();
 

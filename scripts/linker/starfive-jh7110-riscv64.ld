@@ -1,5 +1,5 @@
-PHYS_BASE = 0xa0000000;
-VIRT_BASE = 0xffffffffa0000000;
+PHYS_BASE = 0x40080000;
+VIRT_BASE = 0xffffffc040080000;
 
 ENTRY(bootloader)
 
@@ -9,7 +9,7 @@ SECTIONS {
     . = PHYS_BASE;
     .bootloader : {
         KEEP(*(.text.bootloader))
-        KEEP(*(.bss.bootloader))
+        KEEP(*(.rodata.bootloader))
     }
 
     . = VIRT_BASE + 0x5000;

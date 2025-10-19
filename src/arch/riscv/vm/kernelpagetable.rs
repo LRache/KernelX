@@ -2,8 +2,8 @@ use core::cell::UnsafeCell;
 
 use crate::kernel::mm::MapPerm;
 use crate::arch::riscv::{PageTable, PGSIZE};
-use crate::arch::PageTableTrait;
-use crate::platform::config::{KERNEL_PMEM_TOP, KERNEL_VADDR_OFFSET, TRAMPOLINE_BASE};
+use crate::arch::{PageTableTrait, KADDR_OFFSET};
+use crate::platform::config::{KERNEL_PMEM_TOP, TRAMPOLINE_BASE};
 use crate::println;
 
 unsafe extern "C" {
@@ -111,7 +111,7 @@ pub fn init() {
 
     map_kernel_range(
         core::ptr::addr_of!(__heap_end), 
-        (KERNEL_PMEM_TOP + KERNEL_VADDR_OFFSET) as *const u8, 
+        (KERNEL_PMEM_TOP + KADDR_OFFSET) as *const u8, 
         MapPerm::R | MapPerm::W
     );
 

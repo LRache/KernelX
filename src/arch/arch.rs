@@ -21,6 +21,7 @@ pub trait ArchTrait {
     /* ----- Context Switching ----- */
     fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext);
     fn get_user_pc() -> usize;
+    fn return_to_user() -> !;
     
     /* ----- Interrupt ------ */
     fn wait_for_interrupt();
@@ -43,7 +44,7 @@ pub trait UserContextTrait: Clone {
     fn set_addrspace(&mut self, addrspace: &crate::kernel::mm::AddrSpace);
 
     fn set_sigaction_restorer(&mut self, uptr_restorer: usize) -> &mut Self;
-    fn restore_from_signal(&mut self, sigcontext: &SigContext);
+    fn restore_from_signal(&mut self, sigcontext: &SigContext) -> &mut Self;
 
     fn set_user_entry(&mut self, entry: usize) -> &mut Self;
     fn get_user_entry(&self) -> usize;

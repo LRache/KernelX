@@ -2,13 +2,14 @@ use alloc::sync::Arc;
 use bitflags::bitflags;
 
 use crate::kernel::config;
-use crate::kernel::ipc::Pipe;
+use crate::kernel::ipc::{Pipe, SignalSet};
 use crate::kernel::scheduler::current;
+use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
-use crate::kernel::api;
+use crate::kernel::uapi;
 use crate::kernel::task::manager;
-use crate::{copy_to_user, kinfo};
+use crate::arch;
 
 use super::SyscallRet;
 
@@ -18,7 +19,7 @@ bitflags! {
     }
 }
 
-pub fn pipe(uptr_pipefd: usize, flags: usize) -> SyscallRet {
+pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     let flags = PipeFlags::from_bits_truncate(flags);
     let fd_flags = FDFlags{
         cloexec: flags.contains(PipeFlags::O_CLOEXEC),
@@ -35,9 +36,7 @@ pub fn pipe(uptr_pipefd: usize, flags: usize) -> SyscallRet {
         write_fd = fdtable.push(write_end, fd_flags)?;
     }
 
-    copy_to_user!(
-        uptr_pipefd, [read_fd as i32, write_fd as i32]
-    )?;
+    uptr_pipefd.write(0, &[read_fd as i32, write_fd as i32])?;
 
     Ok(0)
 }
@@ -58,20 +57,19 @@ pub fn rt_sigprocmask(_how: usize, _set: usize, _oldset: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn rt_sigaction(signum: usize, uptr_act: usize, uptr_oldact: usize, sigsetsize: usize) -> SyscallRet {
-    assert!(sigsetsize == core::mem::size_of::<api::sigset_t>());
+pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact: UPtr<uapi::Sigaction>, sigsetsize: usize) -> SyscallRet {
+    assert!(sigsetsize == core::mem::size_of::<SignalSet>());
 
     let signum = signum as u32;
 
     let mut signal_actions = current::signal_actions().lock();
-    if uptr_oldact != 0 {
+    if !uptr_oldact.is_null() {
         let old_action = signal_actions.get(signum);
-        let old_action: api::Sigaction = old_action.into();
-        copy_to_user!(uptr_oldact, old_action)?;
+        uptr_oldact.write(old_action.into())?;
     }
 
-    if uptr_act != 0 {
-        let new_action = current::copy_from_user_type::<api::Sigaction>(uptr_act)?;
+    if !uptr_act.is_null() {
+        let new_action = uptr_act.read()?;
         signal_actions.set(signum, &new_action.into())?;
     }
 
@@ -80,6 +78,5 @@ pub fn rt_sigaction(signum: usize, uptr_act: usize, uptr_oldact: usize, sigsetsi
 
 pub fn rt_sig_return() -> SyscallRet {
     current::tcb().return_from_signal();
-    kinfo!("rt_sig_return called");
-    Ok(0)
+    arch::return_to_user();
 }

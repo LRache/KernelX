@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::driver::block::BlockDriver;
+use crate::driver::{DeviceType, DriverMatcher, DriverOps, Device};
 
 use super::inner::VirtIOBlockDriverInner;
 
@@ -14,6 +15,20 @@ pub struct VirtIOBlockDriver {
 impl VirtIOBlockDriver {
     pub fn new(inner: Arc<VirtIOBlockDriverInner>) -> Self {
         Self { inner }
+    }
+}
+
+impl DriverOps for VirtIOBlockDriver {
+    fn name(&self) -> &str {
+        "virtio_blk_driver"
+    }
+
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Block
+    }
+
+    fn as_block_driver(self: Box<Self>) -> Box<dyn BlockDriver> {
+        self
     }
 }
 
@@ -108,5 +123,15 @@ impl BlockDriver for VirtIOBlockDriver {
 
     fn get_block_count(&self) -> u64 {
         self.inner.capacity()
+    }
+}
+
+pub struct VirtIOBlockDriverMatcher;
+
+impl DriverMatcher for VirtIOBlockDriverMatcher {
+    fn try_match(&self, device: &Device) -> Option<Box<dyn DriverOps>> {
+        if device.typename == "virtio_mmio" && device.compatible == "virtio,mmio" {
+            
+        }
     }
 }

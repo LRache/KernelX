@@ -1,14 +1,13 @@
 use core::usize;
 use alloc::vec::Vec;
-
 use bitflags::bitflags;
 
 use crate::fs::file::FileFlags;
 use crate::fs::vfs;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::current;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::{copy_to_user, copy_to_user_string};
 
 pub fn sched_yield() -> Result<usize, Errno> {
     current::schedule();
@@ -56,40 +55,37 @@ pub fn clone(flags: usize, stack: usize, _uptr_parent_tid: usize, _tls: usize, u
     Ok(child.get_tid() as usize)
 }
 
-pub fn execve(user_path: usize, user_argv: usize, user_envp: usize) -> Result<usize, Errno> {
-    let path = current::get_user_string(user_path)?;
+pub fn execve(uptr_path: usize, uptr_argv: usize, uptr_envp: usize) -> Result<usize, Errno> {
+    // let path = current::get_user_string(user_path)?;
+    let path = copy_from_user::string(uptr_path)?;
     let file = current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare()))?;
 
     let mut argv = Vec::new();
     let mut envp = Vec::new();
-
-    let addrspace = current::addrspace();
         
-    if user_argv != 0 {
-        let mut argv_ptr = user_argv;
+    if uptr_argv != 0 {
+        let mut argv_ptr = uptr_argv;
         loop {
-            let mut buf = [0u8; core::mem::size_of::<usize>()];
-            addrspace.copy_from_user(argv_ptr, &mut buf)?;
-            let ptr = usize::from_le_bytes(buf);
+            let ptr: usize = copy_from_user::object(argv_ptr)?;
             if ptr == 0 {
                 break;
             }
-            let arg = addrspace.get_user_string(ptr)?;
+            // let arg = current::get_user_string(ptr)?;
+            let arg = copy_from_user::string(ptr)?;
             argv.push(arg);
             argv_ptr += core::mem::size_of::<usize>();
         }
     }
         
-    if user_envp != 0 {
-        let mut envp_ptr = user_envp;
+    if uptr_envp != 0 {
+        let mut envp_ptr = uptr_envp;
         loop {
-            let mut buf = [0u8; core::mem::size_of::<usize>()];
-            addrspace.copy_from_user(envp_ptr, &mut buf)?;
-            let ptr = usize::from_le_bytes(buf);
+            // let ptr = current::copy_from_user::<usize>(envp_ptr)?;
+            let ptr: usize = copy_from_user::object(envp_ptr)?;
             if ptr == 0 {
                 break;
             }
-            let env = addrspace.get_user_string(ptr)?;
+            let env = copy_from_user::string(ptr)?;
             envp.push(env);
             envp_ptr += core::mem::size_of::<usize>();
         }
@@ -97,9 +93,6 @@ pub fn execve(user_path: usize, user_argv: usize, user_envp: usize) -> Result<us
 
     let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
     let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
-
-    // print argv
-    // kinfo!("execve: path='{}', argv={:?}, envp={:?}", path, argv_ref, envp_ref);
 
     current::pcb().exec(&current::tcb(), file, &argv_ref, &envp_ref)?;
 
@@ -115,7 +108,7 @@ bitflags! {
     }
 }
 
-pub fn wait4(pid: usize, user_status: usize, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
+pub fn wait4(pid: usize, uptr_status: usize, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
     let options = WaitOptions::from_bits(options).unwrap_or(WaitOptions::empty());
     let pid = pid as isize;
@@ -139,9 +132,10 @@ pub fn wait4(pid: usize, user_status: usize, options: usize, _user_rusages: usiz
         }
     }
 
-    if user_status != 0 {
+    if uptr_status != 0 {
         let status: u32 = (exit_code as u32 & 0xff) << 8; // WEXITSTATUS
-        copy_to_user!(user_status, status)?;
+        // copy_to_user!(user_status, status)?;
+        copy_to_user::object(uptr_status, status)?;
     }
 
     Ok(wait_pid as usize)
@@ -173,13 +167,14 @@ pub fn set_tid_address(tid_address: usize) -> Result<usize, Errno> {
 
 pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {
     let cwd = current::with_cwd(|dentry| dentry.get_path());
-    copy_to_user_string!(ubuf, cwd, size)
+    // copy_to_user_string!(ubuf, cwd, size)
+    // current::copy_to_user_string(ubuf, &cwd, size)
+    copy_to_user::string(ubuf, &cwd, size)
 }
 
 pub fn chdir(user_path: usize) -> SysResult<usize> {
-    let path = current::get_user_string(user_path)?;
+    let path = copy_from_user::string(user_path)?;
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
     current::pcb().set_cwd(&dentry);
-    // kinfo!("Changed working directory to {}", dentry.get_path());
     Ok(0)
 }

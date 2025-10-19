@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use core::cell::UnsafeCell;
+use alloc::vec;
 use spin::Mutex;
 
 use crate::kernel::scheduler::current;
@@ -13,8 +13,9 @@ use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
-use crate::fs::file::File;
+use crate::fs::file::{File, FileFlags};
 use crate::fs::vfs;
+use crate::klib::SpinMutex;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::{arch, kdebug, kinfo, ktrace};
 
@@ -61,7 +62,7 @@ pub struct TCB {
     pub signal_mask: Mutex<SignalSet>,
     pub pending_signal: Mutex<Option<PendingSignal>>,
 
-    state: Mutex<TaskStateSet>,
+    state: SpinMutex<TaskStateSet>,
 }
 
 impl TCB {
@@ -100,7 +101,7 @@ impl TCB {
             signal_mask: Mutex::new(0),
             pending_signal: Mutex::new(None),
             
-            state: Mutex::new(TaskStateSet::new()),
+            state: SpinMutex::new(TaskStateSet::new()),
         });
 
         tcb
@@ -198,6 +199,29 @@ impl TCB {
         argv: &[&str],
         envp: &[&str],
     ) -> Result<Arc<Self>, Errno> {
+        // Read the shebang
+        let mut first_line = [0u8; 128];
+        let n = file.read_at(&mut first_line, 0)?;
+        let first_line = core::str::from_utf8(&first_line[..n]).unwrap_or("");
+        let first_line = first_line.lines().next().unwrap_or("");
+        let first_line = first_line.trim_end_matches('\n');
+        if first_line.starts_with("#!") {
+            let shebang = first_line.trim_start_matches("#!").trim();
+            let mut parts = shebang.split_whitespace();
+            if let Some(interpreter) = parts.next() {
+                let mut new_argv = vec![interpreter];
+                for part in parts {
+                    new_argv.push(part);
+                }
+                for arg in argv {
+                    new_argv.push(arg);
+                }
+
+                let interpreter_file = vfs::open_file(interpreter, FileFlags::dontcare())?;
+                return self.new_exec(interpreter_file, &new_argv, envp);
+            }
+        }
+
         let file = Arc::new(file);
         
         let mut addrspace = AddrSpace::new();
@@ -324,7 +348,7 @@ impl TCB {
         state.state = TaskState::Running;
     }
 
-    pub fn state(&self) -> &Mutex<TaskStateSet> {
+    pub fn state(&self) -> &SpinMutex<TaskStateSet> {
         &self.state
     }
 

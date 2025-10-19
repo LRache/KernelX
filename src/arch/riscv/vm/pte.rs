@@ -2,9 +2,9 @@ use bitflags::bitflags;
 use core::ptr::NonNull;
 use core::fmt;
 
-use crate::arch::riscv::{PGBITS, PGMASK};
-use crate::kernel::mm::{self, MapPerm};
-use crate::{platform, println};
+use crate::kernel::mm::MapPerm;
+use crate::kernel::mm;
+use crate::arch::riscv::{PGBITS, PGMASK, KADDR_OFFSET};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Addr(usize);
@@ -15,15 +15,7 @@ impl Addr {
     }
 
     pub fn from_paddr(paddr: usize) -> Self {
-        // Addr(paddr + platform::config::KERNEL_VADDR_OFFSET)
-        let addr = paddr.checked_add(platform::config::KERNEL_VADDR_OFFSET);
-        match addr {
-            Some(addr) => Addr(addr),
-            None => {
-                println!("Address overflow when converting paddr to Addr: 0x{:x}", paddr);
-                panic!("Address overflow");
-            }
-        }
+        Addr(paddr + KADDR_OFFSET)
     }
 
     pub const fn from_kaddr(kaddr: usize) -> Self {
@@ -35,7 +27,7 @@ impl Addr {
     }
 
     pub fn paddr(self) -> usize {
-        self.0 - platform::config::KERNEL_VADDR_OFFSET
+        self.0 - KADDR_OFFSET
     }
 
     pub const fn kaddr(self) -> usize {
@@ -59,7 +51,7 @@ impl Addr {
     }
 
     pub fn ppn(self) -> PPN {
-        assert!(self.paddr() < 0x88000000, "PPN out of range: 0x{:x}", self.paddr());
+        // debug_assert!(self.paddr() <= 0x88000000, "PPN out of range: 0x{:x}", self.paddr());
         PPN::new(self.paddr() >> PGBITS)
     }
 
@@ -87,7 +79,6 @@ pub struct PPN {
 
 impl PPN {
     pub fn new(ppn: usize) -> Self {
-        // assert!((ppn << PGBITS) < 0x88000000, "PPN out of range: 0x{:x}", ppn);
         PPN { ppn }
     }
 
@@ -96,7 +87,7 @@ impl PPN {
     }
 
     pub fn to_paddr(self) -> usize {
-        assert!((self.ppn << PGBITS) < 0x88000000, "PPN out of range: 0x{:x}", self.ppn);
+        // debug_assert!((self.ppn << PGBITS) < 0x88000000, "PPN out of range: 0x{:x}", self.ppn);
         self.ppn << PGBITS
     }
 
@@ -160,10 +151,6 @@ impl PTE {
         Self::from_ptr(NonNull::new(ptr).expect("PTE pointer cannot be null"))
     }
 
-    pub const fn pte(&self) -> usize {
-        self.pte
-    }
-
     pub const fn flags(&self) -> PTEFlags {
         PTEFlags::from_bits_truncate((self.pte & 0x1ff) as u16)
     }
@@ -201,10 +188,6 @@ impl PTE {
 
     pub const fn is_valid(self) -> bool {
         self.flags().contains(PTEFlags::V)
-    }
-
-    pub const fn dont_clone(self) -> bool {
-        self.flags().contains(PTEFlags::N)
     }
 }
 

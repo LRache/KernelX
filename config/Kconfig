@@ -93,7 +93,7 @@ config COMPILE_MODE
 
 endmenu
 
-menu "Logging Configuration"
+menu "Debug Configuration"
 
 choice
 	prompt "Log Level"
@@ -142,6 +142,12 @@ config LOG_SYSCALL
 	default n
 	help
 	  Enable detailed tracing of all system calls.
+
+config WARN_UNIMPLEMENTED_SYSCALL
+	bool "Warn on Unimplemented Syscalls"
+	default y
+	help
+	  Enable warnings for unimplemented syscalls.
 
 endmenu
 

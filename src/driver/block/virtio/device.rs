@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::driver::block::{BlockDevice, BlockDriver};
@@ -19,7 +18,7 @@ impl VirtIOBlockDevice {
 }
 
 impl BlockDevice for VirtIOBlockDevice {
-    fn name(&self) -> String {
+    fn name(&self) -> &str {
         "virtio_blk".into()
     }
 

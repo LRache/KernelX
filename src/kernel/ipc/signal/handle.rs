@@ -1,12 +1,13 @@
 use alloc::sync::Arc;
 
 use crate::arch::UserContextTrait;
+use crate::kernel::config;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
+use crate::kernel::mm::vdso;
 use crate::kernel::task::{TCB, PCB, Tid};
 use crate::kernel::scheduler::current;
 use crate::kernel::errno::{SysResult, Errno};
-use crate::kinfo;
 
 use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};
 
@@ -22,6 +23,7 @@ impl TCB {
         if signum == 0 {
             return;
         }
+        
         if signum == SignalNum::SIGKILL as u32 || signum == SignalNum::SIGSTOP as u32 {
             self.parent.exit(0);
             current::schedule();
@@ -38,8 +40,10 @@ impl TCB {
 
                     unreachable!();
                 },
-                _ => {},
+                _ => return
             }
+        } else if action.is_ignore() {
+            return;
         }
 
         let old_mask = self.get_signal_mask();
@@ -55,25 +59,24 @@ impl TCB {
         sigframe.info.si_errno = 0;
         sigframe.ucontext.uc_sigmask = old_mask;
         sigframe.ucontext.uc_mcontext = (*self.user_context()).into();
-
-        // self.user_context().set_sigaction_restorer(action.restorer).set_user_entry(action.handler);
-        self.user_context().set_user_entry(action.handler);
-
-        // kinfo!("Deliver signal {} to task {}, handler={:#x}, restorer={:#x}", signum, self.tid, action.handler, action.restorer);
+        
+        self.user_context()
+            .set_sigaction_restorer(vdso::addr_of("sigreturn_trampoline") + config::VDSO_BASE)
+            .set_user_entry(action.handler);
         
         let mut stack_top = self.user_context().get_user_stack_top();
         stack_top -= core::mem::size_of::<SigFrame>();
         stack_top &= !0xf; // Align to 16 bytes
-        self.get_addrspace().copy_to_user(stack_top, unsafe {
-            core::slice::from_raw_parts((&sigframe as *const SigFrame) as *const u8, core::mem::size_of::<SigFrame>())
-        }).expect("Failed to copy sigframe to user stack");
+        self.get_addrspace().copy_to_user_object(stack_top, sigframe).expect("Failed to copy sigframe to user stack");
         self.user_context().set_user_stack_top(stack_top);
     }
 
     pub fn return_from_signal(&self) {
-        let sigframe = self.get_addrspace().copy_from_user_type::<SigFrame>(self.user_context().get_user_stack_top())
+        let sigframe = self.get_addrspace().copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
             .expect("Failed to copy sigframe from user stack");
-    }
+        // kinfo!("return from signal for task {}, ucontext={:?}", self.tid, sigframe.ucontext.uc_mcontext);
+        self.user_context().restore_from_signal(&sigframe.ucontext.uc_mcontext);
+    }  
 
     pub fn send_pending_signal(self: &Arc<Self>, pending: PendingSignal) -> bool {
         let mut task_pending = self.pending_signal.lock();
@@ -85,7 +88,6 @@ impl TCB {
         if SignalNum::is_unignorable(signum) {
             *task_pending = Some(pending);
             self.wakeup(Event::Signal);
-            kinfo!("Send unignorable signal {} to task {}", signum, self.tid);
 
             return true;
         }

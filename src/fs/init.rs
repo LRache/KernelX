@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 
 use crate::fs::vfs;
-use crate::fs::memfs::MemoryFileSystem;
+// use crate::fs::memfs::MemoryFileSystem;
 use crate::fs::ext4::Ext4FileSystem;
 use crate::fs::devfs::DevFileSystem;
 use crate::driver;
@@ -14,7 +14,7 @@ pub fn init() {
     vfs::init();
 
     vfs::register_filesystem("devfs", Box::new(DevFileSystem::new())).unwrap();
-    vfs::register_filesystem("memfs", Box::new(MemoryFileSystem::new())).unwrap();
+    // vfs::register_filesystem("memfs", Box::new(MemoryFileSystem::new())).unwrap();
     vfs::register_filesystem("ext4", Box::new(Ext4FileSystem::new())).unwrap();
 
     kinfo!("File systems registered successfully.");

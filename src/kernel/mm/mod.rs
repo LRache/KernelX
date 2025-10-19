@@ -2,7 +2,7 @@ pub mod page;
 pub mod elf;
 mod frame;
 mod addrspace;
-mod vdso;
+pub mod vdso;
 pub mod maparea;
 
 pub use addrspace::*;
@@ -25,4 +25,9 @@ bitflags! {
         const X = 1 << 2;
         const U = 1 << 3;
     }
+}
+
+pub fn init() {
+    page::init();
+    vdso::init();
 }
