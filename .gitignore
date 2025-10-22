@@ -56,6 +56,9 @@ compile_commands.json
 
 *.dts
 *.dtb
+kernel.asm
+
+.cache
 
 /sdcard-*
 

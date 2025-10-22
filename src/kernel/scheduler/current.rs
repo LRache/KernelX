@@ -6,75 +6,9 @@ use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::task::fdtable::FDTable;
-use crate::kernel::scheduler::Processor;
+use crate::kernel::scheduler::{current, Processor};
 use crate::arch;
 use crate::fs::Dentry;
-
-// #[macro_export]
-// macro_rules! copy_to_user {
-//     ($uaddr:expr, $data:expr) => {
-//         {
-//             let data_ptr = &$data as *const _ as *const u8;
-//             let data_size = core::mem::size_of_val(&$data);
-//             let data_slice = unsafe { core::slice::from_raw_parts(data_ptr, data_size) };
-//             $crate::kernel::scheduler::current::copy_to_user($uaddr, data_slice)
-//         }
-//     };
-// }
-
-// #[macro_export]
-// macro_rules! copy_to_user_ref {
-//     ($uaddr:expr, $data_ref:expr) => {
-//         {
-//             let data_ptr = $data_ref as *const _ as *const u8;
-//             let data_size = core::mem::size_of_val($data_ref);
-//             let data_slice = unsafe { core::slice::from_raw_parts(data_ptr, data_size) };
-//             $crate::kernel::scheduler::current::copy_to_user($uaddr, data_slice)
-//         }
-//     };
-// }
-
-// #[macro_export]
-// macro_rules! copy_slice_to_user {
-//     ($uaddr:expr, $slice:expr) => {
-//         {
-//             let slice = $slice;
-//             let byte_slice = unsafe {
-//                 core::slice::from_raw_parts(
-//                     slice.as_ptr() as *const u8,
-//                     core::mem::size_of_val(slice),
-//                 )
-//             };
-//             $crate::kernel::scheduler::current::copy_to_user($uaddr, byte_slice)
-//         }
-//     };
-// }
-
-
-// #[macro_export]
-// macro_rules! copy_to_user_string {
-//     ($uaddr:expr, $buf:expr, $size:expr) => {
-//         (|| -> $crate::kernel::errno::SysResult<usize> {
-//             let bytes = $buf.as_bytes();
-//             let len = core::cmp::min(bytes.len(), $size - 1);
-//             $crate::kernel::scheduler::current::copy_to_user($uaddr, bytes)?;
-//             $crate::kernel::scheduler::current::copy_to_user($uaddr + len, &[0u8])?;
-//             Ok(len)
-//         })()
-//     };
-// }
-
-// #[macro_export]
-// macro_rules! copy_from_user {
-//     ($uaddr:expr, $data:expr) => {
-//         {
-//             let data_ptr = &$data as *const _ as *mut u8;
-//             let data_size = core::mem::size_of_val(&$data);
-//             let data_slice = unsafe { core::slice::from_raw_parts_mut(data_ptr, data_size) };
-//             $crate::kernel::scheduler::current::copy_from_user_buffer($uaddr, data_slice)
-//         }
-//     };
-// }
 
 pub fn processor() -> &'static mut Processor<'static> {
     let p = arch::get_percpu_data() as *mut Processor;
@@ -193,4 +127,11 @@ pub fn schedule() {
 pub fn block(reason: &'static str) {
     tcb().block(reason);
     schedule();
+}
+
+pub fn kernel_stack_used() -> usize {
+    if is_clear() {
+        return 0;
+    }
+    current::tcb().get_kernel_stack_top() - arch::get_kernel_stack_top()
 }

@@ -1,24 +1,14 @@
 mod virtio;
-mod starfive_mmc;
-
-use alloc::string::String;
-use alloc::boxed::Box;
+// mod starfive_mmc;
 
 pub use virtio::*;
-pub use starfive_mmc::*;
+// pub use starfive_mmc::*;
 
 use crate::driver::DriverOps;
 
 use downcast_rs::{impl_downcast, Downcast};
 
-pub trait BlockDevice {
-    fn name(&self) -> &str;
-    fn driver(&self) -> Box<dyn BlockDriver>;
-}
-
-pub trait BlockDriver: DriverOps + Downcast {
-    fn clone_boxed(&self) -> Box<dyn BlockDriver>;
-    
+pub trait BlockDriver: DriverOps + Downcast {    
     fn open(&mut self) -> Result<(), ()> {
         Ok(())
     }

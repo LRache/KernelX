@@ -52,6 +52,7 @@ impl<T, R: LockTrait> Mutex<T, R> {
         }
         
         self.lock.lock();
+        
         LockGuard {
             data: unsafe { &mut *self.data.get() },
             mutex: self,

@@ -1,6 +1,7 @@
 use crate::kernel::mm::page;
 use crate::{arch, safe_page_write};
 
+#[derive(Debug)]
 pub struct PhysPageFrame {
     page: usize,
 }

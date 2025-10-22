@@ -1,20 +1,27 @@
-use alloc::boxed::Box;
+use alloc::format;
 use alloc::sync::Arc;
+use alloc::string::String;
+use virtio_drivers::device::blk::VirtIOBlk;
+use virtio_drivers::transport::mmio::MmioTransport;
 
 use crate::driver::block::BlockDriver;
-use crate::driver::{DeviceType, DriverMatcher, DriverOps, Device};
-
-use super::inner::VirtIOBlockDriverInner;
+use crate::driver::{DeviceType, DriverOps};
+use crate::driver::virtio::VirtIOHal;
+use crate::klib::SpinMutex;
 
 const BLOCK_SIZE: usize = 512;
 
 pub struct VirtIOBlockDriver {
-    inner: Arc<VirtIOBlockDriverInner>,
+    num: u32,
+    driver: SpinMutex<VirtIOBlk<VirtIOHal, MmioTransport>>
 }
 
 impl VirtIOBlockDriver {
-    pub fn new(inner: Arc<VirtIOBlockDriverInner>) -> Self {
-        Self { inner }
+    pub fn new(num: u32, transport: MmioTransport) -> Self {
+        Self {
+            num,
+            driver: SpinMutex::new(VirtIOBlk::new(transport).unwrap())
+        }
     }
 }
 
@@ -23,26 +30,26 @@ impl DriverOps for VirtIOBlockDriver {
         "virtio_blk_driver"
     }
 
+    fn device_name(&self) -> String {
+        format!("virtio_block{}", self.num)
+    }
+
     fn device_type(&self) -> DeviceType {
         DeviceType::Block
     }
 
-    fn as_block_driver(self: Box<Self>) -> Box<dyn BlockDriver> {
+    fn as_block_driver(self: Arc<Self>) -> Arc<dyn BlockDriver> {
         self
     }
 }
 
 impl BlockDriver for VirtIOBlockDriver {
-    fn clone_boxed(&self) -> Box<dyn BlockDriver> {
-        Box::new(VirtIOBlockDriver::new(self.inner.clone()))
-    }
-
     fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()> {
-        self.inner.read_blocks(block, buf).map_err(|_| ())
+        self.driver.lock().read_blocks(block, buf).map_err(|_| ())
     }
 
     fn write_block(&self, block: usize, buf: &[u8]) -> Result<(), ()> {
-        self.inner.write_blocks(block, buf).map_err(|_| ())
+        self.driver.lock().write_blocks(block, buf).map_err(|_| ())
     }
 
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<(), ()> {
@@ -122,16 +129,6 @@ impl BlockDriver for VirtIOBlockDriver {
     }
 
     fn get_block_count(&self) -> u64 {
-        self.inner.capacity()
-    }
-}
-
-pub struct VirtIOBlockDriverMatcher;
-
-impl DriverMatcher for VirtIOBlockDriverMatcher {
-    fn try_match(&self, device: &Device) -> Option<Box<dyn DriverOps>> {
-        if device.typename == "virtio_mmio" && device.compatible == "virtio,mmio" {
-            
-        }
+        self.driver.lock().capacity()
     }
 }

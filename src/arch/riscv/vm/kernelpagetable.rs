@@ -1,10 +1,11 @@
 use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 
 use crate::kernel::mm::MapPerm;
 use crate::arch::riscv::{PageTable, PGSIZE};
-use crate::arch::{PageTableTrait, KADDR_OFFSET};
-use crate::platform::config::{KERNEL_PMEM_TOP, TRAMPOLINE_BASE};
-use crate::println;
+use crate::arch::{self, kaddr_to_paddr, PageTableTrait};
+use crate::platform::config::TRAMPOLINE_BASE;
+use crate::{kinfo, println};
 
 unsafe extern "C" {
     static __text_start: u8;
@@ -17,30 +18,31 @@ unsafe extern "C" {
     static __bss_end: u8;
     static __stack_start: u8;
     static __stack_end: u8;
-    static __heap_start: u8;
-    static __heap_end: u8;
     static __trampoline_start: u8;
 }
 
-struct KernelPageTable(UnsafeCell<PageTable>);
+unsafe extern "C" {
+    static __riscv_kpgtable_root: usize;
+    static __riscv_kaddr_offset: usize;
+}
 
-
-unsafe impl Send for KernelPageTable {}
-unsafe impl Sync for KernelPageTable {}
+struct KernelPageTable(UnsafeCell<MaybeUninit<PageTable>>);
 
 impl KernelPageTable {
     const fn new() -> Self {
-        KernelPageTable(UnsafeCell::new(PageTable::new()))
+        KernelPageTable(UnsafeCell::new(MaybeUninit::zeroed()))
+    }
+
+    fn init(&self, pagetable: PageTable) {
+        unsafe { (*self.0.get()).write(pagetable); }
     }
     
     fn get_mut(&self) -> &mut PageTable {
-        unsafe { &mut *self.0.get() }
-    }
-    
-    fn get(&self) -> &PageTable {
-        unsafe { &*self.0.get() }
+        unsafe { (*self.0.get()).assume_init_mut() }
     }
 }
+
+unsafe impl Sync for KernelPageTable {}
 
 struct KernelPageTableSatp(UnsafeCell<usize>);
 
@@ -68,52 +70,45 @@ fn map_kernel_range(start: *const u8, end: *const u8, perm: MapPerm) {
     
     let pagetable = KERNEL_PAGETABLE.get_mut();
     while vaddr < end {
-        let paddr = vaddr;
-        pagetable.mmap(vaddr, paddr, perm);
+        let paddr = kaddr_to_paddr(vaddr);
+        pagetable.mmap_paddr(vaddr, paddr, perm);
         vaddr += PGSIZE;
     }
 }
 
-
 pub fn init() {
-    let pagetable = KERNEL_PAGETABLE.get_mut();
-    pagetable.create();
+    kinfo!("root=0x{:x}, offset=0x{:x}", unsafe { __riscv_kpgtable_root }, core::ptr::addr_of!(__riscv_kaddr_offset) as usize);
+    let mut pagetable = PageTable::from_root(unsafe { __riscv_kpgtable_root });
 
-    map_kernel_range(
-        core::ptr::addr_of!(__text_start), 
-        core::ptr::addr_of!(__text_end), 
-        MapPerm::R | MapPerm::X
-    );
+    // map_kernel_range(
+    //     core::ptr::addr_of!(__text_start), 
+    //     core::ptr::addr_of!(__text_end), 
+    //     MapPerm::R | MapPerm::X
+    // );
 
-    map_kernel_range(
-        core::ptr::addr_of!(__rodata_start), 
-        core::ptr::addr_of!(__rodata_end), 
-        MapPerm::R
-    );
+    // map_kernel_range(
+    //     core::ptr::addr_of!(__rodata_start), 
+    //     core::ptr::addr_of!(__rodata_end), 
+    //     MapPerm::R
+    // );
 
-    map_kernel_range(
-        core::ptr::addr_of!(__data_start), 
-        core::ptr::addr_of!(__bss_end), 
-        MapPerm::R | MapPerm::W
-    );
+    // map_kernel_range(
+    //     core::ptr::addr_of!(__data_start), 
+    //     core::ptr::addr_of!(__bss_end), 
+    //     MapPerm::R | MapPerm::W
+    // );
 
-    map_kernel_range(
-        core::ptr::addr_of!(__stack_start), 
-        core::ptr::addr_of!(__stack_end), 
-        MapPerm::R | MapPerm::W
-    );
+    // map_kernel_range(
+    //     core::ptr::addr_of!(__stack_start), 
+    //     core::ptr::addr_of!(__stack_end), 
+    //     MapPerm::R | MapPerm::W
+    // );
 
-    map_kernel_range(
-        core::ptr::addr_of!(__heap_start), 
-        core::ptr::addr_of!(__heap_end), 
-        MapPerm::R | MapPerm::W
-    );
-
-    map_kernel_range(
-        core::ptr::addr_of!(__heap_end), 
-        (KERNEL_PMEM_TOP + KADDR_OFFSET) as *const u8, 
-        MapPerm::R | MapPerm::W
-    );
+    // map_kernel_range(
+    //     core::ptr::addr_of!(__stack_end), 
+    //     (KERNEL_PMEM_TOP + KADDR_OFFSET) as *const u8, 
+    //     MapPerm::R | MapPerm::W
+    // );
 
     pagetable.mmap(
         TRAMPOLINE_BASE,
@@ -127,11 +122,12 @@ pub fn init() {
         MapPerm::R | MapPerm::W
     );
 
-    pagetable.apply(); 
+    // pagetable.apply(); 
 
     KERNEL_SATP.set(pagetable.get_satp());
+    KERNEL_PAGETABLE.init(pagetable);
 }
 
 pub fn get_kernel_satp() -> usize {
-    KERNEL_PAGETABLE.get().get_satp()
+    KERNEL_PAGETABLE.get_mut().get_satp()
 }

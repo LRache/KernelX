@@ -6,13 +6,14 @@ ifeq ($(ARCH),)
 $(error ARCH is not set)
 endif
 
-include $(KERNELX_HOME)/scripts/flags/${ARCH}${ARCH_BITS}.env
+include $(KERNELX_HOME)/scripts/env/${ARCH}${ARCH_BITS}.env
 
 CC=clang
 
 BUILD_DIR = build/$(ARCH)${ARCH_BITS}
 VDSOLIB_BUILD_DIR = $(BUILD_DIR)/lib
-VDSO_TARGET = $(VDSOLIB_BUILD_DIR)/libvdso.so
+VDSOLIB_TARGET = $(VDSOLIB_BUILD_DIR)/libvdso.so
+SYM_TARGET = $(BUILD_DIR)/symbols.inc
 OBJ_TARGET = $(BUILD_DIR)/vdso.o
 
 CMAKE_DEFINITIONS += ARCH=$(ARCH)
@@ -22,14 +23,16 @@ CMAKE_FLAGS += $(addprefix -D, $(CMAKE_DEFINITIONS))
 
 all: $(OBJ_TARGET)
 
-$(OBJ_TARGET): vdso
+$(OBJ_TARGET): $(VDSOLIB_TARGET) $(SYM_TARGET)
 	@ mkdir -p $(BUILD_DIR)
 	@ $(CC) $(CFLAGS) $(ARCH_COMMON_FLAGS) -c vdso.S -o $@ -DVDSO=\"$(VDSO_TARGET)\"
 
-vdso:
+$(VDSOLIB_TARGET):
 	@ mkdir -p $(VDSOLIB_BUILD_DIR)
 	@ cmake -B $(VDSOLIB_BUILD_DIR) $(CMAKE_FLAGS)
 	@ cmake --build $(VDSOLIB_BUILD_DIR)
-	@ python3 scripts/symbols.py --input $(BUILD_DIR)/lib/libvdso.so --output $(BUILD_DIR)/symbols.inc
+
+$(SYM_TARGET): $(VDSOLIB_TARGET)
+	@ python3 scripts/symbols.py --input $< --output $@
 
 .PHONY: all elf

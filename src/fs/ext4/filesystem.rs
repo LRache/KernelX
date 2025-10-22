@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::kernel::errno::Errno;
@@ -15,7 +14,7 @@ impl Ext4FileSystem {
 }
 
 impl FileSystem for Ext4FileSystem {
-    fn create(&self, sno: u32, driver: Option<Box<dyn BlockDriver>>) -> Result<Arc<dyn SuperBlock>, Errno> {
+    fn create(&self, sno: u32, driver: Option<Arc<dyn BlockDriver>>) -> Result<Arc<dyn SuperBlock>, Errno> {
         Ok(Ext4SuperBlock::new(sno, driver.unwrap())?)
     }
 }

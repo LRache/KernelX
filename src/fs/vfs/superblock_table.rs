@@ -17,7 +17,7 @@ impl SuperBlockTable {
         }
     }
 
-    pub fn alloc(&mut self, fs: &Box<dyn FileSystem>, driver: Option<Box<dyn BlockDriver>>) -> SysResult<u32> {
+    pub fn alloc(&mut self, fs: &Box<dyn FileSystem>, driver: Option<Arc<dyn BlockDriver>>) -> SysResult<u32> {
         let sno = self.table.len();
         let superblock = fs.create(sno as u32, driver)?;
         self.table.push(Some(superblock));

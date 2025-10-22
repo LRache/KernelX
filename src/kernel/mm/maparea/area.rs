@@ -6,6 +6,7 @@ use crate::kernel::mm::{MemAccessType, MapPerm};
 use crate::kernel::mm::PhysPageFrame;
 use crate::arch::PageTable;
 
+#[derive(Debug)]
 pub enum Frame {
     Unallocated,
     Allocated(Arc<PhysPageFrame>),

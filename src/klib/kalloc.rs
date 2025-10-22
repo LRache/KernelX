@@ -7,9 +7,6 @@ unsafe extern "C" {
     fn init_heap(start: *mut c_void, size: usize);
     fn malloc_aligned(align: usize, size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
-
-    static __heap_start: u8;
-    static __heap_end: u8;
 }
 
 struct HeapAllocator {
@@ -23,16 +20,9 @@ impl HeapAllocator {
         }
     }
 
-    pub fn init(&self) {
+    pub fn init(&self, heap_start: usize, heap_size: usize) {
         unsafe {
-            let heap_start = core::ptr::addr_of!(__heap_start) as *mut c_void;
-            let heap_end = core::ptr::addr_of!(__heap_end) as *mut c_void;
-            let heap_size = heap_end as usize - heap_start as usize;
-
-            println!("Initializing heap: 0x{:x} - 0x{:x} (size: {} bytes)", 
-                    heap_start as usize, heap_end as usize, heap_size);
-
-            init_heap(heap_start, heap_size);
+            init_heap(heap_start as *mut c_void, heap_size);
             println!("Heap initialized successfully!");
         }
     }
@@ -53,19 +43,6 @@ unsafe impl GlobalAlloc for HeapAllocator {
 #[global_allocator]
 static ALLOCATOR: HeapAllocator = HeapAllocator::new();
 
-// #[global_allocator]
-// static ALLOCATOR: LockedHeap<32> = LockedHeap::new();
-
-// #[alloc_error_handler]
-// fn alloc_error_handler(layout: Layout) -> ! {
-//     println!("Allocation error: {:?}", layout);
-//     panic!("Heap allocation failed");
-// }
-
-pub fn init() {
-    ALLOCATOR.init();
-    // let start = addr_of!(__heap_start) as usize;
-    // let end = addr_of!(__heap_end) as usize;
-    // let size = end - start;
-    // unsafe { ALLOCATOR.lock().init(start, size) };
+pub fn init(heap_start: usize, heap_size: usize) {
+    ALLOCATOR.init(heap_start, heap_size);
 }

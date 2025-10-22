@@ -27,7 +27,7 @@ impl PageAllocator {
         match self.freed.pop_back() {
             Some(page) => page,
             None => {
-                assert!(self.top < 0xffffffff88000000, "Page top overflow: {:#x}", self.top);
+                debug_assert!(self.top < 0xffffffff88000000, "Page top overflow: {:#x}", self.top);
                 let page = self.top;
                 self.top += arch::PGSIZE;
                 page
@@ -42,9 +42,9 @@ impl PageAllocator {
     }
 
     pub fn free(&mut self, addr: usize) {
-        assert!(addr % arch::PGSIZE == 0, "Address must be page-aligned: {:#x}", addr);
-        assert!(addr >= self.bottom && addr < self.top, "Attempted to free an invalid address: {:#x}", addr);
-        assert!(self.freed.iter().find(|&x| *x == addr).is_none(), "Address {:#x} is already freed", addr);
+        debug_assert!(addr % arch::PGSIZE == 0, "Address must be page-aligned: {:#x}", addr);
+        debug_assert!(addr >= self.bottom && addr < self.top, "Attempted to free an invalid address: {:#x}", addr);
+        debug_assert!(self.freed.iter().find(|&x| *x == addr).is_none(), "Address {:#x} is already freed", addr);
 
         // fill freed page with 0xff in debug mode
         if cfg!(debug_assertions) {
@@ -57,12 +57,9 @@ impl PageAllocator {
 
 static ALLOCATOR: Mutex<PageAllocator> = Mutex::new(PageAllocator::new());
 
-pub fn init() {
-    unsafe extern "C" {
-        static __heap_end: u8;
-    }
+pub fn init(heap_end: usize) {
     let mut allocator = ALLOCATOR.lock();
-    allocator.init(core::ptr::addr_of!(__heap_end) as usize);
+    allocator.init(heap_end);
 }
 
 pub fn alloc() -> usize {

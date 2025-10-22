@@ -27,7 +27,7 @@ bitflags! {
     }
 }
 
-pub fn init() {
-    page::init();
+pub fn init(heap_end: usize) {
+    page::init(heap_end);
     vdso::init();
 }

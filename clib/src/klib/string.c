@@ -22,3 +22,32 @@ char *strcpy(char *dest, const char *src) {
     while ((*d++ = *src++));
     return dest;
 }
+
+size_t strnlen(const char *s, size_t maxlen) {
+    size_t l = 0;
+    while (l < maxlen && s[l])
+        ++l;
+    return l;
+}
+
+char *strrchr(const char *s, int ch) {
+    char c = ch;
+    const char *ret = NULL;
+    do {
+        if(*s == c)
+            ret = s;
+    } while(*s++);
+    return (char *) ret;
+}
+
+void *memchr(const void *ptr, int ch, size_t n) {
+    const char *p = ptr;
+    char c = ch;
+    while (n--) {
+        if (*p != c)
+            ++p;
+        else
+            return (void *) p;
+    }
+    return NULL;
+}

@@ -14,7 +14,6 @@ pub type PageTable = arch_impl::PageTable;
 
 pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;
-pub const KADDR_OFFSET: usize = arch_impl::KADDR_OFFSET;
 
 mod arch;
 pub use arch::{PageTableTrait, UserContextTrait};
@@ -47,4 +46,12 @@ arch_export! {
     enable_interrupt  () -> ();
     disable_interrupt () -> ();
     enable_timer_interrupt() -> ();
+
+    get_kernel_stack_top() -> usize;
+
+    // kaddr_offset() -> usize;
+    kaddr_to_paddr(kaddr: usize) -> usize;
+    paddr_to_kaddr(paddr: usize) -> usize;
+
+    scan_device() -> ();
 }

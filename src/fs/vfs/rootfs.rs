@@ -71,7 +71,7 @@ impl SuperBlock for RootFileSystemSuperBlock {
 }
 
 impl FileSystem for RootFileSystem {
-    fn create(&self, _fsno: u32, _driver: Option<Box<dyn BlockDriver>>) -> Result<Arc<dyn SuperBlock>, Errno> {
+    fn create(&self, _fsno: u32, _driver: Option<Arc<dyn BlockDriver>>) -> Result<Arc<dyn SuperBlock>, Errno> {
         Ok(Arc::new(RootFileSystemSuperBlock::new()))
     }
 }

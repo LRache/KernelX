@@ -19,6 +19,7 @@ pub enum Trap {
     HardwareError       = 19,
 }
 
+#[derive(Debug)]
 pub enum Interrupt {
     Software =  0,
     Timer    =  5,
@@ -26,6 +27,7 @@ pub enum Interrupt {
     Counter  = 13,
 }
 
+#[derive(Debug)]
 pub enum Cause {
     Trap(Trap),
     Interrupt(Interrupt),

@@ -7,7 +7,7 @@ use crate::fs::inode::Inode;
 use crate::driver::block::BlockDriver;
 
 pub trait FileSystem: Send + Sync {
-    fn create(&self, fsno: u32, driver: Option<Box<dyn BlockDriver>>) -> SysResult<Arc<dyn SuperBlock>>;
+    fn create(&self, fsno: u32, driver: Option<Arc<dyn BlockDriver>>) -> SysResult<Arc<dyn SuperBlock>>;
 }
 
 pub trait SuperBlock: Send + Sync {

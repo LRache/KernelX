@@ -17,7 +17,7 @@ pub fn register_filesystem(typename: &str, fs: Box<dyn FileSystem>) -> Result<()
     Ok(())
 }
 
-pub fn mount(path: &str, fstype_name: &str, device: Option<Box<dyn BlockDriver>>) -> Result<(), Errno> {
+pub fn mount(path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriver>>) -> Result<(), Errno> {
     vfs().mount(path, fstype_name, device)
 }
 

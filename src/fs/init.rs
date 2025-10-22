@@ -19,7 +19,7 @@ pub fn init() {
 
     kinfo!("File systems registered successfully.");
 
-    let virtio_blk = driver::MANAGER.get_block_driver("virtio_block0").unwrap();
+    let virtio_blk = driver::get_block_driver("virtio_block0").unwrap();
     
     vfs::mount("/", "ext4", Some(virtio_blk)).unwrap();
     

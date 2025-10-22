@@ -18,7 +18,7 @@ impl DevFileSystem {
 }
 
 impl FileSystem for DevFileSystem {
-    fn create(&self, sno: u32, _driver: Option<Box<dyn BlockDriver>>) -> SysResult<Arc<dyn SuperBlock>> {
+    fn create(&self, sno: u32, _driver: Option<Arc<dyn BlockDriver>>) -> SysResult<Arc<dyn SuperBlock>> {
         return Ok(DevSuperBlock::new(sno) as Arc<dyn SuperBlock>);
     }
 }

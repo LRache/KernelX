@@ -12,7 +12,7 @@ use crate::fs::inode::Inode;
 use crate::fs::filesystem::FileSystem;
 use crate::fs::inode;
 use crate::driver::block::BlockDriver;
-use crate::kdebug;
+use crate::{kdebug, kinfo};
 
 use super::rootfs::RootFileSystem;
 use super::dentry::Dentry;
@@ -57,7 +57,7 @@ impl VirtualFileSystem {
         unsafe { self.root.get().as_ref().unwrap().assume_init_ref() }
     }
 
-    pub fn mount(&self, path: &str, fstype_name: &str, device: Option<Box<dyn BlockDriver>>) -> SysResult<()> {
+    pub fn mount(&self, path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriver>>) -> SysResult<()> {
         let dentry = self.lookup_dentry(self.get_root(), path)?;
 
         let fstype_map = self.fstype_map.lock();    
@@ -134,6 +134,8 @@ impl VirtualFileSystem {
 
             let inode: Arc<dyn Inode> = Arc::from(superblock.get_inode(ino)?);
             self.cache.insert(&index, inode.clone())?;
+
+            kinfo!("kernel_stack_used={}", crate::kernel::scheduler::current::kernel_stack_used());
             
             Ok(inode)
         }

@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use alloc::boxed::Box;
+use alloc::string::String;
 use spin::Mutex;
 
 use crate::driver::block::BlockDriver;
@@ -24,16 +24,16 @@ impl DriverOps for EMMCDriver {
         "emmc_driver"
     }
 
+    fn device_name(&self) -> String {
+        "emmc0".into()
+    }
+
     fn device_type(&self) -> DeviceType {
         crate::driver::DeviceType::Block
     }
 }
 
 impl BlockDriver for EMMCDriver {
-    fn clone_boxed(&self) -> Box<dyn BlockDriver> {
-        Box::new(EMMCDriver::new(&self.inner))
-    }
-
     fn read_block(&self, _block: usize, _buf: &mut [u8]) -> Result<(), ()> {
         unimplemented!()
     }

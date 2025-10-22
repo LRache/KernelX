@@ -54,7 +54,7 @@ pub struct TCB {
     user_context_ptr: *mut UserContext,
     user_context_uaddr: usize,
     kernel_context: KernelContext,
-    _kernel_stack: KernelStack,
+    kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
     fdtable: Arc<Mutex<FDTable>>,
@@ -93,7 +93,7 @@ impl TCB {
             user_context_ptr,
             user_context_uaddr,
             kernel_context: KernelContext::new(&kernel_stack),
-            _kernel_stack: kernel_stack,
+            kernel_stack,
 
             addrspace,
             fdtable: fdtable,
@@ -382,6 +382,10 @@ impl TCB {
         if self.parent.get_pid() == self.tid {
             self.parent.exit(code);
         }
+    }
+
+    pub fn get_kernel_stack_top(&self) -> usize {
+        self.kernel_stack.get_top()
     }
 }
 

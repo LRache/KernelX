@@ -1,4 +1,4 @@
-KERNEL = build/$(PLATFORM)/kernelx
+KERNEL = build/$(PLATFORM)/vmkernelx
 KERNEL_BIN = build/$(PLATFORM)/kernel.bin
 
 all: kernel
@@ -11,7 +11,7 @@ init:
 	# @ make -C ./lib/opensbi CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP=y FW_JUMP_ADDR=0x80200000
 
 kernel:
-	@ make -f build.mk kernel $(KERNEL_CONFIG)
+	@ $(MAKE) -f build.mk kernel $(KERNEL_CONFIG)
 
 vdso:
 	@ make -f build.mk vdso $(KERNEL_CONFIG)
@@ -38,11 +38,6 @@ objdump: kernel
 	@ $(CROSS_COMPILE)objdump -d $(KERNEL) > kernel.asm
 	@ echo "Generated kernel.asm"
 
-objcopy:
-	@ make -f build.mk objcopy $(KERNEL_CONFIG)
-	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) kernel.bin
-	@ echo "Generated kernel.bin"
-
 $(KERNEL_BIN): kernel
 	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) $(KERNEL_BIN)
 	@ echo "Generated $(KERNEL_BIN)"
@@ -54,4 +49,4 @@ package: $(KERNEL_BIN)
 count:
 	@ find src c/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" | xargs wc -l
 
-.PHONY: all init run gdb clean count check menuconfig objcopy objdump kernel vdso clib
+.PHONY: all init run gdb clean count check menuconfig objdump kernel vdso clib

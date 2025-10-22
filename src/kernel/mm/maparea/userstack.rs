@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::{arch, ktrace};
+use crate::{arch, kinfo, ktrace};
 use crate::kernel::config;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MemAccessType, PhysPageFrame};
@@ -72,9 +72,9 @@ impl UserStack {
     }
 
     fn allocate_page(&mut self, page_index: usize, pagetable: &mut PageTable) -> usize {
-        assert!(page_index < self.get_max_page_count(), "Page index out of bounds: {}", page_index);
+        debug_assert!(page_index < self.get_max_page_count(), "Page index out of bounds: {}", page_index);
         
-        assert!(self.frames[page_index].is_unallocated(), "Page at index {} is already allocated", page_index);
+        debug_assert!(self.frames[page_index].is_unallocated(), "Page at index {} is already allocated", page_index);
         
         let new_frame = PhysPageFrame::alloc();
         pagetable.mmap(
@@ -93,6 +93,8 @@ impl UserStack {
     fn copy_on_write_page(&mut self, page_index: usize, pagetable: &mut PageTable) -> usize {
         assert!(page_index < self.get_max_page_count(), "Page index out of bounds: {}", page_index);
         assert!(self.frames[page_index].is_cow(), "Page at index {} is not allocated", page_index);
+
+        ktrace!("UserStack::copy_on_write_page: page_index={}", page_index);
 
         let frame = core::mem::replace(&mut self.frames[page_index], Frame::Unallocated);
         
@@ -242,10 +244,10 @@ impl Area for UserStack {
                 Frame::Unallocated => {
                     self.allocate_page(page_index, &mut pagetable.write())
                 }
-                Frame::Cow(_) => {
-                    self.copy_on_write_page(page_index, &mut pagetable.write())
-                }
-                Frame::Allocated(frame) => frame.get_page(),
+                // Frame::Cow(_) => {
+                //     self.copy_on_write_page(page_index, &mut pagetable.write())
+                // }
+                Frame::Allocated(frame) | Frame::Cow(frame) => frame.get_page(),
             };
             
             Some(page + vaddr % arch::PGSIZE)
@@ -314,7 +316,8 @@ impl Area for UserStack {
     }
 
     fn try_to_fix_memory_fault(&mut self, addr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
-        ktrace!("UserStack::try_to_fix_memory_fault: addr={:#x}, access_type={:?}, tid={}", addr, access_type, crate::kernel::scheduler::current::tid());
+        ktrace!("UserStack::try_to_fix_memory_fault: addr={:#x}, access_type={:?}", addr, access_type);
+        ktrace!("UserStack::try_to_fix_memory_fault: frames={:?}", self.frames);
         
         if addr >= config::USER_STACK_TOP {
             return false;

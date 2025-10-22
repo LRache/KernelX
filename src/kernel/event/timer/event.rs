@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
  
-use crate::kernel::{event::Event, task::TCB};
+use crate::kernel::event::Event;
+use crate::kernel::task::TCB;
 
 pub struct TimerEvent {
     pub time: u64,

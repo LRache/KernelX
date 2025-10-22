@@ -28,6 +28,13 @@ pub trait ArchTrait {
     fn enable_interrupt();
     fn disable_interrupt();
     fn enable_timer_interrupt();
+
+    fn get_kernel_stack_top() -> usize;
+
+    fn kaddr_offset() -> usize;
+    fn kaddr_to_paddr(kaddr: usize) -> usize;
+    fn paddr_to_kaddr(paddr: usize) -> usize;
+    fn scan_device();
 }
 
 pub trait UserContextTrait: Clone {

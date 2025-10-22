@@ -128,6 +128,7 @@ impl Dentry {
     }
 
     pub fn get_link_to(self: Arc<Self>) -> Arc<Dentry> {
+        // TODO: Symbolic link
         self
     }
 

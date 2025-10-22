@@ -8,33 +8,32 @@ use super::pte::{Addr, PTE, PTEFlags, PTETable};
 const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
 
+pub trait PageAllocator {
+    fn alloc_page() -> usize;
+}
+
 unsafe extern "C"{
     static __trampoline_start: usize;
 }
 
-pub struct PageTable {
+pub struct PageTableImpls<T: PageAllocator> {
     pub root: usize,
+    _marker: core::marker::PhantomData<T>,
 }
 
-impl Default for PageTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PageTable {
-    pub const fn new() -> Self {
-        PageTable {
-            root: 0,
-        }
-    }
-
+impl<T: PageAllocator> PageTableImpls<T> {
     pub fn create(&mut self) {
-        if self.root != 0 {
-            panic!("PageTable root already set");
-        }
+        debug_assert!(self.root == 0, "PageTable root should be zero when creating a new PageTable");
         
         self.root = mm::page::alloc_zero();
+    }
+
+    pub fn from_root(root: usize) -> Self {
+        debug_assert!(root != 0, "PageTable root cannot be zero");
+        Self {
+            root,
+            _marker: core::marker::PhantomData,
+        }
     }
 
     pub fn apply(&self) {
@@ -53,6 +52,7 @@ impl PageTable {
     }
 
     fn find_pte_vpn(&self, vpn: [usize; PAGE_TABLE_LEVELS]) -> Option<PTE> {
+        debug_assert!(self.root != 0);
         let mut ptetable = PTETable::new(self.root as *mut usize);
         
         for level in 0..PAGE_TABLE_LEVELS {
@@ -77,6 +77,7 @@ impl PageTable {
     }
 
     fn find_pte_or_create_vpn(&mut self, vpn: [usize; PAGE_TABLE_LEVELS]) -> PTE {
+        debug_assert!(self.root != 0);
         let mut ptetable = PTETable::new(self.root as *mut usize);
         
         for level in 0..PAGE_TABLE_LEVELS {
@@ -121,24 +122,28 @@ impl PageTable {
         let ppn = Addr::new(self.root as *const u8).ppn().value();
         (MODE_SV39 << 60) | ppn
     }
+
+    pub fn is_mapped(&self, uaddr: usize) -> bool {
+        self.find_pte(uaddr).is_some()
+    }
 }
 
-impl Drop for PageTable {
+impl<T: PageAllocator> Drop for PageTableImpls<T> {
     fn drop(&mut self) {
         self.free_pagetable(&PTETable::new(self.root as *mut usize), 0);
         self.root = 0; // Clear the root pointer to avoid double free
     }
 }
 
-unsafe impl Send for PageTable {}
-unsafe impl Sync for PageTable {}
+unsafe impl<T: PageAllocator> Send for PageTableImpls<T> {}
+unsafe impl<T: PageAllocator> Sync for PageTableImpls<T> {}
 
-impl PageTableTrait for PageTable {
+impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
         let flags = perm.into();
 
         let mut pte = self.find_pte_or_create(uaddr);
-        assert!(!pte.is_valid(), "PTE should NOT be valid before mmap, uaddr= {:#x}, kaddr = {:#x}", uaddr, kaddr);
+        debug_assert!(!pte.is_valid(), "PTE should NOT be valid before mmap, uaddr= {:#x}, kaddr = {:#x}", uaddr, kaddr);
         
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
@@ -168,22 +173,23 @@ impl PageTableTrait for PageTable {
         pte.set_flags(PTEFlags::empty());
         pte.write_back().expect("Failed to write back PTE for munmap");
     }
+}
 
-    // fn munmap_if_mapped(&mut self, uaddr: usize) -> bool {
-    //     if let Some(mut pte) = self.find_pte(uaddr) {
-    //         pte.set_flags(PTEFlags::empty());
-    //         pte.write_back().expect("Failed to write back PTE for munmap_if_mapped");
-    //         mm::page::free(pte.page() as usize);
-    //         return true;
-    //     }
-    //     false
-    // }
+pub struct NormalPageAllocator;
 
-    // fn is_mapped(&self, vaddr: usize) -> bool {
-    //     if let Some(pte) = self.find_pte(vaddr) {
-    //         pte.is_valid()
-    //     } else {
-    //         false
-    //     }
-    // }
+impl PageAllocator for NormalPageAllocator {
+    fn alloc_page() -> usize {
+        mm::page::alloc_zero()
+    }
+}
+
+pub type PageTable = PageTableImpls<NormalPageAllocator>;
+
+impl PageTable {
+    pub const fn new() -> Self {
+        Self {
+            root: 0,
+            _marker: core::marker::PhantomData,
+        }
+    }
 }

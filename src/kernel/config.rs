@@ -12,7 +12,8 @@ pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 
 pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
 
-pub const KERNEL_STACK_PAGE_COUNT: usize = 12; // Kernel stack page count
+pub const KERNEL_STACK_PAGE_COUNT: usize = 16; // Kernel stack page count
+pub const KERNEL_HEAP_SIZE: usize = 0x2000000;
 
 pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 

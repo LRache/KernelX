@@ -4,7 +4,8 @@ use core::fmt;
 
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm;
-use crate::arch::riscv::{PGBITS, PGMASK, KADDR_OFFSET};
+use crate::arch::riscv::{PGBITS, PGMASK};
+use crate::arch::{kaddr_to_paddr, paddr_to_kaddr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Addr(usize);
@@ -15,7 +16,8 @@ impl Addr {
     }
 
     pub fn from_paddr(paddr: usize) -> Self {
-        Addr(paddr + KADDR_OFFSET)
+        // Addr(paddr + kaddr_offset())
+        Addr(paddr_to_kaddr(paddr))
     }
 
     pub const fn from_kaddr(kaddr: usize) -> Self {
@@ -27,7 +29,8 @@ impl Addr {
     }
 
     pub fn paddr(self) -> usize {
-        self.0 - KADDR_OFFSET
+        kaddr_to_paddr(self.0)
+        // self.0 - kaddr_offset()
     }
 
     pub const fn kaddr(self) -> usize {
@@ -169,6 +172,7 @@ impl PTE {
     }
 
     pub fn next_level(&self) -> PTETable {
+        debug_assert!(self.page() as usize != 0);
         PTETable::new(self.page())
     }
 
@@ -193,7 +197,7 @@ impl PTE {
 
 impl fmt::Display for PTE {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PTE(0x{:016x}, {})", self.pte, self.ppn())
+        write!(f, "PTE({:#x}, {})", self.pte, self.ppn())
     }
 }
 
@@ -203,6 +207,7 @@ pub struct PTETable {
 
 impl PTETable {
     pub fn new(base: *mut usize) -> Self {
+        debug_assert!(base as usize != 0);
         PTETable { base }
     }
 

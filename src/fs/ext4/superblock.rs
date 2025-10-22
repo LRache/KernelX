@@ -18,7 +18,7 @@ pub struct Ext4SuperBlock {
 }
 
 struct Disk {
-    pub driver: Box<dyn BlockDriver>
+    pub driver: Arc<dyn BlockDriver>
 }
 
 impl BlockDevice for Disk {
@@ -38,7 +38,7 @@ unsafe impl Send for Disk {}
 unsafe impl Sync for Disk {}
 
 impl Ext4SuperBlock {
-    pub fn new(sno: u32, driver: Box<dyn BlockDriver>) -> SysResult<Arc<Self>> {
+    pub fn new(sno: u32, driver: Arc<dyn BlockDriver>) -> SysResult<Arc<Self>> {
         let superblock = SuperBlockInner::open(Arc::new(Disk{ driver }));
 
         Ok(Arc::new(Ext4SuperBlock {

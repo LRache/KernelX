@@ -1,4 +1,3 @@
-use crate::arch::UserContextTrait;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -6,7 +5,8 @@ use crate::kernel::syscall;
 use crate::arch::riscv::csr::*;
 use crate::arch::riscv::asm_kerneltrap_entry;
 use crate::arch::riscv::UserContext;
-use crate::ktrace;
+use crate::arch::UserContextTrait;
+use crate::kinfo;
 use crate::platform::config::TRAMPOLINE_BASE;
 use crate::{platform, println};
 
@@ -39,8 +39,10 @@ pub fn usertrap_handler() -> ! {
     stvec::write(asm_kerneltrap_entry as usize);
     current::tcb().user_context().set_user_entry(sepc::read());
 
-    ktrace!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}",
-             scause::read(), sepc::read(), stval::read());
+    // kinfo!("kernel_stack_used={}", crate::kernel::scheduler::current::kernel_stack_used());
+
+    // ktrace!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}",
+    //          scause::read(), sepc::read(), stval::read());
     
     match scause::cause() {
         scause::Cause::Trap(trap) => {
@@ -120,7 +122,7 @@ pub fn return_to_user() -> ! {
 
     let user_context_ptr = tcb.get_user_context_ptr();
 
-    ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.user_context().get_user_entry(), user_context_ptr as usize);
+    // ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.user_context().get_user_entry(), user_context_ptr as usize);
 
     usertrap_return(user_context_ptr);
 }
@@ -133,7 +135,7 @@ pub fn kerneltrap_handler() {
         scause::Cause::Trap(trap) => {
             match trap {
                 _ => {
-                    panic!("Unhandled kernel trap: {:?}", trap);
+                    panic!("Unhandled kernel trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}", trap, sepc, stval::read(), scause::cause());
                 }
             }
         },

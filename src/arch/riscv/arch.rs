@@ -1,11 +1,17 @@
 use crate::arch::riscv::process;
 use crate::arch::{Arch, ArchTrait, UserContextTrait};
 use crate::kernel::scheduler::current;
+use crate::driver;
 
 use super::kernel_switch;
 use super::KernelContext;
 use super::kernelpagetable;
 use super::csr::{Sstatus, SIE, stvec};
+
+unsafe extern "C" {
+    static __riscv_copied_fdt: *const u8;
+    static __riscv_kaddr_offset: usize;
+}
 
 impl ArchTrait for Arch {
     fn init() {
@@ -56,5 +62,29 @@ impl ArchTrait for Arch {
 
     fn enable_timer_interrupt() {
         SIE::read().set_stie(true).write();
+    }
+
+    fn get_kernel_stack_top() -> usize {
+        let sp;
+        unsafe {
+            core::arch::asm!("mv {}, sp", out(reg) sp);
+        }
+        sp
+    }
+
+    fn scan_device() {
+        driver::load_device_tree(unsafe { __riscv_copied_fdt });
+    }
+
+    fn kaddr_offset() -> usize {
+        unsafe { __riscv_kaddr_offset }
+    }
+
+    fn kaddr_to_paddr(kaddr: usize) -> usize {
+        kaddr - unsafe { __riscv_kaddr_offset }
+    }
+
+    fn paddr_to_kaddr(paddr: usize) -> usize {
+        paddr + unsafe { __riscv_kaddr_offset }
     }
 }

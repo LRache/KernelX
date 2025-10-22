@@ -28,7 +28,7 @@ macro_rules! kwarn {
             line!(),
             column!(),
             $crate::klib::klog::COLOR_RESET
-        );
+        )
     };
 }
 
@@ -55,7 +55,7 @@ macro_rules! kinfo {
             line!(),
             column!(),
             $crate::klib::klog::COLOR_RESET
-        );
+        )
     }
 }
 

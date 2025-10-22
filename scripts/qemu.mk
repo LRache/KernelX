@@ -1,8 +1,11 @@
 include config/config.mk
 
+IMAGE = build/$(PLATFORM)/Image
+VMKERNELX = build/$(PLATFORM)/vmkernelx
+
 QEMU = qemu-system-riscv64
 QEMU_FLAGS += -M $(QEMU_MACHINE) -m $(QEMU_MEMORY) -nographic
-QEMU_FLAGS += -kernel $(KERNEL)
+QEMU_FLAGS += -kernel $(IMAGE)
 QEMU_FLAGS += -drive file=$(DISK),if=none,id=x0,format=raw 
 QEMU_FLAGS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 QEMU_FLAGS += -smp $(QEMU_CPUS)
