@@ -1,29 +1,23 @@
 mod virtio;
 mod device;
+mod driver;
 mod matcher;
 mod manager;
+// mod fdt;
 
 pub mod block;
+pub mod char;
+pub mod chosen;
 
-use device::{Device, DeviceType};
 use matcher::DriverMatcher;
 
-pub use manager::{get_block_driver, load_device_tree};
+pub use device::{Device, DeviceType};
+pub use driver::*;
 
-use alloc::sync::Arc;
-use alloc::string::String;
+pub use manager::{get_block_driver, get_char_driver, register_matched_driver, found_device};
+// pub use fdt::load_device_tree;
 
-pub trait DriverOps {
-    fn name(&self) -> &str;
-
-    fn device_name(&self) -> String;
-    fn device_type(&self) -> DeviceType;
-
-    fn as_block_driver(self: Arc<Self>) -> Arc<dyn block::BlockDriver> {
-        unreachable!()
-    }
-}
-
+#[unsafe(link_section = ".text.init")]
 pub fn init() {    
     matcher::register_matchers();
 }

@@ -31,7 +31,9 @@ impl HeapAllocator {
 unsafe impl GlobalAlloc for HeapAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = self.mutex.lock();
-        unsafe { malloc_aligned(layout.align(), layout.size()) as *mut u8 }
+        let ptr = unsafe { malloc_aligned(layout.align(), layout.size()) as *mut u8 };
+        debug_assert!(!ptr.is_null());
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
@@ -43,6 +45,7 @@ unsafe impl GlobalAlloc for HeapAllocator {
 #[global_allocator]
 static ALLOCATOR: HeapAllocator = HeapAllocator::new();
 
+#[unsafe(link_section = ".text.init")]
 pub fn init(heap_start: usize, heap_size: usize) {
     ALLOCATOR.init(heap_start, heap_size);
 }

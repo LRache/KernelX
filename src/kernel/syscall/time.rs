@@ -3,12 +3,12 @@ use crate::kernel::event::{timer, Event};
 use crate::kernel::errno::{SysResult, Errno};
 use crate::kernel::syscall::uptr::{UPtr, UserPointer};
 use crate::kernel::uapi::{Timespec, Timeval};
-use crate::platform;
+use crate::arch;
 
 pub fn gettimeofday(uptr_timeval: UPtr<Timeval>, _uptr_tz: usize) -> SysResult<usize> {
     uptr_timeval.should_not_null()?;
     
-    let us = platform::get_time_us();
+    let us = arch::get_time_us();
     let timeval = Timeval {
         tv_sec:  us / 1000000,
         tv_usec: us % 1000000,

@@ -7,10 +7,15 @@
         "platform-qemu-virt-riscv64",
         "log-trace"
     ],
+    "rust-analyzer.cargo.extraArgs": [
+        "--target",
+        "riscv64gc-unknown-none-elf",
+    ],
     "rust-analyzer.server.extraEnv": {
         "KERNELX_HOME": "${workspaceFolder}",
         "ARCH": "riscv",
         "ARCH_BITS": "64"
     },
-    "cmake.sourceDirectory": "/home/rache/code/KernelX/clib/lib/lwext4/fs_test"
+    "rust-analyzer.trace.server": "verbose",
+    "cmake.ignoreCMakeListsMissing": true
 }

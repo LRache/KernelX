@@ -4,6 +4,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use spin::Mutex;
 
+use crate::fs::file::FileFlags;
 use crate::fs::vfs;
 
 use super::Pid;
@@ -23,25 +24,27 @@ impl Manager {
     }
 
     pub fn create_initprocess(&self) {
-        const INITPATH: &'static str = match option_env!("KERNELX_INITPATH") {
-            Some(path) => path,
-            None => "/init",
-        };
+        // const INITPATH: &'static str = match option_env!("KERNELX_INITPATH") {
+        //     Some(path) => path,
+        //     None => "/init",
+        // };
+        const INITPATH: &'static str = "/glibc/busybox";
 
-        const INITCWD: &'static str = match option_env!("KERNELX_INITCWD") {
-            Some(path) => path,
-            None => "/",
-        };
+        // const INITCWD: &'static str = match option_env!("KERNELX_INITCWD") {
+        //     Some(path) => path,
+        //     None => "/",
+        // };
+        const INITCWD: &'static str = "/glibc";
 
         const INIT_ARGV: &[&str] = &[
             INITPATH, 
             "sh", 
-            "busybox_testcode.sh",
+            "libctest_testcode.sh",
         ];
 
         const INIT_ENVP: &[&str] = &[];
 
-        let initfile = vfs::open_file(INITPATH, crate::fs::file::FileFlags { readable: true, writable: false }).expect("Failed to open init file");
+        let initfile = vfs::open_file(INITPATH, FileFlags { readable: true, writable: false }).expect("Failed to open init file");
         let pcb = PCB::new_initprocess(initfile, INITCWD, INIT_ARGV, INIT_ENVP).expect("Failed to initialize init process from ELF");
         
         self.pcbs.lock().insert(0, pcb.clone());

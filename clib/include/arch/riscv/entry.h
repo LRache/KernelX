@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+#define __init_text __attribute__((section(".text.init")))
+#define __init_data __attribute__((section(".data.init")))
+
 #define PGSIZE 4096
 
 uintptr_t __riscv_load_fdt(const void *fdt);
@@ -13,6 +16,6 @@ uintptr_t *__riscv_init_load_kpgtable_root();
 void **__riscv_init_load_copied_fdt();
 uintptr_t *__riscv_init_load_kaddr_offset();
 
-void __riscv_init_die();
+void __riscv_init_die(const char *reason);
 
 #endif // __ARCH_RISCV_ENTRY_H__

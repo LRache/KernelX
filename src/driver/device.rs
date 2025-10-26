@@ -39,5 +39,3 @@ impl<'a> Device<'a> {
         self.compatible
     }
 }
-
-

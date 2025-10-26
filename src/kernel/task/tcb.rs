@@ -13,11 +13,13 @@ use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
-use crate::fs::file::{File, FileFlags};
+use crate::fs::file::{File, FileFlags, CharFile};
 use crate::fs::vfs;
 use crate::klib::SpinMutex;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
-use crate::{arch, kdebug, kinfo, ktrace};
+use crate::arch;
+use crate::driver;
+use crate::{kdebug, kinfo, ktrace};
 
 use super::kernelstack::KernelStack;
 
@@ -135,9 +137,11 @@ impl TCB {
         let userstack_top = addrspace.create_user_stack(argv, envp, &auxv).expect("Failed to push args and envp to userstack");
 
         let mut fdtable = FDTable::new();
+        let stdout_dev = driver::get_char_driver("sbi-console").unwrap();
         for _ in 0..3 {
-            fdtable.push(vfs::stdout::stdout(), FDFlags::empty()).expect("Failed to push stdout to FDTable");
+            fdtable.push(Arc::new(CharFile::new(stdout_dev.clone())), FDFlags::empty()).unwrap();
         }
+        fdtable.push(file.clone(), FDFlags::empty()).unwrap();
 
         let mut user_context = UserContext::new();
         user_context.set_user_stack_top(userstack_top);

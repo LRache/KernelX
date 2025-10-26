@@ -4,7 +4,7 @@ use alloc::string::String;
 use virtio_drivers::device::blk::VirtIOBlk;
 use virtio_drivers::transport::mmio::MmioTransport;
 
-use crate::driver::block::BlockDriver;
+use crate::driver::BlockDriverOps;
 use crate::driver::{DeviceType, DriverOps};
 use crate::driver::virtio::VirtIOHal;
 use crate::klib::SpinMutex;
@@ -38,12 +38,12 @@ impl DriverOps for VirtIOBlockDriver {
         DeviceType::Block
     }
 
-    fn as_block_driver(self: Arc<Self>) -> Arc<dyn BlockDriver> {
+    fn as_block_driver(self: Arc<Self>) -> Arc<dyn BlockDriverOps> {
         self
     }
 }
 
-impl BlockDriver for VirtIOBlockDriver {
+impl BlockDriverOps for VirtIOBlockDriver {
     fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()> {
         self.driver.lock().read_blocks(block, buf).map_err(|_| ())
     }

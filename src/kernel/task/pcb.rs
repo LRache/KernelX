@@ -5,7 +5,6 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{get_initprocess, manager};
-use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::scheduler::{self, current};
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::tid;
@@ -63,12 +62,6 @@ impl PCB {
         assert!(new_tid == 0);
         
         let file = Arc::new(file);
-
-        let mut fd_table = FDTable::new();
-        for _ in 0..3 {
-            fd_table.push(vfs::stdout::stdout(), FDFlags::empty())?;
-        }
-        fd_table.push(file.clone(), FDFlags::empty())?;
 
         let cwd = vfs::load_dentry(cwd)?;
 
@@ -280,7 +273,6 @@ impl PCB {
 
                         match children.iter().find(|c| c.get_pid() == child){
                             Some(child_pcb) => {
-                                pid = child_pcb.get_pid();
                                 exit_code = child_pcb.get_exit_code();
                             },
                             None => unreachable!(), // The child must exist

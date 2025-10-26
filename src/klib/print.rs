@@ -1,16 +1,11 @@
 use core::fmt::Write;
-use crate::platform::putchar;
 
-pub fn puts(s: &str) {
-    for c in s.bytes() {
-        putchar(c);
-    }
-}
+use crate::driver::chosen::kconsole::kputs;
 
 pub struct Writer;
 impl Write for Writer {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        puts(s);
+        kputs(s);
         Ok(())
     }
 }

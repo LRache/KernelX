@@ -14,6 +14,26 @@ pub fn fini() {
     kinfo!("KernelX deinitialized successfully!");
 }
 
+fn free_init() {
+    unsafe extern "C" {
+        static __init_start: u8;
+        static __init_end:   u8;
+    }
+
+    let kstart = core::ptr::addr_of!(__init_start) as usize;
+    let kend = core::ptr::addr_of!(__init_end) as usize;
+    debug_assert!(kstart % arch::PGSIZE == 0);
+    debug_assert!(kend % arch::PGSIZE == 0);
+
+    let mut kaddr = core::ptr::addr_of!(__init_start) as usize;
+    while kaddr < kend {
+        mm::page::free(kaddr);
+        kaddr += arch::PGSIZE;
+    }
+
+    kinfo!("Freed init section memory {:#x} bytes", kend - kstart);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn main(hartid: usize, heap_start: usize) -> ! {
     kinfo!("Welcome to KernelX!");
@@ -25,10 +45,15 @@ pub extern "C" fn main(hartid: usize, heap_start: usize) -> ! {
     driver::init();
     arch::init();
     arch::scan_device();
+
+    kinfo!("Welcome to KernelX!");
+
     fs::init();
 
     task::init();
     timer::init();
+
+    free_init();
     
     kinfo!("KernelX initialized successfully!");
     

@@ -36,17 +36,6 @@ impl<T: PageAllocator> PageTableImpls<T> {
         }
     }
 
-    pub fn apply(&self) {
-        unsafe {
-            core::arch::asm!(
-                "sfence.vma",
-                "csrw satp, {}",
-                "sfence.vma",
-                in(reg) self.get_satp(),
-            );
-        }
-    }
-
     fn find_pte(&self, vaddr: usize) -> Option<PTE> {        
         self.find_pte_vpn(Addr::from_vaddr(vaddr).vpn())
     }

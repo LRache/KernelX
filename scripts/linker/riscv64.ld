@@ -54,8 +54,11 @@ SECTIONS {
     . = ALIGN(4K);
 
     __stack_start = .;
-    . = . + 0x8000;
+    . = . + 0x16000;
     __stack_end = .;
+    __ktrap_temp_stack_start = .;
+    . = . + 0x8000;
+    __ktrap_temp_stack_end = .;
     __kernel_end = .;
 
     /DISCARD/ : {

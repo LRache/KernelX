@@ -4,10 +4,10 @@ use core::option::Option;
 
 use crate::kernel::errno::SysResult;
 use crate::fs::inode::Inode;
-use crate::driver::block::BlockDriver;
+use crate::driver::BlockDriverOps;
 
 pub trait FileSystem: Send + Sync {
-    fn create(&self, fsno: u32, driver: Option<Arc<dyn BlockDriver>>) -> SysResult<Arc<dyn SuperBlock>>;
+    fn create(&self, fsno: u32, driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlock>>;
 }
 
 pub trait SuperBlock: Send + Sync {

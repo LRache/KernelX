@@ -3,12 +3,10 @@ use crate::kernel::scheduler::current;
 use crate::kernel::trap;
 use crate::kernel::syscall;
 use crate::arch::riscv::csr::*;
-use crate::arch::riscv::asm_kerneltrap_entry;
 use crate::arch::riscv::UserContext;
 use crate::arch::UserContextTrait;
 use crate::kinfo;
 use crate::platform::config::TRAMPOLINE_BASE;
-use crate::{platform, println};
 
 unsafe extern "C" {
     fn asm_usertrap_entry (user_context: *mut   UserContext) -> !;
@@ -35,11 +33,13 @@ fn handle_syscall() {
     });
 }
 
+unsafe extern "C" {
+    fn asm_kerneltrap_entry() -> !;
+}
+
 pub fn usertrap_handler() -> ! {
     stvec::write(asm_kerneltrap_entry as usize);
     current::tcb().user_context().set_user_entry(sepc::read());
-
-    // kinfo!("kernel_stack_used={}", crate::kernel::scheduler::current::kernel_stack_used());
 
     // ktrace!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}",
     //          scause::read(), sepc::read(), stval::read());
@@ -61,9 +61,7 @@ pub fn usertrap_handler() -> ! {
                     trap::memory_fault(addr, MemAccessType::Write);
                 },
                 _ => {
-                    // Handle other traps
-                    // println!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}", scause::read(), sepc::read(), stval::read());
-                    platform::shutdown();
+                    panic!("Unhandled user trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}", trap, sepc::read(), stval::read(), scause::cause());
                 }
             }
         },
@@ -71,17 +69,17 @@ pub fn usertrap_handler() -> ! {
         scause::Cause::Interrupt(interrupt) => {
             match interrupt {
                 scause::Interrupt::Software => {
-                    println!("Software interrupt occurred");
+                    kinfo!("Software interrupt occurred");
                 },
                 scause::Interrupt::Timer => {
-                    // println!("Timer interrupt occurred");
+                    // kinfo!("Timer interrupt occurred");
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
-                    println!("External interrupt occurred");
+                    kinfo!("External interrupt occurred");
                 },
                 scause::Interrupt::Counter => {
-                    println!("Counter interrupt occurred");
+                    kinfo!("Counter interrupt occurred");
                 },
             }
             // println!("Interrupt occurred, returning to user mode");
@@ -143,17 +141,17 @@ pub fn kerneltrap_handler() {
         scause::Cause::Interrupt(interrupt) => {
             match interrupt {
                 scause::Interrupt::Software => {
-                    println!("Kernel software interrupt occurred");
+                    kinfo!("Kernel software interrupt occurred");
                 },
                 scause::Interrupt::Timer => {
-                    // println!("Kernel timer interrupt occurred");
+                    // kinfo!("Kernel timer interrupt occurred");
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
-                    println!("Kernel external interrupt occurred");
+                    kinfo!("Kernel external interrupt occurred");
                 },
                 scause::Interrupt::Counter => {
-                    println!("Kernel counter interrupt occurred");
+                    kinfo!("Kernel counter interrupt occurred");
                 },
             }
         },

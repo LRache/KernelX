@@ -3,7 +3,7 @@ use virtio_drivers::{Hal, BufferDirection, PhysAddr};
 use core::ptr::NonNull;
 
 use crate::kernel::mm::page;
-use crate::{arch, platform};
+use crate::arch;
 
 pub struct VirtIOHal;  
 

@@ -109,6 +109,7 @@ fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
     loaded_programs
 }
 
+#[unsafe(link_section = ".text.init")]
 pub fn init() {
     let ehdr = unsafe {(vdso_start() as *const Elf64Ehdr).as_ref().unwrap()};
     

@@ -6,6 +6,7 @@ mod init;
 mod filesystem;
 mod ext4;
 mod devfs;
+mod rootfs;
 
 pub use init::{init, fini};
 pub use inode::{Inode, Mode, FileType};

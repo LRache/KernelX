@@ -1,7 +1,7 @@
 use core::panic::PanicInfo;
 
+use crate::driver;
 use crate::fs::vfs;
-use crate::platform;
 use crate::println;
 
 pub const COLOR_RESET: &str = "\x1b[0m";
@@ -149,5 +149,5 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
         println!("Failed to sync filesystem: {:?}", e);
     });
 
-    platform::shutdown();
+    driver::chosen::kpmu::shutdown();
 }

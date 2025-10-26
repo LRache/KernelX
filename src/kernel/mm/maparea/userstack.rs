@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::{arch, kinfo, ktrace};
+use crate::{arch, ktrace};
 use crate::kernel::config;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MemAccessType, PhysPageFrame};

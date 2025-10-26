@@ -24,9 +24,11 @@ bitflags! {
         const W = 1 << 1;
         const X = 1 << 2;
         const U = 1 << 3;
+        const RW = (1 << 0) | (1 << 1);
     }
 }
 
+#[unsafe(link_section = ".text.init")]
 pub fn init(heap_end: usize) {
     page::init(heap_end);
     vdso::init();

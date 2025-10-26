@@ -1,11 +1,14 @@
+use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 
 use crate::kernel::mm::MapPerm;
-use crate::arch::riscv::{PageTable, PGSIZE};
-use crate::arch::{self, kaddr_to_paddr, PageTableTrait};
+use crate::arch::riscv::PGSIZE;
+use crate::arch::PageTableTrait;
 use crate::platform::config::TRAMPOLINE_BASE;
-use crate::{kinfo, println};
+use crate::kinfo;
+
+use super::pagetable::PageTable;
 
 unsafe extern "C" {
     static __text_start: u8;
@@ -62,53 +65,10 @@ impl KernelPageTableSatp {
 static KERNEL_PAGETABLE: KernelPageTable = KernelPageTable::new();
 static KERNEL_SATP: KernelPageTableSatp = KernelPageTableSatp::new();
 
-fn map_kernel_range(start: *const u8, end: *const u8, perm: MapPerm) {
-    println!("Mapping kernel range: 0x{:x} - 0x{:x} with perm: {:?}", 
-             start as usize, end as usize, perm);
-    let mut vaddr = start as usize;
-    let end = end as usize;
-    
-    let pagetable = KERNEL_PAGETABLE.get_mut();
-    while vaddr < end {
-        let paddr = kaddr_to_paddr(vaddr);
-        pagetable.mmap_paddr(vaddr, paddr, perm);
-        vaddr += PGSIZE;
-    }
-}
-
+#[unsafe(link_section = ".text.init")]
 pub fn init() {
     kinfo!("root=0x{:x}, offset=0x{:x}", unsafe { __riscv_kpgtable_root }, core::ptr::addr_of!(__riscv_kaddr_offset) as usize);
     let mut pagetable = PageTable::from_root(unsafe { __riscv_kpgtable_root });
-
-    // map_kernel_range(
-    //     core::ptr::addr_of!(__text_start), 
-    //     core::ptr::addr_of!(__text_end), 
-    //     MapPerm::R | MapPerm::X
-    // );
-
-    // map_kernel_range(
-    //     core::ptr::addr_of!(__rodata_start), 
-    //     core::ptr::addr_of!(__rodata_end), 
-    //     MapPerm::R
-    // );
-
-    // map_kernel_range(
-    //     core::ptr::addr_of!(__data_start), 
-    //     core::ptr::addr_of!(__bss_end), 
-    //     MapPerm::R | MapPerm::W
-    // );
-
-    // map_kernel_range(
-    //     core::ptr::addr_of!(__stack_start), 
-    //     core::ptr::addr_of!(__stack_end), 
-    //     MapPerm::R | MapPerm::W
-    // );
-
-    // map_kernel_range(
-    //     core::ptr::addr_of!(__stack_end), 
-    //     (KERNEL_PMEM_TOP + KADDR_OFFSET) as *const u8, 
-    //     MapPerm::R | MapPerm::W
-    // );
 
     pagetable.mmap(
         TRAMPOLINE_BASE,
@@ -116,16 +76,27 @@ pub fn init() {
         MapPerm::R | MapPerm::X
     );
 
-    pagetable.mmap_paddr(
-        0x10001000, 
-        0x10001000, 
-        MapPerm::R | MapPerm::W
-    );
-
-    // pagetable.apply(); 
-
     KERNEL_SATP.set(pagetable.get_satp());
     KERNEL_PAGETABLE.init(pagetable);
+}
+
+pub fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) {
+    let mut kaddr = kstart;
+    let kend = kstart + size;
+    
+    let pagetable = KERNEL_PAGETABLE.get_mut();
+    let mut paddr = pstart;
+    while kaddr < kend {
+        pagetable.mmap_paddr(kaddr, paddr, perm);
+        kaddr += PGSIZE;
+        paddr += PGSIZE;
+    }
+
+    unsafe {
+        asm!(
+            "sfence.vma zero, zero"
+        )
+    }
 }
 
 pub fn get_kernel_satp() -> usize {

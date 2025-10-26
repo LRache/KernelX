@@ -9,12 +9,12 @@ use spin::mutex::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::Inode;
-use crate::fs::filesystem::FileSystem;
 use crate::fs::inode;
-use crate::driver::block::BlockDriver;
-use crate::{kdebug, kinfo};
+use crate::fs::filesystem::FileSystem;
+use crate::fs::rootfs::RootFileSystem;
+use crate::driver::BlockDriverOps;
+use crate::kdebug;
 
-use super::rootfs::RootFileSystem;
 use super::dentry::Dentry;
 use super::SuperBlockTable;
 
@@ -57,7 +57,7 @@ impl VirtualFileSystem {
         unsafe { self.root.get().as_ref().unwrap().assume_init_ref() }
     }
 
-    pub fn mount(&self, path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriver>>) -> SysResult<()> {
+    pub fn mount(&self, path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> SysResult<()> {
         let dentry = self.lookup_dentry(self.get_root(), path)?;
 
         let fstype_map = self.fstype_map.lock();    
@@ -134,8 +134,6 @@ impl VirtualFileSystem {
 
             let inode: Arc<dyn Inode> = Arc::from(superblock.get_inode(ino)?);
             self.cache.insert(&index, inode.clone())?;
-
-            kinfo!("kernel_stack_used={}", crate::kernel::scheduler::current::kernel_stack_used());
             
             Ok(inode)
         }

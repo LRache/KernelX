@@ -4,6 +4,8 @@ use core::sync::atomic::AtomicU32;
 use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
 use virtio_drivers::transport::{Transport, DeviceType};
 
+use crate::kernel::mm::MapPerm;
+use crate::arch::map_kernel_addr;
 use crate::driver::block::VirtIOBlockDriver;
 use crate::driver::{Device, DriverOps, DriverMatcher};
 
@@ -21,9 +23,11 @@ impl VirtIODriverMatcher {
 
 impl DriverMatcher for VirtIODriverMatcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
-        if device.name() != "virtio_mmio" || device.compatible() != "virtio,mmio" {
+        if device.compatible() != "virtio,mmio" {
             return None;
         }
+
+        map_kernel_addr(device.mmio_base(), device.mmio_base(), device.mmio_size(), MapPerm::R | MapPerm::W);
         
         let transport = unsafe {
             MmioTransport::new(NonNull::new(device.mmio_base() as *mut VirtIOHeader).unwrap()).ok()

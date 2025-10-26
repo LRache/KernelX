@@ -90,6 +90,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     let path = uptr_filename.read()?;
 
     let helper = |parent: &Arc<Dentry>| {
+        kdebug!("parent={}", parent.get_path());
         match vfs::openat_file(parent, &path, file_flags) {
             Ok(file) => Ok(file),
             Err(e) => {

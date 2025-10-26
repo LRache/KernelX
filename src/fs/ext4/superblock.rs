@@ -8,7 +8,7 @@ use crate::kernel::errno::SysResult;
 use crate::fs::ext4::inode::Ext4Inode;
 use crate::fs::filesystem::SuperBlock;
 use crate::fs::inode::Inode;
-use crate::driver::block::BlockDriver;
+use crate::driver::BlockDriverOps;
 
 use super::superblock_inner::SuperBlockInner;
 
@@ -18,7 +18,7 @@ pub struct Ext4SuperBlock {
 }
 
 struct Disk {
-    pub driver: Arc<dyn BlockDriver>
+    pub driver: Arc<dyn BlockDriverOps>
 }
 
 impl BlockDevice for Disk {
@@ -38,7 +38,7 @@ unsafe impl Send for Disk {}
 unsafe impl Sync for Disk {}
 
 impl Ext4SuperBlock {
-    pub fn new(sno: u32, driver: Arc<dyn BlockDriver>) -> SysResult<Arc<Self>> {
+    pub fn new(sno: u32, driver: Arc<dyn BlockDriverOps>) -> SysResult<Arc<Self>> {
         let superblock = SuperBlockInner::open(Arc::new(Disk{ driver }));
 
         Ok(Arc::new(Ext4SuperBlock {

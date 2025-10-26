@@ -1,80 +1,33 @@
-use core::array;
-
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use device_tree_parser::{DeviceTreeParser, PropertyValue};
 use spin::RwLock;
 
-use crate::driver::block::BlockDriver;
-use crate::{kwarn, kinfo};
+use crate::{kinfo, kwarn};
 
-use super::{DriverMatcher, Device, DriverOps, DeviceType};
+use super::{DriverMatcher, Device, DriverOps, BlockDriverOps, CharDriverOps, DeviceType};
 
 pub struct DriverManager {
     matchers: RwLock<Vec<&'static dyn DriverMatcher>>,
-    block: RwLock<BTreeMap<String, Arc<dyn BlockDriver>>>,
+    block: RwLock<BTreeMap<String, Arc<dyn BlockDriverOps>>>,
+    char: RwLock<BTreeMap<String, Arc<dyn CharDriverOps>>>,
 }
 
 impl DriverManager {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         DriverManager {
             matchers: RwLock::new(Vec::new()),
             block: RwLock::new(BTreeMap::new()),
+            char: RwLock::new(BTreeMap::new()),
         }
     }
 
-    pub fn load_device_tree(&self, fdt: *const u8) -> Result<(), ()> {
-        let data = unsafe { core::slice::from_raw_parts(fdt as *const u32, 2) };
-        let magic = u32::from_be(data[0]);
-        if magic != 0xd00dfeed {
-            kwarn!("Invalid device tree magic: 0x{:x}", magic);
-            return Err(());
-        }
-        
-        let total_size = u32::from_be(data[1]) as usize;
-
-        let data = unsafe { core::slice::from_raw_parts(fdt, total_size) };
-
-        let parser = DeviceTreeParser::new(data);
-        let tree = parser.parse_tree().map_err(|_| ())?;
-
-        self.load_fdt_node(&tree);
-        
-        Ok(())
-    }
-
-    fn load_fdt_node(&self, node: &device_tree_parser::DeviceTreeNode) {
-        self.load_fdt_device(node);
-        for child in &node.children {
-            
-            self.load_fdt_node(child);
-        }
-    }
-
-    fn load_fdt_device(&self, node: &device_tree_parser::DeviceTreeNode) {
-        // let addr;
-        if node.has_property("reg") {
-            match node["reg"].value {
-                PropertyValue::U64Array(array) => {
-                    
-                }
-
-                PropertyValue::U32Array(array) => {
-                    kinfo!("U32Array {:?}", array)
-                }
-
-                _ => kwarn!("{}", node["reg"].value),
-            }
-        }
-    }
-
-    pub fn register_matcher(&self, matcher: &'static dyn DriverMatcher) {
+    fn register_matcher(&self, matcher: &'static dyn DriverMatcher) {
         self.matchers.write().push(matcher);
     }
 
-    pub fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
+    fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         for matcher in self.matchers.read().iter() {
             if let Some(driver) = matcher.try_match(device) {
                 return Some(driver);
@@ -84,8 +37,9 @@ impl DriverManager {
         None
     }
 
-    pub fn register_device(&self, device: &Device) {
+    fn found_device(&self, device: &Device) {
         if let Some(driver) = self.try_match(device) {
+            kinfo!("Registering driver: {} for device {}: {:?}", driver.name(), driver.device_name(), device);
             match driver.device_type() {
                 DeviceType::Block => {
                     self.register_block_device(driver.as_block_driver());
@@ -95,12 +49,35 @@ impl DriverManager {
         }
     }
 
-    pub fn register_block_device(&self, driver: Arc<dyn BlockDriver>) {
+    fn register_matched_driver(&self, driver: Arc<dyn DriverOps>) {
+        match driver.device_type() {
+            DeviceType::Block => {
+                self.register_block_device(driver.as_block_driver());
+            }
+            DeviceType::Char => {
+                self.register_char_device(driver.as_char_driver());
+            }
+            _ => unimplemented!()
+        }
+    }
+
+    fn register_block_device(&self, driver: Arc<dyn BlockDriverOps>) {
         self.block.write().insert(driver.device_name(), driver);
     }
 
-    pub fn get_block_driver(&self, name: &str) -> Option<Arc<dyn BlockDriver>> {
+    fn register_char_device(&self, driver: Arc<dyn CharDriverOps>) {
+        self.char.write().insert(driver.device_name(), driver);
+    }
+
+    fn get_block_driver(&self, name: &str) -> Option<Arc<dyn BlockDriverOps>> {
         self.block
+            .read()
+            .get(name)
+            .map(|driver| driver.clone())
+    }
+
+    fn get_char_driver(&self, name: &str) -> Option<Arc<dyn CharDriverOps>> {
+        self.char
             .read()
             .get(name)
             .map(|driver| driver.clone())
@@ -108,22 +85,25 @@ impl DriverManager {
 }
 
 unsafe impl Sync for DriverManager {}
-unsafe impl Send for DriverManager {}
 
 static DRIVER_MANAGER: DriverManager = DriverManager::new();
 
 pub fn found_device(device: &Device) {
-    DRIVER_MANAGER.register_device(device);
-}
-
-pub fn load_device_tree(fdt: *const u8) {
-    DRIVER_MANAGER.load_device_tree(fdt).unwrap();
+    DRIVER_MANAGER.found_device(device);
 }
 
 pub fn register_matcher(matcher: &'static dyn DriverMatcher) {
     DRIVER_MANAGER.register_matcher(matcher);
 }
 
-pub fn get_block_driver(name: &str) -> Option<Arc<dyn BlockDriver>> {
+pub fn register_matched_driver(driver: Arc<dyn DriverOps>) {
+    DRIVER_MANAGER.register_matched_driver(driver);
+}
+
+pub fn get_block_driver(name: &str) -> Option<Arc<dyn BlockDriverOps>> {
     DRIVER_MANAGER.get_block_driver(name)
+}
+
+pub fn get_char_driver(name: &str) -> Option<Arc<dyn CharDriverOps>> {
+    DRIVER_MANAGER.get_char_driver(name)
 }

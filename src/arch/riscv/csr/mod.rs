@@ -37,3 +37,22 @@ pub mod sscratch {
         unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) value); }
     }
 }
+
+pub mod time {
+    pub fn read() -> u64 {
+        let value: usize;
+        unsafe { core::arch::asm!("csrr {}, time", out(reg) value); }
+        value as u64
+    }
+}
+
+pub mod timecmp {
+    pub fn write(value: u64) {
+        unsafe {
+            core::arch::asm!(
+                "csrw stimecmp, {}",
+                in(reg) value as usize,
+            );
+        }
+    }
+}

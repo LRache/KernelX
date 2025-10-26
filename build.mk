@@ -52,8 +52,8 @@ endif
 all: kernel
 
 kernel: $(RUST_KERNEL)
-	mkdir -p $(BUILD)
-	cp $(RUST_KERNEL) $(KERNEL_VM)
+	@ mkdir -p $(BUILD)
+	@ cp $(RUST_KERNEL) $(KERNEL_VM)
 	@ $(CROSS_COMPILE)objcopy -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
 
 $(KERNEL_VM): $(RUST_KERNEL)
@@ -73,11 +73,10 @@ $(CLIB):
 vdso: $(VDSO)
 
 $(VDSO):
-	$(BUILD_ENV) make -C vdso all
+	@ $(BUILD_ENV) make -C vdso all
 
 $(RUST_KERNEL): $(CLIB) $(VDSO)
-	$(BUILD_ENV) cargo build --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
-	echo "Built kernel: $@"
+	@ $(BUILD_ENV) cargo build --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
 
 check:
 	@ $(BUILD_ENV) cargo check --target $(RUST_TARGET) --features "$(RUST_FEATURES)"

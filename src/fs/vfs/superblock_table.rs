@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 
 use crate::kernel::errno::SysResult;
 use crate::fs::filesystem::{FileSystem, SuperBlock};
-use crate::driver::block::BlockDriver;
+use crate::driver::BlockDriverOps;
 
 pub struct SuperBlockTable {
     table: Vec<Option<Arc<dyn SuperBlock>>>
@@ -17,7 +17,7 @@ impl SuperBlockTable {
         }
     }
 
-    pub fn alloc(&mut self, fs: &Box<dyn FileSystem>, driver: Option<Arc<dyn BlockDriver>>) -> SysResult<u32> {
+    pub fn alloc(&mut self, fs: &Box<dyn FileSystem>, driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<u32> {
         let sno = self.table.len();
         let superblock = fs.create(sno as u32, driver)?;
         self.table.push(Some(superblock));

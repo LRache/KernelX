@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 
 use crate::kernel::errno::Errno;
 use crate::fs::filesystem::FileSystem;
-use crate::driver::block::BlockDriver;
+use crate::driver::BlockDriverOps;
 
 use super::vfs;
 use super::Dentry;
@@ -17,7 +17,7 @@ pub fn register_filesystem(typename: &str, fs: Box<dyn FileSystem>) -> Result<()
     Ok(())
 }
 
-pub fn mount(path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriver>>) -> Result<(), Errno> {
+pub fn mount(path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> Result<(), Errno> {
     vfs().mount(path, fstype_name, device)
 }
 

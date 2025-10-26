@@ -6,12 +6,12 @@ extern char __kernel_end[];
 extern char __bss_start[];
 extern char __bss_end  [];
 
-__attribute__((section(".data.init")))
+__init_data
 uintptr_t __riscv_kernel_end;
 
 uintptr_t __riscv_kaddr_offset;
 
-__attribute__((section(".text.init")))
+__init_text
 void __riscv_init(uintptr_t hartid, const void *fdt, uintptr_t kaddr_offset)  {
     // Clear BSS
     // Assume BSS in aligned to 4K
@@ -45,6 +45,7 @@ void __riscv_init(uintptr_t hartid, const void *fdt, uintptr_t kaddr_offset)  {
     );
 }
 
+__init_text
 static inline void sbi_putchar(char c) {
     asm volatile (
         "li a6, 0\n"
@@ -57,6 +58,7 @@ static inline void sbi_putchar(char c) {
     );
 }
 
+__init_text
 static inline void sbi_shutdown() {
     asm volatile (
         "li a6, 0\n"
@@ -68,9 +70,14 @@ static inline void sbi_shutdown() {
     );
 }
 
-void __riscv_init_die() {
-    const char *msg = "Kernel panic: fatal error occurred, shutting down...\n";
+__init_text
+void __riscv_init_die(const char *reason) {
+    const char *msg;
+    msg = "Kernel panic: ";
     for (const char *p = msg; *p != '\0'; p++) {
+        sbi_putchar(*p);
+    }
+    for (const char *p = reason; *p != '\0'; p++) {
         sbi_putchar(*p);
     }
     sbi_shutdown();

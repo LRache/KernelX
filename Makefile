@@ -1,5 +1,5 @@
 KERNEL = build/$(PLATFORM)/vmkernelx
-KERNEL_BIN = build/$(PLATFORM)/kernel.bin
+KERNEL_IMAGE = build/$(PLATFORM)/Image
 
 all: kernel
 
@@ -38,15 +38,11 @@ objdump: kernel
 	@ $(CROSS_COMPILE)objdump -d $(KERNEL) > kernel.asm
 	@ echo "Generated kernel.asm"
 
-$(KERNEL_BIN): kernel
-	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) $(KERNEL_BIN)
-	@ echo "Generated $(KERNEL_BIN)"
-
-package: $(KERNEL_BIN)
-	@ KERNEL_IMAGE=$(KERNEL_BIN) IMAGE=$(IMAGE) scripts/package.sh
+package: kernel
+	@ KERNEL_IMAGE=$(KERNEL_IMAGE) IMAGE=$(IMAGE) scripts/package.sh
 	@ echo "Packaged image: $(IMAGE)"
 
 count:
-	@ find src c/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" | xargs wc -l
+	@ find src clib/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" -o -name "*.S" | xargs wc -l
 
 .PHONY: all init run gdb clean count check menuconfig objdump kernel vdso clib

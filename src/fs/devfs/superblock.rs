@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use crate::kernel::errno::SysResult;
 use crate::fs::filesystem::{FileSystem as FileSystem, SuperBlock};
 use crate::fs::Inode;
-use crate::driver::block::BlockDriver;
+use crate::driver::BlockDriverOps;
 
 use super::{root, null, zero};
 use super::def::*;
@@ -18,7 +18,7 @@ impl DevFileSystem {
 }
 
 impl FileSystem for DevFileSystem {
-    fn create(&self, sno: u32, _driver: Option<Arc<dyn BlockDriver>>) -> SysResult<Arc<dyn SuperBlock>> {
+    fn create(&self, sno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlock>> {
         return Ok(DevSuperBlock::new(sno) as Arc<dyn SuperBlock>);
     }
 }

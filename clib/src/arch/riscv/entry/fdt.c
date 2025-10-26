@@ -5,6 +5,7 @@
 
 void *__riscv_copied_fdt;
 
+__init_text
 static inline uint64_t get_memory_top_from_fdt(const void *fdt) {
     int node_offset;
 
@@ -25,24 +26,24 @@ static inline uint64_t get_memory_top_from_fdt(const void *fdt) {
                 base = fdt32_to_cpu(prop_val[0]);
                 size = fdt32_to_cpu(prop_val[1]);
             } else {
-                __riscv_init_die();
+                __riscv_init_die("prop_len is invalid.");
                 return 0;
             }
             return base + size;
         }
     }
 
-    __riscv_init_die();
+    __riscv_init_die("Kernel panic: no memory node found in FDT\n");
 
     return 0;
 }
 
-__attribute__((section(".text.init")))
+__init_text
 uintptr_t __riscv_load_fdt(const void *fdt) {
     uintptr_t *kernel_end = __riscv_init_load_kernel_end();
     
     if (fdt_check_header(fdt) != 0) {
-        __riscv_init_die();
+        __riscv_init_die("FDT header is invalid.\n");
         return 0;
     }
 

@@ -10,6 +10,10 @@
 
 .align 3
 asm_kerneltrap_entry:
+    csrw sscratch, sp
+
+    la sp, __ktrap_temp_stack_end
+    
     addi sp, sp, -32*__riscv_xlen/8
     
     STORE(ra, 1)
@@ -77,5 +81,7 @@ asm_kerneltrap_entry:
     LOAD(t6, 31)
 
     addi sp, sp, 32*__riscv_xlen/8
+
+    csrr sp, sscratch
 
     sret

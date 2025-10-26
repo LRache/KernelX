@@ -31,10 +31,13 @@ pub trait ArchTrait {
 
     fn get_kernel_stack_top() -> usize;
 
-    fn kaddr_offset() -> usize;
     fn kaddr_to_paddr(kaddr: usize) -> usize;
     fn paddr_to_kaddr(paddr: usize) -> usize;
     fn scan_device();
+    fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm);
+
+    fn get_time_us() -> u64;
+    fn set_next_time_event_us(interval: u64);
 }
 
 pub trait UserContextTrait: Clone {

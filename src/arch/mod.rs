@@ -29,6 +29,8 @@ macro_rules! arch_export {
     };
 }
 
+use crate::kernel::mm::MapPerm;
+
 arch_export! {
     init() -> ();
     
@@ -52,6 +54,10 @@ arch_export! {
     // kaddr_offset() -> usize;
     kaddr_to_paddr(kaddr: usize) -> usize;
     paddr_to_kaddr(paddr: usize) -> usize;
+    map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
+
+    get_time_us() -> u64;
+    set_next_time_event_us(internval: u64) -> ();
 
     scan_device() -> ();
 }

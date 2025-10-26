@@ -43,7 +43,7 @@ impl PageAllocator {
 
     pub fn free(&mut self, addr: usize) {
         debug_assert!(addr % arch::PGSIZE == 0, "Address must be page-aligned: {:#x}", addr);
-        debug_assert!(addr >= self.bottom && addr < self.top, "Attempted to free an invalid address: {:#x}", addr);
+        debug_assert!(addr < self.top, "Attempted to free an invalid address: {:#x}", addr);
         debug_assert!(self.freed.iter().find(|&x| *x == addr).is_none(), "Address {:#x} is already freed", addr);
 
         // fill freed page with 0xff in debug mode
@@ -57,6 +57,7 @@ impl PageAllocator {
 
 static ALLOCATOR: Mutex<PageAllocator> = Mutex::new(PageAllocator::new());
 
+#[unsafe(link_section = ".text.init")]
 pub fn init(heap_end: usize) {
     let mut allocator = ALLOCATOR.lock();
     allocator.init(heap_end);

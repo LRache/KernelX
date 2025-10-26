@@ -1,9 +1,6 @@
 #[cfg(feature = "platform-riscv-common")]
 mod riscv_common;
 
-#[cfg(feature = "platform-riscv-common")]
-pub use riscv_common::*;
-
 #[cfg(feature = "platform-qemu-virt-riscv64")]
 mod qemu_virt_riscv64;
 

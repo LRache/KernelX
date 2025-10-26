@@ -8,6 +8,11 @@ use crate::driver;
 use crate::fs::Mode;
 use crate::kinfo;
 
+// const INIT_BLOCK_DEVICE_NAME: &str = "sdio1";
+const INIT_BLOCK_DEVICE_NAME: &str = "virtio_block0";
+const INIT_FILESYSTEM_TYPE: &str = "ext4";
+
+#[unsafe(link_section = ".text.init")]
 pub fn init() {
     kinfo!("Initializing file system...");
 
@@ -19,10 +24,10 @@ pub fn init() {
 
     kinfo!("File systems registered successfully.");
 
-    let virtio_blk = driver::get_block_driver("virtio_block0").unwrap();
-    
-    vfs::mount("/", "ext4", Some(virtio_blk)).unwrap();
-    
+    let init_blk = driver::get_block_driver(INIT_BLOCK_DEVICE_NAME).unwrap();
+
+    vfs::mount("/", INIT_FILESYSTEM_TYPE, Some(init_blk)).unwrap();
+
     // Mount devfs at /dev
     let _ = vfs::load_dentry("/").unwrap().create("dev", Mode::S_IFDIR);
     vfs::mount("/dev", "devfs", None).unwrap();

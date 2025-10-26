@@ -1,12 +1,19 @@
-use crate::arch::riscv::process;
+use alloc::sync::Arc;
+
+use crate::arch::riscv::{csr, load_device_tree, process, sbi_driver};
+use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
 use crate::arch::{Arch, ArchTrait, UserContextTrait};
 use crate::kernel::scheduler::current;
+use crate::kernel::mm::MapPerm;
+use crate::driver::chosen;
 use crate::driver;
 
 use super::kernel_switch;
 use super::KernelContext;
-use super::kernelpagetable;
+use super::pagetable::kernelpagetable;
 use super::csr::{Sstatus, SIE, stvec};
+use super::time_frequency;
+use super::sbi_driver::SBIKConsole;
 
 unsafe extern "C" {
     static __riscv_copied_fdt: *const u8;
@@ -14,12 +21,18 @@ unsafe extern "C" {
 }
 
 impl ArchTrait for Arch {
+    #[unsafe(link_section = ".text.init")]
     fn init() {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;
         }
         stvec::write(asm_kerneltrap_entry as usize);
         kernelpagetable::init();
+
+        chosen::kconsole::register(&SBIKConsole);
+        chosen::kpmu::register(&SBIKPMU);
+
+        driver::register_matched_driver(Arc::new(SBIConsoleDriver));
     }
     
     #[inline(always)]
@@ -73,11 +86,7 @@ impl ArchTrait for Arch {
     }
 
     fn scan_device() {
-        driver::load_device_tree(unsafe { __riscv_copied_fdt });
-    }
-
-    fn kaddr_offset() -> usize {
-        unsafe { __riscv_kaddr_offset }
+        load_device_tree(unsafe { __riscv_copied_fdt }).unwrap();
     }
 
     fn kaddr_to_paddr(kaddr: usize) -> usize {
@@ -86,5 +95,17 @@ impl ArchTrait for Arch {
 
     fn paddr_to_kaddr(paddr: usize) -> usize {
         paddr + unsafe { __riscv_kaddr_offset }
+    }
+
+    fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) {
+        kernelpagetable::map_kernel_addr(kstart, pstart, size, perm);
+    }
+
+    fn get_time_us() -> u64 {
+        csr::time::read() * 1000000 / (time_frequency() as u64)
+    }
+
+    fn set_next_time_event_us(interval: u64) {
+        sbi_driver::set_timer(csr::time::read() + interval);
     }
 }

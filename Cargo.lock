@@ -9,6 +9,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "bitfield-struct"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de05f8756f1c68937349406d4632ae96ae35901019b5e59c508d9c38c64715fb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -76,9 +87,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fdt"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "784a4df722dc6267a04af36895398f59d21d07dce47232adf31ec0ff2fa45e67"
+
+[[package]]
 name = "kernelx"
 version = "0.1.0"
 dependencies = [
+ "bitfield-struct",
  "bitflags",
  "buddy_system_allocator",
  "cc",
@@ -86,9 +104,11 @@ dependencies = [
  "device_tree_parser",
  "downcast-rs",
  "ext4_rs",
+ "fdt",
  "num_enum",
  "spin",
  "virtio-drivers",
+ "visionfive2-sd",
 ]
 
 [[package]]
@@ -126,6 +146,12 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
+
+[[package]]
+name = "preprint"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "067d7939a17011d73ee0f868eb26b569680437d379583e5f97c18ca570b4a32f"
 
 [[package]]
 name = "proc-macro2"
@@ -204,6 +230,16 @@ dependencies = [
  "enumn",
  "log",
  "zerocopy",
+]
+
+[[package]]
+name = "visionfive2-sd"
+version = "0.1.0"
+source = "git+https://github.com/os-module/visionfive2-sd.git?rev=af75139#af751394eb81d2064786135656df3a6c0dd74485"
+dependencies = [
+ "bitfield-struct",
+ "log",
+ "preprint",
 ]
 
 [[package]]
