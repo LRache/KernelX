@@ -23,16 +23,16 @@ check:
 	@ make -f build.mk check $(KERNEL_CONFIG)
 
 run: kernel
-	@ make -f scripts/qemu.mk qemu-run KERNEL=$(KERNEL)
+	@ make -f scripts/qemu.mk qemu-run $(QEMU_ARGS)
 
 clean:
 	@ make -f build.mk clean
 
 qemu-dts:
-	@ make -f scripts/qemu.mk qemu-dts KERNEL=$(KERNEL)
+	@ make -f scripts/qemu.mk qemu-dts $(QEMU_ARGS)
 
 gdb: kernel
-	@ make -f scripts/qemu.mk qemu-gdb KERNEL=$(KERNEL)
+	@ make -f scripts/qemu.mk qemu-gdb $(QEMU_ARGS)
 
 objdump: kernel
 	@ $(CROSS_COMPILE)objdump -d $(KERNEL) > kernel.asm

@@ -22,7 +22,6 @@ impl Matcher {
 
 impl DriverMatcher for Matcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
-        kinfo!("compatible: {}", device.compatible());
         if device.compatible() == "snps,dw-mshc" {
             map_kernel_addr(device.mmio_base(), device.mmio_base(), device.mmio_size(), MapPerm::RW);
             let driver = Driver::new(self.count.fetch_add(1, Ordering::Relaxed), device.mmio_base());

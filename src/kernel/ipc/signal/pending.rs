@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
 
-use crate::kernel::ipc::SignalNum;
+use crate::kernel::ipc::{SignalNum, SignalSet};
 use crate::kernel::task::Tid;
 use crate::kernel::errno::SysResult;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct PendingSignal {
-    pub signum: u32,
+    pub signum: SignalNum,
     pub sender: Tid,
     pub dest: Option<Tid>,
 }
@@ -23,15 +23,14 @@ impl PendingSignalQueue {
     }
 
     pub fn add_pending(&mut self, pending: PendingSignal) -> SysResult<()> {
-        assert!(pending.signum < 32);
         self.pending.push(pending);
         Ok(())
     }
 
-    pub fn pop_pending(&mut self, mask: usize) -> Option<PendingSignal> {
+    pub fn pop_pending(&mut self, mask: SignalSet) -> Option<PendingSignal> {
         let mut index = None;
         for (i, signal) in self.pending.iter().enumerate() {
-            if (mask & (1 << (signal.signum - 1))) != 0 || SignalNum::is_unignorable(signal.signum) {
+            if !signal.signum.is_masked(mask) || signal.signum.is_unignorable() {
                 index = Some(i);
                 break;
             }

@@ -9,10 +9,12 @@ use crate::kernel::scheduler::{self, current};
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::tid;
 use crate::kernel::event::Event;
-use crate::kernel::ipc::{SignalActionTable, PendingSignalQueue};
+use crate::kernel::ipc::{SignalActionTable, PendingSignalQueue, signum};
 use crate::fs::file::File;
 use crate::fs::vfs;
 use crate::fs::Dentry;
+use crate::klib::SpinLock;
+use crate::lock_debug;
 
 use super::tcb::{TCB, TaskState};
 
@@ -23,13 +25,13 @@ struct Signal {
 
 pub struct PCB {
     pid: Tid,
-    pub parent: Mutex<Option<Arc<PCB>>>,
-    is_zombie: Mutex<bool>,
-    exit_code: Mutex<u8>,
+    pub parent: SpinLock<Option<Arc<PCB>>>,
+    is_zombie: SpinLock<bool>,
+    exit_code: SpinLock<u8>,
     
-    pub tasks: Mutex<Vec<Arc<TCB>>>,
-    cwd: Mutex<Arc<Dentry>>,
-    waiting_task: Mutex<Vec<Arc<TCB>>>,
+    pub tasks: SpinLock<Vec<Arc<TCB>>>,
+    cwd: SpinLock<Arc<Dentry>>,
+    waiting_task: SpinLock<Vec<Arc<TCB>>>,
 
     signal: Signal,
 
@@ -40,13 +42,13 @@ impl PCB {
     pub fn new(pid: i32, parent: &Arc<PCB>, cwd: &Arc<Dentry>) -> Arc<Self> {
         Arc::new(Self {
             pid,
-            parent: Mutex::new(Some(parent.clone())),
-            is_zombie: Mutex::new(false),
-            exit_code: Mutex::new(0),
+            parent: SpinLock::new(Some(parent.clone())),
+            is_zombie: SpinLock::new(false),
+            exit_code: SpinLock::new(0),
             
-            tasks: Mutex::new(Vec::new()),
-            cwd: Mutex::new(cwd.clone()),
-            waiting_task: Mutex::new(Vec::new()),
+            tasks: SpinLock::new(Vec::new()),
+            cwd: SpinLock::new(cwd.clone()),
+            waiting_task: SpinLock::new(Vec::new()),
 
             signal: Signal {
                 actions: Mutex::new(SignalActionTable::new()),
@@ -67,13 +69,13 @@ impl PCB {
 
         let pcb = Arc::new(Self {
             pid: 0,
-            parent: Mutex::new(None),
-            is_zombie: Mutex::new(false),
-            exit_code: Mutex::new(0),
+            parent: SpinLock::new(None),
+            is_zombie: SpinLock::new(false),
+            exit_code: SpinLock::new(0),
             
-            tasks: Mutex::new(Vec::new()),
-            cwd: Mutex::new(cwd.clone()),
-            waiting_task: Mutex::new(Vec::new()),
+            tasks: SpinLock::new(Vec::new()),
+            cwd: SpinLock::new(cwd.clone()),
+            waiting_task: SpinLock::new(Vec::new()),
 
             signal: Signal {
                 actions: Mutex::new(SignalActionTable::new()),
@@ -169,10 +171,10 @@ impl PCB {
         }
         
         if let Some(parent) = self.parent.lock().as_ref() {
-            // parent.send_signal(SignalNum::SIGCHLD as u32, self.pid, None).unwrap();
             parent.waiting_task.lock().drain(..).for_each(|t| {
                 t.wakeup(Event::Process { child: self.pid });
             });
+            parent.send_signal(signum::SIGCHLD, current::tid(), None).unwrap_or(());
         }
         
         let mut children = self.children.lock();
@@ -204,6 +206,21 @@ impl PCB {
                     
                     current::tcb().block("wait_child");
                     current::schedule();
+
+                    let state = current::tcb().state().lock();
+                    match state.event {
+                        Some(Event::Process { child }) => {
+                            if child == pid {
+                                break;
+                            }
+                        }
+
+                        Some(Event::Signal) => {
+                            return Err(Errno::EINTR);
+                        }
+
+                        _ => unreachable!(),
+                    }
                     
                     if current::tcb().with_state_mut(|state| {
                         match state.event {
@@ -258,35 +275,33 @@ impl PCB {
             return Ok(None);
         }
 
-        loop {
-            self.waiting_task.lock().push(current::tcb().clone());
-            current::tcb().block("wait_any_child");
-            current::schedule();
+        self.waiting_task.lock().push(current::tcb().clone());
+        current::tcb().block("wait_any_child");
+        current::schedule();
 
-            let mut pid = 0;
-            let mut exit_code = 0;
-            if current::tcb().with_state_mut(|state| {
-                match state.event {
-                    Some(Event::Process { child }) => {
-                        pid = child;
-                        let mut children = self.children.lock();
+        let state = lock_debug!(current::tcb().state());
 
-                        match children.iter().find(|c| c.get_pid() == child){
-                            Some(child_pcb) => {
-                                exit_code = child_pcb.get_exit_code();
-                            },
-                            None => unreachable!(), // The child must exist
-                        }
+        match state.event {
+            Some(Event::Process { child }) => {
+                let pid = child;
+                let exit_code;
+                let mut children = self.children.lock();
 
-                        children.retain(|c| c.get_pid() != pid);
+                match children.iter().find(|c| c.get_pid() == child){
+                    Some(child_pcb) => {
+                        exit_code = child_pcb.get_exit_code();
                     },
-                    _ => return false, // Wakeup by other event
-                };
-                state.event = None;
-                return true;
-            }) {
-                return Ok(Some((pid, exit_code)))
+                    None => unreachable!(), // The child must exist
+                }
+
+                children.retain(|c| c.get_pid() != pid);
+
+                Ok(Some((pid, exit_code)))
             }
+            Some(Event::Signal) => {
+                Err(Errno::EINTR)
+            }
+            _ => unreachable!(),
         }
     }
 

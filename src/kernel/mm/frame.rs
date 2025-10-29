@@ -29,6 +29,15 @@ impl PhysPageFrame {
         safe_page_write!(self.page + offset, src);
     }
 
+    pub fn copy_to_slice(&self, offset: usize, dst: &mut [u8]) {
+        debug_assert!(offset + dst.len() <= arch::PGSIZE, "Slice exceeds page frame bounds");
+        unsafe {
+            let src_ptr = (self.page + offset) as *const u8;
+            let dst_ptr = dst.as_mut_ptr();
+            core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, dst.len());
+        }
+    }
+
     pub fn slice(&self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.page as *mut u8, arch::PGSIZE) }
     }

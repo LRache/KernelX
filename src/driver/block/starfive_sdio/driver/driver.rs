@@ -6,7 +6,7 @@ use visionfive2_sd::{Vf2SdDriver, SDIo, SleepOps};
 
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
 use crate::kernel::event::timer;
-use crate::klib::SpinMutex;
+use crate::klib::SpinLock;
 
 struct SDIOImpls {
     pub base: usize
@@ -53,7 +53,7 @@ impl SleepOps for SleepOpsImpls {
 pub struct Driver {
     base: usize,
     num: i32,
-    inner: SpinMutex<Vf2SdDriver<SDIOImpls, SleepOpsImpls>>
+    inner: SpinLock<Vf2SdDriver<SDIOImpls, SleepOpsImpls>>
 }
 
 impl Driver {
@@ -62,7 +62,7 @@ impl Driver {
         Driver { 
             num, 
             base, 
-            inner: SpinMutex::new(inner) 
+            inner: SpinLock::new(inner) 
         }
     }
 

@@ -1,5 +1,5 @@
 use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::Inode;
+use crate::fs::InodeOps;
 use crate::fs::file::DirResult;
 
 pub const INO: u32 = 1;
@@ -14,7 +14,7 @@ impl NullInode {
     }
 }
 
-impl Inode for NullInode {
+impl InodeOps for NullInode {
     fn get_ino(&self) -> u32 {
         INO
     }

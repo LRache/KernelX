@@ -60,6 +60,9 @@ pub fn usertrap_handler() -> ! {
                     let addr = stval::read();
                     trap::memory_fault(addr, MemAccessType::Write);
                 },
+                scause::Trap::IllegalInst => {
+                    trap::illegal_inst();
+                }
                 _ => {
                     panic!("Unhandled user trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}", trap, sepc::read(), stval::read(), scause::cause());
                 }

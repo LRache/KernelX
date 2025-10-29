@@ -40,7 +40,7 @@ pub trait UserPointer<T: Copy> {
     }
 }
 
-pub struct UPtr<T: Copy> {
+pub struct UPtr<T: Copy + Sized> {
     uaddr: usize,
     _marker: core::marker::PhantomData<T>,
 }
@@ -54,6 +54,14 @@ impl<T: Copy> UPtr<T> {
     pub fn write(&self, value: T) -> SysResult<()> {
         debug_assert!(!self.is_null());
         copy_to_user::object(self.uaddr, value)
+    }
+
+    pub fn read_optional(&self) -> SysResult<Option<T>> {
+        if self.is_null() {
+            Ok(None)
+        } else {
+            Ok(Some(self.read()?))
+        }
     }
 }
 

@@ -1,15 +1,17 @@
 use alloc::sync::Arc;
+use core::time::Duration;
 use bitflags::bitflags;
 
 use crate::kernel::config;
+use crate::kernel::event::{timer, Event};
 use crate::kernel::ipc::{Pipe, SignalSet};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
-use crate::kernel::uapi;
+use crate::kernel::uapi::{self, Timespec};
 use crate::kernel::task::manager;
-use crate::arch;
+use crate::{arch, kinfo};
 
 use super::SyscallRet;
 
@@ -44,23 +46,34 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
 pub fn kill(pid: usize, signum: usize) -> SyscallRet {
     let pid = pid as i32;
     let signum = signum as u32;
+
+    kinfo!("kill: pid={}, signum={}", pid, signum);
     
     if pid > 0 {
         let pcb = manager::get(pid).ok_or(Errno::ESRCH)?;
-        pcb.send_signal(signum, current::tid(), None)?;
+        pcb.send_signal(signum.try_into()?, current::tid(), None)?;
     }
 
     Ok(0)
 }
 
-pub fn rt_sigprocmask(_how: usize, _set: usize, _oldset: usize) -> SyscallRet {
+pub fn rt_sigprocmask(_how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<SignalSet>) -> SyscallRet {
+    let mut signal_mask = current::tcb().signal_mask.lock();
+    if !uptr_oldset.is_null() {
+        let old_mask = signal_mask.clone();
+        uptr_oldset.write(old_mask)?;
+    }
+    if !uptr_set.is_null() {
+        let new_mask = uptr_set.read()?;
+        *signal_mask = new_mask;
+    }
     Ok(0)
 }
 
 pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact: UPtr<uapi::Sigaction>, sigsetsize: usize) -> SyscallRet {
     assert!(sigsetsize == core::mem::size_of::<SignalSet>());
 
-    let signum = signum as u32;
+    let signum = (signum as u32).try_into()?;
 
     let mut signal_actions = current::signal_actions().lock();
     if !uptr_oldact.is_null() {
@@ -79,4 +92,37 @@ pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact:
 pub fn rt_sig_return() -> SyscallRet {
     current::tcb().return_from_signal();
     arch::return_to_user();
+}
+
+pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeout: UPtr<Timespec>) -> SyscallRet {
+    uptr_set.should_not_null()?;
+    
+    let timeout = uptr_timeout.read_optional()?;
+    let signal_set = uptr_set.read()?;
+
+    let mut state = current::tcb().state().lock();
+    if let Some(pending) = state.pending_signal {
+        if signal_set.contains(pending.signum) {
+            state.pending_signal.take();
+            return Ok(pending.signum.into());
+        }
+    }
+
+    if let Some(ts) = timeout {
+        let timeout_duration = Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32);
+        timer::add_timer(current::tcb().clone(), timeout_duration);
+    }
+
+    state.waiting_signal = signal_set;
+
+    drop(state);
+
+    current::block("sigtimedwait");
+
+    match current::tcb().state().lock().event.take() {
+        Some(Event::WaitSignal { signum }) => Ok(signum.into()),
+        Some(Event::Signal) => Err(Errno::EINTR),
+        Some(Event::Timeout) => Err(Errno::EAGAIN),
+        _ => unreachable!(),
+    }
 }

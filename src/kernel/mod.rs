@@ -11,3 +11,4 @@ pub mod config;
 pub mod uapi;
 
 pub use main::fini;
+pub use main::parse_boot_args;

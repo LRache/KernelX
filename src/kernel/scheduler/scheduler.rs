@@ -62,7 +62,6 @@ pub fn run_tasks(_hartid: u8) -> ! {
                 }
             });
         } else {
-            // kinfo!("Waiting for interrupt...");
             arch::enable_interrupt();
             arch::wait_for_interrupt();
         }

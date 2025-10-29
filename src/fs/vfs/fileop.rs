@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use alloc::string::String;
 
-use crate::fs::inode::{Inode, Mode};
+use crate::fs::inode::{InodeOps, Mode};
 use crate::fs::vfs::dentry::Dentry;
 use crate::fs::file::{File, FileFlags};
 use crate::kernel::errno::{Errno, SysResult};
@@ -41,7 +41,7 @@ pub fn openat_file(dir: &Arc<Dentry>, path: &str, flags: FileFlags) -> SysResult
     Ok(new_file(&dentry, flags))
 }
 
-pub fn load_inode(sno: u32, ino: u32) -> SysResult<Arc<dyn Inode>> {
+pub fn load_inode(sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
     vfs().load_inode(sno, ino)
 }
 

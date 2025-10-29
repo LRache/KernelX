@@ -5,6 +5,7 @@ use crate::kernel::uapi::FileStat;
 use crate::kernel::event::{PollEvent, PollEventSet};
 use crate::driver::CharDriverOps;
 use crate::fs::file::FileOps;
+use crate::fs::InodeOps;
 
 use super::{SeekWhence, DirResult};
 
@@ -63,7 +64,7 @@ impl FileOps for CharFile {
         None
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn crate::fs::Inode>> {
+    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
         None
     }
 

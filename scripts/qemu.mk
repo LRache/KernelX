@@ -4,11 +4,30 @@ IMAGE = build/$(PLATFORM)/Image
 VMKERNELX = build/$(PLATFORM)/vmkernelx
 
 QEMU = qemu-system-riscv64
-QEMU_FLAGS += -M $(QEMU_MACHINE) -m $(QEMU_MEMORY) -nographic
+QEMU_FLAGS += -M $(CONFIG_QEMU_MACHINE) -m $(CONFIG_QEMU_MEMORY) -nographic
 QEMU_FLAGS += -kernel $(IMAGE)
-QEMU_FLAGS += -drive file=$(DISK),if=none,id=x0,format=raw 
+QEMU_FLAGS += -drive file=$(CONFIG_DISK_IMAGE),if=none,id=x0,format=raw 
 QEMU_FLAGS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
-QEMU_FLAGS += -smp $(QEMU_CPUS)
+QEMU_FLAGS += -smp $(CONFIG_QEMU_CPUS)
+
+# Set bootargs
+ifneq ($(CONFIG_INITPATH),)
+BOOTARGS += init=$(CONFIG_INITPATH)
+endif
+
+ifneq ($(CONFIG_INITCWD),)
+BOOTARGS += initcwd=$(CONFIG_INITCWD)
+endif
+
+ifneq ($(CONFIG_ROOT_DEVICE),)
+BOOTARGS += root=$(CONFIG_ROOT_DEVICE)
+endif
+
+ifneq ($(CONFIG_ROOT_FSTYPE),)
+BOOTARGS += rootfstype=$(CONFIG_ROOT_FSTYPE)
+endif
+
+QEMU_FLAGS += -append "$(BOOTARGS)"
 
 qemu-run:
 	$(QEMU) $(QEMU_FLAGS)

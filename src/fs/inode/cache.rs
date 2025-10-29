@@ -2,15 +2,14 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use spin::Mutex;
 
-use crate::fs::inode::Inode;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kinfo;
 
-use super::Index;
+use super::{InodeOps, Index};
 
 pub struct Cache {
-    cache: Mutex<BTreeMap<Index, Arc<dyn Inode>>>,
+    cache: Mutex<BTreeMap<Index, Arc<dyn InodeOps>>>,
 }
 
 impl Cache {
@@ -20,11 +19,11 @@ impl Cache {
         }
     }
 
-    pub fn find(&self, index: &Index) -> Option<Arc<dyn Inode>> {
+    pub fn find(&self, index: &Index) -> Option<Arc<dyn InodeOps>> {
         self.cache.lock().get(index).cloned()
     }
 
-    pub fn insert(&self, index: &Index, inode: Arc<dyn Inode>) -> SysResult<()> {
+    pub fn insert(&self, index: &Index, inode: Arc<dyn InodeOps>) -> SysResult<()> {
         let mut cache = self.cache.lock();
         
         if cache.len() >= config::INODE_CACHE_SIZE {

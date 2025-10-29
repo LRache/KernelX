@@ -21,8 +21,8 @@ impl Timer {
         }
     }
 
-    pub fn add_timer(&self, tcb: Arc<TCB>, time: u64, event: Event) {
-        let time = arch::get_time_us() + time;
+    pub fn add_timer(&self, tcb: Arc<TCB>, time: Duration, event: Event) {
+        let time = arch::get_time_us() + time.as_micros() as u64;
         self.wait_queue.lock().push(Reverse(TimerEvent { time, tcb, event }));
     } 
 
@@ -47,7 +47,7 @@ pub fn init() {
     arch::enable_timer_interrupt();
 }
 
-pub fn add_timer(tcb: Arc<TCB>, time: u64) {
+pub fn add_timer(tcb: Arc<TCB>, time: Duration) {
     TIMER.add_timer(tcb, time, Event::Timeout);
 }
 

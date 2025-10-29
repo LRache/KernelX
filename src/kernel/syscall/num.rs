@@ -184,6 +184,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         56  => fs::openat(4),
         57  => fs::close(1),
         61  => fs::getdents64(3),
+        62  => fs::lseek(3),
         63  => fs::read(3),
         64  => fs::write(3),
         65  => fs::readv(3),
@@ -215,6 +216,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         
         99  => misc::set_robust_list(0),
         160 => misc::newuname(1),
+        261 => misc::prlimit64(4),
         293 => misc::rseq(0),
 
         174 => uid::getuid(0),
@@ -227,6 +229,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         129 => ipc::kill(2),
         134 => ipc::rt_sigaction(4),
         135 => ipc::rt_sigprocmask(3),
+        137 => ipc::sigtimedwait(3),
         139 => ipc::rt_sig_return(0),
 
         // Time

@@ -21,7 +21,6 @@ unsafe extern "C" {
 }
 
 impl ArchTrait for Arch {
-    #[unsafe(link_section = ".text.init")]
     fn init() {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;

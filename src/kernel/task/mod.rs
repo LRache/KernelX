@@ -10,8 +10,4 @@ pub use tcb::*;
 pub use pcb::*;
 pub use tid::{Pid, Tid};
 pub use kernelstack::*;
-pub use manager::get_initprocess;
-
-pub fn init() {
-    manager::create_initprocess();
-}
+pub use manager::{get_initprocess, create_initprocess};

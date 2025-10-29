@@ -1,4 +1,4 @@
-use crate::kernel::task::Tid;
+use crate::kernel::{ipc::SignalNum, task::Tid};
 
 use super::PollEvent;
 
@@ -9,5 +9,6 @@ pub enum Event {
     PipeWriteReady,
     Timeout,
     Process { child: Tid },
+    WaitSignal { signum: SignalNum },
     Signal,
 }

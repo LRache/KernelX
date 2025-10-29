@@ -9,6 +9,7 @@ use crate::kernel::task::fdtable::FDTable;
 use crate::kernel::scheduler::{current, Processor};
 use crate::arch;
 use crate::fs::Dentry;
+use crate::klib::SpinLock;
 
 pub fn processor() -> &'static mut Processor<'static> {
     let p = arch::get_percpu_data() as *mut Processor;
@@ -58,7 +59,7 @@ pub fn addrspace() -> &'static Arc<AddrSpace> {
     tcb.get_addrspace()
 }
 
-pub fn fdtable() -> &'static Mutex<FDTable> {
+pub fn fdtable() -> &'static SpinLock<FDTable> {
     let tcb = tcb();
     tcb.fdtable()
 }

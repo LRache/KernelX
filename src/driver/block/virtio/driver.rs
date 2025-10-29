@@ -7,20 +7,20 @@ use virtio_drivers::transport::mmio::MmioTransport;
 use crate::driver::BlockDriverOps;
 use crate::driver::{DeviceType, DriverOps};
 use crate::driver::virtio::VirtIOHal;
-use crate::klib::SpinMutex;
+use crate::klib::SpinLock;
 
 const BLOCK_SIZE: usize = 512;
 
 pub struct VirtIOBlockDriver {
     num: u32,
-    driver: SpinMutex<VirtIOBlk<VirtIOHal, MmioTransport>>
+    driver: SpinLock<VirtIOBlk<VirtIOHal, MmioTransport>>
 }
 
 impl VirtIOBlockDriver {
     pub fn new(num: u32, transport: MmioTransport) -> Self {
         Self {
             num,
-            driver: SpinMutex::new(VirtIOBlk::new(transport).unwrap())
+            driver: SpinLock::new(VirtIOBlk::new(transport).unwrap())
         }
     }
 }

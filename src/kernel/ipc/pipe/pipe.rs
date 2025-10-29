@@ -3,13 +3,13 @@ use alloc::sync::Arc;
 use crate::kernel::event::{PollEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
-use crate::fs::{Dentry, Inode};
+use crate::fs::{Dentry, InodeOps};
 use crate::fs::file::{FileOps, SeekWhence, DirResult};
 
 use super::PipeInner;
 
 struct Meta {
-    inode: Arc<dyn Inode>,
+    inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
 }
 
@@ -76,7 +76,7 @@ impl FileOps for Pipe {
         Err(Errno::ENOTDIR)
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn Inode>> {
+    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
         self.meta.as_ref().map(|m| &m.inode)
     }
 

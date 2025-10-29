@@ -4,7 +4,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::kernel::event::{PollEvent, PollEventSet};
 use crate::kernel::errno::SysResult;
 use crate::kernel::uapi::FileStat;
-use crate::fs::{Dentry, Inode};
+use crate::fs::{Dentry, InodeOps};
 
 use super::DirResult;
 
@@ -26,7 +26,7 @@ pub trait FileOps: DowncastSync {
     fn fstat(&self) -> SysResult<FileStat>;
     fn get_dent(&self) -> SysResult<Option<DirResult>>;
     
-    fn get_inode(&self) -> Option<&Arc<dyn Inode>>;
+    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>>;
     fn get_dentry(&self) -> Option<&Arc<Dentry>>;
 
     fn poll(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<PollEvent>> {

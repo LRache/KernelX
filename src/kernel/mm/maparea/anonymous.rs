@@ -11,6 +11,10 @@ use crate::kernel::mm::{MapPerm, MemAccessType};
 
 use super::area::Frame;
 
+fn index_to_uaddr(ubase: usize, index: usize) -> usize {
+    ubase + index * arch::PGSIZE
+}
+
 pub struct AnonymousArea {
     ubase: usize,
     perm: MapPerm,
@@ -158,6 +162,8 @@ impl Area for AnonymousArea {
             }
         });
 
+        // let frames = self.fork_pages(self_pagetable, new_pagetable, index_to_uaddr);
+
         let new_area = AnonymousArea {
             ubase: self.ubase,
             perm: self.perm,
@@ -225,6 +231,26 @@ impl Area for AnonymousArea {
             self, 
             Box::new(new_area)
         )
+    }
+
+    fn page_frames(&mut self) -> &mut [Frame] {
+        &mut self.frames
+    }
+
+    fn ubase(&self) -> usize {
+        self.ubase
+    }
+
+    fn alloc_new_page(&mut self, _page_index: usize, _pagetable: &RwLock<PageTable>) -> PhysPageFrame {
+        PhysPageFrame::alloc_zeroed()
+    }
+
+    fn alloc_for_cow_page(&mut self, _page_index: usize, old_frame: Arc<PhysPageFrame>) -> PhysPageFrame {
+        old_frame.copy()
+    }
+
+    fn perm(&self) -> MapPerm {
+        self.perm
     }
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {

@@ -12,7 +12,7 @@ use crate::kernel::uapi::{OpenFlags, Dirent, DirentType, FileStat};
 use crate::fs::{Dentry, Mode};
 use crate::fs::vfs;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::kdebug;
+use crate::{kdebug, kinfo};
 
 use super::def::*;
 use super::uptr::UPtr;
@@ -86,8 +86,8 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
-    // let path = copy_from_user::string(uptr_filename)?;
     let path = uptr_filename.read()?;
+    // kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:#o}", dirfd, path, open_flags, mode);
 
     let helper = |parent: &Arc<Dentry>| {
         kdebug!("parent={}", parent.get_path());
@@ -142,9 +142,6 @@ pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
             break; // EOF
         }
         
-        // addrspace.copy_to_user(user_buffer + total_read, &buffer[..bytes_read])
-        //     .map_err(|_| Errno::EFAULT)?;
-        // copy_to_user::buffer(user_buffer + total_read, &buffer[..bytes_read])?;
         ubuf.write(total_read, &buffer[..bytes_read])?;
 
         total_read += bytes_read;
@@ -233,12 +230,6 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     let mut total_read = 0;
 
     for i in 0..iovcnt {
-        // let mut iov_buf = [0u8; core::mem::size_of::<IOVec>()];
-        // addrspace.copy_from_user(iov + i * core::mem::size_of::<IOVec>(), &mut iov_buf)
-        //     .map_err(|_| Errno::EFAULT)?;
-        // current::copy_from_user(uaddr, buf)
-        // let iov = unsafe { &*(iov_buf.as_ptr() as *const IOVec) };
-        // let iov: IOVec = copy_from_user::object(iov + i * core::mem::size_of::<IOVec>())?;
         let iov = uptr_iov.index(i).read()?;
 
         let mut read = 0usize;
@@ -250,9 +241,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
             if bytes_read == 0 {
                 break; // EOF
             }
-
-            // addrspace.copy_to_user(iov.base + read, &buffer[..bytes_read])
-            //     .map_err(|_| Errno::EFAULT)?;
+            
             copy_to_user::buffer(iov.base + read, &buffer[..bytes_read])?;
 
             remaining -= bytes_read;
@@ -307,6 +296,19 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     }
 
     Ok(total_written)
+}
+
+pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    let how = match how {
+        0 => SeekWhence::BEG,
+        1 => SeekWhence::CUR,
+        2 => SeekWhence::END,
+        _ => return Err(Errno::EINVAL),
+    };
+
+    file.seek(offset as isize, how)
 }
 
 pub fn close(fd: usize) -> Result<usize, Errno> {

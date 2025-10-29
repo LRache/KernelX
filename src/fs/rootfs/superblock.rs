@@ -2,8 +2,8 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::kernel::errno::Errno;
-use crate::fs::filesystem::{FileSystem, SuperBlock};
-use crate::fs::Inode;
+use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::InodeOps;
 use crate::driver::BlockDriverOps;
 
 #[derive(Debug, Clone)]
@@ -18,7 +18,7 @@ impl RootInode {
     }
 }
 
-impl Inode for RootInode {
+impl InodeOps for RootInode {
     fn get_ino(&self) -> u32 {
         0
     }
@@ -46,12 +46,6 @@ impl Inode for RootInode {
 
 pub struct RootFileSystem;
 
-impl RootFileSystem {
-    pub fn new() -> Box<dyn FileSystem> {
-        Box::new(RootFileSystem {})
-    }
-}
-
 pub struct RootFileSystemSuperBlock;
 
 impl RootFileSystemSuperBlock {
@@ -60,18 +54,18 @@ impl RootFileSystemSuperBlock {
     }
 }
 
-impl SuperBlock for RootFileSystemSuperBlock {
+impl SuperBlockOps for RootFileSystemSuperBlock {
     fn get_root_ino(&self) -> u32 {
         0
     }
 
-    fn get_inode(&self, _ino: u32) -> Result<Box<dyn Inode>, Errno> {
+    fn get_inode(&self, _ino: u32) -> Result<Box<dyn InodeOps>, Errno> {
         Ok(Box::new(RootInode::new()))
     }
 }
 
-impl FileSystem for RootFileSystem {
-    fn create(&self, _fsno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> Result<Arc<dyn SuperBlock>, Errno> {
+impl FileSystemOps for RootFileSystem {
+    fn create(&self, _fsno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> Result<Arc<dyn SuperBlockOps>, Errno> {
         Ok(Arc::new(RootFileSystemSuperBlock::new()))
     }
 }

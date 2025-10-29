@@ -10,6 +10,7 @@ TESTS=(
     # "basic-ulib"
     # "basic-musl"
     "basic-glibc"
+    "filesystem"
     # "basic-glibc-static"
     # "os-func"
 )

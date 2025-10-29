@@ -41,7 +41,7 @@ impl SigFrame {
                     ss_flags: 0,
                     ss_size: 0,
                 },
-                uc_sigmask: 0,
+                uc_sigmask: SignalSet::empty(),
                 __unused: [0; 1024 / 8 - core::mem::size_of::<SignalSet>()],
                 uc_mcontext: SigContext::empty(),
             },

@@ -6,8 +6,8 @@ use ext4_rs::{BlockDevice, BLOCK_SIZE};
 
 use crate::kernel::errno::SysResult;
 use crate::fs::ext4::inode::Ext4Inode;
-use crate::fs::filesystem::SuperBlock;
-use crate::fs::inode::Inode;
+use crate::fs::filesystem::SuperBlockOps;
+use crate::fs::InodeOps;
 use crate::driver::BlockDriverOps;
 
 use super::superblock_inner::SuperBlockInner;
@@ -52,8 +52,8 @@ impl Ext4SuperBlock {
 unsafe impl Send for Ext4SuperBlock {}  
 unsafe impl Sync for Ext4SuperBlock {}
 
-impl SuperBlock for Ext4SuperBlock {
-    fn get_inode(&self, ino: u32) -> SysResult<Box<dyn Inode>> {
+impl SuperBlockOps for Ext4SuperBlock {
+    fn get_inode(&self, ino: u32) -> SysResult<Box<dyn InodeOps>> {
         // Ok(Box::new(Ext4Inode::new(ino as u32, self.sno, self.fs_handler)?))
         Ok(Box::new(Ext4Inode::new(self.sno, ino, &self.superblock)))
     }

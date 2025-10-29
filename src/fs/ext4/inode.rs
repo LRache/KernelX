@@ -7,7 +7,7 @@ use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::vfs;
-use crate::fs::inode::{Inode, Mode};
+use crate::fs::inode::{InodeOps, Mode};
 use crate::fs::file::DirResult;
 
 use super::superblock_inner::{SuperBlockInnerExt, SuperBlockInner, map_error};
@@ -54,7 +54,7 @@ impl Ext4Inode {
     }
 }
 
-impl Inode for Ext4Inode {
+impl InodeOps for Ext4Inode {
     fn get_ino(&self) -> u32 {
         self.ino
     }
@@ -68,6 +68,10 @@ impl Inode for Ext4Inode {
     }
 
     fn create(&self, name: &str, mode: Mode) -> SysResult<()> {
+        if !self.mode().contains(Mode::S_IFDIR) {
+            return Err(Errno::ENOTDIR);
+        }
+        
         *self.dents_cache.lock() = None; // Invalidate cache
 
         self.with_inode_ref(|inode_ref| {
@@ -168,7 +172,7 @@ impl Inode for Ext4Inode {
         Ok(r.dentry.inode as u32)
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Arc<dyn Inode>, new_name: &str) -> SysResult<()> {
+    fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
         let new_parent_inode = new_parent.clone().downcast_arc::<Ext4Inode>().map_err(|_| "TypeError").unwrap();
 
         let mut meta = self.meta.lock();

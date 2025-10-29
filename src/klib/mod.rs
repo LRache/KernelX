@@ -4,4 +4,5 @@ pub mod klog;
 pub mod ksync;
 pub mod initcell;
 
-pub use ksync::SpinMutex;
+pub use ksync::SpinLock;
+pub use initcell::InitedCell;

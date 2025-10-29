@@ -153,18 +153,6 @@ endmenu
 
 menu "Init Process Configuration"
 
-config INITPATH
-	string "Init process path"
-	default "/init"
-	help
-	  Path to the init process executable.
-
-config INITCWD
-	string "Init process working directory"
-	default "/"
-	help
-	  Working directory for the init process.
-
 endmenu
 
 menu "QEMU Configuration"
@@ -196,5 +184,29 @@ config DISK_IMAGE
 	default "./sdcard-rv.img"
 	help
 	  Path to the disk image file used as storage.
+
+config INITPATH
+	string "Init process path"
+	default "/init"
+	help
+	  Path to the init process executable.
+
+config INITCWD
+	string "Init process working directory"
+	default "/"
+	help
+	  Working directory for the init process.
+
+config ROOT_FS_TYPE
+	string "Root filesystem type"
+	default "ext4"
+	help
+	  Filesystem type for the root filesystem.
+
+config ROOT_DEVICE
+	string "Root device name"
+	default "virtio_block0"
+	help
+	  Device path for the root filesystem.
 
 endmenu

@@ -1,20 +1,38 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use crate::kernel::errno::Errno;
-use crate::fs::filesystem::FileSystem;
+use crate::fs::vfs::vfs::VirtualFileSystem;
+use crate::fs::filesystem::FileSystemOps;
+use crate::kdebug;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::driver::BlockDriverOps;
 
 use super::vfs;
 use super::Dentry;
 
-pub fn register_filesystem(typename: &str, fs: Box<dyn FileSystem>) -> Result<(), ()> {
-    let mut fstype = vfs().fstype_map.lock();
-    if fstype.contains_key(typename) {
-        return Err(());
+impl VirtualFileSystem {
+    pub(super) fn register_filesystem(&mut self, name: &'static str, fs: &'static dyn FileSystemOps) {
+        self.fstype_map.insert(name, fs);
     }
-    fstype.insert(typename.into(), fs);
-    Ok(())
+
+    fn mount(&self, path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> SysResult<()> {
+        let dentry = self.lookup_dentry(self.get_root(), path)?;
+
+        let fstype = self.fstype_map.get(fstype_name).ok_or(Errno::ENOENT)?;
+
+        let (sno, root_ino) = {
+            let mut superblock_table = self.superblock_table.lock();
+            let sno = superblock_table.alloc(*fstype, device)?;
+            (sno, superblock_table.get(sno).unwrap().get_root_ino())
+        };
+
+        let root_inode = self.load_inode(sno, root_ino)?;
+
+        dentry.mount(&root_inode);
+        
+        self.mountpoint.lock().push(dentry);
+        
+        Ok(())
+    }
 }
 
 pub fn mount(path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> Result<(), Errno> {

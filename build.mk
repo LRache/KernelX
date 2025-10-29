@@ -45,7 +45,7 @@ ifeq ($(LOG_SYSCALL),y)
 RUST_FEATURES += log-trace-syscall
 endif
 
-ifeq ($(CONFIG_WARN_UNIMPLEMENTED_SYSCALL),y)
+ifeq ($(WARN_UNIMPLEMENTED_SYSCALL),y)
 RUST_FEATURES += warn-unimplemented-syscall
 endif
 
@@ -76,7 +76,7 @@ $(VDSO):
 	@ $(BUILD_ENV) make -C vdso all
 
 $(RUST_KERNEL): $(CLIB) $(VDSO)
-	@ $(BUILD_ENV) cargo build --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
+	$(BUILD_ENV) cargo build --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
 
 check:
 	@ $(BUILD_ENV) cargo check --target $(RUST_TARGET) --features "$(RUST_FEATURES)"

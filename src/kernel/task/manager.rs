@@ -23,29 +23,17 @@ impl Manager {
         }
     }
 
-    pub fn create_initprocess(&self) {
-        // const INITPATH: &'static str = match option_env!("KERNELX_INITPATH") {
-        //     Some(path) => path,
-        //     None => "/init",
-        // };
-        const INITPATH: &'static str = "/glibc/busybox";
-
-        // const INITCWD: &'static str = match option_env!("KERNELX_INITCWD") {
-        //     Some(path) => path,
-        //     None => "/",
-        // };
-        const INITCWD: &'static str = "/glibc";
-
-        const INIT_ARGV: &[&str] = &[
-            INITPATH, 
+    pub fn create_initprocess(&self, initpath: &str, initcwd: &str) {
+        let initargv: &[&str] = &[
+            initpath, 
             "sh", 
-            "libctest_testcode.sh",
+            "/glibc/libctest_testcode.sh",
         ];
 
-        const INIT_ENVP: &[&str] = &[];
+        let initenvp: &[&str] = &[];
 
-        let initfile = vfs::open_file(INITPATH, FileFlags { readable: true, writable: false }).expect("Failed to open init file");
-        let pcb = PCB::new_initprocess(initfile, INITCWD, INIT_ARGV, INIT_ENVP).expect("Failed to initialize init process from ELF");
+        let initfile = vfs::open_file(initpath, FileFlags { readable: true, writable: false }).expect("Failed to open init file");
+        let pcb = PCB::new_initprocess(initfile, initcwd, initargv, initenvp).expect("Failed to initialize init process from ELF");
         
         self.pcbs.lock().insert(0, pcb.clone());
 
@@ -80,8 +68,8 @@ unsafe impl Sync for Manager {}
 
 static MANAGER: Manager = Manager::new();
 
-pub fn create_initprocess() {
-    MANAGER.create_initprocess();
+pub fn create_initprocess(initpath: &str, initcwd: &str) {
+    MANAGER.create_initprocess(initpath, initcwd);
 }
 
 pub fn get_initprocess() -> &'static Arc<PCB> {

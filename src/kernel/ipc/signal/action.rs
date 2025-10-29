@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 
-use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::errno::SysResult;
+use crate::kernel::ipc::SignalNum;
 
 use super::SignalSet;
 
@@ -31,9 +32,8 @@ pub struct SignalAction {
 impl SignalAction {
     pub const fn empty() -> Self {
         SignalAction {
-            handler: 0,
-            // restorer: 0,
-            mask: 0,
+            handler: SIG_DFL,
+            mask: SignalSet::empty(),
             flags: SignalActionFlags::empty(),
         }
     }
@@ -58,16 +58,14 @@ impl SignalActionTable {
         }
     }
 
-    pub fn get(&self, signum: u32) -> SignalAction {
-        assert!(signum > 0 && signum <= 32);
-        self.actions[signum as usize - 1]
+    pub fn get(&self, signum: SignalNum) -> SignalAction {
+        let index: usize = signum.into();
+        self.actions[index - 1]
     }
 
-    pub fn set(&mut self, signum: u32, action: &SignalAction) -> SysResult<()> {
-        if signum == 0 || signum > 32 {
-            return Err(Errno::EINVAL);
-        }
-        self.actions[signum as usize - 1] = *action;
+    pub fn set(&mut self, signum: SignalNum, action: &SignalAction) -> SysResult<()> {
+        let index: usize = signum.into();
+        self.actions[index - 1] = *action;
         Ok(())
     }
 }

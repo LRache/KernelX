@@ -216,15 +216,8 @@ impl Area for FileMapArea {
         }
     }
 
-    fn fork(&mut self, _self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
-        // Only remove write permission for actually writable mappings
-        let child_perm = if self.perm.contains(MapPerm::W) {
-            // For writable mappings, remove write permission to enable COW
-            self.perm - MapPerm::W
-        } else {
-            // For read-only mappings, keep the same permission
-            self.perm
-        };
+    fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+        let cow_perm = self.perm - MapPerm::W;
         
         let mut pagetable = new_pagetable.write();
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
@@ -234,30 +227,35 @@ impl Area for FileMapArea {
                     pagetable.mmap(
                         self.ubase + page_index * arch::PGSIZE, 
                         frame.get_page(),
-                        child_perm
+                        cow_perm
                     );
-                    // Only mark as COW if the original mapping was writable
-                    if self.perm.contains(MapPerm::W) {
-                        Frame::Cow(frame.clone())
-                    } else {
-                        Frame::Allocated(frame.clone())
-                    }
+                    Frame::Cow(frame.clone())
                 }
                 Frame::Cow(frame) => {
                     pagetable.mmap(
                         self.ubase + page_index * arch::PGSIZE, 
                         frame.get_page(),
-                        child_perm
+                        cow_perm
                     );
-                    // COW pages remain COW only if originally writable
-                    if self.perm.contains(MapPerm::W) {
-                        Frame::Cow(frame.clone())
-                    } else {
-                        Frame::Allocated(frame.clone())
-                    }
+                    Frame::Cow(frame.clone())
                 },
             }
         }).collect();
+
+        if self.perm.contains(MapPerm::W) {
+            // Update original mapping to be COW if it was writable
+            let mut self_pagetable = self_pagetable.write();
+            self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
+                if let Frame::Allocated(f) = frame {
+                    self_pagetable.mmap_replace(
+                        self.ubase + page_index * arch::PGSIZE,
+                        f.get_page(),
+                        cow_perm
+                    );
+                    *frame = Frame::Cow(f.clone());
+                }
+            });
+        }
 
         let new_area = FileMapArea {
             ubase: self.ubase,

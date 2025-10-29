@@ -41,7 +41,7 @@ struct VDSOInfo {
     programs: Vec<LoadedProgram>,
 }
 
-static VDSO: InitedCell<VDSOInfo> = InitedCell::new();
+static VDSO: InitedCell<VDSOInfo> = InitedCell::uninit();
 
 fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
     let ph_addr = vdso_start() + ehdr.e_phoff as usize;

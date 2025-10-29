@@ -11,11 +11,13 @@ pub enum Errno {
     ENOEXEC =  8,  // Exec format error
     EBADF   =  9,  // Bad file descriptor
     ECHILD  = 10,  // No child processes
+    EAGAIN  = 11,  // Try again
     ENOMEM  = 12,  // Out of memory
     EFAULT  = 14,  // Bad address
     EEXIST  = 17,  // File exists
     EXDEV   = 18,  // Cross-device link
     ENOTDIR = 20,  // Not a directory
+    EISDIR  = 21,  // Is a directory
     EINVAL  = 22,  // Invalid argument
     EFBIG   = 27,  // File too large
     ENOSPC  = 28,  // No space left on device

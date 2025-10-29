@@ -4,7 +4,7 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
 use crate::fs::file::DirResult;
-use crate::fs::inode::Inode;
+use crate::fs::InodeOps;
 use crate::fs::vfs::Dentry;
 
 use super::{FileOps, SeekWhence};
@@ -22,7 +22,7 @@ impl FileFlags {
 }
 
 pub struct File {
-    inode: Arc<dyn Inode>,
+    inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
     pos: Mutex<usize>, 
     
@@ -80,27 +80,33 @@ impl FileOps for File {
 
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
         let mut pos = self.pos.lock();
+        let new_pos;
         match whence {
             SeekWhence::BEG => {
                 if offset < 0 {
                     return Err(Errno::EINVAL);
                 }
-                *pos = offset as usize;
+                new_pos = offset;
             }
             SeekWhence::CUR => {
                 if offset < 0 && (*pos as isize + offset) < 0 {
                     return Err(Errno::EINVAL);
                 }
-                *pos = (*pos as isize + offset) as usize;
+                new_pos = *pos as isize + offset;
             }
             SeekWhence::END => {
                 let size = self.inode.size()?;
                 if offset > 0 && (size as isize + offset) < 0 {
                     return Err(Errno::EINVAL);
                 }
-                *pos = (size as isize + offset) as usize;
+                new_pos = size as isize + offset;
             }
         }
+        if new_pos < 0 {
+            return Err(Errno::EINVAL);
+        }
+        *pos = new_pos as usize;
+        
         Ok(*pos)
     }
 
@@ -129,7 +135,7 @@ impl FileOps for File {
         Ok(Some(dent))
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn Inode>> {
+    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
         Some(&self.inode)
     }
 

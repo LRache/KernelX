@@ -20,3 +20,10 @@ pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 pub const MAX_FD: usize = 255; // Maximum number of file descriptors per process
 
 pub const PIPE_CAPACITY: usize = 4096; // Capacity of the pipe buffer
+
+/* ------ BOOT ARGS ------- */
+pub const DEFAULT_BOOT_ROOT_FSTYPE: &str = "ext4";
+pub const DEFAULT_BOOT_ROOT: &str = "virtio_block0";
+pub const DEFAULT_INITPATH: &str = "/init";
+pub const DEFAULT_INITCWD: &str = "/";
+/* ------ BOOT ARGS ------- */

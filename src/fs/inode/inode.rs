@@ -7,7 +7,7 @@ use crate::fs::file::DirResult;
 
 use super::{Mode, FileType};
 
-pub trait Inode: DowncastSync {
+pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
 
     fn get_sno(&self) -> u32;
@@ -38,7 +38,7 @@ pub trait Inode: DowncastSync {
         Err(Errno::ENOENT)
     }
 
-    fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn Inode>, _new_name: &str) -> SysResult<()> {
+    fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn InodeOps>, _new_name: &str) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
 
@@ -63,4 +63,4 @@ pub trait Inode: DowncastSync {
     }
 }
 
-impl_downcast!(sync Inode);
+impl_downcast!(sync InodeOps);

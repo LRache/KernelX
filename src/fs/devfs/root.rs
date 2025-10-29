@@ -1,6 +1,6 @@
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::file::DirResult;
-use crate::fs::{Inode, FileType};
+use crate::fs::{InodeOps, FileType};
 
 use super::def::*;
 
@@ -14,7 +14,7 @@ impl RootInode {
     }
 }
 
-impl Inode for RootInode {
+impl InodeOps for RootInode {
     fn get_ino(&self) -> u32 {
         ROOT_INO
     }

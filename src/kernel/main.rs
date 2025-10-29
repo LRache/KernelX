@@ -1,9 +1,11 @@
+use alloc::collections::btree_map::BTreeMap;
+
 use crate::kernel::event::timer;
 use crate::kernel::{config, mm, scheduler, task};
 use crate::driver;
 use crate::fs;
 use crate::arch;
-use crate::klib::kalloc;
+use crate::klib::{kalloc, InitedCell};
 use crate::kinfo;
 
 pub fn fini() {
@@ -34,8 +36,25 @@ fn free_init() {
     kinfo!("Freed init section memory {:#x} bytes", kend - kstart);
 }
 
+static BOOT_ARGS: InitedCell<BTreeMap<&'static str, &'static str>> = InitedCell::uninit();
+
+pub fn parse_boot_args(bootargs: &'static str) {
+    let mut bootargs_map = BTreeMap::new();
+    for arg in bootargs.split_whitespace() {
+        if let Some((key, value)) = arg.split_once('=') {
+            bootargs_map.insert(key, value);
+            kinfo!("bootarg: {}={}", key, value);
+        } else {
+            bootargs_map.insert(arg, "");
+            kinfo!("bootarg: {}", arg);
+        }
+    }
+
+    BOOT_ARGS.init(bootargs_map);
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn main(hartid: usize, heap_start: usize) -> ! {
+extern "C" fn main(hartid: usize, heap_start: usize) -> ! {
     kinfo!("Welcome to KernelX!");
     
     kinfo!("Initializing KernelX...");
@@ -49,8 +68,16 @@ pub extern "C" fn main(hartid: usize, heap_start: usize) -> ! {
     kinfo!("Welcome to KernelX!");
 
     fs::init();
+    fs::mount_init_fs(
+        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT), 
+        BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE)
+    );
 
-    task::init();
+    task::create_initprocess(
+        BOOT_ARGS.get("init").unwrap_or(&config::DEFAULT_INITPATH),
+        BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD)
+    );
+    
     timer::init();
 
     free_init();

@@ -1,12 +1,14 @@
 use fdt::node::FdtNode;
 use fdt::Fdt;
 
+use crate::kernel::parse_boot_args;
 use crate::driver::Device;
 use crate::driver::found_device;
 use crate::kinfo;
 use crate::klib::initcell::InitedCell;
+use crate::kwarn;
 
-static TIME_FREQ: InitedCell<u32> = InitedCell::new();
+static TIME_FREQ: InitedCell<u32> = InitedCell::uninit();
 
 pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     let data = unsafe { core::slice::from_raw_parts(fdt as *const u32, 2) };
@@ -17,7 +19,7 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
         
     let total_size = u32::from_be(data[1]) as usize;
 
-    let data = unsafe { core::slice::from_raw_parts(fdt, total_size) };
+    let data: &'static [u8] = unsafe { core::slice::from_raw_parts(fdt, total_size) };
 
     let fdt = Fdt::new(data).unwrap();
     
@@ -27,11 +29,20 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
         TIME_FREQ.init(freq as u32);
     });
 
-    kinfo!("Timebase frequency: {} Hz", TIME_FREQ.get());
+    kinfo!("Init timebase frequency = {}Hz", *TIME_FREQ);
     
     let soc_node = fdt.find_node("/soc").unwrap();
     for child in soc_node.children() {
         load_soc_node(&child);
+    }
+
+    let chosen_node = fdt.find_node("/chosen").unwrap();
+    if let Some(bootargs_prop) = chosen_node.property("bootargs") {
+        bootargs_prop.as_str().map(|bootargs| {
+            parse_boot_args(bootargs);
+        });
+    } else {
+        kwarn!("No bootargs found in /chosen node");
     }
 
     kinfo!("Device Tree loaded successfully!");
@@ -55,5 +66,5 @@ fn load_soc_node(child: &FdtNode) -> Option<()> {
 }
 
 pub fn time_frequency() -> u32 {
-    *TIME_FREQ.get()
+    *TIME_FREQ
 }

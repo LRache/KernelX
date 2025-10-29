@@ -15,9 +15,9 @@ use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
 use crate::fs::file::{File, FileFlags, CharFile};
 use crate::fs::vfs;
-use crate::klib::SpinMutex;
+use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
-use crate::arch;
+use crate::{arch, lock_debug};
 use crate::driver;
 use crate::{kdebug, kinfo, ktrace};
 
@@ -36,6 +36,9 @@ pub struct TaskStateSet {
     pub state: TaskState,
     pub event: Option<Event>,
     pub exit_code: u8,
+    
+    pub pending_signal: Option<PendingSignal>,
+    pub waiting_signal: SignalSet
 }
 
 impl TaskStateSet {
@@ -44,6 +47,8 @@ impl TaskStateSet {
             state: TaskState::Ready,
             event: None,
             exit_code: 0,
+            pending_signal: None,
+            waiting_signal: SignalSet::empty()
         }
     }
 }
@@ -59,12 +64,11 @@ pub struct TCB {
     kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
-    fdtable: Arc<Mutex<FDTable>>,
+    fdtable: Arc<SpinLock<FDTable>>,
 
-    pub signal_mask: Mutex<SignalSet>,
-    pub pending_signal: Mutex<Option<PendingSignal>>,
+    pub signal_mask: SpinLock<SignalSet>,
 
-    state: SpinMutex<TaskStateSet>,
+    state: SpinLock<TaskStateSet>,
 }
 
 impl TCB {
@@ -75,7 +79,7 @@ impl TCB {
         mut user_context: UserContext,
         
         addrspace: Arc<AddrSpace>,
-        fdtable: Arc<Mutex<FDTable>>,
+        fdtable: Arc<SpinLock<FDTable>>,
     ) -> Arc<Self> {
         let kernel_stack = KernelStack::new(); 
         user_context.set_kernel_stack_top(kernel_stack.get_top());
@@ -100,10 +104,9 @@ impl TCB {
             addrspace,
             fdtable: fdtable,
 
-            signal_mask: Mutex::new(0),
-            pending_signal: Mutex::new(None),
+            signal_mask: SpinLock::new(SignalSet::empty()),
             
-            state: SpinMutex::new(TaskStateSet::new()),
+            state: SpinLock::new(TaskStateSet::new()),
         });
 
         tcb
@@ -152,7 +155,7 @@ impl TCB {
             parent,
             user_context, 
             Arc::new(addrspace),
-            Arc::new(Mutex::new(fdtable))
+            Arc::new(SpinLock::new(fdtable))
         );
         
         tcb
@@ -191,7 +194,7 @@ impl TCB {
             parent,
             new_user_context,
             new_addrspace,
-            Arc::new(Mutex::new(self.fdtable.lock().fork())),
+            Arc::new(SpinLock::new(self.fdtable.lock().fork())),
         );
 
         new_tcb
@@ -307,7 +310,7 @@ impl TCB {
         &self.addrspace
     }
 
-    pub fn fdtable(&self) -> &Arc<Mutex<FDTable>> {
+    pub fn fdtable(&self) -> &Arc<SpinLock<FDTable>> {
         &self.fdtable
     }
 
@@ -336,7 +339,7 @@ impl TCB {
     }
 
     pub fn wakeup(self: &Arc<Self>, event: Event) {
-        let mut state = self.state.lock();
+        let mut state = lock_debug!(self.state());
         if state.state != TaskState::Blocked {
             return;
         }
@@ -352,7 +355,7 @@ impl TCB {
         state.state = TaskState::Running;
     }
 
-    pub fn state(&self) -> &SpinMutex<TaskStateSet> {
+    pub fn state(&self) -> &SpinLock<TaskStateSet> {
         &self.state
     }
 

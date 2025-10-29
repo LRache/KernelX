@@ -7,7 +7,8 @@ mod filesystem;
 mod ext4;
 mod devfs;
 mod rootfs;
+mod tmpfs;
 
-pub use init::{init, fini};
-pub use inode::{Inode, Mode, FileType};
+pub use init::{init, mount_init_fs, fini};
+pub use inode::{InodeOps, Mode, FileType};
 pub use vfs::Dentry;

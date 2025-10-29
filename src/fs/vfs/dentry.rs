@@ -6,14 +6,14 @@ use alloc::collections::BTreeMap;
 use spin::Mutex;
 
 use crate::kernel::errno::{SysResult, Errno};
-use crate::fs::inode::{Index, Inode, Mode};
+use crate::fs::inode::{Index, InodeOps, Mode};
 
 use super::vfs;
 
 struct DentryInner {
     pub parent: Option<Arc<Dentry>>,
     pub children: BTreeMap<String, Weak<Dentry>>,
-    pub inode: Weak<dyn Inode>,
+    pub inode: Weak<dyn InodeOps>,
     pub mount_to: Option<Arc<Dentry>>,
 }
 
@@ -24,7 +24,7 @@ pub struct Dentry {
 }
 
 impl Dentry {
-    pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn Inode>) -> Self {
+    pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>) -> Self {
         Self {
             inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
             name: name.into(),
@@ -37,20 +37,7 @@ impl Dentry {
         }
     }
 
-    pub fn new_noparent(name: &str, inode: &Arc<dyn Inode>) -> Self {
-        Self {
-            inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
-            name: name.into(),
-            inner: Mutex::new(DentryInner {
-                parent: None,
-                children: BTreeMap::new(),
-                inode: Arc::downgrade(inode),
-                mount_to: None,
-            })
-        }
-    }
-
-    pub fn root(inode: &Arc<dyn Inode>) -> Self {
+    pub fn root(inode: &Arc<dyn InodeOps>) -> Self {
         Self {
             inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
             name: "/".into(),
@@ -71,7 +58,7 @@ impl Dentry {
         self.inode_index.ino
     }
 
-    fn get_inode_inner(&self, inner: &mut DentryInner) -> SysResult<Arc<dyn Inode>> {
+    fn get_inode_inner(&self, inner: &mut DentryInner) -> SysResult<Arc<dyn InodeOps>> {
         match inner.inode.upgrade() {
             None => {
                 let inode =  vfs().load_inode(self.sno(), self.ino())?;
@@ -82,7 +69,7 @@ impl Dentry {
         }
     }
 
-    pub fn get_inode(&self) -> Arc<dyn Inode> {
+    pub fn get_inode(&self) -> Arc<dyn InodeOps> {
         self.get_inode_inner(&mut self.inner.lock()).expect("Failed to get inode from dentry")
     }
 
@@ -102,7 +89,7 @@ impl Dentry {
 
         let inode = match inner.inode.upgrade() {
             None => {
-                let inode =  vfs().load_inode(self.sno(), self.ino())?;
+                let inode = vfs().load_inode(self.sno(), self.ino())?;
                 inner.inode = Arc::downgrade(&inode);
                 inode
             }
@@ -132,7 +119,7 @@ impl Dentry {
         self
     }
 
-    pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn Inode>) {
+    pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>) {
         let mut inner = self.inner.lock();
         inner.mount_to = Some(Arc::new(
             Dentry { 

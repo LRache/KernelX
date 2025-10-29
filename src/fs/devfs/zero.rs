@@ -1,5 +1,5 @@
 use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::Inode;
+use crate::fs::InodeOps;
 use crate::fs::file::DirResult;
 
 use super::def::ZERO_INO;
@@ -13,7 +13,7 @@ impl ZeroInode {
     }
 }
 
-impl Inode for ZeroInode {
+impl InodeOps for ZeroInode {
     fn get_ino(&self) -> u32 {
         ZERO_INO
     }

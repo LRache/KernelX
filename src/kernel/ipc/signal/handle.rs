@@ -4,27 +4,31 @@ use crate::arch::UserContextTrait;
 use crate::kernel::config;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
+use crate::kernel::ipc::SignalSet;
 use crate::kernel::mm::vdso;
-use crate::kernel::task::{TCB, PCB, Tid};
+use crate::kernel::task::{Tid, PCB, TCB};
 use crate::kernel::scheduler::current;
 use crate::kernel::errno::{SysResult, Errno};
+use crate::lock_debug;
 
 use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};
 
 impl TCB {    
     pub fn handle_signal(&self) {
-        let mut signal_pending = self.pending_signal.lock();
-        let signal = match signal_pending.take() {
+        let mut state = self.state().lock();
+        let signal = match state.pending_signal.take() {
             Some(sig) => sig,
             None => return,
         };
+        drop(state);
+        // kinfo!("signal_pending before handle_signal: {:?}", signal_pending);
 
         let signum = signal.signum;
-        if signum == 0 {
+        if signum.is_empty() {
             return;
         }
         
-        if signum == SignalNum::SIGKILL as u32 || signum == SignalNum::SIGSTOP as u32 {
+        if signum.is_kill() {
             self.parent.exit(0);
             current::schedule();
 
@@ -33,9 +37,9 @@ impl TCB {
         
         let action = self.parent.signal_actions().lock().get(signal.signum);
         if action.is_default() {
-            match SignalNum::default_action(signum) {
+            match signum.default_action() {
                 SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
-                    self.parent.exit(0);
+                    self.parent.exit(255);
                     current::schedule();
 
                     unreachable!();
@@ -49,12 +53,12 @@ impl TCB {
         let old_mask = self.get_signal_mask();
         let mut new_mask = old_mask | action.mask;
         if !action.flags.contains(SignalActionFlags::SA_NODEFER) {
-            new_mask |= SignalNum::to_mask(signum);
+            new_mask |= signum.to_mask_set();
         }
         self.set_signal_mask(new_mask);
 
         let mut sigframe = SigFrame::empty();
-        sigframe.info.si_signo = signum as i32;
+        sigframe.info.si_signo = Into::<u32>::into(signum) as i32;
         sigframe.info.si_code = 0;
         sigframe.info.si_errno = 0;
         sigframe.ucontext.uc_sigmask = old_mask;
@@ -69,6 +73,8 @@ impl TCB {
         stack_top &= !0xf; // Align to 16 bytes
         self.get_addrspace().copy_to_user_object(stack_top, sigframe).expect("Failed to copy sigframe to user stack");
         self.user_context().set_user_stack_top(stack_top);
+
+        // kinfo!("handle signal for task {}, signum={:?}, action.handler={:#x}, stack_top={:#x}, pending={:?}", self.tid, signum, action.handler, stack_top, signal_pending);
     }
 
     pub fn return_from_signal(&self) {
@@ -78,24 +84,47 @@ impl TCB {
         self.user_context().restore_from_signal(&sigframe.ucontext.uc_mcontext);
     }  
 
-    pub fn send_pending_signal(self: &Arc<Self>, pending: PendingSignal) -> bool {
-        let mut task_pending = self.pending_signal.lock();
-        if task_pending.is_some() {
+    pub fn try_recive_pending_signal(self: &Arc<Self>, pending: PendingSignal) -> bool {
+        let mut state = lock_debug!(self.state());
+
+        // if state.state != TaskState::Blocked {
+        //     return false;
+        // }
+        
+        if state.pending_signal.is_some() {
             return false;
         }
+
+        // kinfo!("try_recive_pending_signal: task {} checking pending signal {:?}", self.tid, pending);
         
         let signum = pending.signum;
-        if SignalNum::is_unignorable(signum) {
-            *task_pending = Some(pending);
+        if signum.is_unignorable() {
+            state.pending_signal = Some(pending);
+            drop(state);
+            
             self.wakeup(Event::Signal);
 
             return true;
         }
 
+        let waiting = state.waiting_signal;
+        if waiting.contains(signum) {
+            state.pending_signal = Some(pending);
+            state.waiting_signal = SignalSet::empty();
+            drop(state);
+
+            self.wakeup(Event::WaitSignal { signum });
+
+            return true;
+        }
+
         let mask = self.get_signal_mask();
-        if !SignalNum::is_masked(signum, mask) {
-            *task_pending = Some(pending);
+        if !signum.is_masked(mask) {
+            state.pending_signal = Some(pending);
+            drop(state);
+            
             self.wakeup(Event::Signal);
+            
             return true;
         } else {
             return false;
@@ -104,17 +133,27 @@ impl TCB {
 }
 
 impl PCB {
-    pub fn send_signal(&self, signum: u32, sender: Tid, dest: Option<Tid>) -> SysResult<()> {
+    pub fn send_signal(&self, signum: SignalNum, sender: Tid, dest: Option<Tid>) -> SysResult<()> {
         let pending = PendingSignal {
             signum,
             sender,
             dest,
         };
 
+        let action = self.signal_actions().lock().get(signum);
+        
+        if action.is_ignore() && !signum.is_unignorable() {
+            return Ok(());
+        }
+
+        if action.is_default() && signum.default_action() == SignalDefaultAction::Ign {
+            return Ok(());
+        }
+
         if let Some(dest) = dest {
             let tasks = self.tasks.lock();
             if let Some(task) = tasks.iter().find(|t| t.tid == dest).cloned() {
-                if !task.send_pending_signal(pending) {
+                if !task.try_recive_pending_signal(pending) {
                     self.pending_signals().lock().add_pending(pending)?;
                 }
                 return Ok(());
@@ -124,12 +163,12 @@ impl PCB {
         }
 
         for task in self.tasks.lock().iter() {
-            if task.send_pending_signal(pending) {
+            if task.try_recive_pending_signal(pending) {
                 return Ok(())
             }
         }
 
-        self.pending_signals().lock().add_pending(pending)?;
+        // self.pending_signals().lock().add_pending(pending)?;
 
         Ok(())
     }
