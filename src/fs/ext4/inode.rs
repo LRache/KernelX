@@ -6,6 +6,7 @@ use ext4_rs::Ext4Inode as Meta;
 use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::FileStat;
 use crate::fs::vfs;
 use crate::fs::inode::{InodeOps, Mode};
 use crate::fs::file::DirResult;
@@ -107,12 +108,18 @@ impl InodeOps for Ext4Inode {
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        if self.mode().contains(Mode::S_IFDIR) {
+            return Err(Errno::EISDIR);
+        }
         self.with_inode_ref(|inode_ref| {
             self.superblock.readat_ref(inode_ref, offset, buf).map_err(|_| Errno::EIO)
         })
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        if self.mode().contains(Mode::S_IFDIR) {
+            return Err(Errno::EISDIR);
+        }
         self.with_inode_ref(|inode_ref| {
             self.superblock.writeat_ref(inode_ref, offset, buf).map_err(|_| Errno::EIO)
         })
@@ -220,11 +227,29 @@ impl InodeOps for Ext4Inode {
     fn mode(&self) -> Mode {
         Mode::from_bits_truncate(self.meta.lock().mode())
     }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        let meta = self.meta.lock();
+
+        kstat.st_ino = self.ino as u64;
+        kstat.st_size = meta.size() as i64;
+        kstat.st_nlink = meta.links_count() as u32;
+        kstat.st_mode = meta.mode() as u32;
+
+        Ok(kstat)
+    }
+
+    fn sync(&self) -> SysResult<()> {
+        self.superblock.write_back_inode(&mut self.get_inode_ref(&*self.meta.lock()));
+        Ok(())
+    }
 }
 
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
         let meta = self.meta.lock();
+        self.superblock.write_back_inode(&mut self.get_inode_ref(&*meta));
         if meta.links_count() == 0 {
             self.superblock.ialloc_free_inode(self.ino, meta.is_dir());
         }

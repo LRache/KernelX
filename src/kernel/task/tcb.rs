@@ -166,7 +166,8 @@ impl TCB {
         tid: Tid,
         parent: &Arc<PCB>,
         userstack: usize,
-        flags: &TaskCloneFlags
+        flags: &TaskCloneFlags,
+        tls: Option<usize>,
     ) -> Arc<Self> {
         let mut new_user_context = UserContext::new();
         self.with_user_context(|user_context  | {
@@ -188,6 +189,10 @@ impl TCB {
         }
 
         new_user_context.skip_syscall_instruction();
+
+        if let Some(tls) = tls {
+            new_user_context.set_tls(tls);
+        }
 
         let new_tcb = Self::new(
             tid,
@@ -351,7 +356,7 @@ impl TCB {
 
     pub fn run(&self) {
         let mut state = self.state.lock();
-        assert!(state.state == TaskState::Ready);
+        // assert!(state.state == TaskState::Ready);
         state.state = TaskState::Running;
     }
 
@@ -379,7 +384,7 @@ impl TCB {
         //     self.addrspace.copy_to_user(tid_address, &(0 as Tid).to_le_bytes()).expect("Failed to clear TID address");
         // }
 
-        kinfo!("Task {} exited with code {}", self.tid, code);
+        // kinfo!("Task {} exited with code {}", self.tid, code);
 
         state.exit_code = code;
         state.state = TaskState::Exited;

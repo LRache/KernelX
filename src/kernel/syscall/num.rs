@@ -189,6 +189,8 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         64  => fs::write(3),
         65  => fs::readv(3),
         66  => fs::writev(3),
+        67  => fs::pread64(4),
+        // 68  => fs::pwrite64(4),
         71  => fs::sendfile(4),
         78  => fs::readlinkat(4),
         79  => fs::fstatat(4),
@@ -203,7 +205,9 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         94  => task::exit_group(1),
         96  => task::set_tid_address(1),
         124 => task::sched_yield(0),
+        157 => task::setsid(0),
         172 => task::getpid(0),
+        173 => task::getppid(0),
         178 => task::gettid(0),
         220 => task::clone(5),
         221 => task::execve(3),
@@ -214,9 +218,12 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         222 => mm::mmap(6),
         226 => mm::mprotect(3),
         
+        // misc
+        98  => misc::futex(6),
         99  => misc::set_robust_list(0),
         160 => misc::newuname(1),
         261 => misc::prlimit64(4),
+        278 => misc::getrandom(3),
         293 => misc::rseq(0),
 
         174 => uid::getuid(0),
@@ -227,12 +234,14 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         // IPC
         59  => ipc::pipe(2),
         129 => ipc::kill(2),
+        131 => ipc::tgkill(3),
         134 => ipc::rt_sigaction(4),
         135 => ipc::rt_sigprocmask(3),
         137 => ipc::sigtimedwait(3),
         139 => ipc::rt_sig_return(0),
 
         // Time
+        113 => time::clock_gettime(2),
         115 => time::clock_nanosleep(4),
         169 => time::gettimeofday(2),
 

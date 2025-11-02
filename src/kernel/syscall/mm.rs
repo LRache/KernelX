@@ -45,6 +45,8 @@ bitflags! {
         const FIXED     = 0x010; // Fixed address mapping
         const ANONYMOUS = 0x020; // Anonymous mapping
         const DENYWRITE = 0x800; // Deny write access
+        const NORESERVE = 0x4000; // Do not reserve swap space
+        const MAP_STACK = 0x20000;
     }
 }
 

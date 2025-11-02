@@ -1,4 +1,4 @@
-use core::ops::{BitOr, BitOrAssign};
+use core::ops::{BitAnd, BitOr, BitOrAssign, Not};
 
 use crate::kernel::errno::{Errno, SysResult};
 
@@ -103,7 +103,7 @@ impl Into<u32> for SignalNum {
 impl TryFrom<u32> for SignalNum {
     type Error = Errno;
     fn try_from(value: u32) -> SysResult<Self> {
-        if value > 32 {
+        if value > 63 {
             Err(Errno::EINVAL)
         } else {
             Ok(SignalNum(value))
@@ -142,6 +142,22 @@ impl BitOr for SignalSet {
 impl BitOrAssign for SignalSet {
     fn bitor_assign(&mut self, rhs: SignalSet) {
         self.0 |= rhs.0;
+    }
+}
+
+impl Not for SignalSet {
+    type Output = SignalSet;
+
+    fn not(self) -> SignalSet {
+        SignalSet(!self.0)
+    }
+}
+
+impl BitAnd for SignalSet {
+    type Output = SignalSet;
+
+    fn bitand(self, rhs: SignalSet) -> SignalSet {
+        SignalSet(self.0 & rhs.0)
     }
 }
 

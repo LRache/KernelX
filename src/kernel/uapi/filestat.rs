@@ -47,3 +47,9 @@ impl FileStat {
         }
     }
 }
+
+impl Default for FileStat {
+    fn default() -> Self {
+        Self::empty()
+    }
+}

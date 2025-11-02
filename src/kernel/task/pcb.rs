@@ -61,7 +61,7 @@ impl PCB {
 
     pub fn new_initprocess(file: File, cwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
         let new_tid = tid::alloc();
-        assert!(new_tid == 0);
+        // assert!(new_tid == 1);
         
         let file = Arc::new(file);
 
@@ -120,16 +120,17 @@ impl PCB {
         tcb: &Arc<TCB>, 
         userstack: usize,
         flags: &TaskCloneFlags,
+        tls: Option<usize>,
     ) -> Result<Arc<TCB>, Errno> {
         let new_tid = tid::alloc();
         let new_tcb;
 
         if flags.thread {
-            new_tcb = tcb.new_clone(new_tid, self, userstack, flags);
+            new_tcb = tcb.new_clone(new_tid, self, userstack, flags, tls);
             self.tasks.lock().push(new_tcb.clone());
         } else {
             let new_parent = PCB::new(new_tid, self, &self.cwd.lock());
-            new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags);
+            new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags, tls);
             new_parent.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_parent.clone());
             manager::insert(new_parent);

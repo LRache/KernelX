@@ -59,8 +59,6 @@ impl VirtualFileSystem {
         current = current.get_mount_to();
         current = current.get_link_to();
 
-        kdebug!("path={}", path);
-
         path.split('/').filter(|s| !(s.is_empty() || *s == ".")).try_for_each(|part| {
             let next = current.lookup(part)?;
             current = next.get_mount_to();

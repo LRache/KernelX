@@ -59,6 +59,9 @@ impl FDTable {
             self.table[pos] = Some(FDItem { file, flags });
             Ok(pos)
         } else {
+            if self.table.len() >= config::MAX_FD {
+                return Err(Errno::EMFILE);
+            }
             self.table.push(Some(FDItem { file, flags }));
             Ok(self.table.len() - 1)
         }

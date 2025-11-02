@@ -19,12 +19,14 @@ pub enum Errno {
     ENOTDIR = 20,  // Not a directory
     EISDIR  = 21,  // Is a directory
     EINVAL  = 22,  // Invalid argument
+    EMFILE  = 24,  // Too many open files
     EFBIG   = 27,  // File too large
     ENOSPC  = 28,  // No space left on device
     ESPIPE  = 29,  // Illegal seek
     EPIPE   = 32,  // Broken pipe
     ENOSYS  = 38,  // Function not implemented
     EOPNOTSUPP = 95, // Operation not supported on transport endpoint
+    ETIMEDOUT = 110, // Connection timed out
 }
 
 pub type SysResult<T> = Result<T, Errno>;

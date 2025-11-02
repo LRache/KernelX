@@ -4,7 +4,7 @@ use alloc::collections::BTreeMap;
 
 use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::filesystem::SuperBlockOps;
-use crate::fs::{InodeOps, Mode, inode};
+use crate::fs::{InodeOps, Mode};
 use crate::klib::SpinLock;
 
 use super::inode::{InodeMeta, Inode};
@@ -24,12 +24,21 @@ impl SuperBlockInner {
         }
     }
 
-    pub fn alloc_inode(&mut self, inode_mode: Mode) -> u32 {
+    pub fn alloc_inode_number(&mut self) -> u32 {
         let ino = self.max_inode;
         self.max_inode += 1;
+        ino
+    }
+
+    pub fn alloc_inode(&mut self, inode_mode: Mode) -> u32 {
+        let ino = self.alloc_inode_number();
         self.inode_map.insert(ino, Arc::new(SpinLock::new(InodeMeta::new(inode_mode))));
 
         ino
+    }
+
+    pub fn remove_inode(&mut self, ino: u32) {
+        self.inode_map.remove(&ino);
     }
 }
 
@@ -57,5 +66,11 @@ impl SuperBlockOps for SuperBlock {
             .ok_or(Errno::ENOENT)?
             .clone();
         Ok(Box::new(Inode::new(ino, self.sno, meta, self.inner.clone())))
+    }
+
+    fn create_temp(&self, mode: Mode) -> SysResult<Box<dyn InodeOps>> {
+        let mut inner = self.inner.lock();
+        let ino = inner.alloc_inode_number();
+        Ok(Box::new(Inode::new(ino, self.sno, Arc::new(SpinLock::new(InodeMeta::new(mode))), self.inner.clone())))
     }
 }

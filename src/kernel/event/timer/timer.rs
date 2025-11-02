@@ -58,10 +58,9 @@ pub fn interrupt() {
     arch::set_next_time_event_us(10000); // Set next timer interrupt in 10ms
 }
 
-pub fn wait_until(dur: Duration, f: impl FnMut() -> bool) -> bool {
+pub fn wait_until(dur: Duration, mut f: impl FnMut() -> bool) -> bool {
     let start_time = arch::get_time_us();
     let us = dur.as_micros() as u64;
-    let mut f = f;
     loop {
         if f() {
             return true;

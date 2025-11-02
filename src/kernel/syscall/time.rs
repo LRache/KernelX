@@ -41,3 +41,17 @@ pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: UPtr<Timespec>,
         _ => unreachable!(),
     }
 }
+
+pub fn clock_gettime(_clockid: usize, uptr_timespec: UPtr<Timespec>) -> SysResult<usize> {
+    uptr_timespec.should_not_null()?;
+    
+    let us = arch::get_time_us();
+    let timespec = Timespec {
+        tv_sec:  us / 1000000,
+        tv_nsec: (us % 1000000) * 1000,
+    };
+    
+    uptr_timespec.write(timespec)?;
+
+    Ok(0)
+}

@@ -1,7 +1,8 @@
 use alloc::string::String;
+use core::fmt::Debug;
 use core::mem::size_of;
 
-use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
+use crate::kernel::scheduler::current::{self, copy_from_user, copy_to_user};
 use crate::kernel::errno::{SysResult, Errno};
 
 /// Macro to implement From<usize> for user pointer types
@@ -37,6 +38,11 @@ pub trait UserPointer<T: Copy> {
 
     fn index(&self, i: usize) -> Self where Self: Sized {
         Self::from_uaddr(self.uaddr() + i * size_of::<T>())
+    }
+
+    fn kaddr(&self) -> SysResult<usize> {
+        debug_assert!(!self.is_null());
+        current::addrspace().translate_write(self.uaddr())
     }
 }
 
@@ -75,6 +81,12 @@ impl<T: Copy> UserPointer<T> for UPtr<T> {
             uaddr,
             _marker: core::marker::PhantomData,
         }
+    }
+}
+
+impl <T: Copy> Debug for UPtr<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "UPtr({:#x})", self.uaddr)
     }
 }
 
@@ -119,6 +131,8 @@ impl_from_usize!(UArray<T>);
 
 pub type UBuffer = UArray<u8>;
 
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct UString {
     uaddr: usize,
 }
@@ -150,5 +164,11 @@ impl UString {
 impl From<usize> for UString {
     fn from(uaddr: usize) -> Self {
         UString { uaddr }
+    }
+}
+
+impl<T: Copy> From<UPtr<T>> for UString {
+    fn from(value: UPtr<T>) -> Self {
+        Self { uaddr: value.uaddr() }
     }
 }

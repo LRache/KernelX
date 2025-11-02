@@ -48,13 +48,13 @@ impl SignalAction {
 }
 
 pub struct SignalActionTable {
-    pub actions: [SignalAction; 32],
+    pub actions: [SignalAction; 63],
 }
 
 impl SignalActionTable {
     pub fn new() -> Self {
         SignalActionTable {
-            actions: [SignalAction::empty(); 32],
+            actions: [SignalAction::empty(); 63],
         }
     }
 

@@ -256,8 +256,6 @@ impl Area for AnonymousArea {
     fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
         self.perm = perm;
 
-        kinfo!("Setting permissions for AnonymousArea at {:#x} to {:?}", self.ubase, perm);
-
         let mut pagetable = pagetable.write();
         for (page_index, frame) in self.frames.iter().enumerate() {
             if let Frame::Allocated(frame) = frame {

@@ -33,6 +33,10 @@ impl FileOps for CharFile {
         Ok(count)
     }
 
+    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
+        Err(Errno::EPIPE)
+    }
+
     fn write(&self, buf: &[u8]) -> crate::kernel::errno::SysResult<usize> {
         for &c in buf {
             self.driver.putchar(c);

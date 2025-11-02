@@ -1,4 +1,4 @@
-use core::usize;
+use alloc::string::String;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
@@ -7,94 +7,119 @@ use crate::fs::vfs;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::current;
+use crate::kernel::syscall::SyscallRet;
+use crate::kernel::syscall::uptr::{UPtr, UString, UserPointer};
+use crate::kernel::task::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
 
-pub fn sched_yield() -> Result<usize, Errno> {
+pub fn sched_yield() -> SyscallRet {
     current::schedule();
     Ok(0)
 }
 
-pub fn getpid() -> Result<usize, Errno> {
+pub fn getpid() -> SyscallRet {
     let pcb = current::pcb();
     Ok(pcb.get_pid() as usize)
 }
 
-pub fn gettid() -> Result<usize, Errno> {
+pub fn gettid() -> SyscallRet {
     let tcb = current::tcb();
     Ok(tcb.get_tid() as usize)
+}
+
+pub fn getppid() -> SyscallRet {
+    let pcb = current::pcb();
+    let ppid = pcb.parent.lock().as_ref().map_or(0, |p| p.get_pid());
+    Ok(ppid as usize)
+}
+
+pub fn setsid() -> SyscallRet {
+    let pcb = current::pcb();
+    // pcb.set_sid();
+    Ok(pcb.get_pid() as usize)
 }
 
 bitflags! {
     #[derive(Debug)]
     struct CloneFlags: i32 {
-        const CLONE_VM      = 0x00000100;
-        const CLONE_FS      = 0x00000200;
-        const CLONE_FILES   = 0x00000400;
-        const CLONE_SIGHAND = 0x00000800;
-        const CLONE_THREAD  = 0x00010000;
-        const CLONE_CHILD_CLEARTID = 0x00200000;
-        const CLONE_CHILD_SETTID = 0x01000000;
+        const VM      = 0x00000100;
+        const FS      = 0x00000200;
+        const FILES   = 0x00000400;
+        const SIGHAND = 0x00000800;
+        const THREAD  = 0x00010000;
+        const NEWNS   = 0x00020000;
+        const SYSVSEM = 0x00040000;
+        const SETTLS  = 0x00080000;
+        const PARENT_SETTID  = 0x00100000;
+        const CHILD_CLEARTID = 0x00200000;
+        const CHILD_SETTID = 0x01000000;
     }
 }
 
-pub fn clone(flags: usize, stack: usize, _uptr_parent_tid: usize, _tls: usize, uptr_child_tid: usize) -> Result<usize, Errno> {
+pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
 
     let task_flags = TaskCloneFlags {
-        vm: flags.contains(CloneFlags::CLONE_VM),
-        files: flags.contains(CloneFlags::CLONE_FILES),
-        thread: flags.contains(CloneFlags::CLONE_THREAD),
+        vm: flags.contains(CloneFlags::VM),
+        files: flags.contains(CloneFlags::FILES),
+        thread: flags.contains(CloneFlags::THREAD),
     };
 
-    let child = current::pcb().clone_task(&current::tcb(), stack, &task_flags)?;
+    let tls = if flags.contains(CloneFlags::SETTLS) {
+        Some(tls)
+    } else {
+        None
+    };
 
-    if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
+    let child = current::pcb().clone_task(&current::tcb(), stack, &task_flags, tls)?;
+
+    if flags.contains(CloneFlags::CHILD_SETTID) {
         child.set_tid_address(uptr_child_tid);
     }
 
-    Ok(child.get_tid() as usize)
+    let child_tid = child.get_tid();
+
+    if flags.contains(CloneFlags::PARENT_SETTID) {
+        uptr_parent_tid.write(child_tid)?;
+    }
+
+    Ok(child_tid as usize)
 }
 
-pub fn execve(uptr_path: usize, uptr_argv: usize, uptr_envp: usize) -> Result<usize, Errno> {
-    // let path = current::get_user_string(user_path)?;
-    let path = copy_from_user::string(uptr_path)?;
+pub fn execve(uptr_path: UString, uptr_argv: UPtr<UString>, uptr_envp: UPtr<UString>) -> SyscallRet {
+    uptr_path.should_not_null()?;
+
+    let path = uptr_path.read()?;
     let file = current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare()))?;
 
-    let mut argv = Vec::new();
-    let mut envp = Vec::new();
-        
-    if uptr_argv != 0 {
-        let mut argv_ptr = uptr_argv;
-        loop {
-            let ptr: usize = copy_from_user::object(argv_ptr)?;
-            if ptr == 0 {
-                break;
-            }
-            // let arg = current::get_user_string(ptr)?;
-            let arg = copy_from_user::string(ptr)?;
-            argv.push(arg);
-            argv_ptr += core::mem::size_of::<usize>();
+    let helper = |uarray: UPtr<UString>| -> SysResult<Vec<String>> {
+        if uarray.is_null() {
+            return Ok(Vec::new());
         }
-    }
-        
-    if uptr_envp != 0 {
-        let mut envp_ptr = uptr_envp;
-        loop {
-            // let ptr = current::copy_from_user::<usize>(envp_ptr)?;
-            let ptr: usize = copy_from_user::object(envp_ptr)?;
-            if ptr == 0 {
-                break;
-            }
-            let env = copy_from_user::string(ptr)?;
-            envp.push(env);
-            envp_ptr += core::mem::size_of::<usize>();
-        }
-    }
 
+        let mut vec = Vec::new();
+        let mut i = 0;
+        loop {
+            let p = uarray.index(i).read()?;
+            if p.is_null() {
+                break;
+            }
+            vec.push(p.read()?);
+            i += 1;
+        }
+        Ok(vec)
+    };
+
+    let argv = helper(uptr_argv)?;
+    let envp = helper(uptr_envp)?;
     let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
     let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
 
     current::pcb().exec(&current::tcb(), file, &argv_ref, &envp_ref)?;
+
+    drop(envp);
+    drop(argv);
+    drop(path);
 
     current::schedule();
 
@@ -111,7 +136,7 @@ bitflags! {
 pub fn wait4(pid: usize, uptr_status: usize, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
     let options = WaitOptions::from_bits(options).unwrap_or(WaitOptions::empty());
-    let pid = pid as isize;
+    let pid = pid as isize;  
 
     let wait_pid;
     let exit_code: usize;
@@ -134,7 +159,6 @@ pub fn wait4(pid: usize, uptr_status: usize, options: usize, _user_rusages: usiz
 
     if uptr_status != 0 {
         let status: u32 = (exit_code as u32 & 0xff) << 8; // WEXITSTATUS
-        // copy_to_user!(user_status, status)?;
         copy_to_user::object(uptr_status, status)?;
     }
 
@@ -167,8 +191,6 @@ pub fn set_tid_address(tid_address: usize) -> Result<usize, Errno> {
 
 pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {
     let cwd = current::with_cwd(|dentry| dentry.get_path());
-    // copy_to_user_string!(ubuf, cwd, size)
-    // current::copy_to_user_string(ubuf, &cwd, size)
     copy_to_user::string(ubuf, &cwd, size)
 }
 

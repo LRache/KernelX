@@ -77,10 +77,7 @@ pub fn load_dyn(ehdr: &Elf64Ehdr, file: &Arc<File>, addrspace: &mut AddrSpace) -
 }
 
 fn load_interpreter(path: &str, addrspace: &mut AddrSpace) -> Result<(usize, usize), Errno> {
-    let file_flags = FileFlags {
-        readable: true,
-        writable: false,
-    };
+    let file_flags = FileFlags::readonly();
     let file = vfs::open_file(path, file_flags).map_err(|_| {
         Errno::ENOENT
     })?;

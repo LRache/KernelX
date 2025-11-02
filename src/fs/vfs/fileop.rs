@@ -48,3 +48,13 @@ pub fn load_inode(sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
 pub fn sync() -> SysResult<()> {
     vfs().sync()
 }
+
+pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysResult<File> {
+    let superblock = vfs().superblock_table.lock().get(dentry.sno()).ok_or(Errno::ENOENT)?;
+    let inode = superblock.create_temp(mode)?;
+
+    let inode: Arc<dyn InodeOps> = Arc::from(inode);
+    let dentry = Arc::new(Dentry::new("", dentry, &inode));
+
+    Ok(File::new_inode(inode, dentry, flags))
+}

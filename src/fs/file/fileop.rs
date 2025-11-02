@@ -16,6 +16,7 @@ pub enum SeekWhence {
 
 pub trait FileOps: DowncastSync {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize>;
+    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize>;
     fn write(&self, buf: &[u8]) -> SysResult<usize>;
 
     fn readable(&self) -> bool;

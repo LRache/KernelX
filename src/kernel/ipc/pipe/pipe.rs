@@ -9,7 +9,7 @@ use crate::fs::file::{FileOps, SeekWhence, DirResult};
 use super::PipeInner;
 
 struct Meta {
-    inode: Arc<dyn InodeOps>,
+    // inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
 }
 
@@ -17,6 +17,7 @@ pub struct Pipe {
     inner: Arc<PipeInner>,
     meta: Option<Meta>,
     writable: bool,
+    blocked: bool,
 }
 
 impl Pipe {
@@ -27,7 +28,8 @@ impl Pipe {
         Self {
             inner,
             meta: None,
-            writable
+            writable,
+            blocked: true,
         }
     }
 
@@ -42,6 +44,10 @@ impl Pipe {
 impl FileOps for Pipe {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
         self.inner.read(buf)
+    }
+
+    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
+        Err(Errno::ESPIPE)
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
@@ -77,7 +83,8 @@ impl FileOps for Pipe {
     }
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
-        self.meta.as_ref().map(|m| &m.inode)
+        // self.meta.as_ref().map(|m| &m.inode)
+        unimplemented!()
     }
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {

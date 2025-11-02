@@ -12,12 +12,17 @@ use super::{FileOps, SeekWhence};
 #[derive(Clone, Copy)]
 pub struct FileFlags {
     pub readable: bool,
-    pub writable: bool
+    pub writable: bool,
+    pub blocked: bool
 }
 
 impl FileFlags {
     pub const fn dontcare() -> Self {
-        FileFlags { readable: true, writable: true }
+        FileFlags { readable: true, writable: true, blocked: true }
+    }
+
+    pub const fn readonly() -> Self {
+        FileFlags { readable: true, writable: false, blocked: true }
     }
 }
 
@@ -34,6 +39,15 @@ impl File {
         File {
             inode: dentry.get_inode().clone(),
             dentry: dentry.clone(),
+            pos: Mutex::new(0),
+            flags
+        }
+    }
+
+    pub fn new_inode(inode: Arc<dyn InodeOps>, dentry: Arc<Dentry>, flags: FileFlags) -> Self {
+        File {
+            inode,
+            dentry,
             pos: Mutex::new(0),
             flags
         }
@@ -59,6 +73,11 @@ impl FileOps for File {
         let len = self.inode.readat(buf, *pos)?;
         *pos += len;
         
+        Ok(len)
+    }
+
+    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        let len = self.inode.readat(buf, offset)?;
         Ok(len)
     }
 
@@ -115,13 +134,7 @@ impl FileOps for File {
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
-        let mut kstat = FileStat::empty();
-        
-        kstat.st_ino = self.inode.get_ino() as u64;
-        kstat.st_size = self.inode.size()? as i64;
-        kstat.st_mode = self.inode.mode().bits() as u32;
-        
-        Ok(kstat)
+        self.inode.fstat()
     }
 
     fn get_dent(&self) -> SysResult<Option<DirResult>> {

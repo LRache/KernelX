@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use num_enum::TryFromPrimitive;
 use core::time::Duration;
 use bitflags::bitflags;
 
@@ -11,7 +12,7 @@ use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
 use crate::kernel::uapi::{self, Timespec};
 use crate::kernel::task::manager;
-use crate::{arch, kinfo};
+use crate::arch;
 
 use super::SyscallRet;
 
@@ -47,7 +48,7 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
     let pid = pid as i32;
     let signum = signum as u32;
 
-    kinfo!("kill: pid={}, signum={}", pid, signum);
+    // kinfo!("kill: pid={}, signum={}", pid, signum);
     
     if pid > 0 {
         let pcb = manager::get(pid).ok_or(Errno::ESRCH)?;
@@ -57,16 +58,44 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn rt_sigprocmask(_how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<SignalSet>) -> SyscallRet {
+pub fn tgkill(tgid: usize, tid: usize, signum: usize) -> SyscallRet {
+    let tgid = tgid as i32;
+    let tid = tid as i32;
+    let signum = signum as u32;
+
+    if tgid > 0 {
+        let pcb = manager::get(tgid).ok_or(Errno::ESRCH)?;
+        pcb.send_signal(signum.try_into()?, current::tid(), Some(tid))?;
+    }
+
+    Ok(0)
+}
+
+#[repr(usize)]
+#[derive(Debug, TryFromPrimitive)]
+enum SigProcmaskHow {
+    Block = 0,
+    Unblock = 1,
+    Setmask = 2,
+}
+
+pub fn rt_sigprocmask(how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<SignalSet>) -> SyscallRet {
+    let how = SigProcmaskHow::try_from(how).map_err(|_| Errno::EINVAL)?;
+    
     let mut signal_mask = current::tcb().signal_mask.lock();
     if !uptr_oldset.is_null() {
-        let old_mask = signal_mask.clone();
-        uptr_oldset.write(old_mask)?;
+        uptr_oldset.write(*signal_mask)?;
     }
+    
     if !uptr_set.is_null() {
-        let new_mask = uptr_set.read()?;
-        *signal_mask = new_mask;
+        let set = uptr_set.read()?;
+        *signal_mask = match how {
+            SigProcmaskHow::Block => *signal_mask | set,
+            SigProcmaskHow::Unblock => *signal_mask & !set,
+            SigProcmaskHow::Setmask => set,
+        };
     }
+    
     Ok(0)
 }
 

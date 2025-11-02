@@ -7,6 +7,7 @@ pub mod trap;
 pub mod syscall;
 pub mod ipc;
 pub mod event;
+pub mod usync;
 pub mod config;
 pub mod uapi;
 

@@ -1,11 +1,16 @@
 use num_enum::TryFromPrimitive;
+use alloc::vec;
 
-use crate::kernel::config;
+use crate::kernel::event::timer;
+use crate::kernel::scheduler::current;
+use crate::kernel::{config, uapi};
 use crate::kernel::errno::Errno;
-use crate::kernel::syscall::uptr::{UPtr, UserPointer};
+use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::SyscallRet;
-use crate::kernel::task::Pid;
-use crate::{arch, kinfo};
+use crate::kernel::usync::futex;
+use crate::kernel::event::Event;
+use crate::klib::random::random;
+use crate::arch;
 
 pub fn set_robust_list() -> Result<usize, Errno> {
     // This syscall is a no-op in the current implementation.
@@ -73,7 +78,7 @@ enum RLimitResource {
     STACK = 3
 }
 
-pub fn prlimit64(pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, uptr_old_limit: UPtr<RLimit>) -> SyscallRet {
+pub fn prlimit64(_pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, uptr_old_limit: UPtr<RLimit>) -> SyscallRet {
     // kinfo!("prlimit64: pid={}, resource={}, uptr_new={}, uptr_old={}", pid, resource, uptr_new_limit.uaddr(), uptr_old_limit.uaddr());
     
     let resource = RLimitResource::try_from(resource).map_err(|_| Errno::EINVAL)?;
@@ -100,4 +105,77 @@ pub fn prlimit64(pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, uptr
     }
 
     Ok(0)
+}
+
+#[repr(usize)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+enum FutexOp {
+    Wait = 0,
+    Wake = 1,
+    WaitBitset = 9,
+    WakeBitset = 10,
+}
+
+const FUTEX_OP_MASK: usize = 0x7f;
+
+pub fn futex(uaddr: UPtr<i32>, futex_op: usize, val: usize, timeout: UPtr<uapi::Timespec>, _uaddr2: UPtr<()>, _val3: usize) -> SyscallRet {    
+    uaddr.should_not_null()?;
+    if uaddr.uaddr() & 3 != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let op = FutexOp::try_from(futex_op & FUTEX_OP_MASK).map_err(|_| Errno::EINVAL)?;
+    // kinfo!("futex: uaddr={:#x}, futex_op={:?}, val={}, timeout={:?}", uaddr.uaddr(), op, val, timeout);
+
+    match op {
+        FutexOp::Wait | FutexOp::WaitBitset => {
+            let bitset = if op == FutexOp::WaitBitset {
+                val as u32
+            } else {
+                u32::MAX
+            };
+            
+            futex::wait_current(uaddr.kaddr()?, val as i32, bitset)?;
+            if let Some(timeout) = timeout.read_optional()? {
+                timer::add_timer(current::tcb().clone(), timeout.into());
+            }
+            
+            current::block("futex");
+            current::schedule();
+
+            let state = current::tcb().state().lock();
+            match state.event {
+                Some(Event::Futex) => {
+                    Ok(0)
+                }
+                Some(Event::Timeout) => {
+                    Err(Errno::ETIMEDOUT)
+                }
+                Some(Event::Signal) => {
+                    Err(Errno::EINTR)
+                }
+                _ => unreachable!(),
+            }
+        },
+        FutexOp::Wake | FutexOp::WakeBitset => {
+            let woken = futex::wake(uaddr.uaddr(), val as usize, u32::MAX)?;
+            Ok(woken as usize)
+        }
+    }
+}
+
+pub fn getrandom(ubuf: UBuffer, len: usize, _flags: usize) -> SyscallRet {
+    ubuf.should_not_null()?;
+    
+    let mut buf = vec![0u8; len];
+    for chunk in buf.chunks_mut(4) {
+        let rand = random();
+        for (i, byte) in chunk.iter_mut().enumerate() {
+            *byte = ((rand >> (i * 4)) & 0xFF) as u8;
+        }
+    }
+
+    ubuf.write(0, &buf)?;
+
+    Ok(len)
 }

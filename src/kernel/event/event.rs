@@ -8,6 +8,7 @@ pub enum Event {
     PipeReadReady,
     PipeWriteReady,
     Timeout,
+    Futex,
     Process { child: Tid },
     WaitSignal { signum: SignalNum },
     Signal,

@@ -83,6 +83,10 @@ impl UserContextTrait for UserContext {
     fn skip_syscall_instruction(&mut self) {
         self.user_entry += 4; // Skip ecall instruction
     }
+
+    fn set_tls(&mut self, tls: usize) {
+        self.gpr[4] = tls; // tp
+    }
 }
 
 #[repr(C)]

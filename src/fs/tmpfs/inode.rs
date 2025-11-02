@@ -3,13 +3,12 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::kernel::scheduler::current::copy_from_user::buffer;
-use crate::{arch, kinfo};
 use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::InodeOps;
 use crate::fs::inode::Mode;
 use crate::kernel::mm::PhysPageFrame;
 use crate::klib::SpinLock;
+use crate::arch;
 
 use super::superblock::SuperBlockInner;
 
@@ -20,7 +19,6 @@ enum Meta {
 
 pub struct InodeMeta {
     meta: Meta,
-    filesz: usize,
     mode: Mode,
 }
 
@@ -33,7 +31,6 @@ impl InodeMeta {
         };
         Self { 
             meta, 
-            filesz: 0,
             mode
         }
     }
@@ -158,8 +155,27 @@ impl InodeOps for Inode {
         }
     }
 
+    fn unlink(&self, name: &str) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if let Meta::Directory(children) = &mut meta.meta {
+            let ino = children.remove(name).ok_or(Errno::ENOENT)?;
+            self.superblock.lock().remove_inode(ino);
+            Ok(())
+        } else {
+            Err(Errno::ENOTDIR)
+        }
+    }
+
     fn size(&self) -> SysResult<u64> {
-        Ok(self.meta.lock().filesz as u64)
+        let size = match self.meta.lock().meta {
+            Meta::File { filesize, .. } => filesize,
+            Meta::Directory(_) => arch::PGSIZE,
+        };
+        Ok(size as u64)
+    }
+
+    fn mode(&self) -> Mode {
+        self.meta.lock().mode
     }
 
     fn type_name(&self) -> &'static str {

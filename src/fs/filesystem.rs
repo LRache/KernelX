@@ -2,7 +2,8 @@ use alloc::sync::Arc;
 use alloc::boxed::Box;
 use core::option::Option;
 
-use crate::kernel::errno::SysResult;
+use crate::fs::Mode;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::driver::BlockDriverOps;
 
 use super::InodeOps;
@@ -15,6 +16,10 @@ pub trait SuperBlockOps: Send + Sync {
     fn get_root_ino(&self) -> u32;
 
     fn get_inode(&self, ino: u32) -> SysResult<Box<dyn InodeOps>>;
+
+    fn create_temp(&self, _mode: Mode) -> SysResult<Box<dyn InodeOps>> {
+        Err(Errno::EOPNOTSUPP)
+    }
 
     fn unmount(&self) -> SysResult<()> {
         // Default implementation does nothing, can be overridden by specific filesystems

@@ -4,6 +4,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::file::DirResult;
+use crate::kernel::uapi::FileStat;
 
 use super::{Mode, FileType};
 
@@ -43,7 +44,7 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn size(&self) -> SysResult<u64> {
-        unimplemented!()
+        unimplemented!("{}", self.type_name())
     }
     
     fn mode(&self) -> Mode {
@@ -60,6 +61,15 @@ pub trait InodeOps: DowncastSync {
 
     fn sync(&self) -> SysResult<()> {
         Ok(())
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_size = self.size()? as i64;
+        kstat.st_mode = self.mode().bits() as u32;
+
+        Ok(kstat)
     }
 }
 

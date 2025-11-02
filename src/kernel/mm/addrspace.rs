@@ -109,6 +109,10 @@ impl AddrSpace {
         map_manager.increase_userbrk(ubrk)
     }
 
+    pub fn translate_write(&self, uaddr: usize) -> SysResult<usize> {
+        self.map_manager.lock().translate_write(uaddr, &self.pagetable).ok_or(Errno::EFAULT)
+    }
+
     pub fn copy_to_user_buffer(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
         let mut left = buffer.len();
         let mut copied: usize = 0;

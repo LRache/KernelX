@@ -1,5 +1,6 @@
 use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::InodeOps;
+use crate::kernel::uapi::FileStat;
+use crate::fs::{InodeOps, Mode};
 use crate::fs::file::DirResult;
 
 pub const INO: u32 = 1;
@@ -40,5 +41,19 @@ impl InodeOps for NullInode {
     fn get_dent(&self, _index: usize) -> SysResult<Option<DirResult>> {
         // /dev/null is not a directory
         Err(Errno::ENOTDIR)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+
+        kstat.st_ino = INO as u64;
+        kstat.st_size = 0;
+        kstat.st_mode = Mode::S_IFCHR.bits() as u32 | 0o666;
+
+        Ok(kstat)
     }
 }

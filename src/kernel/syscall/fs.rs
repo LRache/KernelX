@@ -1,3 +1,5 @@
+use core::usize;
+
 use alloc::sync::Arc;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
@@ -70,31 +72,53 @@ pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> SyscallRet {
             Ok(open_flags.bits())
         }
 
+        FcntlCmd::F_SETFL => {
+            let file = current::fdtable().lock().get(fd)?;
+            let flags = OpenFlags::from_bits(_arg).ok_or(Errno::EINVAL)?;
+            
+            Ok(0)
+        }
+
         _ => Err(Errno::EINVAL),
     }
 }
 
 pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -> SyscallRet {
     uptr_filename.should_not_null()?;
-    
+
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let file_flags = FileFlags {
         writable: open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR),
         readable: open_flags.contains(OpenFlags::O_RDONLY) || open_flags.contains(OpenFlags::O_RDWR),
+        blocked: !open_flags.contains(OpenFlags::O_NONBLOCK)
     };
     let fd_flags = FDFlags {
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
     let path = uptr_filename.read()?;
-    // kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:#o}", dirfd, path, open_flags, mode);
+
+    kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:#o}", dirfd, path, open_flags, mode);
 
     let helper = |parent: &Arc<Dentry>| {
-        kdebug!("parent={}", parent.get_path());
+        if open_flags.contains(OpenFlags::O_TMPFILE) {
+            if !open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR) {
+                return Err(Errno::EINVAL)
+            }
+
+            let dentry = vfs::load_dentry_at(parent, &path)?;
+            return vfs::create_temp(&dentry, file_flags, Mode::from_bits(mode as u16 & 0o777).ok_or(Errno::EINVAL)? | Mode::S_IFREG);
+        }
+        
         match vfs::openat_file(parent, &path, file_flags) {
-            Ok(file) => Ok(file),
+            Ok(file) => {
+                if open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
+                    return Err(Errno::EEXIST);
+                }
+                Ok(file)
+            }
             Err(e) => {
-                if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREAT) {
+                if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
                     // Create the file
                     let mode = Mode::from_bits(mode as u16 & 0o777).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
                     let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?;
@@ -197,12 +221,9 @@ pub fn write(fd: usize, ubuf: UBuffer, mut count: usize) -> SyscallRet {
     let mut buffer = [0u8; BUFFER_SIZE];
     while count != 0 {
         let to_write = core::cmp::min(count, BUFFER_SIZE);
-        // addrspace.copy_from_user(uptr_buffer + written, &mut buffer[..to_write])
-            // .map_err(|_| Errno::EFAULT)?;
-        // copy_from_user::buffer(uptr_buffer + written, &mut buffer[..to_write])?;
         ubuf.read(written, &mut buffer[..to_write])?;
         
-        file.write(&buffer[..to_write]).map_err(|_| Errno::EIO)?;
+        file.write(&buffer[..to_write])?;
 
         count -= to_write;
         written += to_write;
@@ -237,7 +258,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
         let mut buffer = [0u8; BUFFER_SIZE];
         while remaining != 0 {
             let to_read = core::cmp::min(remaining, BUFFER_SIZE);
-            let bytes_read = file.read(&mut buffer[..to_read]).map_err(|_| Errno::EIO)?;
+            let bytes_read = file.read(&mut buffer[..to_read])?;
             if bytes_read == 0 {
                 break; // EOF
             }
@@ -252,6 +273,37 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     }
 
     Ok(total_read)
+}
+
+pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    if count == 0 {
+        return Ok(0)
+    }
+
+    let mut written = 0;
+    let mut buffer = [0u8; BUFFER_SIZE];
+    let mut left = count;
+
+    while left != 0 {
+        let to_read = core::cmp::min(left, BUFFER_SIZE);
+        let bytes_read = file.pread(&mut buffer[..to_read], pos + (count - left))?;
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        ubuf.write(count - left, &buffer[..bytes_read])?;
+
+        left -= bytes_read;
+        written += bytes_read;
+
+        if bytes_read < to_read {
+            break; // EOF
+        }
+    }
+
+    Ok(written)
 }
 
 pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
@@ -398,6 +450,8 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, _fla
     uptr_stat.should_not_null()?;
     
     let path = uptr_path.read()?;
+
+    kinfo!("openat: dirfd={}, path=\"{}\"", dirfd, path);
 
     let fstat = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare()))?
