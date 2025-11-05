@@ -105,6 +105,10 @@ impl PCB {
         *self.exit_code.lock()
     }
 
+    pub fn has_child(&self, tid: Tid) -> bool {
+        self.tasks.lock().iter().any(|tcb| tcb.get_tid() == tid)
+    }
+
     pub fn with_cwd<F, R>(&self, f: F) -> R 
     where F: FnOnce(&Arc<Dentry>) -> R {
         let cwd = self.cwd.lock();

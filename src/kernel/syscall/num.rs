@@ -234,7 +234,9 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         // IPC
         59  => ipc::pipe(2),
         129 => ipc::kill(2),
+        130 => ipc::tkill(2),
         131 => ipc::tgkill(3),
+        133 => ipc::rt_sigsuspend(1),
         134 => ipc::rt_sigaction(4),
         135 => ipc::rt_sigprocmask(3),
         137 => ipc::sigtimedwait(3),

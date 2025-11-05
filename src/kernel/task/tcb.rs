@@ -3,6 +3,7 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::kernel::scheduler::current;
+use crate::kernel::usync::futex;
 use crate::kernel::{config, scheduler};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::tid::Tid;
@@ -17,9 +18,9 @@ use crate::fs::file::{File, FileFlags, CharFile};
 use crate::fs::vfs;
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
-use crate::{arch, lock_debug};
+use crate::{arch, kinfo, lock_debug, safe_page_write};
 use crate::driver;
-use crate::{kdebug, kinfo, ktrace};
+use crate::ktrace;
 
 use super::kernelstack::KernelStack;
 
@@ -35,10 +36,9 @@ pub enum TaskState {
 pub struct TaskStateSet {
     pub state: TaskState,
     pub event: Option<Event>,
-    pub exit_code: u8,
     
     pub pending_signal: Option<PendingSignal>,
-    pub waiting_signal: SignalSet
+    pub signal_to_wait: SignalSet,
 }
 
 impl TaskStateSet {
@@ -46,9 +46,8 @@ impl TaskStateSet {
         Self {
             state: TaskState::Ready,
             event: None,
-            exit_code: 0,
             pending_signal: None,
-            waiting_signal: SignalSet::empty()
+            signal_to_wait: SignalSet::empty()
         }
     }
 }
@@ -374,19 +373,18 @@ impl TCB {
 
     pub fn exit(&self, code: u8) {
         let mut state = self.state.lock();
-        if state.state == TaskState::Exited {
-            kdebug!("Task {} already exited", self.tid);
-            return;
-        }
 
-        // let tid_address = self.tid_address.lock().take();
-        // if let Some(tid_address) = tid_address {
-        //     self.addrspace.copy_to_user(tid_address, &(0 as Tid).to_le_bytes()).expect("Failed to clear TID address");
-        // }
+        if let Some(tid_address) = *self.tid_address.lock() {
+            self.addrspace.copy_to_user_object(tid_address, &(0 as Tid).to_le_bytes()).expect("Failed to clear TID address");
+            if let Ok(tid_kaddr) = self.addrspace.translate_write(tid_address) {
+                debug_assert!(tid_kaddr & 0x3 == 0);
+                unsafe { *(tid_kaddr as *mut Tid) = 0 };
+                let _ = futex::wake(tid_kaddr, 1, u32::MAX);
+            }
+        }
 
         // kinfo!("Task {} exited with code {}", self.tid, code);
 
-        state.exit_code = code;
         state.state = TaskState::Exited;
 
         drop(state);

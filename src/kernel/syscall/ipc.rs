@@ -11,8 +11,8 @@ use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
 use crate::kernel::uapi::{self, Timespec};
-use crate::kernel::task::manager;
-use crate::arch;
+use crate::kernel::task::{Tid, manager};
+use crate::{arch, kinfo};
 
 use super::SyscallRet;
 
@@ -55,6 +55,14 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
         pcb.send_signal(signum.try_into()?, current::tid(), None)?;
     }
 
+    Ok(0)
+}
+
+pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
+    let tid = tid as Tid;
+    let signum = (signum as u32).try_into()?;
+    let parent = manager::find_task_parent(tid as i32).ok_or(Errno::ESRCH)?;
+    parent.send_signal(signum, current::tid(), Some(tid))?;
     Ok(0)
 }
 
@@ -112,10 +120,36 @@ pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact:
 
     if !uptr_act.is_null() {
         let new_action = uptr_act.read()?;
-        signal_actions.set(signum, &new_action.into())?;
+        kinfo!("sa_flags = 0x{:x}, sa_mask=0x{:x}", new_action.sa_flags, new_action.sa_mask.bits());
+        let new_action = new_action.try_into()?;
+        
+        signal_actions.set(signum, &new_action)?;
+
+        kinfo!("{:?}", new_action.flags);
     }
 
     Ok(0)
+}
+
+pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
+    mask.should_not_null()?;
+    
+    let set = mask.read()?;
+    
+    let tcb = current::tcb();
+    let mut signal_mask = tcb.signal_mask.lock();
+    let old = *signal_mask;
+    *signal_mask = set;
+
+    tcb.block("sigsuspend");
+    current::schedule();
+
+    *tcb.signal_mask.lock() = old;
+
+    match tcb.state().lock().event.take() {
+        Some(Event::Signal) => Err(Errno::EINTR),
+        _ => unreachable!()
+    }
 }
 
 pub fn rt_sig_return() -> SyscallRet {
@@ -142,7 +176,7 @@ pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeou
         timer::add_timer(current::tcb().clone(), timeout_duration);
     }
 
-    state.waiting_signal = signal_set;
+    state.signal_to_wait = signal_set;
 
     drop(state);
 

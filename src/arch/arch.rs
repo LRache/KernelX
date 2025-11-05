@@ -55,6 +55,7 @@ pub trait UserContextTrait: Clone {
 
     fn set_sigaction_restorer(&mut self, uptr_restorer: usize) -> &mut Self;
     fn restore_from_signal(&mut self, sigcontext: &SigContext) -> &mut Self;
+    fn set_arg(&mut self, index: usize, arg: usize) -> &mut Self;
 
     fn set_user_entry(&mut self, entry: usize) -> &mut Self;
     fn get_user_entry(&self) -> usize;

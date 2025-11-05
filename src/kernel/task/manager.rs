@@ -2,8 +2,10 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use spin::Mutex;
 
+use crate::kernel::task::TCB;
+use crate::kernel::task::Tid;
+use crate::klib::SpinLock;
 use crate::fs::file::FileFlags;
 use crate::fs::vfs;
 
@@ -11,19 +13,19 @@ use super::Pid;
 use super::PCB;
 
 pub struct Manager {
-    pcbs: Mutex<BTreeMap<Pid, Arc<PCB>>>,
+    pcbs: SpinLock<BTreeMap<Pid, Arc<PCB>>>,
     initprocess: UnsafeCell<MaybeUninit<Arc<PCB>>>,
 }
 
 impl Manager {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self {
-            pcbs: Mutex::new(BTreeMap::new()),
+            pcbs: SpinLock::new(BTreeMap::new()),
             initprocess: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
 
-    pub fn create_initprocess(&self, initpath: &str, initcwd: &str) {
+    fn create_initprocess(&self, initpath: &str, initcwd: &str) {
         let initargv: &[&str] = &[
             initpath, 
             "sh", 
@@ -42,25 +44,31 @@ impl Manager {
         }
     }
 
-    pub fn get_initprocess(&self) -> &Arc<PCB> {
+    fn get_initprocess(&self) -> &Arc<PCB> {
         unsafe {
             (&*self.initprocess.get()).assume_init_ref()
         }
     }
 
-    pub fn insert_pcb(&self, pcb: Arc<PCB>) {
+    fn insert_pcb(&self, pcb: Arc<PCB>) {
         let mut pcbs = self.pcbs.lock();
         pcbs.insert(pcb.get_pid(), pcb);
     }
 
-    pub fn get_pcb(&self, pid: Pid) -> Option<Arc<PCB>> {
+    fn get_pcb(&self, pid: Pid) -> Option<Arc<PCB>> {
         let pcbs = self.pcbs.lock();
         pcbs.get(&pid).cloned()
     }
 
-    pub fn remove_pcb(&self, pid: Pid) -> Option<Arc<PCB>> {
+    fn remove_pcb(&self, pid: Pid) -> Option<Arc<PCB>> {
         let mut pcbs = self.pcbs.lock();
         pcbs.remove(&pid)
+    }
+
+    fn find_task_parent(&self, tid: Tid) -> Option<Arc<PCB>> {
+        self.pcbs.lock().iter().find(|(_, pcb)| {
+            pcb.has_child(tid)
+        }).map(|(_, pcb)| pcb.clone())
     }
 }
 
@@ -86,4 +94,8 @@ pub fn get(pid: Pid) -> Option<Arc<PCB>> {
 
 pub fn remove(pid: Pid) -> Option<Arc<PCB>> {
     MANAGER.remove_pcb(pid)
+}
+
+pub fn find_task_parent(tid: Tid) -> Option<Arc<PCB>> {
+    MANAGER.find_task_parent(tid)
 }

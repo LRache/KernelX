@@ -11,20 +11,19 @@ const SIG_IGN: usize = 1;
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct SignalActionFlags: u32 {
-        const SA_NOCLDSTOP = 0x0001;
-        const SA_NOCLDWAIT = 0x0002;
-        const SA_SIGINFO   = 0x0004;
-        const SA_ONSTACK   = 0x0008;
-        const SA_RESTART   = 0x0010;
-        const SA_NODEFER   = 0x0020;
-        const SA_RESETHAND = 0x0040;
+        const SA_NOCLDSTOP = 0x1;
+        const SA_NOCLDWAIT = 0x2;
+        const SA_SIGINFO   = 0x4;
+        const SA_ONSTACK   = 0x08000000;
+        const SA_RESTART   = 0x10000000;
+        const SA_NODEFER   = 0x40000000;
+        const SA_RESETHAND = 0x80000000;
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct SignalAction {
     pub handler: usize,
-    // pub restorer: usize,
     pub mask: SignalSet,
     pub flags: SignalActionFlags,
 }

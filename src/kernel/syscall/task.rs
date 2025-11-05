@@ -11,6 +11,7 @@ use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UPtr, UString, UserPointer};
 use crate::kernel::task::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
+use crate::kinfo;
 
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
@@ -42,22 +43,33 @@ pub fn setsid() -> SyscallRet {
 bitflags! {
     #[derive(Debug)]
     struct CloneFlags: i32 {
-        const VM      = 0x00000100;
-        const FS      = 0x00000200;
-        const FILES   = 0x00000400;
+        const VM = 0x0000100;
+        const FS = 0x0000200;
+        const FILES = 0x0000400;
         const SIGHAND = 0x00000800;
-        const THREAD  = 0x00010000;
-        const NEWNS   = 0x00020000;
+        const PIDFD = 0x00001000;
+        const PARENT = 0x00008000;
+        const THREAD = 0x00010000;
         const SYSVSEM = 0x00040000;
-        const SETTLS  = 0x00080000;
-        const PARENT_SETTID  = 0x00100000;
+        const SETTLS = 0x00080000;
+        const PARENT_SETTID = 0x00100000;
         const CHILD_CLEARTID = 0x00200000;
+        const CLONE_DETACHED = 0x00400000;
         const CHILD_SETTID = 0x01000000;
+        const UNTRACED = 0x00800000;
+        const NEWCGROUP = 0x02000000;
+        const NEWUTS = 0x04000000;
+        const NEWIPC = 0x08000000;
+        const NEWUSER = 0x10000000;
+        const NEWPID = 0x20000000;
+        const NEWNET = 0x40000000;
     }
 }
 
 pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
+
+    kinfo!("flags: {:?}", flags);
 
     let task_flags = TaskCloneFlags {
         vm: flags.contains(CloneFlags::VM),
@@ -74,6 +86,10 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
     let child = current::pcb().clone_task(&current::tcb(), stack, &task_flags, tls)?;
 
     if flags.contains(CloneFlags::CHILD_SETTID) {
+        let _ = child.get_addrspace().copy_to_user_object(uptr_child_tid, 0 as Tid);
+    }
+
+    if flags.contains(CloneFlags::CHILD_CLEARTID) {
         child.set_tid_address(uptr_child_tid);
     }
 

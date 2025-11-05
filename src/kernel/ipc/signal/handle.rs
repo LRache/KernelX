@@ -29,7 +29,7 @@ impl TCB {
         }
         
         if signum.is_kill() {
-            self.parent.exit(0);
+            self.parent.exit(128 + signum.num() as u8);
             current::schedule();
 
             unreachable!();
@@ -39,7 +39,7 @@ impl TCB {
         if action.is_default() {
             match signum.default_action() {
                 SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
-                    self.parent.exit(255);
+                    self.parent.exit(128 + signum.num() as u8);
                     current::schedule();
 
                     unreachable!();
@@ -64,22 +64,28 @@ impl TCB {
         sigframe.ucontext.uc_sigmask = old_mask;
         sigframe.ucontext.uc_mcontext = (*self.user_context()).into();
         
-        self.user_context()
-            .set_sigaction_restorer(vdso::addr_of("sigreturn_trampoline") + config::VDSO_BASE)
-            .set_user_entry(action.handler);
-        
         let mut stack_top = self.user_context().get_user_stack_top();
         stack_top -= core::mem::size_of::<SigFrame>();
         stack_top &= !0xf; // Align to 16 bytes
         self.get_addrspace().copy_to_user_object(stack_top, sigframe).expect("Failed to copy sigframe to user stack");
-        self.user_context().set_user_stack_top(stack_top);
+        
+        self.user_context()
+            .set_sigaction_restorer(vdso::addr_of("sigreturn_trampoline") + config::VDSO_BASE)
+            .set_arg(0, signum.into())
+            .set_user_entry(action.handler)
+            .set_user_stack_top(stack_top);
+
+        if action.flags.contains(SignalActionFlags::SA_SIGINFO) {
+            // self.user_context().set_arg(1, arg)
+        }
 
         // kinfo!("handle signal for task {}, signum={:?}, action.handler={:#x}, stack_top={:#x}, pending={:?}", self.tid, signum, action.handler, stack_top, signal_pending);
     }
 
     pub fn return_from_signal(&self) {
-        let sigframe = self.get_addrspace().copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
-            .expect("Failed to copy sigframe from user stack");
+        let sigframe = self.get_addrspace()
+                           .copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
+                           .expect("Failed to copy sigframe from user stack");
         // kinfo!("return from signal for task {}, ucontext={:?}", self.tid, sigframe.ucontext.uc_mcontext);
         self.user_context().restore_from_signal(&sigframe.ucontext.uc_mcontext);
     }  
@@ -107,10 +113,10 @@ impl TCB {
             return true;
         }
 
-        let waiting = state.waiting_signal;
+        let waiting = state.signal_to_wait;
         if waiting.contains(signum) {
             state.pending_signal = Some(pending);
-            state.waiting_signal = SignalSet::empty();
+            state.signal_to_wait = SignalSet::empty();
             drop(state);
 
             self.wakeup(Event::WaitSignal { signum });

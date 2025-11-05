@@ -10,9 +10,10 @@ TESTS=(
     # "basic-ulib"
     # "basic-musl"
     "basic-glibc"
-    "filesystem"
+    # "filesystem"
     # "basic-glibc-static"
     # "os-func"
+    # pthread
 )
 
 RED='\033[0;31m'

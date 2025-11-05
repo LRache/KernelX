@@ -36,15 +36,6 @@ impl VirtualFileSystem {
         vfs
     }
 
-    pub fn init(&self) {
-        assert!(self.superblock_table.lock().is_empty());
-
-        self.superblock_table.lock()
-                             .alloc(&RootFileSystem{}, None).unwrap();
-        
-        self.root.init(Arc::new(Dentry::root(&self.load_inode(0, 0).unwrap())));
-    }
-
     pub fn get_root(&self) -> &Arc<Dentry> {
         &self.root
     }

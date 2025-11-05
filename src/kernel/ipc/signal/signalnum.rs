@@ -92,6 +92,10 @@ impl SignalNum {
             _ => SignalDefaultAction::Term,
         }
     }
+
+    pub fn num(&self) -> u32 {
+        self.0
+    }
 }
 
 impl Into<u32> for SignalNum {
@@ -128,6 +132,10 @@ impl SignalSet {
     
     pub fn contains(&self, num: SignalNum) -> bool {
         num.is_masked(*self)
+    }
+
+    pub fn bits(&self) -> usize {
+        self.0
     }
 }
 

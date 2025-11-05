@@ -6,6 +6,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::task::TCB;
 use crate::kernel::scheduler::current;
+use crate::kinfo;
 use crate::klib::SpinLock;
 
 struct FutexWaitQueueItem {
@@ -78,6 +79,7 @@ impl FutexManager {
     }
 
     fn wait_current(&self, kaddr: usize, expected: i32, mask: u32) -> SysResult<()> {
+        // kinfo!("wait {:#x}", kaddr);
         let mut futexes = self.futexes.lock();
         let futex = futexes.entry(kaddr).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) })));
         
@@ -87,6 +89,7 @@ impl FutexManager {
 
     fn wake(&self, kaddr: usize, num: usize, mask: u32) -> SysResult<usize> {
         let futexes = self.futexes.lock();
+        // kinfo!("wake {:#x}", kaddr);
         if let Some(futex) = futexes.get(&kaddr) {
             let mut futex = futex.lock();
             futex.wake(num, mask)

@@ -65,6 +65,12 @@ impl UserContextTrait for UserContext {
         self
     }
 
+    fn set_arg(&mut self, index: usize, arg: usize) -> &mut Self {
+        debug_assert!(index <= 7);
+        self.gpr[10 + index] = arg;
+        self
+    }
+
     fn restore_from_signal(&mut self, sigcontext: &SigContext) -> &mut Self {
         self.gpr[1..32].copy_from_slice(&sigcontext.gregs);
         self.user_entry = sigcontext.pc;

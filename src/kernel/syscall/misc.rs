@@ -11,8 +11,9 @@ use crate::kernel::usync::futex;
 use crate::kernel::event::Event;
 use crate::klib::random::random;
 use crate::arch;
+use crate::kinfo;
 
-pub fn set_robust_list() -> Result<usize, Errno> {
+pub fn set_robust_list() -> SyscallRet {
     // This syscall is a no-op in the current implementation.
     // It is provided for compatibility with the Linux API.
     Ok(0)
@@ -79,7 +80,7 @@ enum RLimitResource {
 }
 
 pub fn prlimit64(_pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, uptr_old_limit: UPtr<RLimit>) -> SyscallRet {
-    // kinfo!("prlimit64: pid={}, resource={}, uptr_new={}, uptr_old={}", pid, resource, uptr_new_limit.uaddr(), uptr_old_limit.uaddr());
+    // kinfo!("prlimit64: pid={}, resource={}, uptr_new={}, uptr_old={}", _pid, resource, uptr_new_limit.uaddr(), uptr_old_limit.uaddr());
     
     let resource = RLimitResource::try_from(resource).map_err(|_| Errno::EINVAL)?;
 
@@ -118,7 +119,7 @@ enum FutexOp {
 
 const FUTEX_OP_MASK: usize = 0x7f;
 
-pub fn futex(uaddr: UPtr<i32>, futex_op: usize, val: usize, timeout: UPtr<uapi::Timespec>, _uaddr2: UPtr<()>, _val3: usize) -> SyscallRet {    
+pub fn futex(uaddr: UPtr<i32>, futex_op: usize, val: usize, timeout: UPtr<uapi::Timespec>, _uaddr2: UPtr<()>, val3: usize) -> SyscallRet {    
     uaddr.should_not_null()?;
     if uaddr.uaddr() & 3 != 0 {
         return Err(Errno::EINVAL);
@@ -129,13 +130,15 @@ pub fn futex(uaddr: UPtr<i32>, futex_op: usize, val: usize, timeout: UPtr<uapi::
 
     match op {
         FutexOp::Wait | FutexOp::WaitBitset => {
+            let kaddr = uaddr.kaddr()?;
+            
             let bitset = if op == FutexOp::WaitBitset {
-                val as u32
+                val3 as u32
             } else {
                 u32::MAX
             };
             
-            futex::wait_current(uaddr.kaddr()?, val as i32, bitset)?;
+            futex::wait_current(kaddr, val as i32, bitset)?;
             if let Some(timeout) = timeout.read_optional()? {
                 timer::add_timer(current::tcb().clone(), timeout.into());
             }
@@ -158,7 +161,8 @@ pub fn futex(uaddr: UPtr<i32>, futex_op: usize, val: usize, timeout: UPtr<uapi::
             }
         },
         FutexOp::Wake | FutexOp::WakeBitset => {
-            let woken = futex::wake(uaddr.uaddr(), val as usize, u32::MAX)?;
+            let kaddr = uaddr.kaddr()?;
+            let woken = futex::wake(kaddr, val as usize, u32::MAX)?;
             Ok(woken as usize)
         }
     }
