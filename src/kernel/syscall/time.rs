@@ -28,13 +28,9 @@ pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: UPtr<Timespec>,
         return Ok(0);
     }
 
-    let tcb = current::tcb().clone();
-    tcb.block("timer nanosleep");
-    timer::add_timer(tcb, req.into());
-
-    current::schedule();
-
-    let event = current::tcb().state().lock().event.unwrap();
+    timer::add_timer(current::tcb().clone(), req.into());
+    let event = current::block("timer nanosleep");
+    
     match event {
         Event::Timeout => Ok(0),
         Event::Signal => Err(Errno::EINTR),

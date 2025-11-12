@@ -8,3 +8,4 @@ mod siginfo;
 pub use action::*;
 pub use signalnum::*;
 pub use pending::*;
+pub use siginfo::*;

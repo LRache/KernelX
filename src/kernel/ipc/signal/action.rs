@@ -14,6 +14,7 @@ bitflags! {
         const SA_NOCLDSTOP = 0x1;
         const SA_NOCLDWAIT = 0x2;
         const SA_SIGINFO   = 0x4;
+        const SA_RESTORER  = 0x04000000;
         const SA_ONSTACK   = 0x08000000;
         const SA_RESTART   = 0x10000000;
         const SA_NODEFER   = 0x40000000;

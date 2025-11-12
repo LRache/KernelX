@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 
 use crate::arch;
 use crate::kernel::task::TCB;
+use crate::kernel::scheduler::current;
 
 pub struct Processor<'a> {
     pub idle_kernel_context: arch::KernelContext,
@@ -17,8 +18,10 @@ impl<'a> Processor<'a> {
     }
 
     pub fn switch_to_task(&mut self){
+        current::set(self);
         let kernel_context_ptr = self.tcb.get_kernel_context_ptr();
         arch::kernel_switch(&mut self.idle_kernel_context, kernel_context_ptr);
+        current::clear();
     }
 
     pub fn schedule(&mut self) {

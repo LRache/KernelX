@@ -1,13 +1,14 @@
 use alloc::vec::Vec;
 
-use crate::kernel::ipc::{SignalNum, SignalSet};
+use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet};
 use crate::kernel::task::Tid;
 use crate::kernel::errno::SysResult;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PendingSignal {
     pub signum: SignalNum,
-    pub sender: Tid,
+    pub si_code: SiCode,
+    pub fields: KSiFields,
     pub dest: Option<Tid>,
 }
 

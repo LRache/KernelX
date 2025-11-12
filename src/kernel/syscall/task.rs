@@ -11,7 +11,6 @@ use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UPtr, UString, UserPointer};
 use crate::kernel::task::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kinfo;
 
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
@@ -68,9 +67,7 @@ bitflags! {
 
 pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
-
-    kinfo!("flags: {:?}", flags);
-
+    
     let task_flags = TaskCloneFlags {
         vm: flags.contains(CloneFlags::VM),
         files: flags.contains(CloneFlags::FILES),

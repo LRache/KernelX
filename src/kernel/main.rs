@@ -38,6 +38,7 @@ fn free_init() {
 
 static BOOT_ARGS: InitedCell<BTreeMap<&'static str, &'static str>> = InitedCell::uninit();
 
+#[unsafe(link_section = ".text.init")]
 pub fn parse_boot_args(bootargs: &'static str) {
     let mut bootargs_map = BTreeMap::new();
     for arg in bootargs.split_whitespace() {

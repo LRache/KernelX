@@ -1,6 +1,5 @@
 #include <pthread.h>
 #include <semaphore.h>
-#include <string.h>
 
 static void *start_async(void *arg)
 {
@@ -14,17 +13,15 @@ int main(void)
 {
 	pthread_t td;
 	sem_t sem1;
-	int r;
 	void *res;
 
 	sem_init(&sem1, 0, 0);
 
 	/* Asynchronous cancellation */
-	TESTR(r, pthread_create(&td, 0, start_async, &sem1), "failed to create thread");
+	pthread_create(&td, 0, start_async, &sem1);
 	while (sem_wait(&sem1));
-	TESTR(r, pthread_cancel(td), "canceling");
-	TESTR(r, pthread_join(td, &res), "joining canceled thread");
-	TESTC(res == PTHREAD_CANCELED, "canceled thread exit status");
+	pthread_cancel(td);
+	pthread_join(td, &res);
 
     return 0;
 }

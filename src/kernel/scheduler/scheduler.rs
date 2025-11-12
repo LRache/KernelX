@@ -47,11 +47,8 @@ pub fn run_tasks(_hartid: u8) -> ! {
             tcb.run();
 
             let mut processor = Processor::new(&mut tcb);
-            current::set(&mut processor);
             
             processor.switch_to_task();
-
-            current::clear();
 
             tcb.with_state_mut(|state| {
                 if state.state == TaskState::Running {

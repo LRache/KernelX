@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use spin::Mutex;
 
+use crate::kernel::event::Event;
 use crate::kernel::ipc::SignalActionTable;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::tid::Tid;
@@ -9,6 +10,7 @@ use crate::kernel::task::fdtable::FDTable;
 use crate::kernel::scheduler::{current, Processor};
 use crate::arch;
 use crate::fs::Dentry;
+use crate::kernel::uapi::Uid;
 use crate::klib::SpinLock;
 
 pub fn processor() -> &'static mut Processor<'static> {
@@ -42,6 +44,18 @@ pub fn tid() -> Tid {
     } else {
         tcb().get_tid()
     }
+}
+
+pub fn pid() -> Tid {
+    if is_clear() {
+        -1
+    } else {
+        pcb().get_pid()
+    }
+}
+
+pub fn uid() -> Uid {
+    0
 }
 
 pub fn pcb() -> &'static Arc<PCB> {
@@ -122,12 +136,13 @@ pub mod copy_from_user {
 }
 
 pub fn schedule() {
-    processor().schedule();
+    processor().schedule()
 }
 
-pub fn block(reason: &'static str) {
+pub fn block(reason: &'static str) -> Event {
     tcb().block(reason);
     schedule();
+    tcb().take_wakeup_event().unwrap()
 }
 
 pub fn kernel_stack_used() -> usize {

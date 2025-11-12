@@ -97,9 +97,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     };
 
     let path = uptr_filename.read()?;
-
-    kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:#o}", dirfd, path, open_flags, mode);
-
+    
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
             if !open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR) {
@@ -450,8 +448,6 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, _fla
     uptr_stat.should_not_null()?;
     
     let path = uptr_path.read()?;
-
-    kinfo!("openat: dirfd={}, path=\"{}\"", dirfd, path);
 
     let fstat = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare()))?

@@ -11,7 +11,6 @@ use crate::kernel::usync::futex;
 use crate::kernel::event::Event;
 use crate::klib::random::random;
 use crate::arch;
-use crate::kinfo;
 
 pub fn set_robust_list() -> SyscallRet {
     // This syscall is a no-op in the current implementation.
@@ -143,21 +142,19 @@ pub fn futex(uaddr: UPtr<i32>, futex_op: usize, val: usize, timeout: UPtr<uapi::
                 timer::add_timer(current::tcb().clone(), timeout.into());
             }
             
-            current::block("futex");
-            current::schedule();
+            let event = current::block("futex");
 
-            let state = current::tcb().state().lock();
-            match state.event {
-                Some(Event::Futex) => {
+            match event {
+                Event::Futex => {
                     Ok(0)
                 }
-                Some(Event::Timeout) => {
+                Event::Timeout => {
                     Err(Errno::ETIMEDOUT)
                 }
-                Some(Event::Signal) => {
+                Event::Signal => {
                     Err(Errno::EINTR)
                 }
-                _ => unreachable!(),
+                _ => unreachable!("state.event={:?}", event)
             }
         },
         FutexOp::Wake | FutexOp::WakeBitset => {

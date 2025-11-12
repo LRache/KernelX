@@ -46,11 +46,10 @@ impl Futex {
         while let Some(item) = cursor.current() {
             if (item.bitset & mask) != 0 {
                 let item = cursor.remove_current().unwrap();
-                {
-                    let mut state = item.tcb.state().lock();
-                    state.event = None;
-                }
-                
+                // {
+                //     let mut state = item.tcb.state().lock();
+                //     state.event = None;
+                // }
                 
                 item.tcb.wakeup(Event::Futex);
                 

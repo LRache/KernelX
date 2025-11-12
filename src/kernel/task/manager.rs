@@ -3,7 +3,6 @@ use core::mem::MaybeUninit;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
-use crate::kernel::task::TCB;
 use crate::kernel::task::Tid;
 use crate::klib::SpinLock;
 use crate::fs::file::FileFlags;

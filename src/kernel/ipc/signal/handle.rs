@@ -4,12 +4,12 @@ use crate::arch::UserContextTrait;
 use crate::kernel::config;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
-use crate::kernel::ipc::SignalSet;
+use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
 use crate::kernel::mm::vdso;
 use crate::kernel::task::{Tid, PCB, TCB};
 use crate::kernel::scheduler::current;
 use crate::kernel::errno::{SysResult, Errno};
-use crate::lock_debug;
+use crate::{kinfo, lock_debug};
 
 use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};
 
@@ -59,7 +59,8 @@ impl TCB {
 
         let mut sigframe = SigFrame::empty();
         sigframe.info.si_signo = Into::<u32>::into(signum) as i32;
-        sigframe.info.si_code = 0;
+        sigframe.info.si_code = signal.si_code;
+        sigframe.info.fields = signal.fields.into();
         sigframe.info.si_errno = 0;
         sigframe.ucontext.uc_sigmask = old_mask;
         sigframe.ucontext.uc_mcontext = (*self.user_context()).into();
@@ -76,17 +77,16 @@ impl TCB {
             .set_user_stack_top(stack_top);
 
         if action.flags.contains(SignalActionFlags::SA_SIGINFO) {
-            // self.user_context().set_arg(1, arg)
+            let siginfo_uaddr  = stack_top + core::mem::offset_of!(SigFrame, info);
+            let ucontext_uaddr = stack_top + core::mem::offset_of!(SigFrame, ucontext);
+            self.user_context().set_arg(1, siginfo_uaddr).set_arg(2, ucontext_uaddr);
         }
-
-        // kinfo!("handle signal for task {}, signum={:?}, action.handler={:#x}, stack_top={:#x}, pending={:?}", self.tid, signum, action.handler, stack_top, signal_pending);
     }
 
     pub fn return_from_signal(&self) {
         let sigframe = self.get_addrspace()
                            .copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
                            .expect("Failed to copy sigframe from user stack");
-        // kinfo!("return from signal for task {}, ucontext={:?}", self.tid, sigframe.ucontext.uc_mcontext);
         self.user_context().restore_from_signal(&sigframe.ucontext.uc_mcontext);
     }  
 
@@ -96,22 +96,7 @@ impl TCB {
         // if state.state != TaskState::Blocked {
         //     return false;
         // }
-        
-        if state.pending_signal.is_some() {
-            return false;
-        }
-
-        // kinfo!("try_recive_pending_signal: task {} checking pending signal {:?}", self.tid, pending);
-        
         let signum = pending.signum;
-        if signum.is_unignorable() {
-            state.pending_signal = Some(pending);
-            drop(state);
-            
-            self.wakeup(Event::Signal);
-
-            return true;
-        }
 
         let waiting = state.signal_to_wait;
         if waiting.contains(signum) {
@@ -120,6 +105,19 @@ impl TCB {
             drop(state);
 
             self.wakeup(Event::WaitSignal { signum });
+
+            return true;
+        }
+        
+        if state.pending_signal.is_some() {
+            return false;
+        }
+        
+        if signum.is_unignorable() {
+            state.pending_signal = Some(pending);
+            drop(state);
+            
+            self.wakeup(Event::Signal);
 
             return true;
         }
@@ -139,23 +137,15 @@ impl TCB {
 }
 
 impl PCB {
-    pub fn send_signal(&self, signum: SignalNum, sender: Tid, dest: Option<Tid>) -> SysResult<()> {
+    pub fn send_signal(&self, signum: SignalNum, si_code: SiCode, fields: KSiFields, dest: Option<Tid>) -> SysResult<()> {
         let pending = PendingSignal {
             signum,
-            sender,
+            si_code,
+            fields,
             dest,
         };
 
-        let action = self.signal_actions().lock().get(signum);
-        
-        if action.is_ignore() && !signum.is_unignorable() {
-            return Ok(());
-        }
-
-        if action.is_default() && signum.default_action() == SignalDefaultAction::Ign {
-            return Ok(());
-        }
-
+        // kinfo!("send_signal: signum={:?}, dest={:?}", signum, dest);
         if let Some(dest) = dest {
             let tasks = self.tasks.lock();
             if let Some(task) = tasks.iter().find(|t| t.tid == dest).cloned() {

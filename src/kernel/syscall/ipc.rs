@@ -5,14 +5,14 @@ use bitflags::bitflags;
 
 use crate::kernel::config;
 use crate::kernel::event::{timer, Event};
-use crate::kernel::ipc::{Pipe, SignalSet};
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
 use crate::kernel::uapi::{self, Timespec};
 use crate::kernel::task::{Tid, manager};
-use crate::{arch, kinfo};
+use crate::arch;
 
 use super::SyscallRet;
 
@@ -47,12 +47,15 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
 pub fn kill(pid: usize, signum: usize) -> SyscallRet {
     let pid = pid as i32;
     let signum = signum as u32;
-
-    // kinfo!("kill: pid={}, signum={}", pid, signum);
     
     if pid > 0 {
         let pcb = manager::get(pid).ok_or(Errno::ESRCH)?;
-        pcb.send_signal(signum.try_into()?, current::tid(), None)?;
+        pcb.send_signal(
+            signum.try_into()?, 
+            SiCode::SI_USER,
+            KSiFields::kill(current::pid(), current::uid()), 
+            None
+        )?;
     }
 
     Ok(0)
@@ -61,8 +64,14 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
 pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
     let tid = tid as Tid;
     let signum = (signum as u32).try_into()?;
-    let parent = manager::find_task_parent(tid as i32).ok_or(Errno::ESRCH)?;
-    parent.send_signal(signum, current::tid(), Some(tid))?;
+    let parent = manager::find_task_parent(tid).ok_or(Errno::ESRCH)?;
+    parent.send_signal(
+        signum,
+        SiCode::SI_TKILL,
+        KSiFields::kill(current::pid(), current::uid()),
+        Some(tid)
+    )?;
+    
     Ok(0)
 }
 
@@ -71,9 +80,14 @@ pub fn tgkill(tgid: usize, tid: usize, signum: usize) -> SyscallRet {
     let tid = tid as i32;
     let signum = signum as u32;
 
-    if tgid > 0 {
+    if tgid >= 0 {
         let pcb = manager::get(tgid).ok_or(Errno::ESRCH)?;
-        pcb.send_signal(signum.try_into()?, current::tid(), Some(tid))?;
+        pcb.send_signal(
+            signum.try_into()?,
+            SiCode::SI_TKILL,
+            KSiFields::kill(current::pid(), current::uid()),
+            Some(tid)
+        )?;
     }
 
     Ok(0)
@@ -120,12 +134,10 @@ pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact:
 
     if !uptr_act.is_null() {
         let new_action = uptr_act.read()?;
-        kinfo!("sa_flags = 0x{:x}, sa_mask=0x{:x}", new_action.sa_flags, new_action.sa_mask.bits());
+        // kinfo!("0x{:x}", new_action.sa_flags);
         let new_action = new_action.try_into()?;
         
         signal_actions.set(signum, &new_action)?;
-
-        kinfo!("{:?}", new_action.flags);
     }
 
     Ok(0)
@@ -141,13 +153,12 @@ pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
     let old = *signal_mask;
     *signal_mask = set;
 
-    tcb.block("sigsuspend");
-    current::schedule();
+    let event = current::block("sigsuspend");
 
     *tcb.signal_mask.lock() = old;
 
-    match tcb.state().lock().event.take() {
-        Some(Event::Signal) => Err(Errno::EINTR),
+    match event {
+        Event::Signal => Err(Errno::EINTR),
         _ => unreachable!()
     }
 }
@@ -180,12 +191,12 @@ pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeou
 
     drop(state);
 
-    current::block("sigtimedwait");
+    let event = current::block("sigtimedwait");
 
-    match current::tcb().state().lock().event.take() {
-        Some(Event::WaitSignal { signum }) => Ok(signum.into()),
-        Some(Event::Signal) => Err(Errno::EINTR),
-        Some(Event::Timeout) => Err(Errno::EAGAIN),
+    match event {
+        Event::WaitSignal { signum } => Ok(signum.into()),
+        Event::Signal => Err(Errno::EINTR),
+        Event::Timeout => Err(Errno::EAGAIN),
         _ => unreachable!(),
     }
 }

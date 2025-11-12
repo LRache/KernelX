@@ -9,11 +9,11 @@ BUILD_DIR=${BUILD_DIR:-build}
 TESTS=(
     # "basic-ulib"
     # "basic-musl"
-    "basic-glibc"
+    # "basic-glibc"
     # "filesystem"
     # "basic-glibc-static"
     # "os-func"
-    # pthread
+    pthread
 )
 
 RED='\033[0;31m'

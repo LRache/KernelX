@@ -18,9 +18,9 @@ use crate::fs::file::{File, FileFlags, CharFile};
 use crate::fs::vfs;
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
-use crate::{arch, kinfo, lock_debug, safe_page_write};
+use crate::{arch, kinfo};
 use crate::driver;
-use crate::ktrace;
+use crate::{ktrace, lock_debug};
 
 use super::kernelstack::KernelStack;
 
@@ -35,7 +35,6 @@ pub enum TaskState {
 #[derive(Debug, Clone, Copy)]
 pub struct TaskStateSet {
     pub state: TaskState,
-    pub event: Option<Event>,
     
     pub pending_signal: Option<PendingSignal>,
     pub signal_to_wait: SignalSet,
@@ -45,7 +44,6 @@ impl TaskStateSet {
     pub fn new() -> Self {
         Self {
             state: TaskState::Ready,
-            event: None,
             pending_signal: None,
             signal_to_wait: SignalSet::empty()
         }
@@ -68,6 +66,7 @@ pub struct TCB {
     pub signal_mask: SpinLock<SignalSet>,
 
     state: SpinLock<TaskStateSet>,
+    pub wakeup_event: SpinLock<Option<Event>>,
 }
 
 impl TCB {
@@ -106,6 +105,7 @@ impl TCB {
             signal_mask: SpinLock::new(SignalSet::empty()),
             
             state: SpinLock::new(TaskStateSet::new()),
+            wakeup_event: SpinLock::new(None)
         });
 
         tcb
@@ -348,9 +348,16 @@ impl TCB {
             return;
         }
         state.state = TaskState::Ready;
-        state.event = Some(event);
+        *self.wakeup_event.lock() = Some(event);
+
+        // kinfo!("set event: {:?}, tid={}", *self.wakeup_event.lock(), self.tid);
         
         scheduler::push_task(self.clone());
+    }
+
+    pub fn take_wakeup_event(&self) -> Option<Event> {
+        // kinfo!("take_wakeup_event, event={:?}", *self.wakeup_event.lock());
+        self.wakeup_event.lock().take()
     }
 
     pub fn run(&self) {

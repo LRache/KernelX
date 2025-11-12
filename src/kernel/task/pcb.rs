@@ -9,12 +9,11 @@ use crate::kernel::scheduler::{self, current};
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::tid;
 use crate::kernel::event::Event;
-use crate::kernel::ipc::{SignalActionTable, PendingSignalQueue, signum};
+use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum};
 use crate::fs::file::File;
 use crate::fs::vfs;
 use crate::fs::Dentry;
 use crate::klib::SpinLock;
-use crate::lock_debug;
 
 use super::tcb::{TCB, TaskState};
 
@@ -179,7 +178,15 @@ impl PCB {
             parent.waiting_task.lock().drain(..).for_each(|t| {
                 t.wakeup(Event::Process { child: self.pid });
             });
-            parent.send_signal(signum::SIGCHLD, current::tid(), None).unwrap_or(());
+            
+            let fields = KSiFields::SigChld(SiSigChld { 
+                si_pid: self.pid, 
+                si_uid: current::uid(), 
+                si_status: code as i32, 
+                si_utime: 0,
+                si_stime: 0
+            });
+            parent.send_signal(signum::SIGCHLD, SiCode::SI_KERNEL, fields, None).unwrap_or(());
         }
         
         let mut children = self.children.lock();
@@ -209,40 +216,38 @@ impl PCB {
                 loop {
                     self.waiting_task.lock().push(current::tcb().clone());
                     
-                    current::tcb().block("wait_child");
-                    current::schedule();
+                    let event = current::block("wait_child");
 
-                    let state = current::tcb().state().lock();
-                    match state.event {
-                        Some(Event::Process { child }) => {
+                    match event {
+                        Event::Process { child } => {
                             if child == pid {
                                 break;
                             }
                         }
 
-                        Some(Event::Signal) => {
+                        Event::Signal => {
                             return Err(Errno::EINTR);
                         }
 
                         _ => unreachable!(),
                     }
                     
-                    if current::tcb().with_state_mut(|state| {
-                        match state.event {
-                            Some(Event::Process { child }) => {
-                                if child == pid {
-                                    state.event = None;
-                                } else {
-                                    return false;
-                                }
-                            },
-                            _ => return false,
-                        };
-                        state.event = None;
-                        return true;
-                    }) {
-                        break;
-                    }
+                    // if current::tcb().with_state_mut(|state| {
+                    //     match event {
+                    //         Event::Process { child } => {
+                    //             if child == pid {
+                    //                 // state.event = None;
+                    //             } else {
+                    //                 return false;
+                    //             }
+                    //         },
+                    //         _ => return false,
+                    //     };
+                    //     // state.event = None;
+                    //     return true;
+                    // }) {
+                    //     break;
+                    // }
                 }
                 
                 let exit_code = child.get_exit_code();
@@ -281,13 +286,15 @@ impl PCB {
         }
 
         self.waiting_task.lock().push(current::tcb().clone());
-        current::tcb().block("wait_any_child");
-        current::schedule();
+        // current::tcb().block("wait_any_child");
+        // current::schedule();
 
-        let state = lock_debug!(current::tcb().state());
+        let event = current::block("wait_any_child");
 
-        match state.event {
-            Some(Event::Process { child }) => {
+        // let state = lock_debug!(current::tcb().state());
+
+        match event {
+            Event::Process { child } => {
                 let pid = child;
                 let exit_code;
                 let mut children = self.children.lock();
@@ -303,7 +310,7 @@ impl PCB {
 
                 Ok(Some((pid, exit_code)))
             }
-            Some(Event::Signal) => {
+            Event::Signal => {
                 Err(Errno::EINTR)
             }
             _ => unreachable!(),

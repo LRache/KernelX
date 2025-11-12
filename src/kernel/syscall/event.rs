@@ -75,9 +75,7 @@ fn poll(pollfds: &mut [Pollfd], _timeout: Option<u64>) -> SysResult<usize> {
     }
     
     // start polling
-    current::block("poll");
-
-    let event = current::tcb().state().lock().event.unwrap();
+    let event = current::block("poll");
 
     let (poll_event, waker) = match event {
         Event::Poll{ event, waker} => (event, waker),

@@ -3,8 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
 
-use crate::kernel::mm::maparea::area;
-use crate::kernel::mm::{MapPerm, MemAccessType, page};
+use crate::kernel::mm::{MapPerm, MemAccessType};
 use crate::kernel::mm::PhysPageFrame;
 use crate::arch::{self, PageTable, PageTableTrait};
 

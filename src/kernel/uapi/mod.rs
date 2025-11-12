@@ -13,3 +13,4 @@ pub use timespec::*;
 pub use sigaction::*;
 
 pub type uid_t = u32;
+pub type Uid = u32;
