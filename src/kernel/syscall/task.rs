@@ -8,9 +8,10 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::SyscallRet;
-use crate::kernel::syscall::uptr::{UPtr, UString, UserPointer};
+use crate::kernel::syscall::uptr::{UArray, UPtr, UString};
 use crate::kernel::task::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
+use crate::kinfo;
 
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
@@ -83,7 +84,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
     let child = current::pcb().clone_task(&current::tcb(), stack, &task_flags, tls)?;
 
     if flags.contains(CloneFlags::CHILD_SETTID) {
-        let _ = child.get_addrspace().copy_to_user_object(uptr_child_tid, 0 as Tid);
+        let _ = child.get_addrspace().copy_to_user(uptr_child_tid, 0 as Tid);
     }
 
     if flags.contains(CloneFlags::CHILD_CLEARTID) {
@@ -96,43 +97,43 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
         uptr_parent_tid.write(child_tid)?;
     }
 
+    // kinfo!("clone: created child task with TID {}", child_tid);
+
     Ok(child_tid as usize)
 }
 
-pub fn execve(uptr_path: UString, uptr_argv: UPtr<UString>, uptr_envp: UPtr<UString>) -> SyscallRet {
-    uptr_path.should_not_null()?;
+pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
+    {
+        uptr_path.should_not_null()?;
 
-    let path = uptr_path.read()?;
-    let file = current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare()))?;
+        let path = uptr_path.read()?;
+        let file = current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare()))?;
 
-    let helper = |uarray: UPtr<UString>| -> SysResult<Vec<String>> {
-        if uarray.is_null() {
-            return Ok(Vec::new());
-        }
-
-        let mut vec = Vec::new();
-        let mut i = 0;
-        loop {
-            let p = uarray.index(i).read()?;
-            if p.is_null() {
-                break;
+        let helper = |uarray: UArray<UString>| -> SysResult<Vec<String>> {
+            if uarray.is_null() {
+                return Ok(Vec::new());
             }
-            vec.push(p.read()?);
-            i += 1;
-        }
-        Ok(vec)
-    };
 
-    let argv = helper(uptr_argv)?;
-    let envp = helper(uptr_envp)?;
-    let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
-    let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
+            let mut vec = Vec::new();
+            let mut i = 0;
+            loop {
+                let p = uarray.index(i).read()?;
+                if p.is_null() {
+                    break;
+                }
+                vec.push(p.read()?);
+                i += 1;
+            }
+            Ok(vec)
+        };
 
-    current::pcb().exec(&current::tcb(), file, &argv_ref, &envp_ref)?;
+        let argv = helper(uptr_argv)?;
+        let envp = helper(uptr_envp)?;
+        let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+        let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
 
-    drop(envp);
-    drop(argv);
-    drop(path);
+        current::pcb().exec(&current::tcb(), file, &argv_ref, &envp_ref)?;
+    }
 
     current::schedule();
 

@@ -68,7 +68,7 @@ impl TCB {
         let mut stack_top = self.user_context().get_user_stack_top();
         stack_top -= core::mem::size_of::<SigFrame>();
         stack_top &= !0xf; // Align to 16 bytes
-        self.get_addrspace().copy_to_user_object(stack_top, sigframe).expect("Failed to copy sigframe to user stack");
+        self.get_addrspace().copy_to_user(stack_top, sigframe).expect("Failed to copy sigframe to user stack");
         
         self.user_context()
             .set_sigaction_restorer(vdso::addr_of("sigreturn_trampoline") + config::VDSO_BASE)
@@ -76,10 +76,14 @@ impl TCB {
             .set_user_entry(action.handler)
             .set_user_stack_top(stack_top);
 
+        // kinfo!("flags={:?}, signum={}, ucontext={:?}", action.flags, signum.num(), sigframe.ucontext);
+
         if action.flags.contains(SignalActionFlags::SA_SIGINFO) {
             let siginfo_uaddr  = stack_top + core::mem::offset_of!(SigFrame, info);
             let ucontext_uaddr = stack_top + core::mem::offset_of!(SigFrame, ucontext);
-            self.user_context().set_arg(1, siginfo_uaddr).set_arg(2, ucontext_uaddr);
+            self.user_context()
+                .set_arg(1, siginfo_uaddr)
+                .set_arg(2, ucontext_uaddr);
         }
     }
 
@@ -87,6 +91,7 @@ impl TCB {
         let sigframe = self.get_addrspace()
                            .copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
                            .expect("Failed to copy sigframe from user stack");
+        // kinfo!("return_from_signal: sigframe.ucontext={:?}", sigframe.ucontext);
         self.user_context().restore_from_signal(&sigframe.ucontext.uc_mcontext);
     }  
 

@@ -100,6 +100,10 @@ impl ArchTrait for Arch {
         kernelpagetable::map_kernel_addr(kstart, pstart, size, perm);
     }
 
+    fn unmap_kernel_addr(kstart: usize, size: usize) {
+        kernelpagetable::unmap_kernel_addr(kstart, size);
+    }
+
     fn get_time_us() -> u64 {
         csr::time::read() * 1000000 / (time_frequency() as u64)
     }

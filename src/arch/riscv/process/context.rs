@@ -125,6 +125,7 @@ impl KernelContext {
 }
 
 #[repr(C)]
+#[repr(align(16))]
 #[derive(Clone, Copy, Debug)]
 pub struct SigContext {
     pub pc: usize,

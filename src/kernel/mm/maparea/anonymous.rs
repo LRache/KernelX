@@ -25,6 +25,10 @@ impl AnonymousArea {
     pub fn new(ubase: usize, perm: MapPerm, page_count: usize) -> Self {
         // Anonymous areas should be page-aligned
         assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
+        // if perm == MapPerm::U {
+        //     kinfo!("Creating AnonymousArea at ubase {:#x} with {} pages and permissions {:?}", ubase, page_count, perm);
+        //     panic!("AnonymousArea created with user-only permissions, which is not allowed");
+        // }
         
         let frames = Vec::from_iter((0..page_count).map(|_| Frame::Unallocated));
         Self {
@@ -174,26 +178,36 @@ impl Area for AnonymousArea {
     }
 
     fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
-        assert!(uaddr >= self.ubase);
+        debug_assert!(uaddr >= self.ubase);
+
+        if access_type == MemAccessType::Read && !self.perm.contains(MapPerm::R) {
+            return false;
+        }
+        if access_type == MemAccessType::Write && !self.perm.contains(MapPerm::W) {
+            return false;
+        }
+        if access_type == MemAccessType::Execute && !self.perm.contains(MapPerm::X) {
+            return false;
+        }
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index < self.frames.len() {
             match &self.frames[page_index] {
                 Frame::Unallocated => {
-                    ktrace!("Fixing memory fault by allocating page at address: {:#x}, page index: {}", uaddr, page_index);
+                    // ktrace!("Fixing memory fault by allocating page at address: {:#x}, page index: {}", uaddr, page_index);
                     self.allocate_page(page_index, pagetable);
                 }
                 Frame::Allocated(_) => {
                     // Page is already allocated, this shouldn't happen
-                    ktrace!("Memory fault on already allocated page at address: {:#x}", uaddr);
-                    return false;
+                    // ktrace!("Memory fault on already allocated page at address: {:#x}", uaddr);
+                    panic!("Memory fault on already allocated page at address: {:#x}, access_type: {:?}, perm: {:?}", uaddr, access_type, self.perm);
                 }
                 Frame::Cow(_) => {
                     if access_type == MemAccessType::Write {
                         self.copy_on_write_page(page_index, pagetable);
                     } else {
-                        ktrace!("Memory fault on CoW page for read access at address: {:#x}", uaddr);
-                        return false;
+                        // ktrace!("Memory fault on CoW page for read access at address: {:#x}", uaddr);
+                        panic!("Read access fault on CoW page at address: {:#x}", uaddr);
                     }
                 }
             }
@@ -214,8 +228,8 @@ impl Area for AnonymousArea {
     }
 
     fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
-        assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
-        assert!(uaddr > self.ubase && uaddr < self.ubase + self.size(), "uaddr out of range for split");
+        debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
+        debug_assert!(uaddr >= self.ubase && uaddr < self.ubase + self.size(), "uaddr out of range for split, urange: [{:#x}, {:#x}), uaddr: {:#x}", self.ubase, self.ubase + self.size(), uaddr);
 
         let split_index = (uaddr - self.ubase) / arch::PGSIZE;
         let new_ubase = self.ubase + split_index * arch::PGSIZE;
@@ -256,13 +270,15 @@ impl Area for AnonymousArea {
     fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
         self.perm = perm;
 
+        // kinfo!("Setting permissions for AnonymousArea at ubase {:#x} to {:?}", self.ubase, perm);
+
         let mut pagetable = pagetable.write();
         for (page_index, frame) in self.frames.iter().enumerate() {
             if let Frame::Allocated(frame) = frame {
                 let vaddr = self.ubase + page_index * arch::PGSIZE;
                 let paddr = frame.get_page();
                 pagetable.mmap_replace(vaddr, paddr, perm);
-                kinfo!("Updated page table permissions for anonymous page at {:#x} to {:?}", vaddr, perm);
+                // kinfo!("Updated page table permissions for anonymous page at {:#x} to {:?}", vaddr, perm);
             }
             // Note: We don't update COW pages here as they should maintain
             // their current permission state until the next write access

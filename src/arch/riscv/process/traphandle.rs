@@ -41,8 +41,10 @@ pub fn usertrap_handler() -> ! {
     stvec::write(asm_kerneltrap_entry as usize);
     current::tcb().user_context().set_user_entry(sepc::read());
 
-    // ktrace!("Usertrap scause={:#x}, sepc={:#x}, stval={:#x}",
-    //          scause::read(), sepc::read(), stval::read());
+    // if stval::read() >= 0x3ffff0000 {
+    //     crate::ktrace!("sepc={:#x}, stval={:#x}",
+    //          sepc::read(), stval::read());
+    // }
     
     match scause::cause() {
         scause::Cause::Trap(trap) => {
@@ -120,7 +122,7 @@ pub fn return_to_user() -> ! {
         .set_spie(true) // Enable interrupts in user mode
         .set_spp(true) // Set previous mode to user
         .write();
-
+    
     let user_context_ptr = tcb.get_user_context_ptr();
 
     // ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.user_context().get_user_entry(), user_context_ptr as usize);
@@ -135,6 +137,15 @@ pub fn kerneltrap_handler() {
     match scause::cause() {
         scause::Cause::Trap(trap) => {
             match trap {
+                scause::Trap::StorePageFault => {
+                    let stval = stval::read();
+                    let tcb = current::tcb();
+                    if tcb.kernel_stack.stack_overflow(stval) {
+                        panic!("Kernel stack overflow detected at address: {:#x}, tid={}", stval, current::tid());
+                    } else {
+                        panic!("Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}, kstack_top={:#x}", stval, sepc, trap, tcb.kernel_stack.get_top());
+                    }
+                }
                 _ => {
                     panic!("Unhandled kernel trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}", trap, sepc, stval::read(), scause::cause());
                 }

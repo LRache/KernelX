@@ -4,6 +4,7 @@ mod frame;
 mod addrspace;
 pub mod vdso;
 pub mod maparea;
+pub mod uptr;
 
 pub use addrspace::*;
 pub use frame::PhysPageFrame;
@@ -29,7 +30,7 @@ bitflags! {
 }
 
 #[unsafe(link_section = ".text.init")]
-pub fn init(heap_end: usize) {
-    page::init(heap_end);
+pub fn init(frame_start: usize, frame_end: usize) {
+    page::init(frame_start, frame_end);
     vdso::init();
 }

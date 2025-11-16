@@ -3,17 +3,17 @@
 set -e
 
 ISA=${1:-riscv64}
-IMG_SIZE=${IMG_SIZE:-256}
+IMG_SIZE=${IMG_SIZE:-1024}
 BUILD_DIR=${BUILD_DIR:-build}
 
 TESTS=(
     # "basic-ulib"
     # "basic-musl"
     # "basic-glibc"
-    # "filesystem"
+    "filesystem"
     # "basic-glibc-static"
     # "os-func"
-    pthread
+    pthread-musl
 )
 
 RED='\033[0;31m'
@@ -140,7 +140,6 @@ if sudo mount -o loop $IMG_FILE img/${ISA}; then
     sudo chmod -R 755 img/${ISA}/
     sync
     sudo umount img/${ISA}
-    rm -rf img
 else
     log_error "Failed to mount image"
     exit 1

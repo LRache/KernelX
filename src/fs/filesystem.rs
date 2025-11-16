@@ -4,6 +4,7 @@ use core::option::Option;
 
 use crate::fs::Mode;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::Statfs;
 use crate::driver::BlockDriverOps;
 
 use super::InodeOps;
@@ -24,5 +25,9 @@ pub trait SuperBlockOps: Send + Sync {
     fn unmount(&self) -> SysResult<()> {
         // Default implementation does nothing, can be overridden by specific filesystems
         Ok(())
+    }
+
+    fn statfs(&self) -> SysResult<Statfs> {
+        Err(Errno::EOPNOTSUPP)
     }
 }

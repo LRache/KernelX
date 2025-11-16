@@ -13,7 +13,7 @@ pub struct Ext4Inode {
     pub ctime: u32,       // Creation time
     pub mtime: u32,       // Last modification time
     pub dtime: u32,       // Deletion time
-    pub gid: u16,         // Owner group ID
+    pub gid: u16,         // Owner group ID                                            
     pub links_count: u16, // Link count
     pub blocks: u32,      // Allocated blocks count
     pub flags: u32,       // File flags

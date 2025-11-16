@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use crate::fs::file::FileOps;
 use crate::kernel::event::{Event, PollEvent, PollEventSet};
 use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
+use crate::kernel::syscall::uptr::{UArray, UPtr};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
 // use crate::{copy_from_user, copy_to_user_ref};

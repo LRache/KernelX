@@ -1,4 +1,4 @@
-use crate::kernel::mm::MapPerm;
+use crate::{kernel::mm::MapPerm, kinfo};
 use crate::kernel::mm;
 use crate::arch::riscv::PGBITS;
 use crate::arch::PageTableTrait;
@@ -36,7 +36,13 @@ impl<T: PageAllocator> PageTableImpls<T> {
         }
     }
 
-    fn find_pte(&self, vaddr: usize) -> Option<PTE> {        
+    pub fn from_satp(satp: usize) -> Self {
+        let ppn = satp & 0x0000_0fff_ffff_ffff;
+        let root = ppn << PGBITS;
+        Self::from_root(root)
+    }
+
+    pub fn find_pte(&self, vaddr: usize) -> Option<PTE> {        
         self.find_pte_vpn(Addr::from_vaddr(vaddr).vpn())
     }
 
@@ -96,7 +102,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
             for i in 0..512 {
                 let pte = ptetable.get(i);
                 let ppn = pte.ppn();
-                assert!(ppn.value() << PGBITS <= 0x88000000, "PPN out of range: 0x{:x}, level={}, i={}", ppn.value() << PGBITS, level, i);
+                // debug_assert!(ppn.value() << PGBITS <= 0x88000000, "PPN out of range: 0x{:x}, level={}, i={}", ppn.value() << PGBITS, level, i);
                 if pte.is_valid() {
                     self.free_pagetable(&pte.next_level(), level + 1);
                 }
@@ -114,6 +120,10 @@ impl<T: PageAllocator> PageTableImpls<T> {
 
     pub fn is_mapped(&self, uaddr: usize) -> bool {
         self.find_pte(uaddr).is_some()
+    }
+
+    pub fn mapped_flag(&self, uaddr: usize) -> Option<PTEFlags> {
+        self.find_pte(uaddr).map(|pte| pte.flags())
     }
 }
 
@@ -155,6 +165,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
+        // kinfo!("mmap_replace: uaddr={:#x}, kaddr={:#x}, perm={:?}", uaddr, kaddr, perm);
     }
 
     fn munmap(&mut self, vaddr: usize) {

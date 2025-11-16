@@ -65,6 +65,21 @@ impl File {
         let len = self.inode.writeat(buf, offset)?;
         Ok(len)
     }
+
+    pub fn ftruncate(&self, new_size: u64) -> SysResult<()> {
+        self.inode.truncate(new_size)
+    }
+
+    pub fn get_dent(&self) -> SysResult<Option<DirResult>> {
+        let mut pos = self.pos.lock();
+        let dent = match self.inode.get_dent(*pos)? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        *pos += 1;
+        
+        Ok(Some(dent))
+    }
 }
 
 impl FileOps for File {
@@ -137,15 +152,8 @@ impl FileOps for File {
         self.inode.fstat()
     }
 
-    fn get_dent(&self) -> SysResult<Option<DirResult>> {
-        let mut pos = self.pos.lock();
-        let dent = match self.inode.get_dent(*pos)? {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-        *pos += 1;
-        
-        Ok(Some(dent))
+    fn fsync(&self) -> SysResult<()> {
+        self.inode.sync()
     }
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {

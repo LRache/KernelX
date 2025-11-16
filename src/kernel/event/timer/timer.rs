@@ -44,7 +44,7 @@ static TIMER: Timer = Timer::new();
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
     arch::set_next_time_event_us(10000); // Set first timer interrupt in 10ms
-    arch::enable_timer_interrupt();
+    // arch::enable_timer_interrupt();
 }
 
 pub fn add_timer(tcb: Arc<TCB>, time: Duration) {

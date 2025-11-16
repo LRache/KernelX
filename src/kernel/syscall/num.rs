@@ -180,6 +180,8 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         29  => fs::ioctl(3),
         34  => fs::mkdirat(3),
         35  => fs::unlinkat(3),
+        43  => fs::statfs64(2),
+        46  => fs::ftruncate64(2),
         48  => fs::faccessat(3),
         56  => fs::openat(4),
         57  => fs::close(1),
@@ -195,6 +197,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         78  => fs::readlinkat(4),
         79  => fs::fstatat(4),
         80  => fs::newfstat(2),
+        82  => fs::fsync(1),
         88  => fs::utimensat(4),
         276 => fs::renameat2(5),
         
@@ -217,13 +220,20 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         215 => mm::munmap(2),
         222 => mm::mmap(6),
         226 => mm::mprotect(3),
+        233 => mm::madvise(0),
         
+        // futex
+        98  => futex::futex(6),
+        99  => futex::set_robust_list(1),
+        100 => futex::get_robust_list(0),
+
         // misc
-        98  => misc::futex(6),
-        99  => misc::set_robust_list(0),
+        81  => misc::sync(0),
         160 => misc::newuname(1),
+        236 => misc::get_mempolicy(0),
         261 => misc::prlimit64(4),
         278 => misc::getrandom(3),
+        283 => misc::membarrier(0),
         293 => misc::rseq(0),
 
         174 => uid::getuid(0),
@@ -243,6 +253,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         139 => ipc::rt_sig_return(0),
 
         // Time
+        101 => time::nanosleep(2),
         113 => time::clock_gettime(2),
         115 => time::clock_nanosleep(4),
         169 => time::gettimeofday(2),

@@ -25,12 +25,14 @@ struct FDItem {
 
 pub struct FDTable {
     table: Vec<Option<FDItem>>,
+    max_fd: usize,
 }
 
 impl FDTable {
     pub fn new() -> Self {
         Self {
             table: vec![None; 32], // Initialize with 32 file descriptors
+            max_fd: config::MAX_FD,
         }
     }
 
@@ -59,7 +61,7 @@ impl FDTable {
             self.table[pos] = Some(FDItem { file, flags });
             Ok(pos)
         } else {
-            if self.table.len() >= config::MAX_FD {
+            if self.table.len() >= self.max_fd {
                 return Err(Errno::EMFILE);
             }
             self.table.push(Some(FDItem { file, flags }));
@@ -84,7 +86,7 @@ impl FDTable {
             item.as_ref().map(|fd_item| fd_item.clone())
         }).collect();
         
-        Self { table: new_table }
+        Self { table: new_table, max_fd: self.max_fd }
     }
 
     pub fn cloexec(&mut self) {
@@ -95,5 +97,13 @@ impl FDTable {
                 }
             }
         });
+    }
+
+    pub fn set_max_fd(&mut self, max_fd: usize) {
+        self.max_fd = max_fd;
+    }
+
+    pub fn get_max_fd(&self) -> usize {
+        self.max_fd
     }
 }

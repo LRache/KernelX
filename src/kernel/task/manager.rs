@@ -28,7 +28,7 @@ impl Manager {
         let initargv: &[&str] = &[
             initpath, 
             "sh", 
-            "/glibc/libctest_testcode.sh",
+            "/glibc/iozone_testcode.sh",
         ];
 
         let initenvp: &[&str] = &[];

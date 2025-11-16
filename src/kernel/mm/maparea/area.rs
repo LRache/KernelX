@@ -32,9 +32,8 @@ pub trait Area {
         unimplemented!();
     }
     
-    fn ubase(&self) -> usize {
-        unimplemented!();
-    }
+    fn ubase(&self) -> usize;
+    
     fn set_ubase(&mut self, _ubase: usize) {
         unimplemented!("set_ubase not implemented for the area type: {}", self.type_name());
     }

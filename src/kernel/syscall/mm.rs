@@ -4,17 +4,16 @@ use alloc::boxed::Box;
 use bitflags::bitflags;
 
 use crate::fs::file::File;
-use crate::{kdebug};
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{Area, AnonymousArea, FileMapArea};
 use crate::kernel::scheduler::*;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::syscall::SyscallRet;
 use crate::arch;
 use crate::ktrace;
 
-pub fn brk(brk: usize) -> Result<usize, Errno> {
+pub fn brk(brk: usize) -> SyscallRet {
     let r = current::addrspace().increase_userbrk(brk);
-    
     r
 }
 
@@ -50,7 +49,7 @@ bitflags! {
     }
 }
 
-pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, offset: usize) -> Result<usize, Errno> {
+pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, offset: usize) -> SyscallRet {
     let flags = MMapFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     if addr % arch::PGSIZE != 0 || length == 0 {
@@ -103,9 +102,7 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         }
 
         area.set_ubase(ubase);
-
-        kdebug!("mmap: ubase={:#x}, length={:#x}, perm={:?}, flags={:?}, fd={}", ubase, length, perm, flags, fd);
-
+        
         if fixed {
             map_manager.map_area_fixed(ubase, area, current::addrspace().pagetable());
         } else {
@@ -116,7 +113,7 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
     })
 }
 
-pub fn munmap(addr: usize, length: usize) -> SysResult<usize> {
+pub fn munmap(addr: usize, length: usize) -> SyscallRet {
     if addr % arch::PGSIZE != 0 || length == 0 || length % arch::PGSIZE != 0 {
         return Err(Errno::EINVAL);
     }
@@ -130,7 +127,7 @@ pub fn munmap(addr: usize, length: usize) -> SysResult<usize> {
     Ok(0)
 }
 
-pub fn mprotect(addr: usize, length: usize, prot: usize) -> Result<usize, Errno> {
+pub fn mprotect(addr: usize, length: usize, prot: usize) -> SyscallRet {
     let prot = MMapProt::from_bits(prot).ok_or(Errno::EINVAL)?;
     
     ktrace!("mprotect called: addr={:#x}, length={}, prot={:#x}", addr, length, prot);
@@ -144,5 +141,10 @@ pub fn mprotect(addr: usize, length: usize, prot: usize) -> Result<usize, Errno>
 
     current::addrspace().set_area_perm(addr, page_count, prot.into())?;
 
+    Ok(0)
+}
+
+pub fn madvise() -> SyscallRet {
+    // Currently no-op
     Ok(0)
 }

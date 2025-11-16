@@ -7,7 +7,7 @@ use crate::kernel::config;
 use crate::kernel::event::{timer, Event};
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet};
 use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
+use crate::kernel::syscall::uptr::{UArray, UPtr};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
 use crate::kernel::uapi::{self, Timespec};
@@ -134,7 +134,6 @@ pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact:
 
     if !uptr_act.is_null() {
         let new_action = uptr_act.read()?;
-        // kinfo!("0x{:x}", new_action.sa_flags);
         let new_action = new_action.try_into()?;
         
         signal_actions.set(signum, &new_action)?;

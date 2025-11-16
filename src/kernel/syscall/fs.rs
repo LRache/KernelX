@@ -4,20 +4,20 @@ use alloc::sync::Arc;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
+use crate::arch::get_time_us;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
-use crate::kernel::syscall::uptr::{UBuffer, UString, UserPointer};
+use crate::kernel::syscall::uptr::{UArray, UBuffer, UString, UPtr};
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::task::fdtable::FDFlags;
-use crate::kernel::uapi::{OpenFlags, Dirent, DirentType, FileStat};
+use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec};
 use crate::fs::{Dentry, Mode};
 use crate::fs::vfs;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::{kdebug, kinfo};
+use crate::kdebug;
 
 use super::def::*;
-use super::uptr::UPtr;
 
 pub fn dup(oldfd: usize) -> SyscallRet {
     let mut fdtable = current::fdtable().lock();
@@ -73,8 +73,8 @@ pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> SyscallRet {
         }
 
         FcntlCmd::F_SETFL => {
-            let file = current::fdtable().lock().get(fd)?;
-            let flags = OpenFlags::from_bits(_arg).ok_or(Errno::EINVAL)?;
+            // let file = current::fdtable().lock().get(fd)?;
+            // let flags = OpenFlags::from_bits(_arg).ok_or(Errno::EINVAL)?;
             
             Ok(0)
         }
@@ -97,6 +97,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     };
 
     let path = uptr_filename.read()?;
+    crate::kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:#o}", dirfd, path, open_flags, mode);
     
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
@@ -249,7 +250,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     let mut total_read = 0;
 
     for i in 0..iovcnt {
-        let iov = uptr_iov.index(i).read()?;
+        let iov = uptr_iov.add(i).read()?;
 
         let mut read = 0usize;
         let mut remaining = iov.len;
@@ -321,7 +322,7 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
         //     .map_err(|_| Errno::EFAULT)?;
         // let iov = unsafe { &*(iov_buf.as_ptr() as *const IOVec) };
         // let iov: IOVec = copy_from_user::object(iov + i * core::mem::size_of::<IOVec>())?;
-        let iov = uptr_iov.index(i).read()?;
+        let iov = uptr_iov.add(i).read()?;
 
         let mut written = 0usize;
         let mut remaining = iov.len;
@@ -464,22 +465,72 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, _fla
     Ok(0)
 }
 
+pub fn statfs64(uptr_path: UString, uptr_buf: UPtr<Statfs>) -> SyscallRet {
+    uptr_path.should_not_null()?;
+    uptr_buf.should_not_null()?;
+    
+    let path = uptr_path.read()?;
+    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?;
+
+    let statfs = vfs::statfs(dentry.sno())?;
+
+    uptr_buf.write(statfs)?;
+
+    Ok(0)
+}
+
 pub fn newfstat(fd: usize, uptr_stat: UPtr<FileStat>) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     let fstat = file.fstat()?;
 
-    // copy_to_user!(uptr_statbuf, kstat)?;
-    // copy_to_user::object(uptr_statbuf, fstat)?;
     uptr_stat.write(fstat)?;
-
-    // ktrace!("newfstat: fd={}, st_size={}, st_mode={:#o}", fd, fstat.st_size, fstat.st_mode);
 
     Ok(0)
 }
 
-pub fn utimensat(_dirfd: usize, _uptr_path: usize, _uptr_times: usize, _flags: usize) -> Result<usize, Errno> {
-    Err(Errno::ENOENT)
+const UTIME_NOW:  u64 = 0x3fffffff;
+const UTIME_OMIT: u64 = 0x3ffffffe;
+
+pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, _flags: usize) -> SyscallRet {
+    uptr_times.should_not_null()?;
+
+    let atime = uptr_times.index(0).read()?;
+    let mtime = uptr_times.index(1).read()?;
+
+    let path = if uptr_path.is_null() {
+        ""
+    } else {
+        &uptr_path.read()?
+    };
+    let dentry = if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
+    } else {
+        vfs::load_dentry_at(
+            current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
+            path
+        )?
+    };
+    let inode = dentry.get_inode();
+    let now = get_time_us();
+
+    if atime.tv_nsec != UTIME_OMIT {
+        if atime.tv_nsec == UTIME_NOW {
+            inode.update_atime((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u64)?;
+        } else {
+            inode.update_atime(atime.tv_sec, atime.tv_nsec)?;
+        }
+    }
+
+    if mtime.tv_nsec != UTIME_OMIT {
+        if mtime.tv_nsec == UTIME_NOW {
+            inode.update_mtime((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u64)?;
+        } else {
+            inode.update_mtime(mtime.tv_sec, mtime.tv_nsec)?;
+        }
+    }
+
+    Ok(0)
 }
 
 pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
@@ -512,6 +563,7 @@ const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d
 
 pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
+    let file = file.downcast_arc::<File>().map_err(|_| Errno::EBADF)?;
 
     if uptr_dirent == 0 {
         return Err(Errno::EINVAL);
@@ -629,6 +681,28 @@ pub fn renameat2(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_n
     }
 
     old_parent.rename(&old_name, &new_parent, &new_name)?;
+
+    Ok(0)
+}
+
+pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    if !file.writable() {
+        return Err(Errno::EBADF);
+    }
+
+    file.downcast_arc::<File>()
+        .map_err(|_| Errno::EINVAL)?
+        .ftruncate(length as u64)?;
+
+    Ok(0)
+}
+
+pub fn fsync(fd: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    file.fsync()?;
 
     Ok(0)
 }

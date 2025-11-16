@@ -25,7 +25,8 @@ pub trait FileOps: DowncastSync {
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize>;
     fn ioctl(&self, request: usize, arg: usize) -> SysResult<usize>;
     fn fstat(&self) -> SysResult<FileStat>;
-    fn get_dent(&self) -> SysResult<Option<DirResult>>;
+    fn fsync(&self) -> SysResult<()>;
+    // fn get_dent(&self) -> SysResult<Option<DirResult>>;
     
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>>;
     fn get_dentry(&self) -> Option<&Arc<Dentry>>;
@@ -33,7 +34,6 @@ pub trait FileOps: DowncastSync {
     fn poll(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<PollEvent>> {
         Ok(None)
     }
-
     fn poll_cancel(&self) {}
 
     fn type_name(&self) -> &'static str {

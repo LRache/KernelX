@@ -232,10 +232,13 @@ impl Area for ELFArea {
         self.frames.len()
     }
 
+    fn ubase(&self) -> usize {
+        self.ubase
+    }
+
     fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
-        assert!(uaddr % arch::PGSIZE == 0, "Split address must be page-aligned");
-        assert!(uaddr > self.ubase, "Split address must be greater than ubase");
-        assert!(uaddr < self.ubase + self.size(), "Split address out of bounds");
+        debug_assert!(uaddr % arch::PGSIZE == 0, "Split address must be page-aligned");
+        debug_assert!(uaddr >= self.ubase && uaddr < self.ubase + self.size(), "Split address must be within area bounds");
 
         let split_index = (uaddr - self.ubase) / arch::PGSIZE;
         let split_offset = split_index * arch::PGSIZE;

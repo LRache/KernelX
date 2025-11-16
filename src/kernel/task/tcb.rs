@@ -2,8 +2,9 @@ use alloc::sync::Arc;
 use alloc::vec;
 use spin::Mutex;
 
+use crate::kernel::mm::uptr::UPtr;
 use crate::kernel::scheduler::current;
-use crate::kernel::usync::futex;
+use crate::kernel::usync::futex::{self, RobustListHead};
 use crate::kernel::{config, scheduler};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::tid::Tid;
@@ -54,11 +55,12 @@ pub struct TCB {
     pub tid: Tid,
     pub parent: Arc<PCB>,
     tid_address: Mutex<Option<usize>>,
+    pub robust_list: SpinLock<Option<UPtr<RobustListHead>>>,
     
     user_context_ptr: *mut UserContext,
     user_context_uaddr: usize,
     kernel_context: KernelContext,
-    kernel_stack: KernelStack,
+    pub kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
     fdtable: Arc<SpinLock<FDTable>>,
@@ -93,6 +95,7 @@ impl TCB {
             tid,
             parent: parent.clone(),
             tid_address: Mutex::new(None),
+            robust_list: SpinLock::new(None),
             
             user_context_ptr,
             user_context_uaddr,
@@ -100,7 +103,7 @@ impl TCB {
             kernel_stack,
 
             addrspace,
-            fdtable: fdtable,
+            fdtable,
 
             signal_mask: SpinLock::new(SignalSet::empty()),
             
@@ -382,7 +385,7 @@ impl TCB {
         let mut state = self.state.lock();
 
         if let Some(tid_address) = *self.tid_address.lock() {
-            self.addrspace.copy_to_user_object(tid_address, &(0 as Tid).to_le_bytes()).expect("Failed to clear TID address");
+            self.addrspace.copy_to_user(tid_address, &(0 as Tid).to_le_bytes()).expect("Failed to clear TID address");
             if let Ok(tid_kaddr) = self.addrspace.translate_write(tid_address) {
                 debug_assert!(tid_kaddr & 0x3 == 0);
                 unsafe { *(tid_kaddr as *mut Tid) = 0 };

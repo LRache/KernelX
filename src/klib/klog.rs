@@ -145,7 +145,7 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
         );
     }
 
-    vfs::sync().unwrap_or_else(|e| {
+    vfs::sync_all().unwrap_or_else(|e| {
         println!("Failed to sync filesystem: {:?}", e);
     });
 

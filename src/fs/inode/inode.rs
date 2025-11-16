@@ -36,7 +36,7 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn lookup(&self, _name: &str) -> SysResult<u32> {
-        Err(Errno::ENOENT)
+        Err(Errno::ENOTDIR)
     }
 
     fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn InodeOps>, _new_name: &str) -> SysResult<()> {
@@ -70,6 +70,28 @@ pub trait InodeOps: DowncastSync {
         kstat.st_mode = self.mode().bits() as u32;
 
         Ok(kstat)
+    }
+
+    fn truncate(&self, _new_size: u64) -> SysResult<()> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn update_atime(&self, atime: u64, atime_nsec: u64) -> SysResult<()> {
+        let _ = atime;
+        let _ = atime_nsec;
+        Ok(())
+    }
+
+    fn update_mtime(&self, mtime: u64, mtime_nsec: u64) -> SysResult<()> {
+        let _ = mtime;
+        let _ = mtime_nsec;
+        Ok(())
+    }
+
+    fn update_ctime(&self, ctime: u64, ctime_nsec: u64) -> SysResult<()> {
+        let _ = ctime;
+        let _ = ctime_nsec;
+        Ok(())
     }
 }
 

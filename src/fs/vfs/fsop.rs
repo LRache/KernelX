@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
 
 use crate::fs::vfs::vfs::VirtualFileSystem;
-use crate::fs::filesystem::FileSystemOps;
-use crate::kdebug;
+use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::Statfs;
 use crate::driver::BlockDriverOps;
 
 use super::vfs;
@@ -12,6 +12,13 @@ use super::Dentry;
 impl VirtualFileSystem {
     pub(super) fn register_filesystem(&mut self, name: &'static str, fs: &'static dyn FileSystemOps) {
         self.fstype_map.insert(name, fs);
+    }
+
+    fn get_superblock(&self, sno: u32) -> SysResult<Arc<dyn SuperBlockOps>> {
+        let superblock_table = self.superblock_table.lock();
+        let superblock = superblock_table.get(sno).ok_or(Errno::EINVAL)?;
+
+        Ok(superblock)
     }
 
     fn mount(&self, path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> SysResult<()> {
@@ -33,6 +40,10 @@ impl VirtualFileSystem {
         
         Ok(())
     }
+
+    fn sync_all(&self) -> SysResult<()> {
+        self.cache.sync()
+    }
 }
 
 pub fn mount(path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> Result<(), Errno> {
@@ -41,6 +52,16 @@ pub fn mount(path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOp
 
 pub fn get_root_dentry() -> &'static Arc<Dentry> {
     vfs().get_root()
+}
+
+pub fn statfs(sno: u32) -> SysResult<Statfs> {
+    let superblock = vfs().get_superblock(sno).unwrap();
+
+    superblock.statfs()
+}
+
+pub fn sync_all() -> Result<(), Errno> {
+    vfs().sync_all()
 }
 
 // pub fn unmount_all() -> Result<(), Errno> {

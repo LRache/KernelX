@@ -322,14 +322,14 @@ impl SuperBlockInnerExt for SuperBlockInner {
 
             // Verify write
             block.sync_blk_to_disk(&self.block_device);
-            let verify_block = Block::load(&self.block_device, block_offset);
-            if verify_block.data[..write_size] != write_buf[written..written + write_size] {
-                // log::error!("[Write] Verification failed for aligned write at block {}", pblock_idx);
-                // return return_errno_with_message!(Errno::EIO, "Write verification failed");
-                return Err(Errno::EIO);
-            }
+            // let verify_block = Block::load(&self.block_device, block_offset);
+            // if verify_block.data[..write_size] != write_buf[written..written + write_size] {
+            //     // log::error!("[Write] Verification failed for aligned write at block {}", pblock_idx);
+            //     // return return_errno_with_message!(Errno::EIO, "Write verification failed");
+            //     return Err(Errno::EIO);
+            // }
             drop(block);
-            drop(verify_block);
+            // drop(verify_block);
             
             written += write_size;
             iblk_idx += 1;

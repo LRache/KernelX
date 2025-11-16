@@ -56,12 +56,12 @@ impl FileOps for CharFile {
         Err(Errno::ESPIPE)
     }
 
-    fn get_dent(&self) -> SysResult<Option<DirResult>> {
-        Err(Errno::ENOTDIR)
-    }
-
     fn fstat(&self) -> SysResult<FileStat> {
         Ok(FileStat::empty())
+    }
+
+    fn fsync(&self) -> SysResult<()> {
+        Ok(())
     }
 
     fn get_dentry(&self) -> Option<&Arc<crate::fs::Dentry>> {

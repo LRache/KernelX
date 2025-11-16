@@ -74,12 +74,12 @@ impl FileOps for Pipe {
         Ok(kstat)
     }
 
-    fn ioctl(&self, _request: usize, _arg: usize) -> SysResult<usize> {
-        Err(Errno::ENOSYS) // Placeholder for unimplemented ioctl commands
+    fn fsync(&self) -> SysResult<()> {
+        Ok(())
     }
 
-    fn get_dent(&self) -> SysResult<Option<DirResult>> {
-        Err(Errno::ENOTDIR)
+    fn ioctl(&self, _request: usize, _arg: usize) -> SysResult<usize> {
+        Err(Errno::ENOSYS) // Placeholder for unimplemented ioctl commands
     }
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {

@@ -8,17 +8,15 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::InodeOps;
 use crate::fs::inode;
 use crate::fs::filesystem::FileSystemOps;
-use crate::fs::rootfs::RootFileSystem;
 use crate::klib::InitedCell;
-use crate::kdebug;
 
 use super::dentry::Dentry;
 use super::SuperBlockTable;
 
 pub struct VirtualFileSystem {
-    cache: inode::Cache,
+    pub(super) cache: inode::Cache,
     pub(super) mountpoint: Mutex<Vec<Arc<Dentry>>>,
-    pub(super) superblock_table: Mutex<SuperBlockTable>,
+    pub superblock_table: Mutex<SuperBlockTable>,
     pub(super) fstype_map: BTreeMap<&'static str, &'static dyn FileSystemOps>,
     pub(super) root: InitedCell<Arc<Dentry>>,
 }
@@ -96,10 +94,6 @@ impl VirtualFileSystem {
             
             Ok(inode)
         }
-    }
-
-    pub fn sync(&self) -> SysResult<()> {
-        self.cache.sync()
     }
 }
 

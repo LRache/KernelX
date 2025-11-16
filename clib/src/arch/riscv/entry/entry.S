@@ -21,7 +21,7 @@ _entry:
     la t0, main
     
     sfence.vma
-    csrw satp, a2
+    csrw satp, a3
     sfence.vma
 
     /*

@@ -93,7 +93,7 @@ pub mod copy_to_user {
     }
 
     pub fn object<T: Copy>(uaddr: usize, value: T) -> SysResult<()> {
-        addrspace().copy_to_user_object(uaddr, value)
+        addrspace().copy_to_user(uaddr, value)
     }
 
     pub fn slice<T: Copy>(uaddr: usize, slice: &[T]) -> SysResult<()> {

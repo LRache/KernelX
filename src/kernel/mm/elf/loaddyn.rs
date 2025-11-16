@@ -7,7 +7,7 @@ use crate::fs::vfs;
 use crate::kernel::errno::Errno;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::config;
-use crate::ktrace;
+use crate::{kinfo, ktrace};
 
 use super::def::*;
 use super::loader::*;
@@ -57,13 +57,9 @@ pub fn load_dyn(ehdr: &Elf64Ehdr, file: &Arc<File>, addrspace: &mut AddrSpace) -
     }
     
     let phdr_addr = phdr_addr.ok_or(Errno::ENOEXEC)?;
-    
-    if interpreter_path.is_none() {
-        return Err(Errno::ENOEXEC);
-    }
 
-    let interrpreter_path = interpreter_path.unwrap();
-    let (interpreter_base, interpreter_entry) = load_interpreter(&interrpreter_path, addrspace)?;
+    let interpreter_path = interpreter_path.ok_or(Errno::ENOEXEC)?;
+    let (interpreter_base, interpreter_entry) = load_interpreter(&interpreter_path, addrspace)?;
     
     let dyn_info = DynInfo {
         user_entry: ehdr.e_entry as usize + addr_base,

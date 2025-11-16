@@ -303,6 +303,10 @@ impl Area for FileMapArea {
         }
     }
 
+    fn ubase(&self) -> usize {
+        self.ubase
+    }
+
     fn set_ubase(&mut self, ubase: usize) {
         self.ubase = ubase;
     }

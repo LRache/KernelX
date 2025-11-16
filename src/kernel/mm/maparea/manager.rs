@@ -8,7 +8,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::AnonymousArea;
 use crate::kernel::mm::{MapPerm, MemAccessType};
 use crate::arch::{self, PageTable};
-use crate::{ktrace, print};
+use crate::{kinfo, ktrace, print};
 
 use super::area::Area;
 use super::userstack::{UserStack, Auxv};
@@ -70,8 +70,8 @@ impl Manager {
             // Check if candidate address is before this area and has enough space
             if candidate_addr + required_size <= area_base {
                 // Found a suitable gap before this area
-                ktrace!("Found mmap address {:#x} for {} pages (gap before area at {:#x})", 
-                       candidate_addr, page_count, area_base);
+                // ktrace!("Found mmap address {:#x} for {} pages (gap before area at {:#x})", 
+                //        candidate_addr, page_count, area_base);
                 return Some(candidate_addr);
             }
 
@@ -120,20 +120,24 @@ impl Manager {
     }
 
     pub fn map_area(&mut self, uaddr: usize, area: Box<dyn Area>) {
-        assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
-        assert!(!self.is_map_range_overlapped(uaddr, area.page_count()), "Address range is not free");
+        debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
+        debug_assert!(!self.is_map_range_overlapped(uaddr, area.page_count()), "Address range is not free");
         self.areas.insert(uaddr, area);
     }
 
     fn find_overlapped_areas(&self, start: usize, end: usize) -> Vec<usize> {
         let mut overlapped_areas = Vec::new();
-        let iter_start = self.areas.range(..=start).next_back().map(|(k, _)| *k).unwrap_or(0);
+        let iter_start = self.areas.range(..=start).next().map(|(k, _)| *k).unwrap_or(0);
 
-        for (&area_base, _) in self.areas.range(iter_start..) {
-            if end < area_base {
+        for (&area_base, area) in self.areas.range(iter_start..) {
+            if end <= area_base {
                 break;
             }
 
+            if area_base + area.size() <= start {
+                continue;
+            }
+            
             overlapped_areas.push(area_base);
         }
 
@@ -232,36 +236,35 @@ impl Manager {
         assert!(page_count > 0, "page_count should be greater than 0");
 
         // Start iterating from our candidate, or from the beginning of the map if no such candidate exists.
-        let iter_start = self.areas.range(..=uaddr).next_back().map(|(k, _)| *k).unwrap_or(0);
-        let mut overlapped_areas = Vec::new();
+        // let iter_start = self.areas.range(uaddr..).next().map(|(k, _)| *k).unwrap_or(0);
+        // kinfo!("unmap_area: uaddr={:#x}, page_count={}, iter_start={:#x}", uaddr, page_count, iter_start);
+        // let mut overlapped_areas = Vec::new();
 
-        let end_addr = uaddr + page_count * arch::PGSIZE;
-        let mut last_area_end = usize::MAX;
-        for (&area_base, area) in self.areas.range(iter_start..) {
-            // If the current area starts after the unmap range ends, we can stop.
-            if area_base >= end_addr {
-                break;
-            }
+        let uaddr_end = uaddr + page_count * arch::PGSIZE;
+        // // let mut last_area_end = usize::MAX;
+        // for (&area_base, area) in self.areas.range(iter_start..) {
+        //     // If the current area starts after the unmap range ends, we can stop.
+        //     if area_base >= uaddr_end {
+        //         break;
+        //     }
             
-            if last_area_end < area_base {
-                // unreachable!("last_area_end < area_base in unmap_area, last_area_end: {:#x}, area_base: {:#x}", last_area_end, area_base);
-                return Err(Errno::EINVAL);
-            }
+        //     // if last_area_end < area_base {
+        //     //     unreachable!("last_area_end < area_base in unmap_area, last_area_end: {:#x}, area_base: {:#x}", last_area_end, area_base);
+        //     //     // return Err(Errno::EINVAL);
+        //     // }
             
-            let area_end = area_base + area.size();
+        //     // let area_end = area_base + area.size();
 
-            overlapped_areas.push(area_base);
+        //     overlapped_areas.push(area_base);
 
-            last_area_end = area_end;
-        }
+        //     // last_area_end = area_end;
+        // }
 
         // Process each intersecting area
-        for area_base in overlapped_areas {
+        for area_base in self.find_overlapped_areas(uaddr, uaddr_end) {
             // Remove the area from the map
             let mut middle = self.areas.remove(&area_base).unwrap();
-            let area_end = area_base +  middle.size();
-
-            // kinfo!("area_base: {:#x}, area_end: {:#x}, uaddr: {:#x}", area_base, area_end, uaddr);
+            let area_end = area_base + middle.size();
 
             // KEEP Left part [area_base, uaddr)
             if area_base < uaddr {
@@ -270,14 +273,14 @@ impl Manager {
                 self.areas.insert(area_base, left);
             }
 
-            // KEEP Right part [end_addr, area_end)
-            if end_addr < area_end {
+            // KEEP Right part [uaddr_end, area_end)
+            if uaddr_end < area_end {
                 let right;
-                (middle, right) = middle.split(end_addr);
-                self.areas.insert(end_addr, right);
+                (middle, right) = middle.split(uaddr_end);
+                self.areas.insert(uaddr_end, right);
             }
 
-            // UNMAP Middle part [max(area_base, uaddr), min(area_end, end_addr))
+            // UNMAP Middle part [max(area_base, uaddr), min(area_end, uaddr_end))
             middle.unmap(pagetable);
         }
 
@@ -300,15 +303,15 @@ impl Manager {
     /// * `Ok(())` - Success
     /// * `Err(Errno)` - Error (e.g., invalid address range, no mapping found)
     pub fn set_map_area_perm(&mut self, uaddr: usize, page_count: usize, perm: MapPerm, pagetable: &RwLock<PageTable>) -> Result<(), Errno> {
-        assert!(uaddr % arch::PGSIZE == 0, "uaddr must be page-aligned");
+        debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr must be page-aligned");
         
         if page_count == 0 {
             return Ok(());
         }
         
-        let end_uaddr = uaddr + page_count * arch::PGSIZE;
+        let uaddr_end = uaddr + page_count * arch::PGSIZE;
 
-        for overlapped_base in self.find_overlapped_areas(uaddr, end_uaddr) {
+        for overlapped_base in self.find_overlapped_areas(uaddr, uaddr_end) {
             let mut middle = self.areas.remove(&overlapped_base).unwrap();
             let overlapped_end = overlapped_base + middle.size();
 
@@ -318,14 +321,14 @@ impl Manager {
                 self.areas.insert(overlapped_base, left);
             }
 
-            if end_uaddr < overlapped_end {
+            if uaddr_end < overlapped_end {
                 let right;
-                (middle, right) = middle.split(end_uaddr);
-                self.areas.insert(end_uaddr, right);
+                (middle, right) = middle.split(uaddr_end);
+                self.areas.insert(uaddr_end, right);
             }
 
             middle.set_perm(perm, pagetable);
-            self.areas.insert(core::cmp::max(overlapped_base, uaddr), middle);
+            self.areas.insert(middle.ubase(), middle);
         }
 
         Ok(())
@@ -423,8 +426,7 @@ impl Manager {
     }
 
     pub fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
-        if let Some((_ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
-            // ktrace!("UserStack::try_to_fix_memory_fault: addr={:#x}, access_type={:?}", addr, access_type);
+        if let Some((ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
             area.try_to_fix_memory_fault(uaddr, access_type, pagetable)
         } else {
             false
@@ -442,9 +444,9 @@ impl Manager {
 
         let new_page_count = (new_ubrk - config::USER_BRK_BASE + arch::PGSIZE - 1) / arch::PGSIZE;
 
-        if new_page_count >= config::USER_BRK_PAGE_COUNT_MAX {
-            return Err(Errno::ENOMEM);
-        }
+        // if new_page_count >= config::USER_BRK_PAGE_COUNT_MAX {
+        //     return Err(Errno::ENOMEM);
+        // }
 
         if new_page_count > self.userbrk.page_count {
             let ubase = config::USER_BRK_BASE + self.userbrk.page_count * arch::PGSIZE;

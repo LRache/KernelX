@@ -14,11 +14,11 @@ pub struct SignalStack {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SignalUContext {
-    pub _uc_flags: usize,
-    pub _uc_link:  usize,
-    pub _uc_stack: SignalStack,
-    pub uc_sigmask: SignalSet,
-    pub __unused: [u8; 1024 / 8 - core::mem::size_of::<SignalSet>()],
+    pub _uc_flags: usize, // 8
+    pub _uc_link:  usize, // 16
+    pub _uc_stack: SignalStack, // 16 + 24 = 40
+    pub uc_sigmask: SignalSet, // 48
+    pub __unused: [u8; 128 - core::mem::size_of::<SignalSet>()],
     pub uc_mcontext: SigContext,
 }
 
@@ -42,7 +42,7 @@ impl SigFrame {
                     ss_size: 0,
                 },
                 uc_sigmask: SignalSet::empty(),
-                __unused: [0; 1024 / 8 - core::mem::size_of::<SignalSet>()],
+                __unused: [0; 128 - core::mem::size_of::<SignalSet>()],
                 uc_mcontext: SigContext::empty(),
             },
         }

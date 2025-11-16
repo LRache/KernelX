@@ -135,7 +135,7 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn copy_to_user_object<T: Copy>(&self, uaddr: usize, value: T) -> Result<(), Errno> {
+    pub fn copy_to_user<T: Copy>(&self, uaddr: usize, value: T) -> Result<(), Errno> {
         let buffer = unsafe {
             core::slice::from_raw_parts((&value as *const T) as *const u8, core::mem::size_of::<T>())
         };
@@ -265,11 +265,23 @@ impl AddrSpace {
     }
 
     pub fn try_to_fix_memory_fault(&self, uaddr: usize, access_type: MemAccessType) -> bool {
-        if !self.map_manager.lock().try_to_fix_memory_fault(uaddr, access_type, &self.pagetable) {
-            self.map_manager.lock().print_all_areas();
+        let map_manager = &mut self.map_manager.lock();
+        if !map_manager.try_to_fix_memory_fault(uaddr, access_type, &self.pagetable) {
+            map_manager.print_all_areas();
             false
         } else {
             true
+        }
+    }
+}
+
+impl Drop for AddrSpace {
+    fn drop(&mut self) {
+        let frames = self.usercontext_frames.lock();
+        let mut pagetable = self.pagetable.write();
+        for i in 0..frames.len() {
+            let uaddr = TRAMPOLINE_BASE - (i + 1) * arch::PGSIZE;
+            pagetable.munmap(uaddr);
         }
     }
 }

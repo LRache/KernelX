@@ -1,10 +1,10 @@
-use crate::arch::UserContextTrait;
+use crate::arch::{PageTable, UserContextTrait};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::syscall;
 use crate::kernel::event::timer;
-use crate::kwarn;
+use crate::{kinfo, kwarn};
 
 pub fn trap_return() {
     current::tcb().handle_signal();

@@ -231,23 +231,6 @@ impl PCB {
 
                         _ => unreachable!(),
                     }
-                    
-                    // if current::tcb().with_state_mut(|state| {
-                    //     match event {
-                    //         Event::Process { child } => {
-                    //             if child == pid {
-                    //                 // state.event = None;
-                    //             } else {
-                    //                 return false;
-                    //             }
-                    //         },
-                    //         _ => return false,
-                    //     };
-                    //     // state.event = None;
-                    //     return true;
-                    // }) {
-                    //     break;
-                    // }
                 }
                 
                 let exit_code = child.get_exit_code();
@@ -286,12 +269,8 @@ impl PCB {
         }
 
         self.waiting_task.lock().push(current::tcb().clone());
-        // current::tcb().block("wait_any_child");
-        // current::schedule();
 
         let event = current::block("wait_any_child");
-
-        // let state = lock_debug!(current::tcb().state());
 
         match event {
             Event::Process { child } => {

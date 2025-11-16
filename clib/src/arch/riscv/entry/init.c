@@ -39,9 +39,10 @@ void __riscv_init(uintptr_t hartid, const void *fdt, uintptr_t kaddr_offset)  {
         "mv a0, %0\n"
         "mv a1, %1\n"
         "mv a2, %2\n"
+        "mv a3, %3\n"
         :
-        : "r"(hartid), "r"(kernel_end), "r"(satp)
-        : "a0", "a1", "a2"
+        : "r"(hartid), "r"(kernel_end), "r"(memory_top + kaddr_offset), "r"(satp)
+        : "a0", "a1", "a2", "a3"
     );
 }
 

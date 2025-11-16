@@ -6,7 +6,6 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::task::TCB;
 use crate::kernel::scheduler::current;
-use crate::kinfo;
 use crate::klib::SpinLock;
 
 struct FutexWaitQueueItem {
@@ -96,6 +95,39 @@ impl FutexManager {
             Ok(0)
         }
     }
+
+    fn requeue(&self, kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> SysResult<usize> {
+        let mut futexes = self.futexes.lock();
+        let mut pending = LinkedList::new();
+
+        let moved = if let Some(futex_spinlock) = futexes.get(&kaddr) {
+            let mut futex = futex_spinlock.lock();
+            if let Some(val) = val {
+                if *futex.kvalue != val {
+                    return Err(Errno::EAGAIN);
+                }
+            }
+
+            let mut moved = 0;
+            let mut cursor = futex.wait_list.cursor_front_mut();
+            while let Some(item) = cursor.remove_current() {
+                pending.push_back(item);
+                moved += 1;
+                if moved >= num {
+                    break;
+                }
+            }
+            moved
+        } else {
+            return Ok(0);
+        };
+
+        let futex2_spinlock = futexes.entry(kaddr2).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) })));
+        let mut futex2 = futex2_spinlock.lock();
+        futex2.wait_list.append(&mut pending);
+
+        Ok(moved)
+    }
 }
 
 static FUTEX_MANAGER: FutexManager = FutexManager::new();
@@ -106,4 +138,8 @@ pub fn wait_current(kaddr: usize, expected: i32, bitset: u32) -> SysResult<()> {
 
 pub fn wake(kaddr: usize, num: usize, mask: u32) -> SysResult<usize> {
     FUTEX_MANAGER.wake(kaddr, num, mask)
+}
+
+pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> SysResult<usize> {
+    FUTEX_MANAGER.requeue(kaddr, kaddr2, num, val)
 }

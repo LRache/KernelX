@@ -55,18 +55,20 @@ pub fn parse_boot_args(bootargs: &'static str) {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn main(hartid: usize, heap_start: usize) -> ! {
+extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
     kinfo!("Welcome to KernelX!");
     
     kinfo!("Initializing KernelX...");
     
     kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
-    mm::init(heap_start + config::KERNEL_HEAP_SIZE);
+    mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
     driver::init();
     arch::init();
     arch::scan_device();
 
     kinfo!("Welcome to KernelX!");
+
+    kinfo!("Frame space: {:#x} - {:#x}, total {:#x}", heap_start + config::KERNEL_HEAP_SIZE, memory_top, memory_top - (heap_start + config::KERNEL_HEAP_SIZE));
 
     fs::init();
     fs::mount_init_fs(
@@ -81,7 +83,7 @@ extern "C" fn main(hartid: usize, heap_start: usize) -> ! {
     
     timer::init();
 
-    free_init();
+    // free_init();
     
     kinfo!("KernelX initialized successfully!");
     
