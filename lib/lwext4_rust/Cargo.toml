@@ -1,0 +1,25 @@
+[package]
+name = "lwext4_rust"
+authors = ["Luoyuan Xiao <xiaoluoyuan@163.com>", "Mivik <mivikq@gmail.com>"]
+version = "0.2.0"
+edition = "2024"
+license = "GPL-2.0"
+repository = "https://github.com/Mivik/lwext4_rust"
+description = "lwext4 in Rust"
+
+links = "lwext4"
+build = "build.rs"
+
+[features]
+default = ["print", "std"]
+# print = ["printf-compat"]
+print = []
+std = []
+
+[dependencies]
+log = "0.4"
+# printf-compat = { git = "https://github.com/lights0123/printf-compat.git", rev = "5f5c9cc", default-features = false, optional = true }
+
+# See: https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html
+[build-dependencies]
+bindgen = "0.72"

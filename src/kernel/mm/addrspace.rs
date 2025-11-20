@@ -3,13 +3,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use spin::{Lazy, Mutex, RwLock};
 
-use crate::arch::{PageTable, PageTableTrait, UserContext};
-use crate::arch;
 use crate::safe_page_write;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{maparea, PhysPageFrame};
 use crate::kernel::mm::maparea::Auxv;
 use crate::kernel::config::USER_RANDOM_ADDR_BASE;
+use crate::arch::{PageTable, PageTableTrait, UserContext};
+use crate::arch;
 use crate::platform::config::TRAMPOLINE_BASE;
 
 use super::{MemAccessType, MapPerm};

@@ -1,0 +1,6 @@
+{
+  "rust-analyzer.cargo.extraEnv": {
+    "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+  },
+  "cmake.sourceDirectory": "/home/mivik/Projects/lwext4_rust/c/lwext4"
+}
