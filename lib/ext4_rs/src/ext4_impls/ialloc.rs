@@ -16,7 +16,7 @@ impl Ext4 {
             }
 
             let mut bg =
-                Ext4BlockGroup::load_new(&self.block_device, &super_block, bgid as usize);
+                Ext4BlockGroup::load_new(self.block_device.clone(), &super_block, bgid as usize);
 
             let mut free_inodes = bg.get_free_inodes_count();
 
@@ -60,11 +60,11 @@ impl Ext4 {
                     bg.set_itable_unused(&super_block, unused);
                 }
 
-                bg.sync_to_disk_with_csum(&self.block_device, bgid as usize, &super_block);
+                bg.sync_to_disk_with_csum(self.block_device.clone(), bgid as usize, &super_block);
 
                 /* Update superblock */
                 super_block.decrease_free_inodes_count();
-                super_block.sync_to_disk_with_csum(&self.block_device);
+                super_block.sync_to_disk_with_csum(self.block_device.clone());
 
                 /* Compute the absolute i-nodex number */
                 let inodes_per_group = super_block.inodes_per_group();
@@ -82,10 +82,11 @@ impl Ext4 {
     pub fn ialloc_free_inode(&self, index: u32, is_dir: bool) {
         // Compute index of block group
         let bgid = self.get_bgid_of_inode(index);
+        let block_device = self.block_device.clone();
 
         let mut super_block = self.super_block;
         let mut bg =
-            Ext4BlockGroup::load_new(&self.block_device, &super_block, bgid as usize);
+            Ext4BlockGroup::load_new(self.block_device.clone(), &super_block, bgid as usize);
 
         // Load inode bitmap block
         let inode_bitmap_block = bg.get_inode_bitmap_block(&self.super_block);
@@ -113,9 +114,9 @@ impl Ext4 {
             bg.set_used_dirs_count(&self.super_block, used_dirs);
         }
 
-        bg.sync_to_disk_with_csum(&self.block_device, bgid as usize, &super_block);
+        bg.sync_to_disk_with_csum(block_device.clone(), bgid as usize, &super_block);
 
         super_block.decrease_free_inodes_count();
-        super_block.sync_to_disk_with_csum(&self.block_device);
+        super_block.sync_to_disk_with_csum(self.block_device.clone());
     }
 }

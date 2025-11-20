@@ -62,3 +62,7 @@ arch_export! {
 
     scan_device() -> ();
 }
+
+pub fn page_count(size: usize) -> usize {
+    (size + PGSIZE - 1) / PGSIZE
+}

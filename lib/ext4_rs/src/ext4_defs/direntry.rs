@@ -17,24 +17,26 @@ bitflags! {
     }
 }
 
-/// Directory entry for Ext4
+/// Directory entry structure.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext4DirEntry {
-    pub inode: u32,               // Inode number this entry points to
-    pub entry_len: u16,           // Distance to the next directory entry
-    pub name_len: u8,             // Lower 8 bits of name length
-    pub inner: Ext4DirEnInternal, // Union member
-    pub name: [u8; 255],          // File name
+    pub inode: u32,               // 该目录项指向的inode的编号
+    pub entry_len: u16,           // 到下一个目录项的距离
+    pub name_len: u8,             // 低8位的文件名长度
+    pub inner: Ext4DirEnInternal, // 联合体成员
+    pub name: [u8; 255],          // 文件名
 }
+
 
 /// Internal directory entry structure.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union Ext4DirEnInternal {
-    pub name_length_high: u8, // Higher 8 bits of name length
-    pub inode_type: u8,       // Type of the referenced inode (in rev >= 0.5)
+    pub name_length_high: u8, // 高8位的文件名长度
+    pub inode_type: u8,       // 引用的inode的类型（在rev >= 0.5中）
 }
+
 
 /// Fake directory entry structure. Used for directory entry iteration.
 #[repr(C)]
@@ -62,6 +64,7 @@ pub struct Ext4DirSearchResult{
     pub prev_offset: usize, //prev direntry offset
 }
 
+
 impl Ext4DirSearchResult {
     pub fn new(dentry: Ext4DirEntry) -> Self {
         Self {
@@ -72,6 +75,7 @@ impl Ext4DirSearchResult {
         }
     }
 }
+
 
 impl Debug for Ext4DirEnInternal {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -157,18 +161,22 @@ impl Ext4DirEntry {
         self.name_len as usize
     }
 
-    /// Calculate the actual length of a directory entry (excluding padding bytes)
+    /// 计算目录项的实际使用长度（不包括填充字节）
     pub fn actual_len(&self) -> usize {
         size_of::<Ext4FakeDirEntry>() + self.name_len as usize
     }
-    
-    /// Calculate the aligned length of a directory entry (including padding bytes)
-    pub fn align_len(&self) -> usize {
+
+
+    /// 计算对齐后的目录项长度（包括填充字节）
+    pub fn used_len_aligned(&self) -> usize {
         let mut len = self.actual_len();
-        len = (len + 3) & !3;
+        if len % 4 != 0 {
+            len += 4 - (len % 4);
+        }
         len
     }
 
+    
     pub fn write_entry(&mut self, entry_len: u16, inode: u32, name: &str, de_type:DirEntryType) {
         self.inode = inode;
         self.entry_len = entry_len;
@@ -224,6 +232,7 @@ impl Ext4DirEntry {
     }
 }
 
+
 impl Ext4DirEntryTail{
     pub fn new() -> Self {
         Self {
@@ -234,6 +243,7 @@ impl Ext4DirEntryTail{
             checksum: 0,
         }
     }
+
     pub fn tail_set_csum(
         &mut self,
         s: &Ext4Superblock,

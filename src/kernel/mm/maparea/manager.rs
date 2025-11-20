@@ -8,7 +8,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::AnonymousArea;
 use crate::kernel::mm::{MapPerm, MemAccessType};
 use crate::arch::{self, PageTable};
-use crate::{kinfo, ktrace, print};
+use crate::{ktrace, print};
 
 use super::area::Area;
 use super::userstack::{UserStack, Auxv};

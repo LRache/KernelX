@@ -61,6 +61,7 @@ kernel.asm
 .cache
 
 /sdcard-*
+/alpine-*
 
 # Kconfig generated files
 .config*

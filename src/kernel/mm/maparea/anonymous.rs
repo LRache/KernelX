@@ -3,17 +3,13 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::{arch, kinfo, ktrace};
-use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::frame::PhysPageFrame;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
+use crate::arch::{PageTable, PageTableTrait};
+use crate::arch;
 
 use super::area::Frame;
-
-fn index_to_uaddr(ubase: usize, index: usize) -> usize {
-    ubase + index * arch::PGSIZE
-}
 
 pub struct AnonymousArea {
     ubase: usize,
@@ -25,10 +21,6 @@ impl AnonymousArea {
     pub fn new(ubase: usize, perm: MapPerm, page_count: usize) -> Self {
         // Anonymous areas should be page-aligned
         assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
-        // if perm == MapPerm::U {
-        //     kinfo!("Creating AnonymousArea at ubase {:#x} with {} pages and permissions {:?}", ubase, page_count, perm);
-        //     panic!("AnonymousArea created with user-only permissions, which is not allowed");
-        // }
         
         let frames = Vec::from_iter((0..page_count).map(|_| Frame::Unallocated));
         Self {

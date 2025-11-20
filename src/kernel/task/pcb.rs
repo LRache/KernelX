@@ -147,11 +147,12 @@ impl PCB {
     pub fn exec(self: &Arc<Self>, tcb: &Arc<TCB>, file: File, argv: &[&str], envp: &[&str]) -> Result<(), Errno> {        
         let first_task = tcb.new_exec(file, argv, envp)?;
 
-        self.tasks.lock().iter_mut().for_each(|tcb| {
+        let mut tasks = self.tasks.lock();
+        tasks.iter_mut().for_each(|tcb| {
             tcb.with_state_mut(|state| state.state = TaskState::Exited );
         });
-        self.tasks.lock().clear();
-        self.tasks.lock().push(first_task.clone());
+        tasks.clear();
+        tasks.push(first_task.clone());
 
         scheduler::push_task(first_task);
 

@@ -75,8 +75,9 @@ impl Block {
     }
 }
 
+
 impl Block{
-    pub fn sync_blk_to_disk(&self, block_device: &Arc<dyn BlockDevice>){
+    pub fn sync_blk_to_disk(&self, block_device: Arc<dyn BlockDevice>){
         block_device.write_offset(self.disk_offset, &self.data);
     }
 }

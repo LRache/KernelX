@@ -9,18 +9,16 @@ use crate::utils::path_check;
 
 // export some definitions
 pub use crate::ext4_defs::Ext4;
-pub use crate::ext4_defs::BLOCK_SIZE;
-pub use crate::ext4_defs::EXT4_MAX_FILE_SIZE;
-pub use crate::ext4_defs::Block;
 pub use crate::ext4_defs::BlockDevice;
 pub use crate::ext4_defs::InodeFileType;
-pub use crate::ext4_defs::Ext4InodeRef;
-pub use crate::ext4_defs::Ext4Inode;
-pub use crate::ext4_defs::Ext4DirEntry;
-pub use crate::ext4_defs::Ext4DirEntryTail;
 pub use crate::ext4_defs::Ext4DirSearchResult;
+pub use crate::ext4_defs::Ext4DirEntry;
+pub use crate::ext4_defs::Ext4InodeRef;
+pub use crate::ext4_defs::Ext4DirEntryTail;
 pub use crate::ext4_defs::Ext4Fsblk;
-
+pub use crate::ext4_defs::Ext4Inode;
+pub use crate::ext4_defs::Block;
+pub use crate::ext4_defs::BLOCK_SIZE;
 
 /// simple interface for ext4
 impl Ext4 {
@@ -117,19 +115,6 @@ impl Ext4 {
         let mut parent_inode_num = ROOT_INODE;
         let filetype = InodeFileType::S_IFDIR;
         self.generic_open(path, &mut parent_inode_num, false, filetype.bits(), &mut 0)
-    }
-
-    /// Get dir entries of a inode
-    ///
-    /// Params:
-    /// inode: u32 - inode number of the directory
-    /// assert!(inode.is_dir());
-    ///
-    /// Returns:
-    /// `Vec<Ext4DirEntry>` - list of directory entries
-    pub fn ext4_dir_get_entries(&self, inode: u32) -> Vec<Ext4DirEntry> {
-        let mut entries = self.dir_get_entries(inode);
-        entries
     }
 
     /// Read data from a file starting from a given offset.

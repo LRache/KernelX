@@ -6,44 +6,44 @@ use super::*;
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Ext4Inode {
-    pub mode: u16,        // File type and permissions
-    pub uid: u16,         // Owner user ID
-    pub size: u32,        // Lower 32 bits of file size
-    pub atime: u32,       // Last access time
-    pub ctime: u32,       // Creation time
-    pub mtime: u32,       // Last modification time
-    pub dtime: u32,       // Deletion time
-    pub gid: u16,         // Owner group ID                                            
-    pub links_count: u16, // Link count
-    pub blocks: u32,      // Allocated blocks count
-    pub flags: u32,       // File flags
-    pub osd1: u32,        // OS-dependent field 1
-    pub block: [u32; 15], // Data block pointers
-    pub generation: u32,  // File version (NFS)
-    pub file_acl: u32,    // File ACL
-    pub size_hi: u32,     // Higher 32 bits of file size
-    pub faddr: u32,       // Deprecated fragment address
-    pub osd2: Linux2,     // OS-dependent field 2
+    pub mode: u16,        // 文件类型和权限
+    pub uid: u16,         // 所有者用户 ID
+    pub size: u32,        // 低 32 位文件大小
+    pub atime: u32,       // 最近访问时间
+    pub ctime: u32,       // 创建时间
+    pub mtime: u32,       // 最近修改时间
+    pub dtime: u32,       // 删除时间
+    pub gid: u16,         // 所有者组 ID
+    pub links_count: u16, // 链接计数
+    pub blocks: u32,      // 已分配的块数
+    pub flags: u32,       // 文件标志
+    pub osd1: u32,        // 操作系统相关的字段1
+    pub block: [u32; 15], // 数据块指针
+    pub generation: u32,  // 文件版本（NFS）
+    pub file_acl: u32,    // 文件 ACL
+    pub size_hi: u32,     // 高 32 位文件大小
+    pub faddr: u32,       // 已废弃的碎片地址
+    pub osd2: Linux2,     // 操作系统相关的字段2
 
-    pub i_extra_isize: u16,  // Extra inode size
-    pub i_checksum_hi: u16,  // High checksum (crc32c(uuid+inum+inode) BE)
-    pub i_ctime_extra: u32,  // Extra creation time (nanosec << 2 | epoch)
-    pub i_mtime_extra: u32,  // Extra modification time (nanosec << 2 | epoch)
-    pub i_atime_extra: u32,  // Extra access time (nanosec << 2 | epoch)
-    pub i_crtime: u32,       // Creation time
-    pub i_crtime_extra: u32, // Extra creation time (nanosec << 2 | epoch)
-    pub i_version_hi: u32,   // Higher 32 bits of version
+    pub i_extra_isize: u16,  // 额外的 inode 大小
+    pub i_checksum_hi: u16,  // 高位校验和（crc32c(uuid+inum+inode) BE）
+    pub i_ctime_extra: u32,  // 额外的创建时间（纳秒 << 2 | 纪元）
+    pub i_mtime_extra: u32,  // 额外的修改时间（纳秒 << 2 | 纪元）
+    pub i_atime_extra: u32,  // 额外的访问时间（纳秒 << 2 | 纪元）
+    pub i_crtime: u32,       // 创建时间
+    pub i_crtime_extra: u32, // 额外的创建时间（纳秒 << 2 | 纪元）
+    pub i_version_hi: u32,   // 高 32 位版本
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Linux2 {
-    pub l_i_blocks_high: u16,   // Higher 16 bits of allocated blocks count
-    pub l_i_file_acl_high: u16, // Higher 16 bits of file ACL
-    pub l_i_uid_high: u16,      // Higher 16 bits of user ID
-    pub l_i_gid_high: u16,      // Higher 16 bits of group ID
-    pub l_i_checksum_lo: u16,   // Lower checksum
-    pub l_i_reserved: u16,      // Reserved field
+    pub l_i_blocks_high: u16,   // 高 16 位已分配块数
+    pub l_i_file_acl_high: u16, // 高 16 位文件 ACL
+    pub l_i_uid_high: u16,      // 高 16 位用户 ID
+    pub l_i_gid_high: u16,      // 高 16 位组 ID
+    pub l_i_checksum_lo: u16,   // 低位校验和
+    pub l_i_reserved: u16,      // 保留字段
 }
 
 bitflags! {
@@ -463,17 +463,11 @@ impl Ext4Inode {
         }
     }
 
-    pub fn sync_inode_to_disk(&self, block_device: &Arc<dyn BlockDevice>, inode_pos: usize) {
+    pub fn sync_inode_to_disk(&self, block_device: Arc<dyn BlockDevice>, inode_pos: usize) {
         let data = unsafe {
             core::slice::from_raw_parts(self as *const _ as *const u8, size_of::<Ext4Inode>())
         };
         block_device.write_offset(inode_pos, data);
-    }
-
-    pub fn root_extent_block(&self) -> u64 {
-        let block_lo = self.block[0] as u64;
-        let block_hi = self.block[1] as u64;
-        block_lo | (block_hi << 32)
     }
 }
 

@@ -56,15 +56,6 @@ pub struct Ext4Extent {
     pub start_lo: u32,
 }
 
-/// Extent tail structure
-/// This is at the end of the extent block and contains a checksum
-#[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
-pub struct Ext4ExtentTail {
-    /// crc32c(uuid+inum+generation+extent_block)
-    pub et_checksum: u32,
-}
-
 /// Extent tree node. Includes the header, the data.
 #[derive(Clone, Debug)]
 pub struct ExtentNode {
@@ -127,22 +118,6 @@ impl Ext4ExtentHeader {
     pub fn is_leaf(&self) -> bool {
         self.depth == 0
     }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut header = Ext4ExtentHeader {
-            magic: 0,
-            entries_count: 0,
-            max_entries_count: 0,
-            depth: 0,
-            generation: 0,
-        };
-        header.magic = u16::from_le_bytes(bytes[0..2].try_into().unwrap());
-        header.entries_count = u16::from_le_bytes(bytes[2..4].try_into().unwrap());
-        header.max_entries_count = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
-        header.depth = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
-        header.generation = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-        header
-    }
 }
 
 /// load methods for Ext4ExtentIndex
@@ -165,15 +140,6 @@ impl Ext4ExtentIndex {
     /// Load the extent header from u8 array mutably.
     pub fn load_from_u8_mut(data: &mut [u8]) -> Self {
         unsafe { core::ptr::read(data.as_mut_ptr() as *mut _) }
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut idx = Ext4ExtentIndex::default();
-        idx.first_block = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        idx.leaf_lo = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        idx.leaf_hi = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
-        idx.padding = u16::from_le_bytes(bytes[10..12].try_into().unwrap());
-        idx
     }
 }
 
@@ -199,15 +165,6 @@ impl Ext4Extent {
     pub fn load_from_u8_mut(data: &mut [u8]) -> Self {
         let ptr = data.as_mut_ptr() as *mut Self;
         unsafe { *ptr }
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut ext = Ext4Extent::default();
-        ext.first_block = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        ext.block_count = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
-        ext.start_hi = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
-        ext.start_lo = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-        ext
     }
 }
 

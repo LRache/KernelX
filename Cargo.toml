@@ -39,6 +39,7 @@ fdt = "0.1.5"
 bitfield-struct = "0.8.0" 
 visionfive2-sd = { git = "https://github.com/os-module/visionfive2-sd.git", rev = "af75139" }
 ext4_rs = { path = "./lib/ext4_rs"}
+lwext4_rust = { path = "./lib/lwext4_rust" }
 
 [build-dependencies]
 cc = "1.0"

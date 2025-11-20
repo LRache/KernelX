@@ -107,7 +107,7 @@ pub fn load_elf(file: &Arc<File>, addrspace: &mut AddrSpace) -> Result<(usize, O
     let phdr_addr = phdr_addr.unwrap_or(0);
 
     if let Some(interpreter_path) = &interpreter_path {
-        // ktrace!("Interpreter path: {}", interpreter_path);
+        crate::kinfo!("Interpreter path: {}", interpreter_path);
         let (interpreter_base, interpreter_entry) = load_interpreter(&interpreter_path, addrspace)?;
     
         let dyn_info = DynInfo {

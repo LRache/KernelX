@@ -7,36 +7,36 @@ use super::*;
 #[derive(Debug, Default, Clone, Copy)]
 #[repr(C, packed)]
 pub struct Ext4BlockGroup {
-    pub block_bitmap_lo: u32,            // Block bitmap block
-    pub inode_bitmap_lo: u32,            // Inode bitmap block
-    pub inode_table_first_block_lo: u32, // Inode table block
-    pub free_blocks_count_lo: u16,       // Free blocks count
-    pub free_inodes_count_lo: u16,       // Free inodes count
-    pub used_dirs_count_lo: u16,         // Directories count
+    pub block_bitmap_lo: u32,            // 块位图块
+    pub inode_bitmap_lo: u32,            // 节点位图块
+    pub inode_table_first_block_lo: u32, // 节点表块
+    pub free_blocks_count_lo: u16,       // 空闲块数
+    pub free_inodes_count_lo: u16,       // 空闲节点数
+    pub used_dirs_count_lo: u16,         // 目录数
     pub flags: u16,                      // EXT4_BG_flags (INODE_UNINIT, etc)
-    pub exclude_bitmap_lo: u32,          // Snapshot exclusion bitmap
+    pub exclude_bitmap_lo: u32,          // 快照排除位图
     pub block_bitmap_csum_lo: u16,       // crc32c(s_uuid+grp_num+bbitmap) LE
     pub inode_bitmap_csum_lo: u16,       // crc32c(s_uuid+grp_num+ibitmap) LE
-    pub itable_unused_lo: u16,           // Unused inodes count
+    pub itable_unused_lo: u16,           // 未使用的节点数
     pub checksum: u16,                   // crc16(sb_uuid+group+desc)
 
-    pub block_bitmap_hi: u32,            // Block bitmap block MSB
-    pub inode_bitmap_hi: u32,            // Inode bitmap block MSB
-    pub inode_table_first_block_hi: u32, // Inode table block MSB
-    pub free_blocks_count_hi: u16,       // Free blocks count MSB
-    pub free_inodes_count_hi: u16,       // Free inodes count MSB
-    pub used_dirs_count_hi: u16,         // Directories count MSB
-    pub itable_unused_hi: u16,           // Unused inodes count MSB
-    pub exclude_bitmap_hi: u32,          // Snapshot exclusion bitmap MSB
+    pub block_bitmap_hi: u32,            // 块位图块 MSB
+    pub inode_bitmap_hi: u32,            // 节点位图块 MSB
+    pub inode_table_first_block_hi: u32, // 节点表块 MSB
+    pub free_blocks_count_hi: u16,       // 空闲块数 MSB
+    pub free_inodes_count_hi: u16,       // 空闲节点数 MSB
+    pub used_dirs_count_hi: u16,         // 目录数 MSB
+    pub itable_unused_hi: u16,           // 未使用的节点数 MSB
+    pub exclude_bitmap_hi: u32,          // 快照排除位图 MSB
     pub block_bitmap_csum_hi: u16,       // crc32c(s_uuid+grp_num+bbitmap) BE
     pub inode_bitmap_csum_hi: u16,       // crc32c(s_uuid+grp_num+ibitmap) BE
-    pub reserved: u32,                   // Padding
+    pub reserved: u32,                   // 填充
 }
 
 impl Ext4BlockGroup {
     /// Load the block group descriptor from the disk.
     pub fn load_new(
-        block_device: &Arc<dyn BlockDevice>,
+        block_device: Arc<dyn BlockDevice>,
         super_block: &Ext4Superblock,
         block_group_idx: usize,
     ) -> Self {
@@ -46,7 +46,7 @@ impl Ext4BlockGroup {
         let block_id = first_data_block as usize + dsc_id + 1;
         let offset = (block_group_idx % dsc_cnt) * super_block.desc_size as usize;
 
-        let ext4block = Block::load(block_device, block_id * BLOCK_SIZE);
+        let ext4block = Block::load(&block_device, block_id * BLOCK_SIZE);
         let bg: Ext4BlockGroup = ext4block.read_offset_as(offset);
 
         bg
@@ -139,7 +139,7 @@ impl Ext4BlockGroup {
 
         orig_checksum = self.checksum;
 
-        // Preparation: temporarily set bg checksum to 0
+        // 准备：暂时将bg校验和设为0
         self.checksum = 0;
 
         // uuid checksum
@@ -167,12 +167,14 @@ impl Ext4BlockGroup {
     /// Synchronize the block group data to disk.
     pub fn sync_block_group_to_disk(
         &self,
-        block_device: &Arc<dyn BlockDevice>,
+        block_device: Arc<dyn BlockDevice>,
         bgid: usize,
         super_block: &Ext4Superblock,
     ) {
         let dsc_cnt = BLOCK_SIZE / super_block.desc_size as usize;
+        // let dsc_per_block = dsc_cnt;
         let dsc_id = bgid / dsc_cnt;
+        // let first_meta_bg = super_block.first_meta_bg;
         let first_data_block = super_block.first_data_block;
         let block_id = first_data_block as usize + dsc_id + 1;
         let offset = (bgid % dsc_cnt) * super_block.desc_size as usize;
@@ -192,7 +194,7 @@ impl Ext4BlockGroup {
     /// Synchronize the block group data to disk with checksum.
     pub fn sync_to_disk_with_csum(
         &mut self,
-        block_device: &Arc<dyn BlockDevice>,
+        block_device: Arc<dyn BlockDevice>,
         bgid: usize,
         super_block: &Ext4Superblock,
     ) {

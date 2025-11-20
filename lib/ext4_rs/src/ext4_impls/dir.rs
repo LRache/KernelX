@@ -21,10 +21,7 @@ impl Ext4 {
     ) -> Result<usize> {
         // load parent inode
         let parent = self.get_inode_ref(parent_inode);
-        assert!(parent.inode.is_dir(), "parent is not a directory: {}, mode={}", parent_inode, parent.inode.mode());
-        if !parent.inode.is_dir() {
-            return_errno_with_message!(Errno::ENOTDIR, "Not a directory");
-        }
+        assert!(parent.inode.is_dir());
 
         // start from the first logical block
         let mut iblock = 0;
@@ -201,7 +198,7 @@ impl Ext4 {
             if result.is_ok() {
                 // set checksum
                 self.dir_set_csum(&mut ext4block, parent.inode.generation());
-                ext4block.sync_blk_to_disk(&self.block_device);
+                ext4block.sync_blk_to_disk(self.block_device.clone());
 
                 return Ok(EOK);
             }
@@ -224,7 +221,7 @@ impl Ext4 {
 
         // set checksum
         self.dir_set_csum(&mut new_ext4block, parent.inode.generation());
-        new_ext4block.sync_blk_to_disk(&self.block_device);
+        new_ext4block.sync_blk_to_disk(self.block_device.clone());
 
         Ok(EOK)
     }
@@ -290,7 +287,7 @@ impl Ext4 {
                 new_entry.copy_to_slice(&mut block.data, offset + sz);
 
                 // Sync to disk
-                block.sync_blk_to_disk(&self.block_device);
+                block.sync_blk_to_disk(self.block_device.clone());
 
                 return Ok(EOK);
             }
@@ -336,38 +333,19 @@ impl Ext4 {
 
         let mut ext4block = Block::load(&self.block_device, result.pblock_id * BLOCK_SIZE);
 
-        // Invalidate entry first
+        let de_del_entry_len = result.dentry.entry_len();
+
+        // prev entry
+        let pde: &mut Ext4DirEntry = ext4block.read_offset_as_mut(result.prev_offset);
+
+        pde.entry_len += de_del_entry_len;
+
         let de_del: &mut Ext4DirEntry = ext4block.read_offset_as_mut(result.offset);
+
         de_del.inode = 0;
 
-        // Store entry position in block
-        let pos = result.offset;
-
-        // If entry is not the first in block, it must be merged with previous entry
-        if pos != 0 {
-            let mut offset = 0;
-
-            // Start from the first entry in block
-            let mut tmp_de: Ext4DirEntry = ext4block.read_offset_as(offset);
-            let mut de_len = tmp_de.entry_len();
-
-            // Find direct predecessor of removed entry
-            while (offset + de_len as usize) < pos {
-                offset += de_len as usize;
-                tmp_de = ext4block.read_offset_as(offset);
-                de_len = tmp_de.entry_len();
-            }
-            
-            assert!(de_len as usize + offset == pos, "Invalid predecessor calculation");
-
-            // Add removed entry length to predecessor's length
-            let del_len = result.dentry.entry_len();
-            let mut tmp_de_mut: &mut Ext4DirEntry = ext4block.read_offset_as_mut(offset);
-            tmp_de_mut.entry_len = de_len + del_len;
-        }
-
         self.dir_set_csum(&mut ext4block, parent.inode.generation());
-        ext4block.sync_blk_to_disk(&self.block_device);
+        ext4block.sync_blk_to_disk(self.block_device.clone());
 
         Ok(EOK)
     }

@@ -151,10 +151,6 @@ config WARN_UNIMPLEMENTED_SYSCALL
 
 endmenu
 
-menu "Init Process Configuration"
-
-endmenu
-
 menu "QEMU Configuration"
 
 config QEMU_MACHINE

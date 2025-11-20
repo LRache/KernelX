@@ -148,7 +148,7 @@ impl LinuxStat {
             st_gid: inode.gid(),
             st_rdev: 0,
             st_size: inode.size() as u32,
-            st_blksize: 4096, // Block size assumed to be 4096 bytes
+            st_blksize: 4096, // 假设块大小为4096字节
             st_blocks: inode.blocks_count() as u32,
             st_atime: inode.atime(),
             st_atime_nsec: 0,

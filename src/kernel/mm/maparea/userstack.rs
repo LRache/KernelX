@@ -3,13 +3,14 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::{arch, kinfo, ktrace, kwarn};
 use crate::kernel::config;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MemAccessType, PhysPageFrame};
 use crate::kernel::mm::MapPerm;
 use crate::kernel::errno::Errno;
 use crate::arch::{PageTable, PageTableTrait};
+use crate::arch;
+use crate::ktrace;
 
 use super::area::Frame;
 
@@ -120,8 +121,6 @@ impl UserStack {
             MapPerm::R | MapPerm::W | MapPerm::U,
         );
 
-        kinfo!("mapped_flag: {:?}", pagetable.mapped_flag(config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE));
-        
         new_page
     }
 
@@ -281,14 +280,12 @@ impl Area for UserStack {
             match frame {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    let new_frame = frame.copy();
                     new_pagetable.mmap(
                         config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE,
-                        new_frame.get_page(), 
-                        MapPerm::R | MapPerm::W | MapPerm::U
+                        frame.get_page(), 
+                        MapPerm::R | MapPerm::U
                     );
-                    // Frame::Cow(frame.clone())
-                    Frame::Allocated(Arc::new(new_frame))
+                    Frame::Cow(frame.clone())
                 }
             }
         }).collect();
@@ -300,13 +297,12 @@ impl Area for UserStack {
                     Frame::Unallocated
                 }
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    // self_pagetable.mmap_replace(
-                    //     config::USER_STACK_TOP - (index + 1) * arch::PGSIZE,
-                    //     frame.get_page(),
-                    //     MapPerm::R | MapPerm::U
-                    // );
-                    // Frame::Cow(frame.clone())
-                    Frame::Allocated(frame.clone())
+                    self_pagetable.mmap_replace(
+                        config::USER_STACK_TOP - (index + 1) * arch::PGSIZE,
+                        frame.get_page(),
+                        MapPerm::R | MapPerm::U
+                    );
+                    Frame::Cow(frame.clone())
                 }
             }
         });
@@ -348,8 +344,6 @@ impl Area for UserStack {
                 }
                 let mut pagetable = pagetable.write();
                 self.copy_on_write_page(page_index, &mut pagetable);
-                let pte = pagetable.find_pte(addr).unwrap();
-                kinfo!("pte={:?}, pte.ppage()={:#x}", pte, pte.ppn().to_paddr());
             }
             Frame::Unallocated => {
                 let mut pagetable = pagetable.write();

@@ -53,17 +53,17 @@ pub const CRC32C_TAB: [u32; 256] = [
 
 pub const EXT4_CRC32_INIT: u32 = 0xFFFFFFFF;
 
-/// Calculate CRC32 checksum
-/// Parameter crc: Initial value
-/// Parameter buf: Buffer
-/// Parameter size: Buffer size
-/// Parameter tab: Lookup table
+/// 计算CRC32校验和
+/// 参数 crc 初始值
+/// 参数 buf 缓冲区
+/// 参数 size 缓冲区大小
+/// 参数 tab 查找表
 pub fn crc32(crc: u32, buf: &[u8], size: u32, tab: &[u32]) -> u32 {
     let mut crc = crc;
     let mut p = buf;
     let mut size = size as usize;
 
-    // Loop to update crc value
+    // 循环更新crc值
     while size > 0 {
         crc = tab[(crc as u8 ^ p[0]) as usize] ^ (crc >> 8);
         p = &p[1..];
