@@ -145,6 +145,16 @@ pub fn block(reason: &'static str) -> Event {
     tcb().take_wakeup_event().unwrap()
 }
 
+pub fn block_uninterruptible(reason: &'static str) -> Event {
+    tcb().block_uninterruptible(reason);
+    schedule();
+    tcb().take_wakeup_event().unwrap()
+}
+
+pub fn umask() -> u32 {
+    pcb().umask() as u32
+}
+
 pub fn kernel_stack_used() -> usize {
     if is_clear() {
         return 0;

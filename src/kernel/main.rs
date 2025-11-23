@@ -2,11 +2,12 @@ use alloc::collections::btree_map::BTreeMap;
 
 use crate::kernel::event::timer;
 use crate::kernel::{config, mm, scheduler, task};
-use crate::driver;
-use crate::fs;
+use crate::fs::vfs;
 use crate::arch;
+use crate::fs;
+use crate::driver;
 use crate::klib::{kalloc, InitedCell};
-use crate::kinfo;
+use crate::{kinfo, println};
 
 pub fn fini() {
     kinfo!("Deinitializing KernelX...");
@@ -88,4 +89,12 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
     kinfo!("KernelX initialized successfully!");
     
     scheduler::run_tasks(hartid as u8);
+}
+
+pub fn exit() -> ! {
+    vfs::sync_all().unwrap_or_else(|e| {
+        println!("Failed to sync filesystem: {:?}", e);
+    });
+    
+    driver::chosen::kpmu::shutdown();
 }

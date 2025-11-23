@@ -29,9 +29,9 @@ impl InodeOps for RootInode {
 
     fn get_dent(&self, index: usize) -> SysResult<Option<DirResult>> {
         match index {
-            0 => Ok(Some(DirResult { ino: ROOT_INO, name: ".".into(), file_type: FileType::Directory })),
-            1 => Ok(Some(DirResult { ino: NULL_INO, name: "null".into(), file_type: FileType::Regular })),
-            2 => Ok(Some(DirResult { ino: ZERO_INO, name: "zero".into(), file_type: FileType::Regular })),
+            0 => Ok(Some(DirResult { ino: ROOT_INO, name: ".".into(), file_type: FileType::Directory, len: 1})),
+            1 => Ok(Some(DirResult { ino: NULL_INO, name: "null".into(), file_type: FileType::Regular, len: 1 })),
+            2 => Ok(Some(DirResult { ino: ZERO_INO, name: "zero".into(), file_type: FileType::Regular, len: 1 })),
             _ => Ok(None),
         }
     }

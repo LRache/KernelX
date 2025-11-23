@@ -1,8 +1,10 @@
 use bitflags::bitflags;
 
+use crate::{fs::perm::{Perm, PermFlags}, kernel::uapi::Uid};
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Mode: u16 {
+    pub struct Mode: u32 {
         const S_IFMT   = 0o170000; // bit mask for the file type bit field
 
         const S_IFSOCK = 0o140000; // socket
@@ -31,6 +33,23 @@ bitflags! {
     }
 }
 
+impl Mode {
+    pub fn check_perm(&self, perm: &Perm, uid: Uid, gid: Uid) -> bool {
+        let (read_bit, write_bit, exec_bit) = if perm.uid == uid {
+            (Mode::S_IRUSR, Mode::S_IWUSR, Mode::S_IXUSR)
+        } else if perm.gid == gid {
+            (Mode::S_IRGRP, Mode::S_IWGRP, Mode::S_IXGRP)
+        } else {
+            (Mode::S_IROTH, Mode::S_IWOTH, Mode::S_IXOTH)
+        };
+
+        // (a & b) | ~a = ~a | b
+
+        (!perm.flags.contains(PermFlags::R) || self.contains(read_bit)) &&
+        (!perm.flags.contains(PermFlags::W) || self.contains(write_bit)) &&
+        (!perm.flags.contains(PermFlags::X) || self.contains(exec_bit))
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FileType {

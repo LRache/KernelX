@@ -11,12 +11,6 @@ use super::def::*;
 
 pub struct DevFileSystem;
 
-impl DevFileSystem {
-    pub fn new() -> Self {
-        DevFileSystem {}
-    }
-}
-
 impl FileSystemOps for DevFileSystem {
     fn create(&self, sno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
         return Ok(DevSuperBlock::new(sno) as Arc<dyn SuperBlockOps>);

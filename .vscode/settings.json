@@ -4,7 +4,6 @@
         "riscv64gc-unknown-none-elf",
     ],
     "rust-analyzer.cargo.features": [
-        "platform-qemu-virt-riscv64",
         "log-trace"
     ],
     "rust-analyzer.cargo.extraArgs": [

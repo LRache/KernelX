@@ -23,11 +23,12 @@ COMMON_DEFINITIONS =                                      \
 	-DLWEXT4_ULIBC=$(ULIBC) \
 	-DCMAKE_C_COMPILER_WORKS=1 \
 	-DCMAKE_INSTALL_PREFIX=./install \
+	-DLIB_ONLY=TRUE \
 
 define generate_common
 	rm -R -f build_$(1)
 	mkdir build_$(1)
-	cd build_$(1) && cmake -G"Unix Makefiles"           \
+	cd build_$(1) && cmake -G"Unix Makefiles" -DCMAKE_VERBOSE_MAKEFILE=ON          \
 	$(COMMON_DEFINITIONS)                               \
 	$(2)                                                \
 	-DCMAKE_TOOLCHAIN_FILE=../toolchain/$(1).cmake ..

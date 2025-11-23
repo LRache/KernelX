@@ -6,11 +6,13 @@ use bitflags::bitflags;
 use crate::kernel::config;
 use crate::kernel::event::{timer, Event};
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet};
+use crate::kernel::ipc::shm::{IpcGetFlag, IPC_RMID, IPC_SET, IPC_STAT};
+use crate::kernel::ipc::shm;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UArray, UPtr};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
-use crate::kernel::uapi::{self, Timespec};
+use crate::kernel::uapi;
 use crate::kernel::task::{Tid, manager};
 use crate::arch;
 
@@ -167,7 +169,7 @@ pub fn rt_sig_return() -> SyscallRet {
     arch::return_to_user();
 }
 
-pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeout: UPtr<Timespec>) -> SyscallRet {
+pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeout: UPtr<uapi::Timespec>) -> SyscallRet {
     uptr_set.should_not_null()?;
     
     let timeout = uptr_timeout.read_optional()?;
@@ -198,4 +200,51 @@ pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeou
         Event::Timeout => Err(Errno::EAGAIN),
         _ => unreachable!(),
     }
+}
+
+pub fn shmget(key: usize, size: usize, shmflg: usize) -> SyscallRet {
+    let flags = IpcGetFlag::from_bits_truncate(shmflg);
+    let shmid = shm::get_or_create_shm(key, size, flags)?;
+    Ok(shmid)
+}
+
+pub fn shmat(shmid: usize, shmaddr: usize, shmflg: usize) -> SyscallRet {
+    let addr_space = current::addrspace();
+    let flags = shm::ShmFlag::from_bits_truncate(shmflg);
+    let addr = shm::attach_shm(shmid, addr_space, shmaddr, flags)?;
+    Ok(addr)
+}
+
+pub fn shmctl(shmid: usize, cmd: usize, _buf: usize) -> SyscallRet {
+    match cmd {
+        IPC_RMID => {
+            shm::mark_remove_shm(shmid)?;
+            Ok(0)
+        }
+        IPC_STAT => {
+            // TODO: Implement IPC_STAT
+            Err(Errno::ENOSYS)
+        }
+        IPC_SET => {
+            // TODO: Implement IPC_SET
+            Err(Errno::ENOSYS)
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+pub fn shmdt(_shmaddr: usize) -> SyscallRet {
+    // TODO: Implement shmdt based on address
+    // Currently our manager uses shmid to detach, but syscall uses address.
+    // We need to find shmid from address or change manager to support detach by address.
+    // For now, return ENOSYS or implement a lookup.
+    
+    // Since we don't have reverse lookup yet, let's leave it as TODO or 
+    // we can iterate over areas in addrspace to find the shm area?
+    // But shm_manager needs shmid.
+    
+    // Real implementation would look up the VMA at shmaddr, check if it's a SHM VMA,
+    // get the shmid/shm object from it, and then detach.
+    
+    Err(Errno::ENOSYS)
 }

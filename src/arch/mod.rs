@@ -14,6 +14,7 @@ pub type PageTable = arch_impl::PageTable;
 
 pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;
+pub const TRAMPOLINE_BASE: usize = arch_impl::TRAMPOLINE_BASE;
 
 mod arch;
 pub use arch::{PageTableTrait, UserContextTrait};
@@ -55,7 +56,6 @@ arch_export! {
     kaddr_to_paddr(kaddr: usize) -> usize;
     paddr_to_kaddr(paddr: usize) -> usize;
     map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
-    unmap_kernel_addr(kstart: usize, size: usize) -> ();
 
     get_time_us() -> u64;
     set_next_time_event_us(internval: u64) -> ();
@@ -65,4 +65,8 @@ arch_export! {
 
 pub fn page_count(size: usize) -> usize {
     (size + PGSIZE - 1) / PGSIZE
+}
+
+pub unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
+    unsafe { Arch::unmap_kernel_addr(kstart, size) }
 }

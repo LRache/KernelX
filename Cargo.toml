@@ -5,11 +5,7 @@ edition = "2024"
 build = "scripts/build.rs"
 
 [features]
-default = ["platform-qemu-virt-riscv64", "deadlock-detect", "log-info"]
-
-platform-riscv-common = []
-platform-qemu-virt-riscv64=["platform-riscv-common"]
-platform-starfive-jh7110-riscv64=["platform-riscv-common"]
+default = ["deadlock-detect", "log-info", "no-smp"]
 
 log-warn  = []
 log-info  = ["log-warn"]
@@ -19,6 +15,7 @@ log-trace-syscall = []
 warn-unimplemented-syscall = []
 
 deadlock-detect = []
+no-smp = []
 
 [profile.dev]
 panic = "abort"

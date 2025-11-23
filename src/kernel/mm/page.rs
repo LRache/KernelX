@@ -109,9 +109,9 @@ pub fn free_contiguous(addr: usize, pages: usize) {
 }
 
 pub fn copy(src: usize, dst: usize) {
-    assert!(src % arch::PGSIZE == 0, "Source address must be page-aligned: {:#x}", src);
-    assert!(dst % arch::PGSIZE == 0, "Destination address must be page-aligned: {:#x}", dst);
-    assert!(src != dst, "Source and destination addresses must be different: {:#x}", src);
+    debug_assert!(src % arch::PGSIZE == 0, "Source address must be page-aligned: {:#x}", src);
+    debug_assert!(dst % arch::PGSIZE == 0, "Destination address must be page-aligned: {:#x}", dst);
+    debug_assert!(src != dst, "Source and destination addresses must be different: {:#x}", src);
     
     unsafe {
         core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, arch::PGSIZE);
@@ -119,7 +119,7 @@ pub fn copy(src: usize, dst: usize) {
 }
 
 pub fn zero(addr: usize) {
-    unsafe {
+    unsafe { 
         core::ptr::write_bytes(addr as *mut u8, 0, arch::PGSIZE);
     }
 }

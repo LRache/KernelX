@@ -10,4 +10,4 @@ mod klib;
 mod fs;
 mod driver;
 mod arch;
-mod platform;
+// mod platform;

@@ -8,9 +8,8 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{maparea, PhysPageFrame};
 use crate::kernel::mm::maparea::Auxv;
 use crate::kernel::config::USER_RANDOM_ADDR_BASE;
-use crate::arch::{PageTable, PageTableTrait, UserContext};
+use crate::arch::{PageTable, PageTableTrait, UserContext, TRAMPOLINE_BASE};
 use crate::arch;
-use crate::platform::config::TRAMPOLINE_BASE;
 
 use super::{MemAccessType, MapPerm};
 use super::vdso;
@@ -272,6 +271,10 @@ impl AddrSpace {
         } else {
             true
         }
+    }
+
+    pub fn find_mmap_ubase(&self, page_count: usize) -> Option<usize> {
+        self.map_manager.lock().find_mmap_ubase(page_count)
     }
 }
 

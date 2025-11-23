@@ -4,9 +4,9 @@ use crate::kernel::trap;
 use crate::kernel::syscall;
 use crate::arch::riscv::csr::*;
 use crate::arch::riscv::UserContext;
+use crate::arch::riscv::TRAMPOLINE_BASE;
 use crate::arch::UserContextTrait;
 use crate::kinfo;
-use crate::platform::config::TRAMPOLINE_BASE;
 
 unsafe extern "C" {
     fn asm_usertrap_entry (user_context: *mut   UserContext) -> !;
@@ -41,10 +41,7 @@ pub fn usertrap_handler() -> ! {
     stvec::write(asm_kerneltrap_entry as usize);
     current::tcb().user_context().set_user_entry(sepc::read());
 
-    // if stval::read() >= 0x3ffff0000 {
-    //     crate::ktrace!("sepc={:#x}, stval={:#x}",
-    //          sepc::read(), stval::read());
-    // }
+    trap::trap_enter();
     
     match scause::cause() {
         scause::Cause::Trap(trap) => {
@@ -65,8 +62,12 @@ pub fn usertrap_handler() -> ! {
                 scause::Trap::IllegalInst => {
                     trap::illegal_inst();
                 }
+                scause::Trap::InstAddrMisaligned | scause::Trap::LoadAddrMisaligned | scause::Trap::StoreAddrMisaligned => {
+                    trap::memory_misaligned();
+                }
                 _ => {
-                    panic!("Unhandled user trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}", trap, sepc::read(), stval::read(), scause::cause());
+                    let inst: u32 = current::addrspace().copy_from_user(sepc::read()).unwrap();
+                    panic!("Unhandled user trap: {:?}, sepc={:#x}, stval={:#x}, stinst={:#x}, cause={:?}", trap, sepc::read(), stval::read(), inst, scause::cause());
                 }
             }
         },
@@ -90,8 +91,6 @@ pub fn usertrap_handler() -> ! {
             // println!("Interrupt occurred, returning to user mode");
         },
     }
-
-    trap::trap_return();
     
     return_to_user();
 }
@@ -112,6 +111,8 @@ fn usertrap_return(user_context: *const UserContext) -> ! {
 }
 
 pub fn return_to_user() -> ! {
+    trap::trap_return();
+    
     let tcb = current::tcb();
 
     sepc::write(tcb.user_context().get_user_entry());

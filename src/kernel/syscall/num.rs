@@ -183,6 +183,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         43  => fs::statfs64(2),
         46  => fs::ftruncate64(2),
         48  => fs::faccessat(3),
+        53  => fs::fchmodat(3),
         56  => fs::openat(4),
         57  => fs::close(1),
         61  => fs::getdents64(3),
@@ -192,13 +193,14 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         65  => fs::readv(3),
         66  => fs::writev(3),
         67  => fs::pread64(4),
-        // 68  => fs::pwrite64(4),
+        68  => fs::pwrite64(4),
         71  => fs::sendfile(4),
         78  => fs::readlinkat(4),
         79  => fs::fstatat(4),
         80  => fs::newfstat(2),
         82  => fs::fsync(1),
         88  => fs::utimensat(4),
+        166 => fs::umask(1),
         276 => fs::renameat2(5),
         
         // Task
@@ -230,6 +232,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         // misc
         81  => misc::sync(0),
         160 => misc::newuname(1),
+        165 => misc::getrusage(2),
         236 => misc::get_mempolicy(0),
         261 => misc::prlimit64(4),
         278 => misc::getrandom(3),
@@ -251,6 +254,10 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         135 => ipc::rt_sigprocmask(3),
         137 => ipc::sigtimedwait(3),
         139 => ipc::rt_sig_return(0),
+        194 => ipc::shmget(3),
+        195 => ipc::shmctl(3),
+        196 => ipc::shmat(3),
+        197 => ipc::shmdt(1),
 
         // Time
         101 => time::nanosleep(2),
@@ -259,6 +266,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         169 => time::gettimeofday(2),
 
         // Event
+        72  => event::pselect6_time32(6),
         73  => event::ppoll_time32(5),
     }
 }

@@ -32,6 +32,14 @@ pub mod stval {
     }
 }
 
+pub mod stinst {
+    pub fn read() -> usize {
+        let value: usize;
+        unsafe { core::arch::asm!("csrr {}, stinst", out(reg) value); }
+        value
+    }
+}
+
 pub mod sscratch {
     pub fn write(value: usize) {
         unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) value); }

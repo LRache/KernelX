@@ -4,7 +4,7 @@ use crate::kernel::event::{PollEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, InodeOps};
-use crate::fs::file::{FileOps, SeekWhence, DirResult};
+use crate::fs::file::{FileOps, SeekWhence};
 
 use super::PipeInner;
 
@@ -54,6 +54,10 @@ impl FileOps for Pipe {
         self.inner.write(buf)
     }
 
+    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
+        Err(Errno::EPIPE)
+    }
+
     fn readable(&self) -> bool {
         !self.writable
     }
@@ -62,7 +66,7 @@ impl FileOps for Pipe {
         self.writable
     }
 
-    fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {
+    fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
         Err(Errno::ESPIPE)
     }
 

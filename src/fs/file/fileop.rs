@@ -6,8 +6,6 @@ use crate::kernel::errno::SysResult;
 use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, InodeOps};
 
-use super::DirResult;
-
 pub enum SeekWhence {
     BEG,
     CUR,
@@ -18,6 +16,7 @@ pub trait FileOps: DowncastSync {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize>;
     fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize>;
     fn write(&self, buf: &[u8]) -> SysResult<usize>;
+    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize>;
 
     fn readable(&self) -> bool;
     fn writable(&self) -> bool;

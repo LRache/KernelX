@@ -3,15 +3,15 @@ use alloc::vec::Vec;
 use bitflags::bitflags;
 
 use crate::fs::file::FileFlags;
-use crate::fs::vfs;
+use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::Event;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
-use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::{self, current};
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString};
 use crate::kernel::task::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kinfo;
 
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
@@ -48,6 +48,7 @@ bitflags! {
         const FILES = 0x0000400;
         const SIGHAND = 0x00000800;
         const PIDFD = 0x00001000;
+        const VFORK = 0x0000_4000;
         const PARENT = 0x00008000;
         const THREAD = 0x00010000;
         const SYSVSEM = 0x00040000;
@@ -68,6 +69,8 @@ bitflags! {
 
 pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
+
+    // kinfo!("clone: flags={:?}", flags);
     
     let task_flags = TaskCloneFlags {
         vm: flags.contains(CloneFlags::VM),
@@ -97,6 +100,23 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
         uptr_parent_tid.write(child_tid)?;
     }
 
+    if flags.contains(CloneFlags::VFORK) {
+        // timer::add_timer(current::tcb().clone(), Duration::from_secs(1));
+        current::tcb().block_uninterruptible("vfork");
+
+        child.set_parent_waiting_vfork(Some(current::tcb().clone()));
+        scheduler::push_task(child);
+
+        current::schedule();
+
+        match current::tcb().take_wakeup_event().unwrap() {
+            Event::VFork => {}
+            _ => unreachable!(),
+        }
+    } else {
+        scheduler::push_task(child);
+    }
+
     // kinfo!("clone: created child task with TID {}", child_tid);
 
     Ok(child_tid as usize)
@@ -107,7 +127,10 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
         uptr_path.should_not_null()?;
 
         let path = uptr_path.read()?;
-        let file = current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare()))?;
+
+        // crate::kinfo!("execve: {}", path);
+
+        let file = current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::new(PermFlags::X)))?;
 
         let helper = |uarray: UArray<UString>| -> SysResult<Vec<String>> {
             if uarray.is_null() {
@@ -133,7 +156,8 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
         let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
 
         current::pcb().exec(&current::tcb(), file, &argv_ref, &envp_ref)?;
-    }
+        current::tcb().wake_parent_waiting_vfork();
+    }    
 
     current::schedule();
 
@@ -182,6 +206,8 @@ pub fn wait4(pid: usize, uptr_status: usize, options: usize, _user_rusages: usiz
 pub fn exit(code: usize) -> Result<usize, Errno> {
     let tcb = current::tcb();
     tcb.exit(code as u8);
+
+    tcb.wake_parent_waiting_vfork();
     
     current::schedule();
     

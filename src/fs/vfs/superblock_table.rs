@@ -40,4 +40,13 @@ impl SuperBlockTable {
         }
         Ok(())
     }
+
+    pub fn sync_all(&self) -> SysResult<()> {
+        for fs in &self.table {
+            if let Some(sb) = fs {
+                sb.sync();
+            }
+        }
+        Ok(())
+    }
 }

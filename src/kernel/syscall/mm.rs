@@ -7,7 +7,7 @@ use crate::fs::file::File;
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{Area, AnonymousArea, FileMapArea};
 use crate::kernel::scheduler::*;
-use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::errno::Errno;
 use crate::kernel::syscall::SyscallRet;
 use crate::arch;
 use crate::ktrace;

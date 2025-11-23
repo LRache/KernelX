@@ -3,6 +3,8 @@ use core::mem::MaybeUninit;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
+use crate::fs::Perm;
+use crate::fs::PermFlags;
 use crate::kernel::task::Tid;
 use crate::klib::SpinLock;
 use crate::fs::file::FileFlags;
@@ -27,13 +29,18 @@ impl Manager {
     fn create_initprocess(&self, initpath: &str, initcwd: &str) {
         let initargv: &[&str] = &[
             initpath, 
-            "sh", 
-            "/glibc/iozone_testcode.sh",
+            "sh",
+            "/glibc/lmbench_testcode.sh",
+            // "main.c"
         ];
 
         let initenvp: &[&str] = &[];
 
-        let initfile = vfs::open_file(initpath, FileFlags { readable: true, writable: false, blocked: true }).expect("Failed to open init file");
+        let initfile = vfs::open_file(
+            initpath, 
+            FileFlags { readable: true, writable: false, blocked: true },
+            &Perm::new(PermFlags::X)
+        ).expect("Failed to open init file");
         let pcb = PCB::new_initprocess(initfile, initcwd, initargv, initenvp).expect("Failed to initialize init process from ELF");
         
         self.pcbs.lock().insert(0, pcb.clone());

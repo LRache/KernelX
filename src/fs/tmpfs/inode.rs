@@ -2,12 +2,13 @@ use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::time::Duration;
 
 use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::InodeOps;
 use crate::fs::inode::Mode;
 use crate::kernel::mm::PhysPageFrame;
-use crate::kernel::uapi::FileStat;
+use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::SpinLock;
 use crate::arch;
 
@@ -46,6 +47,7 @@ enum Meta {
 pub struct InodeMeta {
     meta: Meta,
     mode: Mode,
+    owner: (Uid, Uid),
     mtime: Timespec,
     atime: Timespec,
     ctime: Timespec,
@@ -61,6 +63,7 @@ impl InodeMeta {
         Self { 
             meta, 
             mode,
+            owner: (0, 0),
             mtime: Timespec::default(),
             atime: Timespec::default(),
             ctime: Timespec::default(),
@@ -206,8 +209,12 @@ impl InodeOps for Inode {
         Ok(size as u64)
     }
 
-    fn mode(&self) -> Mode {
-        self.meta.lock().mode
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(self.meta.lock().mode)
+    }
+
+    fn owner(&self) -> SysResult<(Uid, Uid)> {
+        Ok(self.meta.lock().owner)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
@@ -238,25 +245,24 @@ impl InodeOps for Inode {
 
         Ok(kstat)
     }
-
-    fn update_atime(&self, atime: u64, atime_nsec: u64) -> SysResult<()> {
+    fn update_atime(&self, time: &Duration) -> SysResult<()> {
         let mut meta = self.meta.lock();
-        meta.atime.tv_sec = atime;
-        meta.atime.tv_nsec = atime_nsec;
+        meta.atime.tv_sec = time.as_secs();
+        meta.atime.tv_nsec = time.subsec_nanos() as u64;
         Ok(())
     }
 
-    fn update_mtime(&self, mtime: u64, mtime_nsec: u64) -> SysResult<()> {
+    fn update_mtime(&self, time: &Duration) -> SysResult<()> {
         let mut meta = self.meta.lock();
-        meta.mtime.tv_sec = mtime;
-        meta.mtime.tv_nsec = mtime_nsec;
+        meta.mtime.tv_sec = time.as_secs();
+        meta.mtime.tv_nsec = time.subsec_nanos() as u64;
         Ok(())
     }
 
-    fn update_ctime(&self, ctime: u64, ctime_nsec: u64) -> SysResult<()> {
+    fn update_ctime(&self, time: &Duration) -> SysResult<()> {
         let mut meta = self.meta.lock();
-        meta.ctime.tv_sec = ctime;
-        meta.ctime.tv_nsec = ctime_nsec;
+        meta.ctime.tv_sec = time.as_secs();
+        meta.ctime.tv_nsec = time.subsec_nanos() as u64;
         Ok(())
     }
 

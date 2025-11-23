@@ -265,6 +265,14 @@ impl<Hal: SystemHal, Dev: BlockDevice> Drop for Ext4Filesystem<Hal, Dev> {
     }
 }
 
+// The underlying C structures contain raw pointers and are not automatically
+// `Send`/`Sync`. In this project the filesystem is always synchronized by
+// the surrounding kernel locking; mark the type as `Send`/`Sync` so it can
+// be stored inside our kernel `Mutex`/`Arc`. This is an unsafe, but
+// controlled decision.
+unsafe impl<Hal: SystemHal, Dev: BlockDevice> Send for Ext4Filesystem<Hal, Dev> {}
+unsafe impl<Hal: SystemHal, Dev: BlockDevice> Sync for Ext4Filesystem<Hal, Dev> {}
+
 pub(crate) struct WritebackGuard {
     bdev: *mut ext4_blockdev,
 }

@@ -13,6 +13,7 @@ pub enum Errno {
     ECHILD  = 10,  // No child processes
     EAGAIN  = 11,  // Try again
     ENOMEM  = 12,  // Out of memory
+    EACCES  = 13,  // Permission denied
     EFAULT  = 14,  // Bad address
     EEXIST  = 17,  // File exists
     EXDEV   = 18,  // Cross-device link

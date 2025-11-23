@@ -59,6 +59,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             panic!("Deadlock detected in Mutex: current thread {} is trying to lock a mutex it already holds", tid);
         }
         
+        #[cfg(not(feature = "no-smp"))]
         self.lock.lock();
         *self.holder() = current::tid();
         

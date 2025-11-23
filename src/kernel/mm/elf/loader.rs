@@ -4,15 +4,24 @@ use alloc::vec;
 use alloc::string::String;
 
 use crate::fs::file::{File, FileOps, FileFlags, SeekWhence};
-use crate::fs::vfs;
+use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::Errno;
-use crate::kernel::mm::elf::loaddyn::DynInfo;
+// use crate::kernel::mm::elf::loaddyn::DynInfo;
 use crate::kernel::mm::{maparea, AddrSpace, MapPerm};
 use crate::kernel::config;
 use crate::{arch, ktrace};
 use crate::println;
 
 use super::def::*;
+
+#[derive(Debug, Clone, Copy)]
+pub struct DynInfo {
+    pub user_entry: usize,
+    pub interpreter_base: usize,
+    pub phdr_addr: usize,
+    pub phent: u16,
+    pub phnum: u16,
+}
 
 pub fn read_ehdr(file: &Arc<File>) -> Result<Elf64Ehdr, Errno> {
     let mut header = [0u8; core::mem::size_of::<Elf64Ehdr>()];
@@ -107,7 +116,7 @@ pub fn load_elf(file: &Arc<File>, addrspace: &mut AddrSpace) -> Result<(usize, O
     let phdr_addr = phdr_addr.unwrap_or(0);
 
     if let Some(interpreter_path) = &interpreter_path {
-        crate::kinfo!("Interpreter path: {}", interpreter_path);
+        // crate::kinfo!("Interpreter path: {}", interpreter_path);
         let (interpreter_base, interpreter_entry) = load_interpreter(&interpreter_path, addrspace)?;
     
         let dyn_info = DynInfo {
@@ -177,9 +186,7 @@ pub fn load_program_from_file(
 
 fn load_interpreter(path: &str, addrspace: &mut AddrSpace) -> Result<(usize, usize), Errno> {
     let file_flags = FileFlags::readonly();
-    let file = vfs::open_file(path, file_flags).map_err(|_| {
-        Errno::ENOENT
-    })?;
+    let file = vfs::open_file(path, file_flags, &Perm::new(PermFlags::X))?;
     let file = Arc::new(file);
     
     let ehdr = read_ehdr(&file)?;

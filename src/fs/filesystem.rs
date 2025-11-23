@@ -30,4 +30,9 @@ pub trait SuperBlockOps: Send + Sync {
     fn statfs(&self) -> SysResult<Statfs> {
         Err(Errno::EOPNOTSUPP)
     }
+
+    fn sync(&self) -> SysResult<()> {
+        // Default implementation does nothing, can be overridden by specific filesystems
+        Ok(())
+    }
 }

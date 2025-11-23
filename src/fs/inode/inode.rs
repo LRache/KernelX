@@ -1,10 +1,13 @@
+use core::time::Duration;
+
 use alloc::string::String;
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::{FileStat, Uid};
+use crate::fs::perm::Perm;
 use crate::fs::file::DirResult;
-use crate::kernel::uapi::FileStat;
 
 use super::{Mode, FileType};
 
@@ -47,12 +50,30 @@ pub trait InodeOps: DowncastSync {
         unimplemented!("{}", self.type_name())
     }
     
-    fn mode(&self) -> Mode {
-        Mode::empty()
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::empty())
     }
 
-    fn inode_type(&self) -> FileType {
-        self.mode().into()
+    fn chmod(&self, _mode: Mode) -> SysResult<()> {
+        Err(Errno::EOPNOTSUPP)
+    }
+      
+    fn owner(&self) -> SysResult<(Uid, Uid)> {
+        Ok((0, 0))
+    }
+
+    fn check_perm(&self, _perm: &Perm) -> SysResult<()> {
+        let (uid, gid) = self.owner()?;
+        let mode = self.mode()?;
+        if mode.check_perm(_perm, uid, gid) {
+            Ok(())
+        } else {
+            Err(Errno::EACCES)
+        }
+    }
+
+    fn inode_type(&self) -> SysResult<FileType> {
+        self.mode().map(|inode| inode.into())
     }
 
     fn readlink(&self) -> SysResult<String> {
@@ -67,7 +88,7 @@ pub trait InodeOps: DowncastSync {
         let mut kstat = FileStat::default();
         kstat.st_ino = self.get_ino() as u64;
         kstat.st_size = self.size()? as i64;
-        kstat.st_mode = self.mode().bits() as u32;
+        kstat.st_mode = self.mode()?.bits() as u32;
 
         Ok(kstat)
     }
@@ -76,21 +97,18 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
-    fn update_atime(&self, atime: u64, atime_nsec: u64) -> SysResult<()> {
-        let _ = atime;
-        let _ = atime_nsec;
+    fn update_atime(&self, time: &Duration) -> SysResult<()> {
+        let _ = time;
         Ok(())
     }
 
-    fn update_mtime(&self, mtime: u64, mtime_nsec: u64) -> SysResult<()> {
-        let _ = mtime;
-        let _ = mtime_nsec;
+    fn update_mtime(&self, time: &Duration) -> SysResult<()> {
+        let _ = time;
         Ok(())
     }
 
-    fn update_ctime(&self, ctime: u64, ctime_nsec: u64) -> SysResult<()> {
-        let _ = ctime;
-        let _ = ctime_nsec;
+    fn update_ctime(&self, time: &Duration) -> SysResult<()> {
+        let _ = time;
         Ok(())
     }
 }

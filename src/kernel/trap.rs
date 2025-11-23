@@ -6,8 +6,22 @@ use crate::kernel::syscall;
 use crate::kernel::event::timer;
 use crate::kwarn;
 
+pub fn trap_enter() {
+    let tcb = current::tcb();
+    let counter = &mut tcb.time_counter.lock();
+    counter.system_start = Some(timer::now());
+    let user_start = counter.user_start.take().unwrap();
+    counter.user_time += timer::now() - user_start;
+}
+
 pub fn trap_return() {
-    current::tcb().handle_signal();
+    let tcb = current::tcb();
+    tcb.handle_signal();
+
+    let counter = &mut tcb.time_counter.lock();
+    counter.user_start = Some(timer::now());
+    let system_start = counter.system_start.take().unwrap();
+    counter.system_time += timer::now() - system_start;
 }
 
 pub fn timer_interrupt() {
@@ -47,4 +61,8 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
 pub fn illegal_inst() {
     // TODO: Implement the sicode and fields for illegal inst
     current::pcb().send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, KSiFields::Empty, None).unwrap();
+}
+
+pub fn memory_misaligned() {
+    current::pcb().send_signal(signum::SIGBUS, SiCode::SI_KERNEL, KSiFields::Empty, None).unwrap();
 }

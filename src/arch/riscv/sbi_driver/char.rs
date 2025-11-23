@@ -38,7 +38,8 @@ impl CharDriverOps for SBIConsoleDriver {
     }
 
     fn poll(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<PollEvent>> {
-        unimplemented!()
+        // unimplemented!()
+        Ok(None)
     }
 
     fn poll_cancel(&self) {

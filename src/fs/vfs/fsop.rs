@@ -42,7 +42,9 @@ impl VirtualFileSystem {
     }
 
     fn sync_all(&self) -> SysResult<()> {
-        self.cache.sync()
+        self.cache.sync()?;
+        self.superblock_table.lock().sync_all()?;
+        Ok(())
     }
 }
 

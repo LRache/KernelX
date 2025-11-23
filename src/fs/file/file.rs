@@ -76,7 +76,7 @@ impl File {
             Some(d) => d,
             None => return Ok(None),
         };
-        *pos += 1;
+        *pos += dent.len as usize;
         
         Ok(Some(dent))
     }
@@ -101,6 +101,11 @@ impl FileOps for File {
         let len = self.inode.writeat(buf, *pos)?;
         *pos += len;
         
+        Ok(len)
+    }
+
+    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        let len = self.inode.writeat(buf, offset)?;
         Ok(len)
     }
 

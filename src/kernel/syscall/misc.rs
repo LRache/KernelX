@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use num_enum::TryFromPrimitive;
 use alloc::vec;
 
@@ -7,6 +9,7 @@ use crate::kernel::config;
 use crate::kernel::errno::Errno;
 use crate::kernel::syscall::uptr::{UBuffer, UPtr};
 use crate::kernel::syscall::SyscallRet;
+use crate::kernel::uapi;
 use crate::klib::random::random;
 use crate::arch;
 
@@ -141,6 +144,72 @@ pub fn membarrier() -> SyscallRet {
 
 pub fn get_mempolicy() -> SyscallRet {
     // TODO: Not implemented yet
+    Ok(0)
+}
+#[derive(Debug, Copy, Clone)]
+pub struct Rusage {
+    ru_utime: uapi::TimeVal, // user CPU time used
+    ru_stime: uapi::TimeVal, // system CPU time used
+    ru_maxrss: isize,      // maximum resident set size
+    ru_ixrss: isize,       // integral shared memory size
+    ru_idrss: isize,       // integral unshared data size
+    ru_isrss: isize,       // integral unshared stack size
+    ru_minflt: isize,      // page reclaims (soft page faults)
+    ru_majflt: isize,      // page faults (hard page faults)
+    ru_nswap: isize,       // swaps
+    ru_inblock: isize,     // block input operations
+    ru_oublock: isize,     // block output operations
+    ru_msgsnd: isize,      // IPC messages sent
+    ru_msgrcv: isize,      // IPC messages received
+    ru_nsignals: isize,    // signals received
+    ru_nvcsw: isize,       // voluntary context switches
+    ru_nivcsw: isize,      // involuntary context switches
+}
+
+impl Default for Rusage {
+    fn default() -> Self {
+        Rusage {
+            ru_utime: uapi::TimeVal { tv_sec: 0, tv_usec: 0 },
+            ru_stime: uapi::TimeVal { tv_sec: 0, tv_usec: 0 },
+            ru_maxrss: 0,
+            ru_ixrss: 0,
+            ru_idrss: 0,
+            ru_isrss: 0,
+            ru_minflt: 0,
+            ru_majflt: 0,
+            ru_nswap: 0,
+            ru_inblock: 0,
+            ru_oublock: 0,
+            ru_msgsnd: 0,
+            ru_msgrcv: 0,
+            ru_nsignals: 0,
+            ru_nvcsw: 0,
+            ru_nivcsw: 0,
+        }
+    }
+}
+
+#[repr(usize)]
+#[derive(TryFromPrimitive)]
+pub enum RusageWho {
+    SELF = 0,
+}
+
+pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
+    let who = RusageWho::try_from(who).map_err(|_| Errno::EINVAL)?;
+    
+    let mut rusage = Rusage::default();
+    
+    match who {
+        RusageWho::SELF => {
+            let (utime, stime) = current::pcb().tasks_usage_time();
+            rusage.ru_utime = utime.into();
+            rusage.ru_stime = stime.into();
+        }
+    };
+    
+    uptr_rusage.write(rusage)?;
+
     Ok(0)
 }
 

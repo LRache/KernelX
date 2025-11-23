@@ -9,7 +9,6 @@ use crate::kernel::mm::vdso;
 use crate::kernel::task::{Tid, PCB, TCB};
 use crate::kernel::scheduler::current;
 use crate::kernel::errno::{SysResult, Errno};
-use crate::{kinfo, lock_debug};
 
 use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};
 
@@ -21,7 +20,6 @@ impl TCB {
             None => return,
         };
         drop(state);
-        // kinfo!("signal_pending before handle_signal: {:?}", signal_pending);
 
         let signum = signal.signum;
         if signum.is_empty() {
@@ -96,7 +94,7 @@ impl TCB {
     }  
 
     pub fn try_recive_pending_signal(self: &Arc<Self>, pending: PendingSignal) -> bool {
-        let mut state = lock_debug!(self.state());
+        let mut state = self.state().lock();
 
         // if state.state != TaskState::Blocked {
         //     return false;

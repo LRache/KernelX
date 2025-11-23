@@ -1,8 +1,7 @@
 use crate::kernel::mm::MapPerm;
-use crate::arch::riscv::PGSIZE;
+use crate::arch::riscv::{PGSIZE, TRAMPOLINE_BASE};
 use crate::arch::PageTableTrait;
 use crate::klib::{InitedCell, SpinLock};
-use crate::platform::config::TRAMPOLINE_BASE;
 use crate::kinfo;
 
 use super::pagetable::PageTable;
@@ -50,7 +49,7 @@ pub fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm)
     }
 }
 
-pub fn unmap_kernel_addr(kstart: usize, size: usize) {
+pub unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
     let mut kaddr = kstart;
     let kend = kstart + size;
     

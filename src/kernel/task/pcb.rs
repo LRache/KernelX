@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use alloc::sync::Arc;
+use core::time::Duration;
 use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
@@ -30,6 +31,7 @@ pub struct PCB {
     
     pub tasks: SpinLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
+    umask: SpinLock<u16>,
     waiting_task: SpinLock<Vec<Arc<TCB>>>,
 
     signal: Signal,
@@ -38,7 +40,7 @@ pub struct PCB {
 }
 
 impl PCB {
-    pub fn new(pid: i32, parent: &Arc<PCB>, cwd: &Arc<Dentry>) -> Arc<Self> {
+    pub fn new(pid: i32, parent: &Arc<PCB>) -> Arc<Self> {
         Arc::new(Self {
             pid,
             parent: SpinLock::new(Some(parent.clone())),
@@ -46,7 +48,8 @@ impl PCB {
             exit_code: SpinLock::new(0),
             
             tasks: SpinLock::new(Vec::new()),
-            cwd: SpinLock::new(cwd.clone()),
+            cwd: SpinLock::new(parent.cwd.lock().clone()),
+            umask: SpinLock::new(*parent.umask.lock()),
             waiting_task: SpinLock::new(Vec::new()),
 
             signal: Signal {
@@ -61,8 +64,6 @@ impl PCB {
     pub fn new_initprocess(file: File, cwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
         let new_tid = tid::alloc();
         // assert!(new_tid == 1);
-        
-        let file = Arc::new(file);
 
         let cwd = vfs::load_dentry(cwd)?;
 
@@ -74,6 +75,7 @@ impl PCB {
             
             tasks: SpinLock::new(Vec::new()),
             cwd: SpinLock::new(cwd.clone()),
+            umask: SpinLock::new(0o022),
             waiting_task: SpinLock::new(Vec::new()),
 
             signal: Signal {
@@ -84,7 +86,7 @@ impl PCB {
             children: Mutex::new(Vec::new()),
         });
 
-        let first_task = TCB::new_inittask(new_tid, &pcb, &file, argv, envp);
+        let first_task = TCB::new_inittask(new_tid, &pcb, file, argv, envp);
         pcb.tasks.lock().push(first_task.clone());
 
         scheduler::push_task(first_task);
@@ -118,6 +120,14 @@ impl PCB {
         *self.cwd.lock() = dentry.clone();
     }
 
+    pub fn umask(&self) -> u16 {
+        *self.umask.lock()
+    }
+
+    pub fn set_umask(&self, mask: u16) {
+        *self.umask.lock() = mask & 0o777;
+    }
+
     pub fn clone_task(
         self: &Arc<Self>, 
         tcb: &Arc<TCB>, 
@@ -132,14 +142,12 @@ impl PCB {
             new_tcb = tcb.new_clone(new_tid, self, userstack, flags, tls);
             self.tasks.lock().push(new_tcb.clone());
         } else {
-            let new_parent = PCB::new(new_tid, self, &self.cwd.lock());
+            let new_parent = PCB::new(new_tid, self);
             new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags, tls);
             new_parent.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_parent.clone());
             manager::insert(new_parent);
         }
-        
-        scheduler::push_task(new_tcb.clone());
 
         Ok(new_tcb)
     }
@@ -303,6 +311,20 @@ impl PCB {
 
     pub fn pending_signals(&self) -> &Mutex<PendingSignalQueue> {
         &self.signal.pending
+    }
+
+    pub fn tasks_usage_time(&self) -> (Duration, Duration) {
+        let tasks = self.tasks.lock();
+        let mut utime = Duration::ZERO;
+        let mut stime = Duration::ZERO;
+
+        tasks.iter().for_each(|task| {
+            let counter = task.time_counter.lock();
+            utime += counter.user_time;
+            stime += counter.system_time;
+        });
+
+        (utime, stime)
     }
 }
 

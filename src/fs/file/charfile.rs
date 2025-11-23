@@ -5,7 +5,7 @@ use crate::kernel::uapi::FileStat;
 use crate::kernel::event::{PollEvent, PollEventSet};
 use crate::driver::CharDriverOps;
 use crate::fs::file::FileOps;
-use crate::fs::InodeOps;
+use crate::fs::{InodeOps, Mode};
 
 use super::{SeekWhence, DirResult};
 
@@ -44,6 +44,10 @@ impl FileOps for CharFile {
         Ok(buf.len())
     }
 
+    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
+        Err(Errno::EPIPE)
+    }
+
     fn readable(&self) -> bool {
         true
     }
@@ -57,7 +61,11 @@ impl FileOps for CharFile {
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
-        Ok(FileStat::empty())
+        let mut kstat = FileStat::default();
+
+        kstat.st_mode = Mode::S_IFCHR.bits() as u32;
+
+        Ok(kstat)
     }
 
     fn fsync(&self) -> SysResult<()> {

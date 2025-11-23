@@ -1,4 +1,5 @@
 use core::usize;
+use core::time::Duration;
 
 use alloc::sync::Arc;
 use bitflags::bitflags;
@@ -12,10 +13,9 @@ use crate::kernel::syscall::uptr::{UArray, UBuffer, UString, UPtr};
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec};
-use crate::fs::{Dentry, Mode};
+use crate::fs::{Dentry, Mode, Perm, PermFlags};
 use crate::fs::vfs;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::kdebug;
 
 use super::def::*;
 
@@ -52,7 +52,7 @@ pub enum FcntlCmd {
     F_DUPFD_CLOEXEC = 1030,
 }
 
-pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> SyscallRet {
+pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     match FcntlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)? {
         FcntlCmd::F_DUPFD_CLOEXEC => {
             let mut fdtable = current::fdtable().lock();
@@ -79,6 +79,16 @@ pub fn fcntl64(fd: usize, cmd: usize, _arg: usize) -> SyscallRet {
             Ok(0)
         }
 
+        FcntlCmd::F_SETFD => {
+            let _file = current::fdtable().lock().get(fd)?;
+            let _flags = OpenFlags::from_bits(arg).ok_or(Errno::EINVAL)?;
+            // if flags.contains(OpenFlags::O_WRONLY) {
+            //     file.readable()
+            // }
+            
+            Ok(0)
+        }
+
         _ => Err(Errno::EINVAL),
     }
 }
@@ -87,9 +97,11 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     uptr_filename.should_not_null()?;
 
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let readable = open_flags.contains(OpenFlags::O_RDONLY) || open_flags.contains(OpenFlags::O_RDWR);
+    let writable = open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR);
     let file_flags = FileFlags {
-        writable: open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR),
-        readable: open_flags.contains(OpenFlags::O_RDONLY) || open_flags.contains(OpenFlags::O_RDWR),
+        writable,
+        readable,
         blocked: !open_flags.contains(OpenFlags::O_NONBLOCK)
     };
     let fd_flags = FDFlags {
@@ -97,7 +109,9 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     };
 
     let path = uptr_filename.read()?;
-    crate::kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:#o}", dirfd, path, open_flags, mode);
+    if !path.starts_with("/tmp") {
+        // crate::kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:#o}", dirfd, path, open_flags, mode);
+    }
     
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
@@ -106,10 +120,14 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             }
 
             let dentry = vfs::load_dentry_at(parent, &path)?;
-            return vfs::create_temp(&dentry, file_flags, Mode::from_bits(mode as u16 & 0o777).ok_or(Errno::EINVAL)? | Mode::S_IFREG);
+            return vfs::create_temp(&dentry, file_flags, Mode::from_bits(mode as u32 & 0o777).ok_or(Errno::EINVAL)? | Mode::S_IFREG);
         }
+
+        let mut perm_flags = PermFlags::empty();
+        if readable { perm_flags.insert(PermFlags::R); }
+        if writable { perm_flags.insert(PermFlags::W); }
         
-        match vfs::openat_file(parent, &path, file_flags) {
+        match vfs::openat_file(parent, &path, file_flags, &Perm::new(perm_flags)) {
             Ok(file) => {
                 if open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
                     return Err(Errno::EEXIST);
@@ -119,10 +137,10 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             Err(e) => {
                 if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
                     // Create the file
-                    let mode = Mode::from_bits(mode as u16 & 0o777).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
+                    let mode = Mode::from_bits(mode as u32 & 0o777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
                     let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?;
-                    parent_dentry.create(&child_name, mode)?;                    
-                    vfs::openat_file(parent, &path, file_flags)
+                    parent_dentry.create(&child_name, mode)?;
+                    vfs::openat_file(parent, &path, file_flags, &Perm::new(perm_flags))
                 } else {
                     Err(e)
                 }
@@ -179,12 +197,12 @@ pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
 }
 
 pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UString, bufsize: usize) -> SyscallRet {
-    // let path = current::get_user_string(uptr_path)?;
-    // let path = copy_from_user::string(uptr_path)?;
     uptr_path.should_not_null()?;
     ubuf.should_not_null()?;
 
     let path = uptr_path.read()?;
+
+    // crate::kinfo!("readlinkat: dirfd={}, path=\"{}\"", dirfd as isize, path);
     
     let path = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
@@ -195,9 +213,6 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UString, bufsize: usiz
         )?
     }.readlink()?;
 
-    // copy_to_user_string!(uptr_buf, &path, bufsize)?;
-    // current::copy_to_user_string(uptr_buf, &path, bufsize)?;
-    // copy_to_user::string(uptr_buf, &path, bufsize)?;
     ubuf.write(&path, bufsize)?;
 
     Ok(0)
@@ -305,6 +320,37 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
     Ok(written)
 }
 
+pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    if count == 0 {
+        return Ok(0)
+    }
+
+    let mut written = 0;
+    let mut buffer = [0u8; BUFFER_SIZE];
+    let mut left = count;
+
+    while left != 0 {
+        let to_write = core::cmp::min(left, BUFFER_SIZE);
+        ubuf.read(count - left, &mut buffer[..to_write])?;
+
+        let bytes_written = file.pwrite(&buffer[..to_write], pos + (count - left))?;
+        if bytes_written == 0 {
+            break; // EOF
+        }
+
+        left -= bytes_written;
+        written += bytes_written;
+
+        if bytes_written < to_write {
+            break; // EOF
+        }
+    }
+
+    Ok(written)
+}
+
 pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
@@ -317,11 +363,6 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     let mut total_written = 0;
 
     for i in 0..iovcnt {
-        // let mut iov_buf = [0u8; core::mem::size_of::<IOVec>()];
-        // addrspace.copy_from_user(iov + i * core::mem::size_of::<IOVec>(), &mut iov_buf)
-        //     .map_err(|_| Errno::EFAULT)?;
-        // let iov = unsafe { &*(iov_buf.as_ptr() as *const IOVec) };
-        // let iov: IOVec = copy_from_user::object(iov + i * core::mem::size_of::<IOVec>())?;
         let iov = uptr_iov.add(i).read()?;
 
         let mut written = 0usize;
@@ -329,8 +370,6 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
         let mut buffer = [0u8; BUFFER_SIZE];
         while remaining != 0 {
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
-            // addrspace.copy_from_user(iov.base + written, &mut buffer[..to_write])
-            //     .map_err(|_| Errno::EFAULT)?;
             copy_from_user::buffer(iov.base + written, &mut buffer[..to_write])
                 .map_err(|_| Errno::EFAULT)?;
 
@@ -418,12 +457,6 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
         }
     }
 
-    // if uptr_offset != 0 {
-    //     // copy_to_user!(uptr_offset, local_offset)?;
-    //     copy_to_user::object(uptr_offset, local_offset)?;
-    // } else {
-    //     in_file.seek(local_offset as isize, SeekWhence::BEG)?;
-    // }
     if uptr_offset.is_null() {
         in_file.seek(local_offset as isize, SeekWhence::BEG)?;
     } else {
@@ -439,8 +472,20 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> SyscallRet {
     file.ioctl(request, arg)
 }
 
-// TODO: Implement faccessat
-pub fn faccessat(_dirfd: usize, _uptr_path: usize, _mode: usize) -> SyscallRet {
+pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
+    uptr_path.should_not_null()?;
+
+    let path = uptr_path.read()?;
+
+    // crate::kinfo!("faccessat: dirfd={}, path=\"{}\"", dirfd, path);
+
+    if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?;
+    } else {
+        let file = current::fdtable().lock().get(dirfd)?;
+        vfs::load_dentry_at(file.get_dentry().ok_or(Errno::ENOTDIR)?, &path)?;
+    }
+
     Ok(0)
 }
 
@@ -450,13 +495,16 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, _fla
     
     let path = uptr_path.read()?;
 
+    // crate::kinfo!("fstatat: dirfd={}, path=\"{}\"", dirfd, path);
+
     let fstat = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare()))?
+        current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare(), &Perm::dontcare()))?
     } else {
         vfs::openat_file(
             current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
             &path, 
-            FileFlags::dontcare()
+            FileFlags::dontcare(),
+            &Perm::dontcare()
         )?
     }.fstat()?;
 
@@ -513,20 +561,23 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
     };
     let inode = dentry.get_inode();
     let now = get_time_us();
-
     if atime.tv_nsec != UTIME_OMIT {
         if atime.tv_nsec == UTIME_NOW {
-            inode.update_atime((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u64)?;
+            let duration = Duration::new((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u32);
+            inode.update_atime(&duration)?;
         } else {
-            inode.update_atime(atime.tv_sec, atime.tv_nsec)?;
+            let duration = Duration::new(atime.tv_sec, atime.tv_nsec as u32);
+            inode.update_atime(&duration)?;
         }
     }
 
     if mtime.tv_nsec != UTIME_OMIT {
         if mtime.tv_nsec == UTIME_NOW {
-            inode.update_mtime((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u64)?;
+            let duration = Duration::new((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u32);
+            inode.update_mtime(&duration)?;
         } else {
-            inode.update_mtime(mtime.tv_sec, mtime.tv_nsec)?;
+            let duration = Duration::new(mtime.tv_sec, mtime.tv_nsec as u32);
+            inode.update_mtime(&duration)?;
         }
     }
 
@@ -537,22 +588,19 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     if mode > 0o7777 {
         return Err(Errno::EINVAL);
     }
-    let mode = Mode::from_bits(mode as u16).ok_or(Errno::EINVAL)? | Mode::S_IFDIR;
-
+    let mode = Mode::from_bits(mode as u32 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFDIR;
     uptr_path.should_not_null()?;
     
-    // let path = current::get_user_string(user_path)?;
-    // let path = copy_from_user::string(user_path)?;
     let path = uptr_path.read()?;
 
-    let parent_dentry = if dirfd as isize == AT_FDCWD {
+    let (parent, name) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?
     } else {
-        vfs::load_parent_dentry(&path)?
+        vfs::load_parent_dentry_at(
+            current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
+            &path
+        )?
     };
-
-    let parent = parent_dentry.0;
-    let name = &parent_dentry.1;
 
     parent.create(name, mode)?;
 
@@ -591,11 +639,10 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
         let name_len = core::cmp::min(name_bytes.len(), 255);
         let reclen = DIRENT_NAME_OFFSET + name_len + 1;
         let reclen_aligned = (reclen + 7) & !7; // Align to 8 bytes
-        kdebug!("getdents64: dent ino={}, name={}, reclen_aligned={}", dent.ino, name, reclen_aligned);
+        let len = dent.len as usize;
 
         if total_copied + reclen_aligned > count {
-            kdebug!("getdents64: buffer full, total_copied={}, reclen_aligned={}, count={}", total_copied, reclen_aligned, count);
-            file.seek(-1, SeekWhence::CUR)?; // Rewind one entry
+            file.seek(-(len as isize), SeekWhence::CUR)?; // Rewind one entry
             break; 
         }
 
@@ -609,8 +656,6 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
         // Copy dirent to user space
         let dirent_ptr = uptr_dirent + total_copied;
 
-        // copy_to_user!(dirent_ptr, dirent).unwrap();
-        // copy_to_user_string!(dirent_ptr + DIRENT_NAME_OFFSET, name, name_len + 1)?;
         copy_to_user::object(dirent_ptr, dirent)?;
         copy_to_user::string(dirent_ptr + DIRENT_NAME_OFFSET, name, name_len + 1)?;
 
@@ -618,7 +663,6 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     }
 
     if total_copied == 0 {
-        kdebug!("getdents64: no entries copied, buffer too small");
         Err(Errno::EINVAL)
     } else {
         Ok(total_copied)
@@ -685,6 +729,30 @@ pub fn renameat2(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_n
     Ok(0)
 }
 
+pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
+    if mode > 0o777 {
+        return Err(Errno::EINVAL);
+    }
+    let mode = Mode::from_bits(mode as u32).ok_or(Errno::EINVAL)?;
+
+    uptr_path.should_not_null()?;
+    
+    let path = uptr_path.read()?;
+
+    let dentry = if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
+    } else {
+        vfs::load_dentry_at(
+            current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
+            &path
+        )?
+    };
+
+    dentry.get_inode().chmod(mode)?;
+
+    Ok(0)
+}
+
 pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
@@ -697,6 +765,18 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
         .ftruncate(length as u64)?;
 
     Ok(0)
+}
+
+pub fn umask(mask: usize) -> SyscallRet {
+    if mask > 0o777 {
+        return Err(Errno::EINVAL);
+    }
+
+    let pcb = current::pcb();
+    let old_mask = pcb.umask();
+    pcb.set_umask(mask as u16);
+
+    Ok(old_mask as usize)
 }
 
 pub fn fsync(fd: usize) -> SyscallRet {

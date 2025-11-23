@@ -24,8 +24,6 @@ RUST_TARGET_DIR ?= $(abspath target/$(RUST_TARGET)/$(COMPILE_MODE))
 RUST_KERNEL ?= $(RUST_TARGET_DIR)/kernelx
 RUST_DEPENDENCIES = $(RUST_TARGET_DIR)/kernelx.d
 
-RUST_FEATURES += platform-$(PLATFORM)
-
 # ------ Configure log level features using a more elegant lookup ------ #
 LOG_FEATURES_trace = log-trace
 LOG_FEATURES_debug = log-debug
@@ -48,6 +46,8 @@ endif
 ifeq ($(WARN_UNIMPLEMENTED_SYSCALL),y)
 RUST_FEATURES += warn-unimplemented-syscall
 endif
+
+RUST_FEATURES += no-smp
 
 all: kernel
 

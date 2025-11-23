@@ -47,6 +47,10 @@ pub fn init() {
     arch::enable_timer_interrupt();
 }
 
+pub fn now() -> Duration {
+    Duration::from_micros(arch::get_time_us())
+}
+
 pub fn add_timer(tcb: Arc<TCB>, time: Duration) {
     TIMER.add_timer(tcb, time, Event::Timeout);
 }

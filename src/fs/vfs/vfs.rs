@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use alloc::string::String;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use spin::mutex::Mutex;
@@ -46,11 +45,11 @@ impl VirtualFileSystem {
 
         // TODO: Link to
         current = current.get_mount_to();
-        current = current.get_link_to();
+        current = current.walk_link()?;
 
         path.split('/').filter(|s| !(s.is_empty() || *s == ".")).try_for_each(|part| {
             let next = current.lookup(part)?;
-            current = next.get_mount_to();
+            current = next.get_mount_to().walk_link()?;
 
             Ok(())
         })?;
@@ -58,27 +57,32 @@ impl VirtualFileSystem {
         Ok(current)
     }
 
-    pub fn lookup_parent_dentry(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<(Arc<Dentry>, String)> {
+    pub fn lookup_parent_dentry<'a>(&self, dir: &Arc<Dentry>, path: &'a str) -> SysResult<(Arc<Dentry>, &'a str)> {
         let mut current = match path.chars().next() {
             Some('/') => self.get_root().clone(),
             _ => dir.clone(),
         };
-        current = current.get_mount_to().get_link_to();
+        current = current.get_mount_to().walk_link()?;
 
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
+        // if parts.is_empty() {
+        //     return current.get_parent()
+        //            .ok_or(Errno::ENOENT)
+        //            .map(|p| (p, String::from("/")));
+        // }
         if parts.is_empty() {
             return current.get_parent()
                    .ok_or(Errno::ENOENT)
-                   .map(|p| (p, String::from("/")));
+                   .map(|p| (p, "/"));
         }
 
         for part in &parts[0..parts.len()-1] {
             let next = current.lookup(part)?;
-            current = next.get_mount_to().get_link_to();
+            current = next.get_mount_to().walk_link()?;
         }
 
-        Ok((current, parts[parts.len()-1].into()))
+        Ok((current, parts[parts.len()-1]))
     }
 
     pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {

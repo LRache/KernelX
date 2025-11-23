@@ -35,7 +35,7 @@ pub trait ArchTrait {
     fn paddr_to_kaddr(paddr: usize) -> usize;
     fn scan_device();
     fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm);
-    fn unmap_kernel_addr(kstart: usize, size: usize);
+    unsafe fn unmap_kernel_addr(kstart: usize, size: usize);
 
     fn get_time_us() -> u64;
     fn set_next_time_event_us(interval: u64);

@@ -43,7 +43,7 @@ pub fn cause() -> Cause {
     let scause = read();
     if scause & (1 << 63) == 0 {
         Cause::Trap(
-            match scause & 0x7fffffffffffffff {
+            match scause & isize::MAX as usize {
                 0  => Trap::InstAddrMisaligned,
                 1  => Trap::InstAccessFault,
                 2  => Trap::IllegalInst,

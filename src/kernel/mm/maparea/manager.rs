@@ -105,13 +105,23 @@ impl Manager {
     }
 
     pub fn is_map_range_overlapped(&self, uaddr: usize, page_count: usize) -> bool {
-        let end_addr = uaddr + page_count * arch::PGSIZE;
+        if page_count == 0 {
+            return false;
+        }
 
-        for (&area_base, area) in &self.areas {
-            let area_end = area_base + area.size();
+        let end_addr = uaddr.saturating_add(page_count * arch::PGSIZE);
 
-            // Check if the range overlaps with this area
-            if area_base < end_addr && area_end > uaddr {
+        // Previous area (if any) might extend into the new range.
+        if let Some((area_base, area)) = self.areas.range(..=uaddr).next_back() {
+            let area_end = area_base.saturating_add(area.size());
+            if uaddr < area_end {
+                return true;
+            }
+        }
+
+        // Next area is the only other candidate because areas are non-overlapping and ordered.
+        if let Some((area_base, _)) = self.areas.range(uaddr..).next() {
+            if *area_base < end_addr {
                 return true;
             }
         }

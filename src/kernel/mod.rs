@@ -1,6 +1,7 @@
 mod main;
 pub mod mm;
 pub mod task;
+pub mod kthread;
 pub mod scheduler;
 pub mod errno;
 pub mod trap;
@@ -11,5 +12,5 @@ pub mod usync;
 pub mod config;
 pub mod uapi;
 
-pub use main::fini;
+pub use main::exit;
 pub use main::parse_boot_args;

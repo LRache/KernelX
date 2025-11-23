@@ -25,3 +25,32 @@ impl Into<Duration> for Timeval {
         Duration::new(self.tv_sec as u64, (self.tv_usec * 1000) as u32)
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Timespec32 {
+    pub tv_sec:  i32,     // seconds
+    pub tv_nsec: i32,     // nanoseconds
+}
+
+impl Into<Duration> for Timespec32 {
+    fn into(self) -> Duration {
+        Duration::new(self.tv_sec as u64, self.tv_nsec as u32)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TimeVal {
+    pub tv_sec:  usize,    // seconds
+    pub tv_usec: usize,    // microseconds
+}
+
+impl From<Duration> for TimeVal {
+    fn from(dur: Duration) -> Self {
+        TimeVal {
+            tv_sec: dur.as_secs() as usize,
+            tv_usec: (dur.subsec_nanos() / 1000) as usize,
+        }
+    }
+}

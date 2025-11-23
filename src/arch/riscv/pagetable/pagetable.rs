@@ -1,4 +1,4 @@
-use crate::{kernel::mm::MapPerm, kinfo};
+use crate::kernel::mm::MapPerm;
 use crate::kernel::mm;
 use crate::arch::riscv::PGBITS;
 use crate::arch::PageTableTrait;

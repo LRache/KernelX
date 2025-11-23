@@ -1,3 +1,4 @@
+use core::time::Duration;
 use alloc::sync::Arc;
 use alloc::vec;
 use spin::Mutex;
@@ -12,14 +13,15 @@ use crate::kernel::task::PCB;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::mm::{AddrSpace, elf};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
-use crate::kernel::event::Event;
+use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
+// use crate::kernel::scheduler::Task;
 use crate::fs::file::{File, FileFlags, CharFile};
-use crate::fs::vfs;
+use crate::fs::{Perm, PermFlags, vfs};
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
-use crate::{arch, kinfo};
+use crate::arch;
 use crate::driver;
 use crate::{ktrace, lock_debug};
 
@@ -30,6 +32,7 @@ pub enum TaskState {
     Running,
     Ready,
     Blocked,
+    BlockedUninterruptible,
     Exited,
 }
 
@@ -47,6 +50,24 @@ impl TaskStateSet {
             state: TaskState::Ready,
             pending_signal: None,
             signal_to_wait: SignalSet::empty()
+        }
+    }
+}
+
+pub struct TimeCounter {
+    pub user_time: Duration,
+    pub system_time: Duration,
+    pub user_start: Option<Duration>,
+    pub system_start: Option<Duration>,
+}
+
+impl TimeCounter {
+    pub fn new() -> Self {
+        Self {
+            user_time: Duration::ZERO,
+            system_time: Duration::ZERO,
+            user_start: None,
+            system_start: Some(timer::now()),
         }
     }
 }
@@ -69,6 +90,8 @@ pub struct TCB {
 
     state: SpinLock<TaskStateSet>,
     pub wakeup_event: SpinLock<Option<Event>>,
+    parent_waiting_vfork: SpinLock<Option<Arc<TCB>>>,
+    pub time_counter: SpinLock<TimeCounter>,
 }
 
 impl TCB {
@@ -108,7 +131,9 @@ impl TCB {
             signal_mask: SpinLock::new(SignalSet::empty()),
             
             state: SpinLock::new(TaskStateSet::new()),
-            wakeup_event: SpinLock::new(None)
+            wakeup_event: SpinLock::new(None),
+            parent_waiting_vfork: SpinLock::new(None),
+            time_counter: SpinLock::new(TimeCounter::new()),
         });
 
         tcb
@@ -117,12 +142,41 @@ impl TCB {
     pub fn new_inittask(
         tid: i32, 
         parent: &Arc<PCB>,
-        file: &Arc<File>,
+        file: File,
         argv: &[&str],
         envp: &[&str],
     ) -> Arc<Self> {
+        // Read the shebang
+        let mut first_line = [0u8; 128];
+        let n = file.read_at(&mut first_line, 0).expect("Failed to read first line of init file");
+        let first_line = core::str::from_utf8(&first_line[..n]).unwrap_or("");
+        let first_line = first_line.lines().next().unwrap_or("");
+        let first_line = first_line.trim_end_matches('\n');
+        if first_line.starts_with("#!") {
+            let shebang = first_line.trim_start_matches("#!").trim();
+            let mut parts = shebang.split_whitespace();
+            if let Some(interpreter) = parts.next() {
+                let mut new_argv = vec![interpreter];
+                for part in parts {
+                    new_argv.push(part);
+                }
+                for arg in argv {
+                    new_argv.push(arg);
+                }
+
+                let interpreter_file = vfs::open_file(
+                    interpreter, 
+                    FileFlags::dontcare(),
+                    &Perm::new(PermFlags::X)
+                ).expect("Failed to open.");
+                return Self::new_inittask(tid, parent, interpreter_file, &new_argv, envp);
+            }
+        }
+
+        let file = Arc::new(file);
+        
         let mut addrspace = AddrSpace::new();
-        let (user_entry, dyn_info) = elf::loader::load_elf(file, &mut addrspace)
+        let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)
             .expect("Failed to load ELF for init task");
 
         let mut auxv = Auxv::new();
@@ -176,7 +230,7 @@ impl TCB {
             new_user_context = user_context.new_clone();
         });
 
-        if flags.thread {
+        if flags.vm {
             new_user_context.set_user_stack_top(userstack);
         }
 
@@ -231,7 +285,11 @@ impl TCB {
                     new_argv.push(arg);
                 }
 
-                let interpreter_file = vfs::open_file(interpreter, FileFlags::dontcare())?;
+                let interpreter_file = vfs::open_file(
+                    interpreter, 
+                    FileFlags::dontcare(),
+                    &Perm::new(PermFlags::X)
+                )?;
                 return self.new_exec(interpreter_file, &new_argv, envp);
             }
         }
@@ -345,6 +403,18 @@ impl TCB {
         true
     }
 
+    pub fn block_uninterruptible(self: &Arc<Self>, _reason: &str) -> bool {
+        assert!(Arc::ptr_eq(self, current::tcb()));
+        
+        let mut state = self.state.lock();
+        match state.state {
+            TaskState::Ready | TaskState::Running => {},
+            _ => return false,
+        }
+        state.state = TaskState::BlockedUninterruptible;
+        true
+    }
+
     pub fn wakeup(self: &Arc<Self>, event: Event) {
         let mut state = lock_debug!(self.state());
         if state.state != TaskState::Blocked {
@@ -352,14 +422,23 @@ impl TCB {
         }
         state.state = TaskState::Ready;
         *self.wakeup_event.lock() = Some(event);
+        
+        scheduler::push_task(self.clone());
+    }
 
-        // kinfo!("set event: {:?}, tid={}", *self.wakeup_event.lock(), self.tid);
+    pub fn wakeup_uninterruptible(self: &Arc<Self>, event: Event) {
+        let mut state = lock_debug!(self.state());
+        match state.state {
+            TaskState::Blocked | TaskState::BlockedUninterruptible => {},
+            _ => return,
+        }
+        state.state = TaskState::Ready;
+        *self.wakeup_event.lock() = Some(event);
         
         scheduler::push_task(self.clone());
     }
 
     pub fn take_wakeup_event(&self) -> Option<Event> {
-        // kinfo!("take_wakeup_event, event={:?}", *self.wakeup_event.lock());
         self.wakeup_event.lock().take()
     }
 
@@ -407,6 +486,16 @@ impl TCB {
     pub fn get_kernel_stack_top(&self) -> usize {
         self.kernel_stack.get_top()
     }
+
+    pub fn set_parent_waiting_vfork(&self, parent: Option<Arc<TCB>>) {
+        *self.parent_waiting_vfork.lock() = parent;
+    }
+
+    pub fn wake_parent_waiting_vfork(&self) {
+        if let Some(parent) = self.parent_waiting_vfork.lock().take() {
+            parent.wakeup_uninterruptible(Event::VFork);
+        }
+    }
 }
 
 impl Drop for TCB {
@@ -417,3 +506,13 @@ impl Drop for TCB {
 
 unsafe impl Send for TCB {}
 unsafe impl Sync for TCB {}
+
+// impl Task for TCB {
+//     fn get_kernel_context_ptr(&self) -> *mut KernelContext {
+//         &self.kernel_context as *const KernelContext as *mut KernelContext
+//     }
+
+//     fn tcb(self: &Arc<Self>) -> &Arc<TCB> {
+//         self
+//     }
+// }

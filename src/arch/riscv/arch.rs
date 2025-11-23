@@ -8,11 +8,11 @@ use crate::kernel::mm::MapPerm;
 use crate::driver::chosen;
 use crate::driver;
 
-use super::kernel_switch;
 use super::KernelContext;
 use super::pagetable::kernelpagetable;
 use super::csr::{Sstatus, SIE, stvec};
 use super::time_frequency;
+use super::kernel_switch;
 use super::sbi_driver::SBIKConsole;
 
 unsafe extern "C" {
@@ -100,8 +100,8 @@ impl ArchTrait for Arch {
         kernelpagetable::map_kernel_addr(kstart, pstart, size, perm);
     }
 
-    fn unmap_kernel_addr(kstart: usize, size: usize) {
-        kernelpagetable::unmap_kernel_addr(kstart, size);
+    unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
+        unsafe { kernelpagetable::unmap_kernel_addr(kstart, size) };
     }
 
     fn get_time_us() -> u64 {
