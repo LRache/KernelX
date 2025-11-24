@@ -1,13 +1,13 @@
 use alloc::sync::Arc;
 
-use crate::kernel::errno::{SysResult, Errno};
-use crate::kernel::uapi::FileStat;
-use crate::kernel::event::{PollEvent, PollEventSet};
 use crate::driver::CharDriverOps;
 use crate::fs::file::FileOps;
 use crate::fs::{InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{PollEvent, PollEventSet};
+use crate::kernel::uapi::FileStat;
 
-use super::{SeekWhence, DirResult};
+use super::{DirResult, SeekWhence};
 
 pub struct CharFile {
     driver: Arc<dyn CharDriverOps>,

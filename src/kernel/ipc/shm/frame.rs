@@ -4,7 +4,7 @@ use crate::kernel::mm::PhysPageFrame;
 use crate::klib::SpinLock;
 
 pub struct ShmFrames {
-    pub frames: SpinLock<Vec<PhysPageFrame>>
+    pub frames: SpinLock<Vec<PhysPageFrame>>,
 }
 
 impl ShmFrames {
@@ -14,7 +14,7 @@ impl ShmFrames {
             frames.push(PhysPageFrame::alloc());
         }
         ShmFrames {
-            frames: SpinLock::new(frames)
+            frames: SpinLock::new(frames),
         }
     }
 

@@ -1,17 +1,17 @@
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 
-use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::filesystem::SuperBlockOps;
 use crate::fs::{InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::SpinLock;
 
-use super::inode::{InodeMeta, Inode};
+use super::inode::{Inode, InodeMeta};
 
 pub struct SuperBlockInner {
     inode_map: BTreeMap<u32, Arc<SpinLock<InodeMeta>>>,
-    max_inode: u32
+    max_inode: u32,
 }
 
 impl SuperBlockInner {
@@ -20,7 +20,7 @@ impl SuperBlockInner {
         inode_map.insert(0, Arc::new(SpinLock::new(InodeMeta::new(Mode::S_IFDIR))));
         Self {
             inode_map,
-            max_inode: 1
+            max_inode: 1,
         }
     }
 
@@ -32,7 +32,8 @@ impl SuperBlockInner {
 
     pub fn alloc_inode(&mut self, inode_mode: Mode) -> u32 {
         let ino = self.alloc_inode_number();
-        self.inode_map.insert(ino, Arc::new(SpinLock::new(InodeMeta::new(inode_mode))));
+        self.inode_map
+            .insert(ino, Arc::new(SpinLock::new(InodeMeta::new(inode_mode))));
 
         ino
     }
@@ -62,15 +63,29 @@ impl SuperBlockOps for SuperBlock {
     }
 
     fn get_inode(&self, ino: u32) -> SysResult<Box<dyn InodeOps>> {
-        let meta = self.inner.lock().inode_map.get(&ino)
+        let meta = self
+            .inner
+            .lock()
+            .inode_map
+            .get(&ino)
             .ok_or(Errno::ENOENT)?
             .clone();
-        Ok(Box::new(Inode::new(ino, self.sno, meta, self.inner.clone())))
+        Ok(Box::new(Inode::new(
+            ino,
+            self.sno,
+            meta,
+            self.inner.clone(),
+        )))
     }
 
     fn create_temp(&self, mode: Mode) -> SysResult<Box<dyn InodeOps>> {
         let mut inner = self.inner.lock();
         let ino = inner.alloc_inode_number();
-        Ok(Box::new(Inode::new(ino, self.sno, Arc::new(SpinLock::new(InodeMeta::new(mode))), self.inner.clone())))
+        Ok(Box::new(Inode::new(
+            ino,
+            self.sno,
+            Arc::new(SpinLock::new(InodeMeta::new(mode))),
+            self.inner.clone(),
+        )))
     }
 }

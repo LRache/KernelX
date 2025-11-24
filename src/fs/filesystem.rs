@@ -1,16 +1,20 @@
-use alloc::sync::Arc;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use core::option::Option;
 
+use crate::driver::BlockDriverOps;
 use crate::fs::Mode;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
-use crate::driver::BlockDriverOps;
 
 use super::InodeOps;
 
 pub trait FileSystemOps: Send + Sync {
-    fn create(&self, fsno: u32, driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>>;
+    fn create(
+        &self,
+        fsno: u32,
+        driver: Option<Arc<dyn BlockDriverOps>>,
+    ) -> SysResult<Arc<dyn SuperBlockOps>>;
 }
 
 pub trait SuperBlockOps: Send + Sync {

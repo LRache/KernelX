@@ -81,6 +81,9 @@ $(RUST_KERNEL): $(CLIB) $(VDSO)
 check:
 	@ $(BUILD_ENV) cargo check --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
 
+fmt:
+	@ cargo fmt
+
 objcopy:
 	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) build/$(PLATFORM)/kernel.bin
 	@ echo "Generated kernel.bin"

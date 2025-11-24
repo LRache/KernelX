@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
+use crate::kernel::errno::SysResult;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet};
 use crate::kernel::task::Tid;
-use crate::kernel::errno::SysResult;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PendingSignal {
@@ -13,7 +13,7 @@ pub struct PendingSignal {
 }
 
 pub struct PendingSignalQueue {
-    pending: Vec<PendingSignal>
+    pending: Vec<PendingSignal>,
 }
 
 impl PendingSignalQueue {

@@ -1,9 +1,9 @@
-use fdt::node::FdtNode;
 use fdt::Fdt;
+use fdt::node::FdtNode;
 
-use crate::kernel::parse_boot_args;
 use crate::driver::Device;
 use crate::driver::found_device;
+use crate::kernel::parse_boot_args;
 use crate::kinfo;
 use crate::klib::initcell::InitedCell;
 use crate::kwarn;
@@ -16,13 +16,13 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     if magic != 0xd00dfeed {
         return Err(());
     }
-        
+
     let total_size = u32::from_be(data[1]) as usize;
 
     let data: &'static [u8] = unsafe { core::slice::from_raw_parts(fdt, total_size) };
 
     let fdt = Fdt::new(data).unwrap();
-    
+
     let cpu_node = fdt.find_node("/cpus").unwrap();
     let timebase_freq_prop = cpu_node.property("timebase-frequency").ok_or(())?;
     timebase_freq_prop.as_usize().map(|freq| {
@@ -30,7 +30,7 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     });
 
     kinfo!("Init timebase frequency = {}Hz", *TIME_FREQ);
-    
+
     let soc_node = fdt.find_node("/soc").unwrap();
     for child in soc_node.children() {
         load_soc_node(&child);

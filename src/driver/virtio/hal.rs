@@ -1,11 +1,10 @@
-
-use virtio_drivers::{Hal, BufferDirection, PhysAddr};
 use core::ptr::NonNull;
+use virtio_drivers::{BufferDirection, Hal, PhysAddr};
 
-use crate::kernel::mm::page;
 use crate::arch;
+use crate::kernel::mm::page;
 
-pub struct VirtIOHal;  
+pub struct VirtIOHal;
 
 unsafe impl Hal for VirtIOHal {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
@@ -21,7 +20,8 @@ unsafe impl Hal for VirtIOHal {
     }
 
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(paddr as * mut u8).expect("Failed to convert MMIO physical address to virtual address")
+        NonNull::new(paddr as *mut u8)
+            .expect("Failed to convert MMIO physical address to virtual address")
     }
 
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {

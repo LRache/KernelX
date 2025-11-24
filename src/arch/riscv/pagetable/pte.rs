@@ -1,11 +1,11 @@
 use bitflags::bitflags;
-use core::ptr::NonNull;
 use core::fmt;
+use core::ptr::NonNull;
 
-use crate::kernel::mm::MapPerm;
-use crate::kernel::mm;
 use crate::arch::riscv::{PGBITS, PGMASK};
 use crate::arch::{kaddr_to_paddr, paddr_to_kaddr};
+use crate::kernel::mm;
+use crate::kernel::mm::MapPerm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Addr(usize);
@@ -77,7 +77,7 @@ impl From<Addr> for *mut usize {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PPN {
-    ppn: usize
+    ppn: usize,
 }
 
 impl PPN {
@@ -95,7 +95,9 @@ impl PPN {
     }
 
     pub const fn from_paddr(paddr: usize) -> Self {
-        PPN { ppn: paddr >> PGBITS }
+        PPN {
+            ppn: paddr >> PGBITS,
+        }
     }
 
     pub fn to_addr(self) -> Addr {
@@ -133,10 +135,18 @@ bitflags! {
 impl From<MapPerm> for PTEFlags {
     fn from(perm: MapPerm) -> Self {
         let mut flags = PTEFlags::V | PTEFlags::A | PTEFlags::D;
-        if perm.contains(MapPerm::R) { flags |= PTEFlags::R; }
-        if perm.contains(MapPerm::W) { flags |= PTEFlags::W; }
-        if perm.contains(MapPerm::X) { flags |= PTEFlags::X; }
-        if perm.contains(MapPerm::U) { flags |= PTEFlags::U; }
+        if perm.contains(MapPerm::R) {
+            flags |= PTEFlags::R;
+        }
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::W;
+        }
+        if perm.contains(MapPerm::X) {
+            flags |= PTEFlags::X;
+        }
+        if perm.contains(MapPerm::U) {
+            flags |= PTEFlags::U;
+        }
         flags
     }
 }
@@ -202,7 +212,7 @@ impl fmt::Display for PTE {
 }
 
 pub struct PTETable {
-    base: *mut usize
+    base: *mut usize,
 }
 
 impl PTETable {

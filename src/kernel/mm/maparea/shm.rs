@@ -2,10 +2,10 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use spin::RwLock;
 
-use crate::kernel::mm::{MapPerm, MemAccessType};
 use crate::arch::{self, PageTable, PageTableTrait};
-use crate::kernel::mm::maparea::area::{Area, Frame};
 use crate::kernel::ipc::shm::ShmFrames;
+use crate::kernel::mm::maparea::area::{Area, Frame};
+use crate::kernel::mm::{MapPerm, MemAccessType};
 
 pub struct ShmArea {
     ubase: usize,
@@ -28,12 +28,12 @@ impl Area for ShmArea {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index < frames.len() {
-             Some(frames[page_index].get_page())
+            Some(frames[page_index].get_page())
         } else {
             None
         }
     }
-    
+
     fn translate_write(&mut self, uaddr: usize, _pagetable: &RwLock<PageTable>) -> Option<usize> {
         self.translate_read(uaddr, _pagetable)
     }
@@ -54,33 +54,44 @@ impl Area for ShmArea {
         self.frames.frames.lock().len()
     }
 
-    fn fork(&mut self, _self_pagetable: &RwLock<PageTable>, _fork_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+    fn fork(
+        &mut self,
+        _self_pagetable: &RwLock<PageTable>,
+        _fork_pagetable: &RwLock<PageTable>,
+    ) -> Box<dyn Area> {
         Box::new(ShmArea {
             ubase: self.ubase,
             frames: self.frames.clone(),
             perm: self.perm,
         })
     }
-    
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
+
+    fn try_to_fix_memory_fault(
+        &mut self,
+        uaddr: usize,
+        access_type: MemAccessType,
+        pagetable: &RwLock<PageTable>,
+    ) -> bool {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index >= frames.len() {
             return false;
         }
-        
+
         if access_type == MemAccessType::Write && !self.perm.contains(MapPerm::W) {
             return false;
         }
         if access_type == MemAccessType::Read && !self.perm.contains(MapPerm::R) {
-             return false;
+            return false;
         }
 
         let frame = &frames[page_index];
-        pagetable.write().mmap(uaddr & !arch::PGMASK, frame.get_page(), self.perm);
+        pagetable
+            .write()
+            .mmap(uaddr & !arch::PGMASK, frame.get_page(), self.perm);
         true
     }
-    
+
     fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
         let mut pt = pagetable.write();
         let frames = self.frames.frames.lock();
@@ -88,7 +99,7 @@ impl Area for ShmArea {
             pt.munmap(self.ubase + i * arch::PGSIZE);
         }
     }
-    
+
     fn type_name(&self) -> &'static str {
         "ShmArea"
     }

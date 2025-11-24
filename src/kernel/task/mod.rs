@@ -1,13 +1,13 @@
-mod tcb;
-mod pcb;
-pub mod manager;
-pub mod fdtable;
-pub mod tid;
-pub mod kernelstack;
 pub mod def;
+pub mod fdtable;
+pub mod kernelstack;
+pub mod manager;
+mod pcb;
+mod tcb;
+pub mod tid;
 
-pub use tcb::*;
-pub use pcb::*;
-pub use tid::{Pid, Tid};
 pub use kernelstack::*;
-pub use manager::{get_initprocess, create_initprocess};
+pub use manager::{create_initprocess, get_initprocess};
+pub use pcb::*;
+pub use tcb::*;
+pub use tid::{Pid, Tid};

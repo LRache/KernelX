@@ -4,12 +4,12 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
+use crate::fs::file::DirResult;
+use crate::fs::perm::Perm;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::fs::perm::Perm;
-use crate::fs::file::DirResult;
 
-use super::{Mode, FileType};
+use super::{FileType, Mode};
 
 pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
@@ -29,7 +29,7 @@ pub trait InodeOps: DowncastSync {
     fn readat(&self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
         unimplemented!()
     }
-    
+
     fn writeat(&self, _buf: &[u8], _offset: usize) -> Result<usize, Errno> {
         unimplemented!()
     }
@@ -42,14 +42,19 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::ENOTDIR)
     }
 
-    fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn InodeOps>, _new_name: &str) -> SysResult<()> {
+    fn rename(
+        &self,
+        _old_name: &str,
+        _new_parent: &Arc<dyn InodeOps>,
+        _new_name: &str,
+    ) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
 
     fn size(&self) -> SysResult<u64> {
         unimplemented!("{}", self.type_name())
     }
-    
+
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::empty())
     }
@@ -57,7 +62,7 @@ pub trait InodeOps: DowncastSync {
     fn chmod(&self, _mode: Mode) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
-      
+
     fn owner(&self) -> SysResult<(Uid, Uid)> {
         Ok((0, 0))
     }

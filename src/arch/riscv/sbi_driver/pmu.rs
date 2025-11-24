@@ -1,5 +1,5 @@
-use crate::driver::chosen::kpmu::KPMU;
 use crate::driver::PMUDriverOps;
+use crate::driver::chosen::kpmu::KPMU;
 
 use super::sbi;
 

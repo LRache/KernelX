@@ -1,16 +1,16 @@
-mod area;
 mod anonymous;
+mod area;
 mod elf;
 mod filemap;
-mod userstack;
-mod userbrk;
 mod manager;
 pub mod shm;
+mod userbrk;
+mod userstack;
 
-pub use manager::Manager;
+pub use anonymous::AnonymousArea;
 pub use area::Area;
 pub use elf::ELFArea;
-pub use anonymous::AnonymousArea;
 pub use filemap::FileMapArea;
-pub use userstack::{Auxv, AuxKey};
+pub use manager::Manager;
 pub use shm::ShmArea;
+pub use userstack::{AuxKey, Auxv};

@@ -1,7 +1,7 @@
-use spin::Mutex;
+use crate::println;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
-use crate::println;
+use spin::Mutex;
 
 unsafe extern "C" {
     fn init_heap(start: *mut c_void, size: usize);

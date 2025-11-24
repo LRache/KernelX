@@ -1,12 +1,12 @@
-use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use bitflags::bitflags;
 
-use crate::kernel::mm::{MapPerm, AddrSpace};
-use crate::kernel::mm::maparea::shm::ShmArea;
 use crate::arch::PGSIZE;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::maparea::shm::ShmArea;
+use crate::kernel::mm::{AddrSpace, MapPerm};
 use crate::klib::SpinLock;
 
 use super::frame::ShmFrames;
@@ -65,7 +65,12 @@ impl ShmManager {
         }
     }
 
-    fn get_or_create(&mut self, key: usize, size: usize, flags: IpcGetFlag) -> Result<usize, Errno> {
+    fn get_or_create(
+        &mut self,
+        key: usize,
+        size: usize,
+        flags: IpcGetFlag,
+    ) -> Result<usize, Errno> {
         if key != IPC_PRIVATE {
             // Try to find existing
             let mut found_id = None;
@@ -94,18 +99,18 @@ impl ShmManager {
 
         // Create new
         if size == 0 {
-             return Err(Errno::EINVAL);
+            return Err(Errno::EINVAL);
         }
 
         let page_count = (size + PGSIZE - 1) / PGSIZE;
-        let frames = Arc::new(ShmFrames::new(page_count));    
+        let frames = Arc::new(ShmFrames::new(page_count));
         let id = self.next_shmid;
         self.next_shmid += 1;
 
         let shm = ShmIdentifier {
-            ds: ShmidDs { 
-                key, 
-                size, 
+            ds: ShmidDs {
+                key,
+                size,
                 mode: (flags.bits() & 0o777) as u32,
                 ctime: 0, // TODO: get time
                 atime: 0,
@@ -123,9 +128,15 @@ impl ShmManager {
     fn get(&mut self, shmid: usize) -> Option<&mut ShmIdentifier> {
         self.shms.get_mut(&shmid)
     }
-    
+
     // Called on shmat
-    pub fn attach(&mut self, shmid: usize, addrspace: &AddrSpace, shmaddr: usize, shmflg: ShmFlag) -> SysResult<usize> {
+    pub fn attach(
+        &mut self,
+        shmid: usize,
+        addrspace: &AddrSpace,
+        shmaddr: usize,
+        shmflg: ShmFlag,
+    ) -> SysResult<usize> {
         let shm = self.shms.get_mut(&shmid).ok_or(Errno::EINVAL)?;
         let page_count = shm.frames.page_count();
 
@@ -141,7 +152,9 @@ impl ShmManager {
         addrspace.with_map_manager_mut(|map_manager| {
             // Determine address
             let uaddr = if shmaddr == 0 {
-                map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)?
+                map_manager
+                    .find_mmap_ubase(page_count)
+                    .ok_or(Errno::ENOMEM)?
             } else {
                 let aligned_addr = (shmaddr + PGSIZE - 1) & !(PGSIZE - 1);
                 if map_manager.is_map_range_overlapped(aligned_addr, page_count * PGSIZE) {
@@ -155,7 +168,6 @@ impl ShmManager {
             shm.ds.atime = 0; // TODO: update time
 
             map_manager.map_area(uaddr, shm_area);
-
 
             Ok(uaddr)
         })
@@ -203,8 +215,15 @@ pub fn get_or_create_shm(key: usize, size: usize, flags: IpcGetFlag) -> SysResul
     SHM_MANAGER.lock().get_or_create(key, size, flags)
 }
 
-pub fn attach_shm(shmid: usize, addr_space: &AddrSpace, shmaddr: usize, shmflg: ShmFlag) -> SysResult<usize> {
-    SHM_MANAGER.lock().attach(shmid, addr_space, shmaddr, shmflg)
+pub fn attach_shm(
+    shmid: usize,
+    addr_space: &AddrSpace,
+    shmaddr: usize,
+    shmflg: ShmFlag,
+) -> SysResult<usize> {
+    SHM_MANAGER
+        .lock()
+        .attach(shmid, addr_space, shmaddr, shmflg)
 }
 
 pub fn detach_shm(shmid: usize) -> SysResult<()> {

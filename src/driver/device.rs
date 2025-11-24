@@ -14,7 +14,12 @@ pub struct Device<'a> {
 }
 
 impl<'a> Device<'a> {
-    pub fn new(mmio_base: usize, mmio_size: usize, name: &'a str, compatible: &'a str) -> Device<'a> {
+    pub fn new(
+        mmio_base: usize,
+        mmio_size: usize,
+        name: &'a str,
+        compatible: &'a str,
+    ) -> Device<'a> {
         Device {
             mmio_base,
             mmio_size,

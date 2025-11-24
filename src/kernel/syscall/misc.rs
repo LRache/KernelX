@@ -1,15 +1,15 @@
-use num_enum::TryFromPrimitive;
 use alloc::vec;
+use num_enum::TryFromPrimitive;
 
+use crate::arch;
 use crate::fs::vfs;
-use crate::kernel::scheduler::current;
 use crate::kernel::config;
 use crate::kernel::errno::Errno;
-use crate::kernel::syscall::uptr::{UserPointer, UBuffer, UPtr};
+use crate::kernel::scheduler::current;
+use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::uapi;
 use crate::klib::random::random;
-use crate::arch;
 
 pub fn rseq() -> Result<usize, Errno> {
     // This syscall is a no-op in the current implementation.
@@ -44,7 +44,7 @@ impl Utsname {
         ustname.sysname[..sysname.len()].copy_from_slice(sysname);
 
         // let release = option_env!("KERNELX_RELEASE").unwrap_or("0.1.0");
-        let release = "5.0.0" ;
+        let release = "5.0.0";
         ustname.release[..release.len()].copy_from_slice(release.as_bytes());
 
         let machine = b"riscv64";
@@ -76,9 +76,14 @@ enum RLimitResource {
     NOFILE = 7,
 }
 
-pub fn prlimit64(_pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, uptr_old_limit: UPtr<RLimit>) -> SyscallRet {
+pub fn prlimit64(
+    _pid: usize,
+    resource: usize,
+    uptr_new_limit: UPtr<RLimit>,
+    uptr_old_limit: UPtr<RLimit>,
+) -> SyscallRet {
     // crate::kinfo!("prlimit64: pid={}, resource={}, uptr_new={}, uptr_old={}", _pid, resource, uptr_new_limit.uaddr(), uptr_old_limit.uaddr());
-    
+
     let resource = RLimitResource::try_from(resource).map_err(|_| Errno::EINVAL)?;
 
     match resource {
@@ -126,7 +131,7 @@ pub fn prlimit64(_pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, upt
 
 pub fn getrandom(ubuf: UBuffer, len: usize, _flags: usize) -> SyscallRet {
     ubuf.should_not_null()?;
-    
+
     let mut buf = vec![0u8; len];
     for chunk in buf.chunks_mut(4) {
         let rand = random();
@@ -152,20 +157,20 @@ pub fn get_mempolicy() -> SyscallRet {
 pub struct Rusage {
     ru_utime: uapi::TimeVal, // user CPU time used
     ru_stime: uapi::TimeVal, // system CPU time used
-    ru_maxrss: isize,      // maximum resident set size
-    ru_ixrss: isize,       // integral shared memory size
-    ru_idrss: isize,       // integral unshared data size
-    ru_isrss: isize,       // integral unshared stack size
-    ru_minflt: isize,      // page reclaims (soft page faults)
-    ru_majflt: isize,      // page faults (hard page faults)
-    ru_nswap: isize,       // swaps
-    ru_inblock: isize,     // block input operations
-    ru_oublock: isize,     // block output operations
-    ru_msgsnd: isize,      // IPC messages sent
-    ru_msgrcv: isize,      // IPC messages received
-    ru_nsignals: isize,    // signals received
-    ru_nvcsw: isize,       // voluntary context switches
-    ru_nivcsw: isize,      // involuntary context switches
+    ru_maxrss: isize,        // maximum resident set size
+    ru_ixrss: isize,         // integral shared memory size
+    ru_idrss: isize,         // integral unshared data size
+    ru_isrss: isize,         // integral unshared stack size
+    ru_minflt: isize,        // page reclaims (soft page faults)
+    ru_majflt: isize,        // page faults (hard page faults)
+    ru_nswap: isize,         // swaps
+    ru_inblock: isize,       // block input operations
+    ru_oublock: isize,       // block output operations
+    ru_msgsnd: isize,        // IPC messages sent
+    ru_msgrcv: isize,        // IPC messages received
+    ru_nsignals: isize,      // signals received
+    ru_nvcsw: isize,         // voluntary context switches
+    ru_nivcsw: isize,        // involuntary context switches
 }
 
 impl UserStruct for Rusage {}
@@ -173,8 +178,14 @@ impl UserStruct for Rusage {}
 impl Default for Rusage {
     fn default() -> Self {
         Rusage {
-            ru_utime: uapi::TimeVal { tv_sec: 0, tv_usec: 0 },
-            ru_stime: uapi::TimeVal { tv_sec: 0, tv_usec: 0 },
+            ru_utime: uapi::TimeVal {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            ru_stime: uapi::TimeVal {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
             ru_maxrss: 0,
             ru_ixrss: 0,
             ru_idrss: 0,
@@ -201,9 +212,9 @@ pub enum RusageWho {
 
 pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
     let who = RusageWho::try_from(who).map_err(|_| Errno::EINVAL)?;
-    
+
     let mut rusage = Rusage::default();
-    
+
     match who {
         RusageWho::SELF => {
             let (utime, stime) = current::pcb().tasks_usage_time();
@@ -211,7 +222,7 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
             rusage.ru_stime = stime.into();
         }
     };
-    
+
     uptr_rusage.write(rusage)?;
 
     Ok(0)

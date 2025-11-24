@@ -1,13 +1,13 @@
 use num_enum::TryFromPrimitive;
 
+use crate::kernel::errno::Errno;
+use crate::kernel::event::Event;
 use crate::kernel::event::timer;
 use crate::kernel::scheduler::current;
-use crate::kernel::uapi;
-use crate::kernel::errno::Errno;
-use crate::kernel::syscall::uptr::{UserPointer, UPtr};
 use crate::kernel::syscall::SyscallRet;
+use crate::kernel::syscall::uptr::{UPtr, UserPointer};
+use crate::kernel::uapi;
 use crate::kernel::usync::futex::{self, RobustListHead};
-use crate::kernel::event::Event;
 
 pub fn set_robust_list(u: UPtr<RobustListHead>) -> SyscallRet {
     current::tcb().set_robust_list(u.uaddr());
@@ -20,7 +20,6 @@ pub fn get_robust_list() -> SyscallRet {
         None => Ok(0),
     }
 }
-
 
 #[repr(usize)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
@@ -35,13 +34,13 @@ enum FutexOp {
 const FUTEX_OP_MASK: usize = 0x7f;
 
 pub fn futex(
-    uaddr: UPtr<i32>, 
-    futex_op: usize, 
-    val: usize, 
-    timeout: UPtr<uapi::Timespec>, 
-    uaddr2: UPtr<()>, 
-    val3: usize
-) -> SyscallRet {    
+    uaddr: UPtr<i32>,
+    futex_op: usize,
+    val: usize,
+    timeout: UPtr<uapi::Timespec>,
+    uaddr2: UPtr<()>,
+    val3: usize,
+) -> SyscallRet {
     uaddr.should_not_null()?;
     if uaddr.uaddr() & 3 != 0 {
         return Err(Errno::EINVAL);
@@ -53,44 +52,38 @@ pub fn futex(
     match op {
         FutexOp::Wait | FutexOp::WaitBitset => {
             let kaddr = uaddr.kaddr()?;
-            
+
             let bitset = if op == FutexOp::WaitBitset {
                 val3 as u32
             } else {
                 u32::MAX
             };
-            
+
             futex::wait_current(kaddr, val as i32, bitset)?;
             if let Some(timeout) = timeout.read_optional()? {
                 timer::add_timer(current::task().clone(), timeout.into());
             }
-            
+
             let event = current::block("futex");
 
             match event {
-                Event::Futex => {
-                    Ok(0)
-                }
-                Event::Timeout => {
-                    Err(Errno::ETIMEDOUT)
-                }
-                Event::Signal => {
-                    Err(Errno::EINTR)
-                }
-                _ => unreachable!("state.event={:?}", event)
+                Event::Futex => Ok(0),
+                Event::Timeout => Err(Errno::ETIMEDOUT),
+                Event::Signal => Err(Errno::EINTR),
+                _ => unreachable!("state.event={:?}", event),
             }
-        },
+        }
         FutexOp::Wake | FutexOp::WakeBitset => {
             let kaddr = uaddr.kaddr()?;
             let woken = futex::wake(kaddr, val as usize, u32::MAX)?;
             Ok(woken as usize)
-        },
+        }
 
         FutexOp::REQUEUE => {
             let kaddr = uaddr.kaddr()?;
             let kaddr2 = uaddr2.kaddr()?;
             let n = futex::requeue(kaddr, kaddr2, val as usize, None)?;
             Ok(n as usize)
-        },
+        }
     }
 }

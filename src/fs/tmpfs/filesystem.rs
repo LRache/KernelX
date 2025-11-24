@@ -9,7 +9,11 @@ use super::superblock::SuperBlock;
 pub struct FileSystem;
 
 impl FileSystemOps for FileSystem {
-    fn create(&self, sno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
+    fn create(
+        &self,
+        sno: u32,
+        _driver: Option<Arc<dyn BlockDriverOps>>,
+    ) -> SysResult<Arc<dyn SuperBlockOps>> {
         Ok(Arc::new(SuperBlock::new(sno)))
     }
 }

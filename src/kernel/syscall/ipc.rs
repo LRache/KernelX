@@ -1,20 +1,20 @@
 use alloc::sync::Arc;
-use num_enum::TryFromPrimitive;
-use core::time::Duration;
 use bitflags::bitflags;
+use core::time::Duration;
+use num_enum::TryFromPrimitive;
 
-use crate::kernel::config;
-use crate::kernel::event::{timer, Event};
-use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet};
-use crate::kernel::ipc::shm::{IpcGetFlag, IPC_RMID, IPC_SET, IPC_STAT};
-use crate::kernel::ipc::shm;
-use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr};
-use crate::kernel::task::fdtable::FDFlags;
-use crate::kernel::errno::Errno;
-use crate::kernel::uapi;
-use crate::kernel::task::{Tid, manager};
 use crate::arch;
+use crate::kernel::config;
+use crate::kernel::errno::Errno;
+use crate::kernel::event::{Event, timer};
+use crate::kernel::ipc::shm;
+use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet};
+use crate::kernel::scheduler::current;
+use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
+use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::task::{Tid, manager};
+use crate::kernel::uapi;
 
 use super::SyscallRet;
 
@@ -26,10 +26,10 @@ bitflags! {
 
 pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     let flags = PipeFlags::from_bits_truncate(flags);
-    let fd_flags = FDFlags{
+    let fd_flags = FDFlags {
         cloexec: flags.contains(PipeFlags::O_CLOEXEC),
     };
-    
+
     let (read_end, write_end) = Pipe::create(config::PIPE_CAPACITY);
     let read_end = Arc::new(read_end);
     let write_end = Arc::new(write_end);
@@ -49,14 +49,14 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
 pub fn kill(pid: usize, signum: usize) -> SyscallRet {
     let pid = pid as i32;
     let signum = signum as u32;
-    
+
     if pid > 0 {
         let pcb = manager::get(pid).ok_or(Errno::ESRCH)?;
         pcb.send_signal(
-            signum.try_into()?, 
+            signum.try_into()?,
             SiCode::SI_USER,
-            KSiFields::kill(current::pid(), current::uid()), 
-            None
+            KSiFields::kill(current::pid(), current::uid()),
+            None,
         )?;
     }
 
@@ -71,9 +71,9 @@ pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
         signum,
         SiCode::SI_TKILL,
         KSiFields::kill(current::pid(), current::uid()),
-        Some(tid)
+        Some(tid),
     )?;
-    
+
     Ok(0)
 }
 
@@ -88,7 +88,7 @@ pub fn tgkill(tgid: usize, tid: usize, signum: usize) -> SyscallRet {
             signum.try_into()?,
             SiCode::SI_TKILL,
             KSiFields::kill(current::pid(), current::uid()),
-            Some(tid)
+            Some(tid),
         )?;
     }
 
@@ -103,14 +103,18 @@ enum SigProcmaskHow {
     Setmask = 2,
 }
 
-pub fn rt_sigprocmask(how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<SignalSet>) -> SyscallRet {
+pub fn rt_sigprocmask(
+    how: usize,
+    uptr_set: UPtr<SignalSet>,
+    uptr_oldset: UPtr<SignalSet>,
+) -> SyscallRet {
     let how = SigProcmaskHow::try_from(how).map_err(|_| Errno::EINVAL)?;
-    
+
     let mut signal_mask = current::tcb().signal_mask.lock();
     if !uptr_oldset.is_null() {
         uptr_oldset.write(*signal_mask)?;
     }
-    
+
     if !uptr_set.is_null() {
         let set = uptr_set.read()?;
         *signal_mask = match how {
@@ -119,11 +123,16 @@ pub fn rt_sigprocmask(how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<S
             SigProcmaskHow::Setmask => set,
         };
     }
-    
+
     Ok(0)
 }
 
-pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact: UPtr<uapi::Sigaction>, sigsetsize: usize) -> SyscallRet {
+pub fn rt_sigaction(
+    signum: usize,
+    uptr_act: UPtr<uapi::Sigaction>,
+    uptr_oldact: UPtr<uapi::Sigaction>,
+    sigsetsize: usize,
+) -> SyscallRet {
     assert!(sigsetsize == core::mem::size_of::<SignalSet>());
 
     let signum = (signum as u32).try_into()?;
@@ -137,7 +146,7 @@ pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact:
     if !uptr_act.is_null() {
         let new_action = uptr_act.read()?;
         let new_action = new_action.try_into()?;
-        
+
         signal_actions.set(signum, &new_action)?;
     }
 
@@ -146,9 +155,9 @@ pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact:
 
 pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
     mask.should_not_null()?;
-    
+
     let set = mask.read()?;
-    
+
     let tcb = current::tcb();
     let mut signal_mask = tcb.signal_mask.lock();
     let old = *signal_mask;
@@ -160,7 +169,7 @@ pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
 
     match event {
         Event::Signal => Err(Errno::EINTR),
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 
@@ -169,9 +178,13 @@ pub fn rt_sig_return() -> SyscallRet {
     arch::return_to_user();
 }
 
-pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeout: UPtr<uapi::Timespec>) -> SyscallRet {
+pub fn sigtimedwait(
+    uptr_set: UPtr<SignalSet>,
+    _uptr_info: UPtr<()>,
+    uptr_timeout: UPtr<uapi::Timespec>,
+) -> SyscallRet {
     uptr_set.should_not_null()?;
-    
+
     let timeout = uptr_timeout.read_optional()?;
     let signal_set = uptr_set.read()?;
 
@@ -238,13 +251,13 @@ pub fn shmdt(_shmaddr: usize) -> SyscallRet {
     // Currently our manager uses shmid to detach, but syscall uses address.
     // We need to find shmid from address or change manager to support detach by address.
     // For now, return ENOSYS or implement a lookup.
-    
-    // Since we don't have reverse lookup yet, let's leave it as TODO or 
+
+    // Since we don't have reverse lookup yet, let's leave it as TODO or
     // we can iterate over areas in addrspace to find the shm area?
     // But shm_manager needs shmid.
-    
+
     // Real implementation would look up the VMA at shmaddr, check if it's a SHM VMA,
     // get the shmid/shm object from it, and then detach.
-    
+
     Err(Errno::ENOSYS)
 }

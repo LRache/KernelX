@@ -1,9 +1,9 @@
-mod inode;
 mod cache;
 mod index;
+mod inode;
 mod mode;
 
-pub use inode::InodeOps;
-pub use index::Index;
 pub use cache::Cache;
-pub use mode::{Mode, FileType};
+pub use index::Index;
+pub use inode::InodeOps;
+pub use mode::{FileType, Mode};

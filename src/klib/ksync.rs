@@ -56,13 +56,16 @@ impl<T, R: LockerTrait> Mutex<T, R> {
         #[cfg(feature = "deadlock-detect")]
         if self.deadlock_detect() {
             let tid = current::tid();
-            panic!("Deadlock detected in Mutex: current thread {} is trying to lock a mutex it already holds", tid);
+            panic!(
+                "Deadlock detected in Mutex: current thread {} is trying to lock a mutex it already holds",
+                tid
+            );
         }
-        
+
         #[cfg(not(feature = "no-smp"))]
         self.lock.lock();
         *self.holder() = current::tid();
-        
+
         LockGuard {
             data: unsafe { &mut *self.data.get() },
             mutex: self,
@@ -97,13 +100,23 @@ impl LockerTrait for SpinLocker {
     fn is_locked(&self) -> bool {
         self.lock.load(core::sync::atomic::Ordering::Relaxed)
     }
-    
+
     fn lock(&self) {
-        while self.lock.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {}
+        while self
+            .lock
+            .compare_exchange_weak(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {}
     }
 
     fn unlock(&self) {
-        self.lock.store(false, core::sync::atomic::Ordering::Release);
+        self.lock
+            .store(false, core::sync::atomic::Ordering::Release);
     }
 }
 
@@ -124,14 +137,14 @@ macro_rules! lock_debug {
     ($mutex:expr) => {{
         let mutex = &$mutex;
         let current_tid = $crate::kernel::scheduler::current::tid();
-        
+
         if mutex.deadlock_detect() {
             panic!(
                 "Deadlock detected in Mutex: current thread {} is trying to lock a mutex it already holds",
                 current_tid,
             );
         }
-        
+
         mutex.lock()
     }};
 }

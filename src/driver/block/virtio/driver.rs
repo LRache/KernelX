@@ -1,26 +1,26 @@
 use alloc::format;
-use alloc::sync::Arc;
 use alloc::string::String;
+use alloc::sync::Arc;
 use virtio_drivers::device::blk::VirtIOBlk;
 use virtio_drivers::transport::mmio::MmioTransport;
 
 use crate::driver::BlockDriverOps;
-use crate::driver::{DeviceType, DriverOps};
 use crate::driver::virtio::VirtIOHal;
+use crate::driver::{DeviceType, DriverOps};
 use crate::klib::SpinLock;
 
 const BLOCK_SIZE: usize = 512;
 
 pub struct VirtIOBlockDriver {
     num: u32,
-    driver: SpinLock<VirtIOBlk<VirtIOHal, MmioTransport>>
+    driver: SpinLock<VirtIOBlk<VirtIOHal, MmioTransport>>,
 }
 
 impl VirtIOBlockDriver {
     pub fn new(num: u32, transport: MmioTransport) -> Self {
         Self {
             num,
-            driver: SpinLock::new(VirtIOBlk::new(transport).unwrap())
+            driver: SpinLock::new(VirtIOBlk::new(transport).unwrap()),
         }
     }
 }
@@ -62,10 +62,11 @@ impl BlockDriverOps for VirtIOBlockDriver {
         let block_offset = offset % BLOCK_SIZE;
         if block_offset != 0 {
             self.read_block(block, &mut block_buf)?;
-            
+
             let read_size = core::cmp::min(BLOCK_SIZE - block_offset, length);
-            buf[buf_offset..buf_offset + read_size].copy_from_slice(&block_buf[block_offset..block_offset + read_size]);
-            
+            buf[buf_offset..buf_offset + read_size]
+                .copy_from_slice(&block_buf[block_offset..block_offset + read_size]);
+
             buf_offset += read_size;
             length -= read_size;
             block += 1;
@@ -73,10 +74,10 @@ impl BlockDriverOps for VirtIOBlockDriver {
 
         while length != 0 {
             self.read_block(block, &mut block_buf)?;
-            
+
             let read_size = core::cmp::min(length, BLOCK_SIZE);
             buf[buf_offset..buf_offset + read_size].copy_from_slice(&block_buf[..read_size]);
-            
+
             buf_offset += read_size;
             length -= read_size;
             block += 1;
@@ -88,7 +89,7 @@ impl BlockDriverOps for VirtIOBlockDriver {
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), ()> {
         let mut length = buf.len();
         let mut block = offset / BLOCK_SIZE;
-  
+
         let mut block_buf = [0u8; BLOCK_SIZE];
         let mut buf_offset = 0;
 
@@ -97,7 +98,8 @@ impl BlockDriverOps for VirtIOBlockDriver {
             self.read_block(block, &mut block_buf)?;
 
             let write_size = core::cmp::min(BLOCK_SIZE - block_offset, length);
-            block_buf[block_offset..block_offset + write_size].copy_from_slice(&buf[buf_offset..buf_offset + write_size]);
+            block_buf[block_offset..block_offset + write_size]
+                .copy_from_slice(&buf[buf_offset..buf_offset + write_size]);
             self.write_block(block, &block_buf)?;
 
             buf_offset += write_size;

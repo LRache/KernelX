@@ -1,10 +1,10 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use crate::kernel::errno::Errno;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
-use crate::fs::InodeOps;
 use crate::driver::BlockDriverOps;
+use crate::fs::InodeOps;
+use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::kernel::errno::Errno;
 
 #[derive(Debug, Clone)]
 pub struct RootInode;
@@ -65,7 +65,11 @@ impl SuperBlockOps for RootFileSystemSuperBlock {
 }
 
 impl FileSystemOps for RootFileSystem {
-    fn create(&self, _fsno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> Result<Arc<dyn SuperBlockOps>, Errno> {
+    fn create(
+        &self,
+        _fsno: u32,
+        _driver: Option<Arc<dyn BlockDriverOps>>,
+    ) -> Result<Arc<dyn SuperBlockOps>, Errno> {
         Ok(Arc::new(RootFileSystemSuperBlock::new()))
     }
 }

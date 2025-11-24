@@ -1,10 +1,10 @@
-use alloc::sync::Arc;
 use alloc::string::String;
+use alloc::sync::Arc;
 
+use crate::fs::file::{File, FileFlags};
 use crate::fs::inode::{InodeOps, Mode};
 use crate::fs::perm::Perm;
 use crate::fs::vfs::dentry::Dentry;
-use crate::fs::file::{File, FileFlags};
 use crate::kernel::errno::{Errno, SysResult};
 
 use super::vfs;
@@ -43,11 +43,19 @@ pub fn load_dentry_at(dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
     vfs().lookup_dentry(dir, path)
 }
 
-pub fn load_parent_dentry_at<'a>(dir: &Arc<Dentry>, path: &'a str) -> SysResult<(Arc<Dentry>, &'a str)> {
+pub fn load_parent_dentry_at<'a>(
+    dir: &Arc<Dentry>,
+    path: &'a str,
+) -> SysResult<(Arc<Dentry>, &'a str)> {
     vfs().lookup_parent_dentry(dir, path)
 }
 
-pub fn openat_file(dir: &Arc<Dentry>, path: &str, flags: FileFlags, perm: &Perm) -> SysResult<File> {
+pub fn openat_file(
+    dir: &Arc<Dentry>,
+    path: &str,
+    flags: FileFlags,
+    perm: &Perm,
+) -> SysResult<File> {
     let dentry = vfs().lookup_dentry(dir, path)?;
     new_file(&dentry, flags, perm)
 }
@@ -57,7 +65,11 @@ pub fn load_inode(sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
 }
 
 pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysResult<File> {
-    let superblock = vfs().superblock_table.lock().get(dentry.sno()).ok_or(Errno::ENOENT)?;
+    let superblock = vfs()
+        .superblock_table
+        .lock()
+        .get(dentry.sno())
+        .ok_or(Errno::ENOENT)?;
     let inode = superblock.create_temp(mode)?;
 
     let inode: Arc<dyn InodeOps> = Arc::from(inode);

@@ -1,22 +1,22 @@
+use crate::arch::UserContextTrait;
+use crate::arch::riscv::TRAMPOLINE_BASE;
+use crate::arch::riscv::UserContext;
+use crate::arch::riscv::csr::*;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
-use crate::kernel::trap;
 use crate::kernel::syscall;
-use crate::arch::riscv::csr::*;
-use crate::arch::riscv::UserContext;
-use crate::arch::riscv::TRAMPOLINE_BASE;
-use crate::arch::UserContextTrait;
+use crate::kernel::trap;
 use crate::kinfo;
 
 unsafe extern "C" {
-    fn asm_usertrap_entry (user_context: *mut   UserContext) -> !;
+    fn asm_usertrap_entry(user_context: *mut UserContext) -> !;
     fn asm_usertrap_return(user_context: *const UserContext) -> !;
 }
 
 fn handle_syscall() {
     let tcb = current::tcb();
 
-    tcb.with_user_context_mut(|user_context|{
+    tcb.with_user_context_mut(|user_context| {
         let syscall_args: syscall::Args = [
             user_context.gpr[10], // a0
             user_context.gpr[11], // a1
@@ -42,64 +42,70 @@ pub fn usertrap_handler() -> ! {
     current::tcb().user_context().set_user_entry(sepc::read());
 
     trap::trap_enter();
-    
+
     match scause::cause() {
-        scause::Cause::Trap(trap) => {
-            match trap {
-                scause::Trap::EcallU => handle_syscall(),
-                scause::Trap::InstPageFault => {
-                    let addr = stval::read();
-                    trap::memory_fault(addr, MemAccessType::Execute);
-                },
-                scause::Trap::LoadPageFault => {
-                    let addr = stval::read();
-                    trap::memory_fault(addr, MemAccessType::Read);
-                },
-                scause::Trap::StorePageFault => {
-                    let addr = stval::read();
-                    trap::memory_fault(addr, MemAccessType::Write);
-                },
-                scause::Trap::IllegalInst => {
-                    trap::illegal_inst();
-                }
-                scause::Trap::InstAddrMisaligned | scause::Trap::LoadAddrMisaligned | scause::Trap::StoreAddrMisaligned => {
-                    trap::memory_misaligned();
-                }
-                _ => {
-                    let inst: u32 = current::addrspace().copy_from_user(sepc::read()).unwrap();
-                    panic!("Unhandled user trap: {:?}, sepc={:#x}, stval={:#x}, stinst={:#x}, cause={:?}", trap, sepc::read(), stval::read(), inst, scause::cause());
-                }
+        scause::Cause::Trap(trap) => match trap {
+            scause::Trap::EcallU => handle_syscall(),
+            scause::Trap::InstPageFault => {
+                let addr = stval::read();
+                trap::memory_fault(addr, MemAccessType::Execute);
+            }
+            scause::Trap::LoadPageFault => {
+                let addr = stval::read();
+                trap::memory_fault(addr, MemAccessType::Read);
+            }
+            scause::Trap::StorePageFault => {
+                let addr = stval::read();
+                trap::memory_fault(addr, MemAccessType::Write);
+            }
+            scause::Trap::IllegalInst => {
+                trap::illegal_inst();
+            }
+            scause::Trap::InstAddrMisaligned
+            | scause::Trap::LoadAddrMisaligned
+            | scause::Trap::StoreAddrMisaligned => {
+                trap::memory_misaligned();
+            }
+            _ => {
+                let inst: u32 = current::addrspace().copy_from_user(sepc::read()).unwrap();
+                panic!(
+                    "Unhandled user trap: {:?}, sepc={:#x}, stval={:#x}, stinst={:#x}, cause={:?}",
+                    trap,
+                    sepc::read(),
+                    stval::read(),
+                    inst,
+                    scause::cause()
+                );
             }
         },
-        
+
         scause::Cause::Interrupt(interrupt) => {
             match interrupt {
                 scause::Interrupt::Software => {
                     kinfo!("Software interrupt occurred");
-                },
+                }
                 scause::Interrupt::Timer => {
                     // kinfo!("Timer interrupt occurred");
                     trap::timer_interrupt();
-                },
+                }
                 scause::Interrupt::External => {
                     kinfo!("External interrupt occurred");
-                },
+                }
                 scause::Interrupt::Counter => {
                     kinfo!("Counter interrupt occurred");
-                },
+                }
             }
             // println!("Interrupt occurred, returning to user mode");
-        },
+        }
     }
-    
+
     return_to_user();
 }
 
 fn usertrap_return(user_context: *const UserContext) -> ! {
-    let trampoline_usertrap_return = 
-        (TRAMPOLINE_BASE + (asm_usertrap_return as usize - asm_usertrap_entry as usize)) 
-        as usize;
-    
+    let trampoline_usertrap_return =
+        (TRAMPOLINE_BASE + (asm_usertrap_return as usize - asm_usertrap_entry as usize)) as usize;
+
     unsafe {
         core::arch::asm!(
             "jr {target}",
@@ -112,7 +118,7 @@ fn usertrap_return(user_context: *const UserContext) -> ! {
 
 pub fn return_to_user() -> ! {
     trap::trap_return();
-    
+
     let tcb = current::tcb();
 
     sepc::write(tcb.user_context().get_user_entry());
@@ -123,7 +129,7 @@ pub fn return_to_user() -> ! {
         .set_spie(true) // Enable interrupts in user mode
         .set_spp(true) // Set previous mode to user
         .write();
-    
+
     let user_context_ptr = tcb.get_user_context_ptr();
 
     // ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.user_context().get_user_entry(), user_context_ptr as usize);
@@ -136,41 +142,54 @@ pub fn kerneltrap_handler() {
     let sepc = sepc::read();
 
     match scause::cause() {
-        scause::Cause::Trap(trap) => {
-            match trap {
-                scause::Trap::StorePageFault => {
-                    let stval = stval::read();
-                    let tcb = current::tcb();
-                    if tcb.kernel_stack.stack_overflow(stval) {
-                        panic!("Kernel stack overflow detected at address: {:#x}, tid={}", stval, current::tid());
-                    } else {
-                        panic!("Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}, kstack_top={:#x}", stval, sepc, trap, tcb.kernel_stack.get_top());
-                    }
-                }
-                _ => {
-                    panic!("Unhandled kernel trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}", trap, sepc, stval::read(), scause::cause());
+        scause::Cause::Trap(trap) => match trap {
+            scause::Trap::StorePageFault => {
+                let stval = stval::read();
+                let tcb = current::tcb();
+                if tcb.kernel_stack.stack_overflow(stval) {
+                    panic!(
+                        "Kernel stack overflow detected at address: {:#x}, tid={}",
+                        stval,
+                        current::tid()
+                    );
+                } else {
+                    panic!(
+                        "Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}, kstack_top={:#x}",
+                        stval,
+                        sepc,
+                        trap,
+                        tcb.kernel_stack.get_top()
+                    );
                 }
             }
+            _ => {
+                panic!(
+                    "Unhandled kernel trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}",
+                    trap,
+                    sepc,
+                    stval::read(),
+                    scause::cause()
+                );
+            }
         },
-        
+
         scause::Cause::Interrupt(interrupt) => {
             match interrupt {
                 scause::Interrupt::Software => {
                     kinfo!("Kernel software interrupt occurred");
-                },
+                }
                 scause::Interrupt::Timer => {
                     // kinfo!("Kernel timer interrupt occurred");
                     trap::timer_interrupt();
-                },
+                }
                 scause::Interrupt::External => {
                     kinfo!("Kernel external interrupt occurred");
-                },
+                }
                 scause::Interrupt::Counter => {
                     kinfo!("Kernel counter interrupt occurred");
-                },
+                }
             }
-        },
-        
+        }
     }
 
     Sstatus::read().set_spp(false).write(); // Set previous mode to supervisor

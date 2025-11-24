@@ -1,11 +1,11 @@
 use core::fmt::Debug;
 
-use alloc::sync::{Arc, Weak};
-use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::{Arc, Weak};
 
-use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::inode::{Index, InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kinfo;
 use crate::klib::SpinLock;
 
@@ -31,7 +31,10 @@ pub struct Dentry {
 impl Dentry {
     pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>) -> Self {
         Self {
-            inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
+            inode_index: Index {
+                sno: inode.get_sno(),
+                ino: inode.get_ino(),
+            },
             name: name.into(),
             // inner: SpinLock::new(DentryInner {
             //     parent: Some(parent.clone()),
@@ -48,7 +51,10 @@ impl Dentry {
 
     pub fn root(inode: &Arc<dyn InodeOps>) -> Self {
         Self {
-            inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
+            inode_index: Index {
+                sno: inode.get_sno(),
+                ino: inode.get_ino(),
+            },
             name: "/".into(),
             // inner: SpinLock::new(DentryInner {
             //     parent: None,
@@ -74,7 +80,7 @@ impl Dentry {
     fn get_inode_inner(&self, inner: &mut DentryInner) -> SysResult<Arc<dyn InodeOps>> {
         match inner.inode.upgrade() {
             None => {
-                let inode =  vfs().load_inode(self.sno(), self.ino())?;
+                let inode = vfs().load_inode(self.sno(), self.ino())?;
                 inner.inode = Arc::downgrade(&inode);
                 Ok(inode)
             }
@@ -96,7 +102,9 @@ impl Dentry {
         match inode.upgrade() {
             None => {
                 drop(inode);
-                let inode =  vfs().load_inode(self.sno(), self.ino()).expect("Failed to load inode");
+                let inode = vfs()
+                    .load_inode(self.sno(), self.ino())
+                    .expect("Failed to load inode");
                 *self.inode.lock() = Arc::downgrade(&inode);
                 inode
             }
@@ -119,7 +127,7 @@ impl Dentry {
                 return Ok(child);
             }
         }
-        
+
         // if let Some(child) = inner.children.get(name) {
         //     if let Some(child) = child.upgrade() {
         //         return Ok(child);
@@ -151,7 +159,7 @@ impl Dentry {
         let new_child = Arc::new(Self::new(name, self, &inode));
         // inner.children.insert(name.into(), Arc::downgrade(&new_child));
         children.insert(name.into(), Arc::downgrade(&new_child));
-        
+
         Ok(new_child)
     }
 
@@ -195,7 +203,8 @@ impl Dentry {
             if inode.mode()?.contains(Mode::S_IFLNK) {
                 let mut buffer = [0u8; 255];
                 let count = inode.readat(&mut buffer, 0)?;
-                let link_path = core::str::from_utf8(&buffer[..count]).map_err(|_| Errno::EINVAL)?;
+                let link_path =
+                    core::str::from_utf8(&buffer[..count]).map_err(|_| Errno::EINVAL)?;
                 let r = vfs().lookup_dentry(&p, &link_path)?;
                 Ok(r)
             } else {
@@ -211,7 +220,7 @@ impl Dentry {
     pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>) {
         // let mut inner = self.inner.lock();
         // inner.mount_to = Some(Arc::new(
-        //     Dentry { 
+        //     Dentry {
         //         inode_index: Index { sno: mount_to.get_sno(), ino: mount_to.get_ino() },
         //         name: self.name.clone(),
         //         inner: SpinLock::new(DentryInner {
@@ -222,22 +231,23 @@ impl Dentry {
         //         })
         //     }
         // ));
-        *self.mount_to.lock() =  Some(Arc::new(
-            Dentry { 
-                inode_index: Index { sno: mount_to.get_sno(), ino: mount_to.get_ino() },
-                name: self.name.clone(),
-                // inner: SpinLock::new(DentryInner {
-                //     parent: inner.parent.clone(),
-                //     children: BTreeMap::new(),
-                //     inode: Arc::downgrade(mount_to),
-                //     mount_to: None,
-                // })
-                parent: SpinLock::new(self.parent.lock().clone()),
-                children: SpinLock::new(BTreeMap::new()),
-                inode: SpinLock::new(Arc::downgrade(mount_to)),
-                mount_to: SpinLock::new(None),
-            }
-        ));
+        *self.mount_to.lock() = Some(Arc::new(Dentry {
+            inode_index: Index {
+                sno: mount_to.get_sno(),
+                ino: mount_to.get_ino(),
+            },
+            name: self.name.clone(),
+            // inner: SpinLock::new(DentryInner {
+            //     parent: inner.parent.clone(),
+            //     children: BTreeMap::new(),
+            //     inode: Arc::downgrade(mount_to),
+            //     mount_to: None,
+            // })
+            parent: SpinLock::new(self.parent.lock().clone()),
+            children: SpinLock::new(BTreeMap::new()),
+            inode: SpinLock::new(Arc::downgrade(mount_to)),
+            mount_to: SpinLock::new(None),
+        }));
     }
 
     pub fn get_path(&self) -> String {
@@ -270,11 +280,16 @@ impl Dentry {
         self.get_inode().unlink(name)?;
 
         self.children.lock().remove(name);
-        
+
         Ok(())
     }
 
-    pub fn rename(self: &Arc<Self>, old_name: &str, new_parent: &Arc<Dentry>, new_name: &str) -> SysResult<()> {
+    pub fn rename(
+        self: &Arc<Self>,
+        old_name: &str,
+        new_parent: &Arc<Dentry>,
+        new_name: &str,
+    ) -> SysResult<()> {
         assert!(self.sno() == new_parent.sno());
         assert!(old_name != "." && old_name != "..");
         assert!(new_name != "." && new_name != "..");
@@ -290,7 +305,7 @@ impl Dentry {
 
     pub fn readlink(&self) -> SysResult<String> {
         // let mut inner = self.inner.lock();
-        
+
         // if let Some(mount_to) = &inner.mount_to {
         //     return mount_to.readlink();
         // }
@@ -304,11 +319,16 @@ impl Dentry {
 
 impl Debug for Dentry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Dentry {{ sno: {}, ino: {}, name: {} }}", self.sno(), self.ino(), self.name)
+        write!(
+            f,
+            "Dentry {{ sno: {}, ino: {}, name: {} }}",
+            self.sno(),
+            self.ino(),
+            self.name
+        )
     }
 }
 
 impl Drop for Dentry {
-    fn drop(&mut self) {
-    }
+    fn drop(&mut self) {}
 }

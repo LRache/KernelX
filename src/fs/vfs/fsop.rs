@@ -1,16 +1,20 @@
 use alloc::sync::Arc;
 
-use crate::fs::vfs::vfs::VirtualFileSystem;
+use crate::driver::BlockDriverOps;
 use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::vfs::vfs::VirtualFileSystem;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
-use crate::driver::BlockDriverOps;
 
-use super::vfs;
 use super::Dentry;
+use super::vfs;
 
 impl VirtualFileSystem {
-    pub(super) fn register_filesystem(&mut self, name: &'static str, fs: &'static dyn FileSystemOps) {
+    pub(super) fn register_filesystem(
+        &mut self,
+        name: &'static str,
+        fs: &'static dyn FileSystemOps,
+    ) {
         self.fstype_map.insert(name, fs);
     }
 
@@ -21,7 +25,12 @@ impl VirtualFileSystem {
         Ok(superblock)
     }
 
-    fn mount(&self, path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> SysResult<()> {
+    fn mount(
+        &self,
+        path: &str,
+        fstype_name: &str,
+        device: Option<Arc<dyn BlockDriverOps>>,
+    ) -> SysResult<()> {
         let dentry = self.lookup_dentry(self.get_root(), path)?;
 
         let fstype = self.fstype_map.get(fstype_name).ok_or(Errno::ENOENT)?;
@@ -35,9 +44,9 @@ impl VirtualFileSystem {
         let root_inode = self.load_inode(sno, root_ino)?;
 
         dentry.mount(&root_inode);
-        
+
         self.mountpoint.lock().push(dentry);
-        
+
         Ok(())
     }
 
@@ -48,7 +57,11 @@ impl VirtualFileSystem {
     }
 }
 
-pub fn mount(path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> Result<(), Errno> {
+pub fn mount(
+    path: &str,
+    fstype_name: &str,
+    device: Option<Arc<dyn BlockDriverOps>>,
+) -> Result<(), Errno> {
     vfs().mount(path, fstype_name, device)
 }
 

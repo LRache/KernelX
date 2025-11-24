@@ -1,10 +1,10 @@
-use core::alloc::Layout;
 use buddy_system_allocator::LockedFrameAllocator;
+use core::alloc::Layout;
 // use alloc::collections::VecDeque;
 // use spin::Mutex;
 
-use crate::klib::InitedCell;
 use crate::arch;
+use crate::klib::InitedCell;
 
 // struct PageAllocator {
 //     freed: VecDeque<usize>,
@@ -54,7 +54,7 @@ use crate::arch;
 //         if cfg!(debug_assertions) {
 //             unsafe { core::ptr::write_bytes(addr as *mut u8, 'A' as u8, arch::PGSIZE); }
 //         }
-        
+
 //         self.freed.push_back(addr);
 //     }
 // }
@@ -73,14 +73,20 @@ pub fn init(frame_start: usize, frame_end: usize) {
 
 pub fn alloc() -> usize {
     // ALLOCATOR.lock().alloc()
-    let page = FRAME_ALLOCATOR.lock().alloc_aligned(Layout::from_size_align(arch::PGSIZE, arch::PGSIZE).unwrap()).unwrap();
+    let page = FRAME_ALLOCATOR
+        .lock()
+        .alloc_aligned(Layout::from_size_align(arch::PGSIZE, arch::PGSIZE).unwrap())
+        .unwrap();
     // kinfo!("alloc page at {:#x}", page);
     page
 }
 
 pub fn alloc_zero() -> usize {
     // let addr = ALLOCATOR.lock().alloc();
-    let page = FRAME_ALLOCATOR.lock().alloc_aligned(Layout::from_size_align(arch::PGSIZE, arch::PGSIZE).unwrap()).unwrap();
+    let page = FRAME_ALLOCATOR
+        .lock()
+        .alloc_aligned(Layout::from_size_align(arch::PGSIZE, arch::PGSIZE).unwrap())
+        .unwrap();
     zero(page);
     page
 }
@@ -109,46 +115,55 @@ pub fn free_contiguous(addr: usize, pages: usize) {
 }
 
 pub fn copy(src: usize, dst: usize) {
-    debug_assert!(src % arch::PGSIZE == 0, "Source address must be page-aligned: {:#x}", src);
-    debug_assert!(dst % arch::PGSIZE == 0, "Destination address must be page-aligned: {:#x}", dst);
-    debug_assert!(src != dst, "Source and destination addresses must be different: {:#x}", src);
-    
+    debug_assert!(
+        src % arch::PGSIZE == 0,
+        "Source address must be page-aligned: {:#x}",
+        src
+    );
+    debug_assert!(
+        dst % arch::PGSIZE == 0,
+        "Destination address must be page-aligned: {:#x}",
+        dst
+    );
+    debug_assert!(
+        src != dst,
+        "Source and destination addresses must be different: {:#x}",
+        src
+    );
+
     unsafe {
         core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, arch::PGSIZE);
     }
 }
 
 pub fn zero(addr: usize) {
-    unsafe { 
+    unsafe {
         core::ptr::write_bytes(addr as *mut u8, 0, arch::PGSIZE);
     }
 }
 
 #[macro_export]
 macro_rules! safe_page_write {
-    ($addr:expr, $buffer:expr) => {
-        {
-            let addr = $addr;
-            let buffer = $buffer;
-            
-            // Only perform bounds checking in debug mode
-            if cfg!(debug_assertions) {
-                if (addr & $crate::arch::PGMASK) + buffer.len() > $crate::arch::PGSIZE {
-                    panic!(
-                        "Buffer exceeds page size at {}:{}:{}\n  addr = {:#x}, len = {:#x}",
-                        file!(),
-                        line!(),
-                        column!(),
-                        addr,
-                        buffer.len()
-                    );
-                }
-            }
+    ($addr:expr, $buffer:expr) => {{
+        let addr = $addr;
+        let buffer = $buffer;
 
-            unsafe {
-                core::slice::from_raw_parts_mut(addr as *mut u8, buffer.len())
-                    .copy_from_slice(buffer);
+        // Only perform bounds checking in debug mode
+        if cfg!(debug_assertions) {
+            if (addr & $crate::arch::PGMASK) + buffer.len() > $crate::arch::PGSIZE {
+                panic!(
+                    "Buffer exceeds page size at {}:{}:{}\n  addr = {:#x}, len = {:#x}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    addr,
+                    buffer.len()
+                );
             }
         }
-    };
+
+        unsafe {
+            core::slice::from_raw_parts_mut(addr as *mut u8, buffer.len()).copy_from_slice(buffer);
+        }
+    }};
 }

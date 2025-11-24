@@ -30,7 +30,7 @@ impl PipeInner {
         if buf.len() == 0 {
             return Ok(0);
         }
-        
+
         let mut total_read = 0;
 
         {
@@ -39,7 +39,7 @@ impl PipeInner {
                 Some(byte) => {
                     buf[0] = byte;
                     total_read += 1;
-                },
+                }
                 None => {
                     if *self.writer_count.lock() == 0 {
                         return Ok(0); // No writers left, return 0 to indicate EOF
@@ -51,13 +51,13 @@ impl PipeInner {
                 }
             }
         }
-        
+
         while total_read < buf.len() {
             let mut fifo = self.buffer.lock();
             if fifo.is_empty() {
                 break;
             }
-            
+
             let to_read = core::cmp::min(buf.len() - total_read, fifo.len());
             for _ in 0..to_read {
                 if let Some(byte) = fifo.pop_front() {
@@ -82,7 +82,7 @@ impl PipeInner {
             if fifo.len() == *capacity {
                 drop(capacity);
                 drop(fifo);
-                
+
                 // If buffer is full, wait for space
                 self.write_waiter.lock().wait_current(Event::PipeWriteReady);
                 current::schedule();
@@ -95,11 +95,16 @@ impl PipeInner {
                 self.read_waiter.lock().wake_all(|e| e); // Wake up readers waiting for data
             }
         }
-        
+
         Ok(total_written)
     }
 
-    pub fn poll(&self, waker: usize, event: PollEventSet, writable: bool) -> SysResult<Option<PollEvent>> {
+    pub fn poll(
+        &self,
+        waker: usize,
+        event: PollEventSet,
+        writable: bool,
+    ) -> SysResult<Option<PollEvent>> {
         if event.contains(PollEventSet::POLLIN) && writable {
             return Ok(None);
         }
@@ -107,7 +112,7 @@ impl PipeInner {
         if event.contains(PollEventSet::POLLOUT) && !writable {
             return Ok(None);
         }
-        
+
         let buffer = self.buffer.lock();
         if event.contains(PollEventSet::POLLIN) {
             if buffer.len() > 0 && !writable {
@@ -116,7 +121,13 @@ impl PipeInner {
                 if *self.writer_count.lock() == 0 {
                     return Ok(Some(PollEvent::HangUp)); // No writers left, indicate EOF
                 }
-                self.read_waiter.lock().wait(current::task().clone(), Event::Poll{event: PollEvent::ReadReady, waker});
+                self.read_waiter.lock().wait(
+                    current::task().clone(),
+                    Event::Poll {
+                        event: PollEvent::ReadReady,
+                        waker,
+                    },
+                );
             }
         }
 
@@ -124,7 +135,13 @@ impl PipeInner {
             if buffer.len() < *self.capacity.lock() {
                 return Ok(Some(PollEvent::WriteReady));
             } else {
-                self.write_waiter.lock().wait(current::task().clone(), Event::Poll{event: PollEvent::WriteReady, waker});
+                self.write_waiter.lock().wait(
+                    current::task().clone(),
+                    Event::Poll {
+                        event: PollEvent::WriteReady,
+                        waker,
+                    },
+                );
             }
         }
 
@@ -149,12 +166,16 @@ impl PipeInner {
         assert!(*writer_count > 0);
         *writer_count -= 1;
         if *writer_count == 0 {
-            self.read_waiter.lock().wake_all(|e| {
-                match e {
-                    Event::Poll{ event: PollEvent::ReadReady, waker } => {Event::Poll{event: PollEvent::HangUp, waker} },
-                    _ => e
-                }
+            self.read_waiter.lock().wake_all(|e| match e {
+                Event::Poll {
+                    event: PollEvent::ReadReady,
+                    waker,
+                } => Event::Poll {
+                    event: PollEvent::HangUp,
+                    waker,
+                },
+                _ => e,
             }); // Wake up readers to notify them of EOF
         }
     }
-}  
+}

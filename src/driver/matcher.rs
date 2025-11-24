@@ -3,8 +3,8 @@ use alloc::sync::Arc;
 use super::manager;
 use super::{Device, DriverOps};
 
-use super::virtio::VirtIODriverMatcher;
 use super::block::starfive_sdio;
+use super::virtio::VirtIODriverMatcher;
 
 pub trait DriverMatcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>>;

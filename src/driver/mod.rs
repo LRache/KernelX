@@ -1,8 +1,8 @@
-mod virtio;
 mod device;
 mod driver;
-mod matcher;
 mod manager;
+mod matcher;
+mod virtio;
 // mod fdt;
 
 pub mod block;
@@ -14,10 +14,10 @@ use matcher::DriverMatcher;
 pub use device::{Device, DeviceType};
 pub use driver::*;
 
-pub use manager::{get_block_driver, get_char_driver, register_matched_driver, found_device};
+pub use manager::{found_device, get_block_driver, get_char_driver, register_matched_driver};
 // pub use fdt::load_device_tree;
 
 #[unsafe(link_section = ".text.init")]
-pub fn init() {    
+pub fn init() {
     matcher::register_matchers();
 }

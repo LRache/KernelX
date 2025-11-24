@@ -2,12 +2,12 @@ use alloc::sync::Arc;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicU32;
 use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
-use virtio_drivers::transport::{Transport, DeviceType};
+use virtio_drivers::transport::{DeviceType, Transport};
 
-use crate::kernel::mm::{MapPerm, page};
 use crate::arch::{self, map_kernel_addr};
 use crate::driver::block::VirtIOBlockDriver;
-use crate::driver::{Device, DriverOps, DriverMatcher};
+use crate::driver::{Device, DriverMatcher, DriverOps};
+use crate::kernel::mm::{MapPerm, page};
 
 pub struct VirtIODriverMatcher {
     block_count: AtomicU32,
@@ -28,16 +28,22 @@ impl DriverMatcher for VirtIODriverMatcher {
         }
 
         let mmio_base = page::alloc_contiguous(arch::page_count(device.mmio_size()));
-        map_kernel_addr(mmio_base, device.mmio_base(), device.mmio_size(), MapPerm::R | MapPerm::W);
-        
+        map_kernel_addr(
+            mmio_base,
+            device.mmio_base(),
+            device.mmio_size(),
+            MapPerm::R | MapPerm::W,
+        );
+
         let transport = unsafe {
             MmioTransport::new(NonNull::new(mmio_base as *mut VirtIOHeader).unwrap()).ok()
         }?;
 
         match transport.device_type() {
-            DeviceType::Block => {
-                Some(Arc::new(VirtIOBlockDriver::new(self.block_count.load(core::sync::atomic::Ordering::Relaxed), transport)))
-            }
+            DeviceType::Block => Some(Arc::new(VirtIOBlockDriver::new(
+                self.block_count.load(core::sync::atomic::Ordering::Relaxed),
+                transport,
+            ))),
             _ => None,
         }
     }

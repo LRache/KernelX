@@ -1,9 +1,9 @@
-pub mod page;
+mod addrspace;
 pub mod elf;
 mod frame;
-mod addrspace;
-pub mod vdso;
 pub mod maparea;
+pub mod page;
+pub mod vdso;
 // pub mod uptr;
 
 pub use addrspace::*;

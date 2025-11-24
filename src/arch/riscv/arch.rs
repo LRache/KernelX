@@ -1,19 +1,19 @@
 use alloc::sync::Arc;
 
-use crate::arch::riscv::{csr, load_device_tree, process, sbi_driver};
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
+use crate::arch::riscv::{csr, load_device_tree, process, sbi_driver};
 use crate::arch::{Arch, ArchTrait, UserContextTrait};
-use crate::kernel::scheduler::current;
-use crate::kernel::mm::MapPerm;
-use crate::driver::chosen;
 use crate::driver;
+use crate::driver::chosen;
+use crate::kernel::mm::MapPerm;
+use crate::kernel::scheduler::current;
 
 use super::KernelContext;
-use super::pagetable::kernelpagetable;
-use super::csr::{Sstatus, SIE, stvec};
-use super::time_frequency;
+use super::csr::{SIE, Sstatus, stvec};
 use super::kernel_switch;
+use super::pagetable::kernelpagetable;
 use super::sbi_driver::SBIKConsole;
+use super::time_frequency;
 
 unsafe extern "C" {
     static __riscv_copied_fdt: *const u8;
@@ -33,7 +33,7 @@ impl ArchTrait for Arch {
 
         driver::register_matched_driver(Arc::new(SBIConsoleDriver));
     }
-    
+
     #[inline(always)]
     fn set_percpu_data(data: usize) {
         unsafe { core::arch::asm!("mv tp, {data}", data = in(reg) data) };
@@ -59,11 +59,11 @@ impl ArchTrait for Arch {
     fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext) {
         kernel_switch(from, to);
     }
-    
+
     fn wait_for_interrupt() {
         unsafe { core::arch::asm!("wfi") };
     }
-    
+
     fn enable_interrupt() {
         Sstatus::read().set_sie(true).write();
     }

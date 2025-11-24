@@ -1,20 +1,20 @@
-use alloc::sync::Arc;
 use alloc::boxed::Box;
-use lwext4_rust::{BlockDevice, DummyHal, Ext4Error, Ext4Filesystem, Ext4Result, FsConfig};
+use alloc::sync::Arc;
 use lwext4_rust::EXT4_DEV_BSIZE;
+use lwext4_rust::{BlockDevice, DummyHal, Ext4Error, Ext4Filesystem, Ext4Result, FsConfig};
 
+use crate::driver::BlockDriverOps;
+use crate::fs::InodeOps;
+use crate::fs::ext4::inode::Ext4Inode;
+use crate::fs::filesystem::SuperBlockOps;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
 use crate::klib::SpinLock;
-use crate::fs::ext4::inode::Ext4Inode;
-use crate::fs::filesystem::SuperBlockOps;
-use crate::fs::InodeOps;
-use crate::driver::BlockDriverOps;
 
 pub(super) fn map_error_to_ext4(e: Errno, context: &'static str) -> Ext4Error {
-    Ext4Error { 
-        code: e as i32, 
-        context: Some(context)
+    Ext4Error {
+        code: e as i32,
+        context: Some(context),
     }
 }
 
@@ -27,7 +27,7 @@ pub(super) fn map_error_to_kernel(e: Ext4Error) -> Errno {
 }
 
 pub(super) struct BlockDeviceImpls {
-    driver: Arc<dyn BlockDriverOps>
+    driver: Arc<dyn BlockDriverOps>,
 }
 
 impl BlockDeviceImpls {
@@ -38,16 +38,23 @@ impl BlockDeviceImpls {
 
 impl BlockDevice for BlockDeviceImpls {
     fn num_blocks(&self) -> Ext4Result<u64> {
-        Ext4Result::Ok(self.driver.get_block_size() as u64 * self.driver.get_block_count() / EXT4_DEV_BSIZE as u64)
+        Ext4Result::Ok(
+            self.driver.get_block_size() as u64 * self.driver.get_block_count()
+                / EXT4_DEV_BSIZE as u64,
+        )
     }
 
     fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Ext4Result<usize> {
-        self.driver.read_at(block_id as usize * EXT4_DEV_BSIZE as usize, buf).map_err(|_| map_error_to_ext4(Errno::EIO, "read_block"))?;
+        self.driver
+            .read_at(block_id as usize * EXT4_DEV_BSIZE as usize, buf)
+            .map_err(|_| map_error_to_ext4(Errno::EIO, "read_block"))?;
         Ext4Result::Ok(buf.len())
     }
 
     fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Ext4Result<usize> {
-        self.driver.write_at(block_id as usize * EXT4_DEV_BSIZE, buf).map_err(|_| map_error_to_ext4(Errno::EIO, "write_block"))?;
+        self.driver
+            .write_at(block_id as usize * EXT4_DEV_BSIZE, buf)
+            .map_err(|_| map_error_to_ext4(Errno::EIO, "write_block"))?;
         Ok(buf.len())
     }
 }
@@ -57,7 +64,7 @@ pub(super) type SuperBlockInner = Ext4Filesystem<DummyHal, BlockDeviceImpls>;
 pub struct Ext4SuperBlock {
     sno: u32,
     // superblock: Arc<SuperBlockInner>,
-    superblock: Arc<SpinLock<SuperBlockInner>>
+    superblock: Arc<SpinLock<SuperBlockInner>>,
 }
 
 // struct Disk {
@@ -72,7 +79,7 @@ pub struct Ext4SuperBlock {
 //         }
 
 //         // kinfo!("Disk::read_offset offset={:x} buf={:?}", offset, &buf);
-        
+
 //         buf
 //     }
 
@@ -92,21 +99,26 @@ impl Ext4SuperBlock {
         //     sno,
         //     superblock: Arc::new(superblock),
         // }))
-        let superblock = Ext4Filesystem::new(BlockDeviceImpls::new(driver), FsConfig::default()).map_err(map_error_to_kernel)?;
+        let superblock = Ext4Filesystem::new(BlockDeviceImpls::new(driver), FsConfig::default())
+            .map_err(map_error_to_kernel)?;
 
-        Ok(Arc::new(Self { 
-            sno, 
-            superblock: Arc::new(SpinLock::new(superblock))
+        Ok(Arc::new(Self {
+            sno,
+            superblock: Arc::new(SpinLock::new(superblock)),
         }))
     }
 }
 
-unsafe impl Send for Ext4SuperBlock {}  
+unsafe impl Send for Ext4SuperBlock {}
 unsafe impl Sync for Ext4SuperBlock {}
 
 impl SuperBlockOps for Ext4SuperBlock {
     fn get_inode(&self, ino: u32) -> SysResult<Box<dyn InodeOps>> {
-        Ok(Box::new(Ext4Inode::new(self.sno, ino, self.superblock.clone())))
+        Ok(Box::new(Ext4Inode::new(
+            self.sno,
+            ino,
+            self.superblock.clone(),
+        )))
     }
 
     fn get_root_ino(&self) -> u32 {

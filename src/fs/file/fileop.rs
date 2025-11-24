@@ -1,10 +1,10 @@
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::kernel::event::{PollEvent, PollEventSet};
-use crate::kernel::errno::SysResult;
-use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, InodeOps};
+use crate::kernel::errno::SysResult;
+use crate::kernel::event::{PollEvent, PollEventSet};
+use crate::kernel::uapi::FileStat;
 
 pub enum SeekWhence {
     BEG,
@@ -20,13 +20,13 @@ pub trait FileOps: DowncastSync {
 
     fn readable(&self) -> bool;
     fn writable(&self) -> bool;
-    
+
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize>;
     fn ioctl(&self, request: usize, arg: usize) -> SysResult<usize>;
     fn fstat(&self) -> SysResult<FileStat>;
     fn fsync(&self) -> SysResult<()>;
     // fn get_dent(&self) -> SysResult<Option<DirResult>>;
-    
+
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>>;
     fn get_dentry(&self) -> Option<&Arc<Dentry>>;
 
