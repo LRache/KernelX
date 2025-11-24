@@ -56,4 +56,8 @@ impl InodeOps for NullInode {
 
         Ok(kstat)
     }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() as u32 | 0o666))
+    }
 }

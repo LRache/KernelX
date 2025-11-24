@@ -1,4 +1,5 @@
-use crate::kernel::{mm::uptr::{UPtr, UserPointer}, task::TCB};
+use crate::kernel::mm::uptr::UserPointer;
+use crate::kernel::task::TCB;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

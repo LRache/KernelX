@@ -28,7 +28,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, _uptr_rem: usize) -> SysResult<usize>
         return Ok(0);
     }
 
-    timer::add_timer(current::tcb().clone(), req.into());
+    timer::add_timer(current::task().clone(), req.into());
     let event = current::block("timer nanosleep");
     
     match event {
@@ -47,7 +47,7 @@ pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: UPtr<Timespec>,
         return Ok(0);
     }
 
-    timer::add_timer(current::tcb().clone(), req.into());
+    timer::add_timer(current::task().clone(), req.into());
     let event = current::block("timer nanosleep");
     
     match event {

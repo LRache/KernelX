@@ -116,7 +116,7 @@ impl PipeInner {
                 if *self.writer_count.lock() == 0 {
                     return Ok(Some(PollEvent::HangUp)); // No writers left, indicate EOF
                 }
-                self.read_waiter.lock().wait(current::tcb().clone(), Event::Poll{event: PollEvent::ReadReady, waker});
+                self.read_waiter.lock().wait(current::task().clone(), Event::Poll{event: PollEvent::ReadReady, waker});
             }
         }
 
@@ -124,7 +124,7 @@ impl PipeInner {
             if buffer.len() < *self.capacity.lock() {
                 return Ok(Some(PollEvent::WriteReady));
             } else {
-                self.write_waiter.lock().wait(current::tcb().clone(), Event::Poll{event: PollEvent::WriteReady, waker});
+                self.write_waiter.lock().wait(current::task().clone(), Event::Poll{event: PollEvent::WriteReady, waker});
             }
         }
 
@@ -132,8 +132,8 @@ impl PipeInner {
     }
 
     pub fn poll_cancel(&self) {
-        self.read_waiter.lock().remove(current::tcb());
-        self.write_waiter.lock().remove(current::tcb());
+        self.read_waiter.lock().remove(current::task());
+        self.write_waiter.lock().remove(current::task());
     }
 
     pub fn increment_reader_count(&self) {

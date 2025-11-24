@@ -3,10 +3,12 @@ use alloc::sync::Arc;
 use alloc::vec;
 use spin::Mutex;
 
+use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::mm::uptr::UPtr;
 use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::Task;
 use crate::kernel::usync::futex::{self, RobustListHead};
-use crate::kernel::{config, scheduler};
+use crate::kernel::config;
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::PCB;
@@ -16,14 +18,14 @@ use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
-// use crate::kernel::scheduler::Task;
 use crate::fs::file::{File, FileFlags, CharFile};
 use crate::fs::{Perm, PermFlags, vfs};
+use crate::kinfo;
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::arch;
 use crate::driver;
-use crate::{ktrace, lock_debug};
+use crate::ktrace;
 
 use super::kernelstack::KernelStack;
 
@@ -90,7 +92,7 @@ pub struct TCB {
 
     state: SpinLock<TaskStateSet>,
     pub wakeup_event: SpinLock<Option<Event>>,
-    parent_waiting_vfork: SpinLock<Option<Arc<TCB>>>,
+    parent_waiting_vfork: SpinLock<Option<Arc<dyn Task>>>,
     pub time_counter: SpinLock<TimeCounter>,
 }
 
@@ -104,7 +106,7 @@ impl TCB {
         addrspace: Arc<AddrSpace>,
         fdtable: Arc<SpinLock<FDTable>>,
     ) -> Arc<Self> {
-        let kernel_stack = KernelStack::new(); 
+        let kernel_stack = KernelStack::new(UTASK_KSTACK_PAGE_COUNT); 
         user_context.set_kernel_stack_top(kernel_stack.get_top());
 
         let (user_context_uaddr, user_context_ptr) = addrspace.alloc_usercontext_page();
@@ -218,7 +220,7 @@ impl TCB {
     }
 
     pub fn new_clone(
-        self: &Arc<Self>,
+        &self,
         tid: Tid,
         parent: &Arc<PCB>,
         userstack: usize,
@@ -262,7 +264,7 @@ impl TCB {
     }
 
     pub fn new_exec(
-        self: &Arc<Self>,
+        &self,
         file: File,
         argv: &[&str],
         envp: &[&str],
@@ -342,11 +344,6 @@ impl TCB {
         self.user_context_ptr
     }
 
-    /// Returns a mutable pointer to the kernel context
-    pub fn get_kernel_context_ptr(&self) -> *mut KernelContext {
-        &self.kernel_context as *const KernelContext as *mut KernelContext
-    }
-
     pub fn get_parent(&self) -> &Arc<PCB> {
         &self.parent
     }
@@ -391,62 +388,38 @@ impl TCB {
         *self.tid_address.lock() = Some(addr);
     }
 
-    pub fn block(self: &Arc<Self>, _reason: &str) -> bool {
-        assert!(Arc::ptr_eq(self, current::tcb()));
+    // pub fn wakeup(self: &Arc<Self>, event: Event) {
+    //     let mut state = self.state().lock();
+    //     if state.state != TaskState::Blocked {
+    //         return;
+    //     }
+    //     state.state = TaskState::Ready;
+    //     *self.wakeup_event.lock() = Some(event);
         
-        let mut state = self.state.lock();
-        match state.state {
-            TaskState::Ready | TaskState::Running => {},
-            _ => return false,
-        }
-        state.state = TaskState::Blocked;
-        true
-    }
+    //     scheduler::push_task(Task::User(self.clone()));
+    // }
 
-    pub fn block_uninterruptible(self: &Arc<Self>, _reason: &str) -> bool {
-        assert!(Arc::ptr_eq(self, current::tcb()));
+    // pub fn wakeup_uninterruptible(self: &Arc<Self>, event: Event) {
+    //     let mut state = self.state().lock();
+    //     match state.state {
+    //         TaskState::Blocked | TaskState::BlockedUninterruptible => {},
+    //         _ => return,
+    //     }
+    //     state.state = TaskState::Ready;
+    //     *self.wakeup_event.lock() = Some(event);
         
-        let mut state = self.state.lock();
-        match state.state {
-            TaskState::Ready | TaskState::Running => {},
-            _ => return false,
-        }
-        state.state = TaskState::BlockedUninterruptible;
-        true
-    }
+    //     scheduler::push_task(Task::User(self.clone()));
+    // }
 
-    pub fn wakeup(self: &Arc<Self>, event: Event) {
-        let mut state = lock_debug!(self.state());
-        if state.state != TaskState::Blocked {
-            return;
-        }
-        state.state = TaskState::Ready;
-        *self.wakeup_event.lock() = Some(event);
-        
-        scheduler::push_task(self.clone());
-    }
+    // pub fn take_wakeup_event(&self) -> Option<Event> {
+    //     self.wakeup_event.lock().take()
+    // }
 
-    pub fn wakeup_uninterruptible(self: &Arc<Self>, event: Event) {
-        let mut state = lock_debug!(self.state());
-        match state.state {
-            TaskState::Blocked | TaskState::BlockedUninterruptible => {},
-            _ => return,
-        }
-        state.state = TaskState::Ready;
-        *self.wakeup_event.lock() = Some(event);
-        
-        scheduler::push_task(self.clone());
-    }
-
-    pub fn take_wakeup_event(&self) -> Option<Event> {
-        self.wakeup_event.lock().take()
-    }
-
-    pub fn run(&self) {
-        let mut state = self.state.lock();
-        // assert!(state.state == TaskState::Ready);
-        state.state = TaskState::Running;
-    }
+    // pub fn run(&self) {
+    //     let mut state = self.state.lock();
+    //     // assert!(state.state == TaskState::Ready);
+    //     state.state = TaskState::Running;
+    // }
 
     pub fn state(&self) -> &SpinLock<TaskStateSet> {
         &self.state
@@ -464,15 +437,12 @@ impl TCB {
         let mut state = self.state.lock();
 
         if let Some(tid_address) = *self.tid_address.lock() {
-            self.addrspace.copy_to_user(tid_address, &(0 as Tid).to_le_bytes()).expect("Failed to clear TID address");
             if let Ok(tid_kaddr) = self.addrspace.translate_write(tid_address) {
-                debug_assert!(tid_kaddr & 0x3 == 0);
+                // debug_assert!(tid_kaddr & 0x3 == 0);
                 unsafe { *(tid_kaddr as *mut Tid) = 0 };
                 let _ = futex::wake(tid_kaddr, 1, u32::MAX);
             }
         }
-
-        // kinfo!("Task {} exited with code {}", self.tid, code);
 
         state.state = TaskState::Exited;
 
@@ -487,7 +457,7 @@ impl TCB {
         self.kernel_stack.get_top()
     }
 
-    pub fn set_parent_waiting_vfork(&self, parent: Option<Arc<TCB>>) {
+    pub fn set_parent_waiting_vfork(&self, parent: Option<Arc<dyn Task>>) {
         *self.parent_waiting_vfork.lock() = parent;
     }
 
@@ -504,15 +474,86 @@ impl Drop for TCB {
     }
 }
 
+impl Task for TCB {
+    fn tid(&self) -> Tid {
+        self.tid
+    }
+
+    fn get_kcontext_ptr(&self) -> *mut KernelContext {
+        &self.kernel_context as *const KernelContext as *mut KernelContext
+    }
+
+    fn tcb(&self) -> &TCB {
+        self
+    }
+
+    fn run_if_ready(&self) -> bool {
+        let mut state = self.state.lock();
+        if state.state != TaskState::Ready {
+            return false;
+        }
+        state.state = TaskState::Running;
+        return true;
+    }
+
+    fn state_running_to_ready(&self) -> bool {
+        let mut state = self.state.lock();
+        if state.state != TaskState::Running {
+            return false;
+        }
+        state.state = TaskState::Ready;
+        true
+    }
+
+    fn block(&self, _reason: &str) -> bool {
+        debug_assert!(current::tid() == self.tid);
+        
+        let mut state = self.state.lock();
+        match state.state {
+            TaskState::Ready | TaskState::Running => {},
+            _ => return false,
+        }
+        state.state = TaskState::Blocked;
+        // kinfo!("Task {} blocked: {}", self.tid, _reason);
+        true
+    }
+
+    fn block_uninterruptible(&self, _reason: &str) -> bool {
+        debug_assert!(current::tid() == self.tid);
+        
+        let mut state = self.state.lock();
+        match state.state {
+            TaskState::Ready | TaskState::Running => {},
+            _ => return false,
+        }
+        state.state = TaskState::BlockedUninterruptible;
+        true
+    }
+
+    fn wakeup(&self, event: Event) -> bool {
+        let mut state = self.state().lock();
+        if state.state != TaskState::Blocked {
+            return false;
+        }
+        state.state = TaskState::Ready;
+        *self.wakeup_event.lock() = Some(event);
+        true
+    }
+
+    fn wakeup_uninterruptible(&self, event: Event) {
+        let mut state = self.state().lock();
+        match state.state {
+            TaskState::Blocked | TaskState::BlockedUninterruptible => {},
+            _ => return,
+        }
+        state.state = TaskState::Ready;
+        *self.wakeup_event.lock() = Some(event);
+    }
+
+    fn take_wakeup_event(&self) -> Option<Event> {
+        self.wakeup_event.lock().take()
+    }
+}
+
 unsafe impl Send for TCB {}
 unsafe impl Sync for TCB {}
-
-// impl Task for TCB {
-//     fn get_kernel_context_ptr(&self) -> *mut KernelContext {
-//         &self.kernel_context as *const KernelContext as *mut KernelContext
-//     }
-
-//     fn tcb(self: &Arc<Self>) -> &Arc<TCB> {
-//         self
-//     }
-// }

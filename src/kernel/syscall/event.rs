@@ -97,7 +97,7 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     }
 
     if let Some(timeout) = timeout {
-        timer::add_timer(current::tcb().clone(), timeout);
+        timer::add_timer(current::task().clone(), timeout);
     }
     
     // start polling

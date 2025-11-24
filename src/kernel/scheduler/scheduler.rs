@@ -1,63 +1,82 @@
 use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
-use spin::Mutex;
 
 use crate::kernel::scheduler::current;
-use crate::kernel::task::{TaskState, TCB};
-use crate::arch;
+use crate::kernel::scheduler::task::Task;
+use crate::kernel::event::Event;
+use crate::{arch, kinfo};
+use crate::klib::SpinLock;
 
 use super::processor::Processor;
 
 pub struct Scheduler {
-    ready_queue: Mutex<VecDeque<Arc<TCB>>>,
+    ready_queue: SpinLock<VecDeque<Arc<dyn Task>>>,
 }
 
 impl Scheduler {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self {
-            ready_queue: Mutex::new(VecDeque::new()),
+            ready_queue: SpinLock::new(VecDeque::new()),
         }
     }
 
-    pub fn push_task(&self, tcb: Arc<TCB>) {
-        self.ready_queue.lock().push_back(tcb);
+    fn push_task(&self, task: Arc<dyn Task>) {
+        let mut ready_queue = self.ready_queue.lock();
+        ready_queue.iter().for_each(|t| {
+            debug_assert!(t.tid() != task.tid(), "Task {} is already in ready queue!", t.tid());
+        });
+        ready_queue.push_back(task);
     }
 
-    pub fn fetch_next_task(&self) -> Option<Arc<TCB>> {
+    fn fetch_next_task(&self) -> Option<Arc<dyn Task>> {
         self.ready_queue.lock().pop_front()
     }
 }
 
 static SCHEDULER: Scheduler = Scheduler::new();
 
-pub fn push_task(tcb: Arc<TCB>) {
-    // kinfo!("Push task with TID {}", tcb.get_tid());
-    SCHEDULER.push_task(tcb);
+pub fn push_task(task: Arc<dyn Task>) {
+    SCHEDULER.push_task(task);
 }
 
-pub fn fetch_next_task() -> Option<Arc<TCB>> {
+pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
     SCHEDULER.fetch_next_task()
+}
+
+pub fn block_task(task: &Arc<dyn Task>, reason: &str) {
+    task.block(reason);
+}
+
+pub fn block_task_uninterruptible(task: &Arc<dyn Task>, reason: &str) {
+    task.block_uninterruptible(reason);
+}
+
+pub fn wakeup_task(task: Arc<dyn Task>, event: Event) {
+    if task.wakeup(event) {
+        push_task(task);
+    }
 }
 
 pub fn run_tasks(_hartid: u8) -> ! {
     current::clear();
     loop {
         arch::disable_interrupt();
-        if let Some(mut tcb) = fetch_next_task() {
-            tcb.run();
+        if let Some(task) = fetch_next_task() {
+            // kinfo!("Switching to task {}", task.tid());
+            if !task.run_if_ready() {
+                continue;
+            }
 
-            let mut processor = Processor::new(&mut tcb);
+            let mut processor = Processor::new(&task);
             
             processor.switch_to_task();
 
-            tcb.with_state_mut(|state| {
-                if state.state == TaskState::Running {
-                    state.state = TaskState::Ready;
-                    push_task(tcb.clone());
-                } else {
-                    // kinfo!("Task {} not ready to run, state: {:?}", tcb.get_tid(), state.state);
-                }
-            });
+            if task.state_running_to_ready() {
+                // kinfo!("Task {} yielded CPU, push back to ready queue", task.tid());
+                push_task(task);
+            } else {
+                // kinfo!("Task {} switched out of CPU", task.tid());
+            }
         } else {
             arch::enable_interrupt();
             arch::wait_for_interrupt();

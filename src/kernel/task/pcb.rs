@@ -6,7 +6,7 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{get_initprocess, manager};
-use crate::kernel::scheduler::{self, current};
+use crate::kernel::scheduler::{self, Task, current};
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::tid;
 use crate::kernel::event::Event;
@@ -32,7 +32,7 @@ pub struct PCB {
     pub tasks: SpinLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
-    waiting_task: SpinLock<Vec<Arc<TCB>>>,
+    waiting_task: SpinLock<Vec<Arc<dyn Task>>>,
 
     signal: Signal,
 
@@ -130,7 +130,7 @@ impl PCB {
 
     pub fn clone_task(
         self: &Arc<Self>, 
-        tcb: &Arc<TCB>, 
+        tcb: &TCB, 
         userstack: usize,
         flags: &TaskCloneFlags,
         tls: Option<usize>,
@@ -152,7 +152,13 @@ impl PCB {
         Ok(new_tcb)
     }
 
-    pub fn exec(self: &Arc<Self>, tcb: &Arc<TCB>, file: File, argv: &[&str], envp: &[&str]) -> Result<(), Errno> {        
+    pub fn exec(
+        self: &Arc<Self>, 
+        tcb: &TCB, 
+        file: File, 
+        argv: &[&str], 
+        envp: &[&str]
+    ) -> Result<(), Errno> {        
         let first_task = tcb.new_exec(file, argv, envp)?;
 
         let mut tasks = self.tasks.lock();
@@ -185,7 +191,7 @@ impl PCB {
         
         if let Some(parent) = self.parent.lock().as_ref() {
             parent.waiting_task.lock().drain(..).for_each(|t| {
-                t.wakeup(Event::Process { child: self.pid });
+                scheduler::wakeup_task(t, Event::Process { child: self.pid });
             });
             
             let fields = KSiFields::SigChld(SiSigChld { 
@@ -223,7 +229,7 @@ impl PCB {
             
             if blocked {
                 loop {
-                    self.waiting_task.lock().push(current::tcb().clone());
+                    self.waiting_task.lock().push(current::task().clone());
                     
                     let event = current::block("wait_child");
 
@@ -277,7 +283,7 @@ impl PCB {
             return Ok(None);
         }
 
-        self.waiting_task.lock().push(current::tcb().clone());
+        self.waiting_task.lock().push(current::task().clone());
 
         let event = current::block("wait_any_child");
 

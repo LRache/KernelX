@@ -2,14 +2,15 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 
+use crate::kernel::scheduler;
 use crate::kernel::scheduler::current;
-use crate::kernel::task::TCB;
+use crate::kernel::scheduler::Task;
 
 use super::Event;
 
 struct WaitQueueItem<T: Copy> {
-    tcb: Arc<TCB>,
-    arg: T,
+    task: Arc<dyn Task>,
+    arg:  T,
 }
 
 pub struct WaitQueue<T: Copy> {
@@ -17,12 +18,13 @@ pub struct WaitQueue<T: Copy> {
 }
 
 impl<T: Copy> WaitQueueItem<T> {
-    fn new(tcb: Arc<TCB>, arg: T) -> Self {
-        Self { tcb, arg }
+    fn new(task: Arc<dyn Task>, arg: T) -> Self {
+        Self { task, arg }
     }
 
-    fn wakeup(&self, e: Event) {
-        self.tcb.wakeup(e);
+    fn wakeup(self, e: Event) {
+        // self.task.wakeup(e);
+        scheduler::wakeup_task(self.task, e);
     }
 }
 
@@ -33,34 +35,42 @@ impl<T: Copy> WaitQueue<T> {
         }
     }
 
-    pub fn wait(&mut self, tcb: Arc<TCB>, arg: T) {
-        self.waiters.push_back(WaitQueueItem::new(tcb, arg));
+    pub fn wait(&mut self, task: Arc<dyn Task>, arg: T) {
+        self.waiters.push_back(WaitQueueItem::new(task, arg));
     }
 
     pub fn wait_current(&mut self, arg: T) {
-        let current = current::tcb();
+        let current = current::task();
         current.block("waitqueue");
         self.wait(current.clone(), arg);
     }
 
-    pub fn wake_one(&mut self, e: Event) -> Option<Arc<TCB>> {
+    // pub fn wake_one(&mut self, e: Event) -> Option<Arc<dyn Task>> {
+    pub fn wake_one(&mut self, e: Event) {
         let r = self.waiters.pop_front();
         match r {
             Some(item) => {
                 item.wakeup(e);
-                Some(item.tcb)
+                // Some(item.task)
             }
-            None => None,
+            // None => None,
+            None => {}
         }
     }
 
-    pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) -> Vec<Arc<TCB>> {
-        self.waiters.iter().for_each(|i| i.wakeup(map_arg_to_event(i.arg)));
-        self.waiters.drain(..).map(|item| item.tcb).collect()
+    // pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) -> Vec<Arc<dyn Task>> {
+    pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) {
+        // self.waiters.iter().for_each(|i| i.wakeup(map_arg_to_event(i.arg)));
+        self.waiters.drain(..).for_each(|item| {
+            let arg = item.arg;
+            item.wakeup(map_arg_to_event(arg));
+            // item.task
+        });
+        // }).collect()
     }
 
-    pub fn remove(&mut self, tcb: &Arc<TCB>) {
-        if let Some(pos) = self.waiters.iter().position(|item| Arc::ptr_eq(&item.tcb, tcb)) {
+    pub fn remove(&mut self, task: &Arc<dyn Task>) {
+        if let Some(pos) = self.waiters.iter().position(|item| Arc::ptr_eq(&item.task, task)) {
             self.waiters.remove(pos);
         }
     }

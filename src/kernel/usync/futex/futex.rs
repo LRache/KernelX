@@ -4,12 +4,13 @@ use alloc::sync::Arc;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
-use crate::kernel::task::TCB;
+use crate::kernel::scheduler;
+use crate::kernel::scheduler::Task;
 use crate::kernel::scheduler::current;
 use crate::klib::SpinLock;
 
 struct FutexWaitQueueItem {
-    tcb: Arc<TCB>,
+    tcb: Arc<dyn Task>,
     bitset: u32,
 }
 
@@ -32,7 +33,7 @@ impl Futex {
         }
         
         self.wait_list.push_back(FutexWaitQueueItem {
-            tcb: current::tcb().clone(),
+            tcb: current::task().clone(),
             bitset,
         });
         
@@ -50,7 +51,7 @@ impl Futex {
                 //     state.event = None;
                 // }
                 
-                item.tcb.wakeup(Event::Futex);
+                scheduler::wakeup_task(item.tcb.clone(), Event::Futex);
                 
                 woken += 1;
                 if woken >= num {

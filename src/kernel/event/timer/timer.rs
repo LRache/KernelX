@@ -5,7 +5,7 @@ use core::time::Duration;
 use spin::Mutex;
 
 use crate::kernel::event::Event;
-use crate::kernel::task::TCB;
+use crate::kernel::scheduler::{self, Task};
 use crate::arch;
 
 use super::event::TimerEvent;
@@ -21,7 +21,7 @@ impl Timer {
         }
     }
 
-    pub fn add_timer(&self, tcb: Arc<TCB>, time: Duration, event: Event) {
+    pub fn add_timer(&self, tcb: Arc<dyn Task>, time: Duration, event: Event) {
         let time = arch::get_time_us() + time.as_micros() as u64;
         self.wait_queue.lock().push(Reverse(TimerEvent { time, tcb, event }));
     } 
@@ -31,7 +31,8 @@ impl Timer {
         while let Some(Reverse(event)) = wait_queue.peek() {
             if event.time <= current_time {
                 let event = wait_queue.pop().unwrap().0;
-                event.tcb.wakeup(Event::Timeout);
+                scheduler::wakeup_task(event.tcb.clone(), Event::Timeout);
+                // event.tcb.wakeup(Event::Timeout);
             } else {
                 break;
             }
@@ -51,7 +52,7 @@ pub fn now() -> Duration {
     Duration::from_micros(arch::get_time_us())
 }
 
-pub fn add_timer(tcb: Arc<TCB>, time: Duration) {
+pub fn add_timer(tcb: Arc<dyn Task>, time: Duration) {
     TIMER.add_timer(tcb, time, Event::Timeout);
 }
 

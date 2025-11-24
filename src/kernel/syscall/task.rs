@@ -7,7 +7,8 @@ use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
-use crate::kernel::scheduler::{self, current};
+use crate::kernel::scheduler::{current, Task};
+use crate::kernel::scheduler;
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString};
 use crate::kernel::task::Tid;
@@ -84,7 +85,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
         None
     };
 
-    let child = current::pcb().clone_task(&current::tcb(), stack, &task_flags, tls)?;
+    let child = current::pcb().clone_task(current::tcb(), stack, &task_flags, tls)?;
 
     if flags.contains(CloneFlags::CHILD_SETTID) {
         let _ = child.get_addrspace().copy_to_user(uptr_child_tid, 0 as Tid);
@@ -102,9 +103,10 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
 
     if flags.contains(CloneFlags::VFORK) {
         // timer::add_timer(current::tcb().clone(), Duration::from_secs(1));
-        current::tcb().block_uninterruptible("vfork");
+        // current::tcb().block_uninterruptible("vfork");
+        scheduler::block_task_uninterruptible(current::task(), "vfork");
 
-        child.set_parent_waiting_vfork(Some(current::tcb().clone()));
+        child.set_parent_waiting_vfork(Some(current::task().clone()));
         scheduler::push_task(child);
 
         current::schedule();
@@ -155,7 +157,7 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
         let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
         let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
 
-        current::pcb().exec(&current::tcb(), file, &argv_ref, &envp_ref)?;
+        current::pcb().exec(current::tcb(), file, &argv_ref, &envp_ref)?;
         current::tcb().wake_parent_waiting_vfork();
     }    
 

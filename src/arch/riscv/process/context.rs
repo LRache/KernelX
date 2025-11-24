@@ -122,6 +122,10 @@ impl KernelContext {
             a0: 0,
         }
     }
+
+    pub fn set_entry(&mut self, entry: usize) {
+        self.ra = entry;
+    }
 }
 
 #[repr(C)]

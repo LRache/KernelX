@@ -55,7 +55,7 @@ pub fn futex(uaddr: UPtr<i32>, futex_op: usize, val: usize, timeout: UPtr<uapi::
             
             futex::wait_current(kaddr, val as i32, bitset)?;
             if let Some(timeout) = timeout.read_optional()? {
-                timer::add_timer(current::tcb().clone(), timeout.into());
+                timer::add_timer(current::task().clone(), timeout.into());
             }
             
             let event = current::block("futex");

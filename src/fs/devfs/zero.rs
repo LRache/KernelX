@@ -47,4 +47,8 @@ impl InodeOps for ZeroInode {
         kstat.st_mode = Mode::S_IFCHR.bits() as u32 | 0o666;
         Ok(kstat)
     }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() as u32 | 0o666))
+    }
 }

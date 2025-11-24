@@ -4,6 +4,7 @@ use spin::Mutex;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::SignalActionTable;
 use crate::kernel::mm::AddrSpace;
+use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::task::fdtable::FDTable;
@@ -33,9 +34,14 @@ pub fn is_clear() -> bool {
     arch::get_percpu_data() == 0
 }
 
-pub fn tcb() -> &'static Arc<TCB> {
+pub fn task() -> &'static Arc<dyn Task> {
     let processor = processor();
-    processor.tcb
+    &processor.task()
+}
+
+pub fn tcb() -> &'static TCB {
+    let processor = processor();
+    processor.tcb()
 }
 
 pub fn tid() -> Tid {
@@ -59,8 +65,7 @@ pub fn uid() -> Uid {
 }
 
 pub fn pcb() -> &'static Arc<PCB> {
-    let processor = processor();
-    &processor.tcb.get_parent()
+    tcb().get_parent()
 }
 
 pub fn signal_actions() -> &'static Mutex<SignalActionTable> {
@@ -140,15 +145,15 @@ pub fn schedule() {
 }
 
 pub fn block(reason: &'static str) -> Event {
-    tcb().block(reason);
+    task().block(reason);
     schedule();
-    tcb().take_wakeup_event().unwrap()
+    task().take_wakeup_event().unwrap()
 }
 
 pub fn block_uninterruptible(reason: &'static str) -> Event {
-    tcb().block_uninterruptible(reason);
+    task().block_uninterruptible(reason);
     schedule();
-    tcb().take_wakeup_event().unwrap()
+    task().take_wakeup_event().unwrap()
 }
 
 pub fn umask() -> u32 {

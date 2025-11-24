@@ -30,7 +30,7 @@ impl Manager {
         let initargv: &[&str] = &[
             initpath, 
             "sh",
-            "/glibc/lmbench_testcode.sh",
+            "/glibc/libcbench_testcode.sh",
             // "main.c"
         ];
 

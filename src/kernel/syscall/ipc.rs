@@ -185,7 +185,7 @@ pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeou
 
     if let Some(ts) = timeout {
         let timeout_duration = Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32);
-        timer::add_timer(current::tcb().clone(), timeout_duration);
+        timer::add_timer(current::task().clone(), timeout_duration);
     }
 
     state.signal_to_wait = signal_set;

@@ -1,33 +1,32 @@
 use crate::arch;
 use crate::kernel::mm;
-use crate::kernel::config::KERNEL_STACK_PAGE_COUNT;
 
 pub struct KernelStack {
-    base: usize,
+    top: usize,
+    page_count: usize,
 }
 
 impl KernelStack {
-    pub fn new() -> Self {
-        let page = mm::page::alloc_contiguous(KERNEL_STACK_PAGE_COUNT);
-        // arch::unmap_kernel_addr(page, arch::PGSIZE);
-        Self {
-            base: page,
-        }
+    pub fn new(page_count: usize) -> Self {
+        let base = mm::page::alloc_contiguous(page_count);
+        let top = base + arch::PGSIZE * page_count;
+        Self { top, page_count }
     }
 
     pub fn get_top(&self) -> usize {
-        self.base + arch::PGSIZE * KERNEL_STACK_PAGE_COUNT
+        self.top
     }
 
     pub fn stack_overflow(&self, sp: usize) -> bool {
-        sp < self.base + arch::PGSIZE && sp >= self.base
+        let base = self.top - arch::PGSIZE * self.page_count;
+        sp < self.top && sp >= base
     }
 }
 
 impl Drop for KernelStack {
     fn drop(&mut self) {
-        // arch::map_kernel_addr(self.base, arch::kaddr_to_paddr(self.base), arch::PGSIZE, MapPerm::RW);
-        mm::page::free_contiguous(self.base, KERNEL_STACK_PAGE_COUNT);
+        let base = self.top - arch::PGSIZE * self.page_count;
+        mm::page::free_contiguous(base, self.page_count);
     }
 }
 

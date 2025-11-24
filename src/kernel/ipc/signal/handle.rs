@@ -1,13 +1,14 @@
 use alloc::sync::Arc;
 
 use crate::arch::UserContextTrait;
-use crate::kernel::config;
+use crate::kernel::{config, scheduler};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
 use crate::kernel::mm::vdso;
 use crate::kernel::task::{Tid, PCB, TCB};
 use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::Task;
 use crate::kernel::errno::{SysResult, Errno};
 
 use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};
@@ -107,7 +108,7 @@ impl TCB {
             state.signal_to_wait = SignalSet::empty();
             drop(state);
 
-            self.wakeup(Event::WaitSignal { signum });
+            scheduler::wakeup_task(self.clone(), Event::WaitSignal { signum });
 
             return true;
         }
@@ -120,7 +121,7 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
             
-            self.wakeup(Event::Signal);
+            scheduler::wakeup_task(self.clone(), Event::Signal);
 
             return true;
         }
@@ -130,7 +131,8 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
             
-            self.wakeup(Event::Signal);
+            // self.wakeup(Event::Signal);
+            scheduler::wakeup_task(self.clone(), Event::Signal);
             
             return true;
         } else {
