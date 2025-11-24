@@ -10,7 +10,7 @@ use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::{current, Task};
 use crate::kernel::scheduler;
 use crate::kernel::syscall::SyscallRet;
-use crate::kernel::syscall::uptr::{UArray, UPtr, UString};
+use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr, UString};
 use crate::kernel::task::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
 

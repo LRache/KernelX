@@ -1,14 +1,9 @@
 use alloc::sync::Arc;
 
-use crate::arch;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::scheduler::current;
 use crate::kernel::task::TCB;
-
-enum Meta {
-    TCB(Arc<TCB>),
-    KThread(Arc<dyn Task>),
-}
+use crate::arch;
 
 pub struct Processor<'a> {
     idle_kernel_context: arch::KernelContext,

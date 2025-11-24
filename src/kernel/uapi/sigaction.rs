@@ -3,6 +3,7 @@ use crate::kernel::errno::SysResult;
 use crate::kernel::ipc::SignalAction;
 use crate::kernel::ipc::SignalActionFlags;
 use crate::kernel::ipc::SignalSet;
+use crate::kernel::syscall::UserStruct;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -32,3 +33,5 @@ impl From<SignalAction> for Sigaction {
         }
     }
 }
+
+impl UserStruct for Sigaction {}

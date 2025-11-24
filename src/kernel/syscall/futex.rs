@@ -4,7 +4,7 @@ use crate::kernel::event::timer;
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi;
 use crate::kernel::errno::Errno;
-use crate::kernel::syscall::uptr::UPtr;
+use crate::kernel::syscall::uptr::{UserPointer, UPtr};
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::usync::futex::{self, RobustListHead};
 use crate::kernel::event::Event;
@@ -34,7 +34,14 @@ enum FutexOp {
 
 const FUTEX_OP_MASK: usize = 0x7f;
 
-pub fn futex(uaddr: UPtr<i32>, futex_op: usize, val: usize, timeout: UPtr<uapi::Timespec>, uaddr2: UPtr<()>, val3: usize) -> SyscallRet {    
+pub fn futex(
+    uaddr: UPtr<i32>, 
+    futex_op: usize, 
+    val: usize, 
+    timeout: UPtr<uapi::Timespec>, 
+    uaddr2: UPtr<()>, 
+    val3: usize
+) -> SyscallRet {    
     uaddr.should_not_null()?;
     if uaddr.uaddr() & 3 != 0 {
         return Err(Errno::EINVAL);

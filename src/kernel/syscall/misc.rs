@@ -1,5 +1,3 @@
-use core::time::Duration;
-
 use num_enum::TryFromPrimitive;
 use alloc::vec;
 
@@ -7,8 +5,8 @@ use crate::fs::vfs;
 use crate::kernel::scheduler::current;
 use crate::kernel::config;
 use crate::kernel::errno::Errno;
-use crate::kernel::syscall::uptr::{UBuffer, UPtr};
-use crate::kernel::syscall::SyscallRet;
+use crate::kernel::syscall::uptr::{UserPointer, UBuffer, UPtr};
+use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::uapi;
 use crate::klib::random::random;
 use crate::arch;
@@ -29,6 +27,8 @@ pub struct Utsname {
     pub machine: [u8; 65],
     pub domainname: [u8; 65],
 }
+
+impl UserStruct for Utsname {}
 
 impl Utsname {
     pub fn new() -> Self {
@@ -66,6 +66,8 @@ pub struct RLimit {
     rlim_cur: usize,
     rlim_max: usize,
 }
+
+impl UserStruct for RLimit {}
 
 #[repr(usize)]
 #[derive(TryFromPrimitive)]
@@ -165,6 +167,8 @@ pub struct Rusage {
     ru_nvcsw: isize,       // voluntary context switches
     ru_nivcsw: isize,      // involuntary context switches
 }
+
+impl UserStruct for Rusage {}
 
 impl Default for Rusage {
     fn default() -> Self {

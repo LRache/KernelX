@@ -1,17 +1,18 @@
-use alloc::sync::Arc;
+// use alloc::sync::Arc;
+use alloc::boxed::Box;
  
-use crate::kernel::event::Event;
-use crate::kernel::scheduler::Task;
+// use crate::kernel::scheduler::Task;
 
 pub struct TimerEvent {
     pub time: u64,
-    pub tcb: Arc<dyn Task>,
-    pub event: Event,
+    // pub task: Arc<dyn Task>,
+    pub expired_func: Box<dyn FnOnce()>,
 }
 
 impl PartialEq for TimerEvent {
     fn eq(&self, other: &Self) -> bool {
-        self.time == other.time && Arc::ptr_eq(&self.tcb, &other.tcb)
+        // self.time == other.time && Arc::ptr_eq(&self.task, &other.task)
+        self.time == other.time
     }
 }
 

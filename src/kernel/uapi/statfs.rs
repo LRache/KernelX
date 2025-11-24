@@ -1,3 +1,5 @@
+use crate::kernel::syscall::UserStruct;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Statfs {
@@ -14,3 +16,5 @@ pub struct Statfs {
     pub f_flag: u64,
     pub f_spare: [u64; 4],
 }
+
+impl UserStruct for Statfs {}

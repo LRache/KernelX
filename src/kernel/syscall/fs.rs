@@ -9,8 +9,8 @@ use crate::arch::get_time_us;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
-use crate::kernel::syscall::uptr::{UArray, UBuffer, UString, UPtr};
-use crate::kernel::syscall::SyscallRet;
+use crate::kernel::syscall::uptr::{UserPointer, UArray, UBuffer, UString, UPtr};
+use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec};
 use crate::fs::{Dentry, Mode, Perm, PermFlags};
@@ -252,6 +252,8 @@ pub struct IOVec {
     pub base: usize,
     pub len: usize,
 }
+
+impl UserStruct for IOVec {}
 
 pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;

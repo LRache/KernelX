@@ -1,7 +1,12 @@
 use alloc::collections::btree_map::BTreeMap;
 
 use crate::kernel::event::timer;
-use crate::kernel::{config, mm, scheduler, task};
+use crate::kernel::config;
+use crate::kernel::kthread;
+use crate::kernel::mm;
+use crate::kernel::scheduler;
+use crate::kernel::scheduler::current;
+use crate::kernel::task;
 use crate::fs::vfs;
 use crate::arch;
 use crate::fs;
@@ -84,11 +89,23 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
     
     timer::init();
 
+    // kthread::spawn(kthread_test);
+
     // free_init();
     
     kinfo!("KernelX initialized successfully!");
     
     scheduler::run_tasks(hartid as u8);
+}
+
+fn kthread_test() {
+    let mut sec = 0;
+    loop {
+        timer::add_timer(current::task().clone(), core::time::Duration::from_secs(1));
+        current::block("sleep");
+        sec += 1;
+        kinfo!("kthread_test: {} seconds elapsed", sec);
+    }
 }
 
 pub fn exit() -> ! {

@@ -2,8 +2,8 @@ use alloc::string::String;
 use core::fmt::Debug;
 use core::mem::size_of;
 
-use crate::kernel::mm::AddrSpace;
-use crate::kernel::scheduler::current::{self, copy_from_user, copy_to_user};
+use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
+use crate::kernel::scheduler::current;
 use crate::kernel::errno::{SysResult, Errno};
 
 /// Macro to implement From<usize> for user pointer types
@@ -51,25 +51,25 @@ pub struct UPtr<T: Copy + Sized> {
 }
 
 impl<T: Copy> UPtr<T> {
-    pub fn read(&self, addrspace: &AddrSpace) -> SysResult<T> {
+    pub fn read(&self) -> SysResult<T> {
         debug_assert!(!self.is_null());
-        addrspace.copy_from_user(self.uaddr)
+        copy_from_user::object(self.uaddr)
     }
 
-    pub fn write(&self, value: T, addrspace: &AddrSpace) -> SysResult<()> {
+    pub fn write(&self, value: T) -> SysResult<()> {
         debug_assert!(!self.is_null());
-        addrspace.copy_to_user(self.uaddr, value)
+        copy_to_user::object(self.uaddr, value)
     }
 
     pub fn add(&self, offset: usize) -> Self {
         Self::from_uaddr(self.uaddr + offset * size_of::<T>())
     }
 
-    pub fn read_optional(&self, addrspace: &AddrSpace) -> SysResult<Option<T>> {
+    pub fn read_optional(&self) -> SysResult<Option<T>> {
         if self.is_null() {
             Ok(None)
         } else {
-            Ok(Some(self.read(addrspace)?))
+            Ok(Some(self.read()?))
         }
     }
 }
@@ -107,13 +107,13 @@ pub struct UArray<T: Copy> {
 }
 
 impl<T: Copy> UArray<T> {
-    pub fn read(&self, offset: usize, buf: &mut [T], addrspace: &AddrSpace) -> SysResult<()> {
+    pub fn read(&self, offset: usize, buf: &mut [T]) -> SysResult<()> {
         debug_assert!(!self.is_null());
-        addrspace.copy_from_user_slice(self.uaddr + size_of::<T>() * offset, buf)
+        copy_from_user::slice(self.uaddr + size_of::<T>() * offset, buf)
     }
 
-    pub fn write(&self, offset: usize, buf: &[T], addrspace: &AddrSpace) -> SysResult<()> {
-        addrspace.copy_to_user_slice(self.uaddr + size_of::<T>() * offset, buf)
+    pub fn write(&self, offset: usize, buf: &[T]) -> SysResult<()> {
+        copy_to_user::slice(self.uaddr + size_of::<T>() * offset, buf)
     }
 
     pub fn index(&self, i: usize) -> UPtr<T> {

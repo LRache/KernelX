@@ -48,7 +48,7 @@ pub fn tid() -> Tid {
     if is_clear() {
         -1
     } else {
-        tcb().get_tid()
+        task().tid()
     }
 }
 

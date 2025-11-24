@@ -9,7 +9,7 @@ use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet};
 use crate::kernel::ipc::shm::{IpcGetFlag, IPC_RMID, IPC_SET, IPC_STAT};
 use crate::kernel::ipc::shm;
 use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::{UArray, UPtr};
+use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
 use crate::kernel::uapi;

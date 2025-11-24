@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 
 use crate::kernel::scheduler;
@@ -46,17 +45,17 @@ impl<T: Copy> WaitQueue<T> {
     }
 
     // pub fn wake_one(&mut self, e: Event) -> Option<Arc<dyn Task>> {
-    pub fn wake_one(&mut self, e: Event) {
-        let r = self.waiters.pop_front();
-        match r {
-            Some(item) => {
-                item.wakeup(e);
-                // Some(item.task)
-            }
-            // None => None,
-            None => {}
-        }
-    }
+    // pub fn wake_one(&mut self, e: Event) {
+    //     let r = self.waiters.pop_front();
+    //     match r {
+    //         Some(item) => {
+    //             item.wakeup(e);
+    //             // Some(item.task)
+    //         }
+    //         // None => None,
+    //         None => {}
+    //     }
+    // }
 
     // pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) -> Vec<Arc<dyn Task>> {
     pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) {

@@ -1,11 +1,15 @@
 use core::time::Duration;
 
+use crate::kernel::syscall::UserStruct;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Timespec {
     pub tv_sec:  u64,     // seconds
     pub tv_nsec: u64,     // nanoseconds
 }
+
+impl UserStruct for Timespec {}
 
 impl Into<Duration> for Timespec {
     fn into(self) -> Duration {
@@ -20,6 +24,8 @@ pub struct Timeval {
     pub tv_usec: u64,     // microseconds
 }
 
+impl UserStruct for Timeval {}
+
 impl Into<Duration> for Timeval {
     fn into(self) -> Duration {
         Duration::new(self.tv_sec as u64, (self.tv_usec * 1000) as u32)
@@ -32,6 +38,8 @@ pub struct Timespec32 {
     pub tv_sec:  i32,     // seconds
     pub tv_nsec: i32,     // nanoseconds
 }
+
+impl UserStruct for Timespec32 {}
 
 impl Into<Duration> for Timespec32 {
     fn into(self) -> Duration {

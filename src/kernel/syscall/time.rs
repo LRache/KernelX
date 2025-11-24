@@ -1,7 +1,7 @@
 use crate::kernel::scheduler::current;
 use crate::kernel::event::{timer, Event};
 use crate::kernel::errno::{SysResult, Errno};
-use crate::kernel::syscall::uptr::UPtr;
+use crate::kernel::syscall::uptr::{UserPointer, UPtr};
 use crate::kernel::uapi::{Timespec, Timeval};
 use crate::arch;
 

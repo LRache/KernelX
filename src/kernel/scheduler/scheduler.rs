@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::event::Event;
-use crate::{arch, kinfo};
+use crate::arch;
 use crate::klib::SpinLock;
 
 use super::processor::Processor;
@@ -62,7 +62,7 @@ pub fn run_tasks(_hartid: u8) -> ! {
     loop {
         arch::disable_interrupt();
         if let Some(task) = fetch_next_task() {
-            // kinfo!("Switching to task {}", task.tid());
+            // crate::kinfo!("Switching to task {}", task.tid());
             if !task.run_if_ready() {
                 continue;
             }

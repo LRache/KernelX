@@ -1,36 +1,74 @@
 use alloc::string::String;
+use core::fmt::Debug;
+use core::mem::size_of;
 
-use crate::kernel::mm::uptr::{self, UserPointer};
-use crate::kernel::errno::SysResult;
+use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::current;
+use crate::kernel::errno::{SysResult, Errno};
 
-pub struct UPtr<T: Copy> {
-    inner: uptr::UPtr<T>,
+/// Macro to implement From<usize> for user pointer types
+macro_rules! impl_from_usize {
+    ($type_name:ident<T>) => {
+        impl<T: UserStruct> From<usize> for $type_name<T> {
+            fn from(uaddr: usize) -> Self {
+                $type_name {
+                    uaddr,
+                    _marker: core::marker::PhantomData,
+                }
+            }
+        }
+    };
 }
 
-impl<T: Copy> UPtr<T> {
-    pub fn should_not_null(&self) -> SysResult<()> {
-        self.inner.should_not_null()
+pub trait UserStruct: Sized + Copy {}
+
+impl UserStruct for u8 {}
+impl UserStruct for usize {}
+impl UserStruct for () {}
+
+pub trait UserPointer<T: UserStruct> {
+    fn from_uaddr(uaddr: usize) -> Self;
+
+    fn uaddr(&self) -> usize;
+    
+    fn is_null(&self) -> bool {
+        self.uaddr() == 0
+    }
+    
+    fn should_not_null(&self) -> SysResult<()> {
+        if self.is_null() {
+            Err(Errno::EINVAL)
+        } else {
+            Ok(())
+        }
     }
 
-    pub fn uaddr(&self) -> usize {
-        self.inner.uaddr()
+    fn kaddr(&self) -> SysResult<usize> {
+        debug_assert!(!self.is_null());
+        current::addrspace().translate_write(self.uaddr())
     }
+}
 
-    pub fn kaddr(&self) -> SysResult<usize> {
-        self.inner.kaddr()
-    }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UPtr<T: UserStruct> {
+    uaddr: usize,
+    _marker: core::marker::PhantomData<T>,
+}
 
-    pub fn is_null(&self) -> bool {
-        self.inner.is_null()
-    }
-
+impl<T: UserStruct> UPtr<T> {
     pub fn read(&self) -> SysResult<T> {
-        self.inner.read(current::addrspace())
+        debug_assert!(!self.is_null());
+        copy_from_user::object(self.uaddr)
     }
 
     pub fn write(&self, value: T) -> SysResult<()> {
-        self.inner.write(value, current::addrspace())
+        debug_assert!(!self.is_null());
+        copy_to_user::object(self.uaddr, value)
+    }
+
+    pub fn add(&self, offset: usize) -> Self {
+        Self::from_uaddr(self.uaddr + offset * size_of::<T>())
     }
 
     pub fn read_optional(&self) -> SysResult<Option<T>> {
@@ -40,91 +78,112 @@ impl<T: Copy> UPtr<T> {
             Ok(Some(self.read()?))
         }
     }
-
-    pub fn add(&self, offset: usize) -> Self {
-        Self {
-            inner: self.inner.add(offset),
-        }
-    }
 }
 
-impl<T: Copy> From<usize> for UPtr<T> {
-    fn from(uaddr: usize) -> Self {
+impl<T: UserStruct> UserPointer<T> for UPtr<T> {
+    fn uaddr(&self) -> usize {
+        self.uaddr
+    }
+
+    fn from_uaddr(uaddr: usize) -> Self {
         UPtr {
-            inner: uptr::UPtr::from(uaddr),
+            uaddr,
+            _marker: core::marker::PhantomData,
         }
     }
 }
 
-pub struct UArray<T: Copy> {
-    inner: uptr::UArray<T>,
+impl <T: UserStruct> Debug for UPtr<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "UPtr({:#x})", self.uaddr)
+    }
 }
 
-impl<T: Copy> UArray<T> {
-    pub fn uaddr(&self) -> usize {
-        self.inner.uaddr()
-    }
+impl_from_usize!(UPtr<T>);
 
-    pub fn is_null(&self) -> bool {
-        self.inner.is_null()
+impl<T: UserStruct> Into<usize> for UPtr<T> {
+    fn into(self) -> usize {
+        self.uaddr
     }
+}
 
-    pub fn should_not_null(&self) -> SysResult<()> {
-        self.inner.should_not_null()
-    }
+pub struct UArray<T: UserStruct> {
+    uaddr: usize,
+    _marker: core::marker::PhantomData<T>,
+}
 
+impl<T: UserStruct> UArray<T> {
     pub fn read(&self, offset: usize, buf: &mut [T]) -> SysResult<()> {
-        self.inner.read(offset, buf, current::addrspace())
+        debug_assert!(!self.is_null());
+        copy_from_user::slice(self.uaddr + size_of::<T>() * offset, buf)
     }
 
     pub fn write(&self, offset: usize, buf: &[T]) -> SysResult<()> {
-        self.inner.write(offset, buf, current::addrspace())
+        copy_to_user::slice(self.uaddr + size_of::<T>() * offset, buf)
     }
 
     pub fn index(&self, i: usize) -> UPtr<T> {
-        UPtr {
-            inner: self.inner.index(i),
+        UPtr::from_uaddr(self.uaddr + i * size_of::<T>())
+    }
+}
+
+impl<T: UserStruct> UserPointer<T> for UArray<T> {
+    fn uaddr(&self) -> usize {
+        self.uaddr
+    }
+
+    fn from_uaddr(uaddr: usize) -> Self {
+        UArray {
+            uaddr,
+            _marker: core::marker::PhantomData,
         }
     }
 }
 
-impl<T: Copy> From<usize> for UArray<T> {
-    fn from(uaddr: usize) -> Self {
-        UArray {
-            inner: uptr::UArray::from(uaddr),
-        }
-    }
-}
+impl_from_usize!(UArray<T>);
 
 pub type UBuffer = UArray<u8>;
 
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct UString {
-    inner: uptr::UString,
+    uaddr: usize,
 }
 
 impl UString {
-    pub fn is_null(&self) -> bool {
-        self.inner.is_null()
-    }
-
-    pub fn should_not_null(&self) -> SysResult<()> {
-        self.inner.should_not_null()
-    }
-
     pub fn read(&self) -> SysResult<String> {
-        self.inner.read()
+        debug_assert!(!self.is_null());
+        copy_from_user::string(self.uaddr)
     }
 
     pub fn write(&self, s: &str, max_size: usize) -> SysResult<usize> {
-        self.inner.write(s, max_size)
+        debug_assert!(!self.is_null());
+        copy_to_user::string(self.uaddr, s, max_size)
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.uaddr == 0
+    }
+
+    pub fn should_not_null(&self) -> SysResult<()> {
+        if self.is_null() {
+            Err(Errno::EINVAL)
+        } else {
+            Ok(())
+        }
     }
 }
 
+impl UserStruct for UString {}
+
 impl From<usize> for UString {
     fn from(uaddr: usize) -> Self {
-        UString {
-            inner: uptr::UString::from(uaddr),
-        }
+        UString { uaddr }
+    }
+}
+
+impl<T: UserStruct> From<UPtr<T>> for UString {
+    fn from(value: UPtr<T>) -> Self {
+        Self { uaddr: value.uaddr() }
     }
 }

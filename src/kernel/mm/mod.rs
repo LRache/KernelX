@@ -4,7 +4,7 @@ mod frame;
 mod addrspace;
 pub mod vdso;
 pub mod maparea;
-pub mod uptr;
+// pub mod uptr;
 
 pub use addrspace::*;
 pub use frame::PhysPageFrame;

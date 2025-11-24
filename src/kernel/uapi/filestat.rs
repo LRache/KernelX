@@ -1,3 +1,5 @@
+use crate::kernel::syscall::UserStruct;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FileStat {
@@ -53,3 +55,5 @@ impl Default for FileStat {
         Self::empty()
     }
 }
+
+impl UserStruct for FileStat {}

@@ -1,4 +1,4 @@
-use crate::kernel::mm::uptr::UserPointer;
+use crate::kernel::syscall::UserStruct;
 use crate::kernel::task::TCB;
 
 #[repr(C)]
@@ -15,12 +15,14 @@ pub struct RobustListHead {
     pending: usize,
 }
 
+impl UserStruct for RobustListHead {}
+
 impl TCB {
     pub fn set_robust_list(&self, uaddr: usize) {
-        *self.robust_list.lock() = Some(uaddr.into());
+        *self.robust_list.lock() = Some(uaddr);
     }
 
     pub fn get_robust_list(&self) -> Option<usize> {
-        self.robust_list.lock().map(|u| u.uaddr())
+        *self.robust_list.lock()
     }
 }

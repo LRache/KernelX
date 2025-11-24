@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::collections::BinaryHeap;
 use alloc::sync::Arc;
 use core::cmp::Reverse;
@@ -21,9 +22,10 @@ impl Timer {
         }
     }
 
-    pub fn add_timer(&self, tcb: Arc<dyn Task>, time: Duration, event: Event) {
+    pub fn add_timer(&self, time: Duration, expired_func: Box<dyn FnOnce()>) {
         let time = arch::get_time_us() + time.as_micros() as u64;
-        self.wait_queue.lock().push(Reverse(TimerEvent { time, tcb, event }));
+        // self.wait_queue.lock().push(Reverse(TimerEvent { time, task: task, expired_func }));
+        self.wait_queue.lock().push(Reverse(TimerEvent { time, expired_func }));
     } 
 
     pub fn wakeup_expired(&self, current_time: u64) {
@@ -31,7 +33,8 @@ impl Timer {
         while let Some(Reverse(event)) = wait_queue.peek() {
             if event.time <= current_time {
                 let event = wait_queue.pop().unwrap().0;
-                scheduler::wakeup_task(event.tcb.clone(), Event::Timeout);
+                (event.expired_func)();
+                // scheduler::wakeup_task(event.tcb.clone(), Event::Timeout);
                 // event.tcb.wakeup(Event::Timeout);
             } else {
                 break;
@@ -39,6 +42,8 @@ impl Timer {
         }
     }
 }
+
+unsafe impl Sync for Timer {}
 
 static TIMER: Timer = Timer::new();
 
@@ -53,7 +58,14 @@ pub fn now() -> Duration {
 }
 
 pub fn add_timer(tcb: Arc<dyn Task>, time: Duration) {
-    TIMER.add_timer(tcb, time, Event::Timeout);
+    TIMER.add_timer(time, Box::new(move || {
+        scheduler::wakeup_task(tcb, Event::Timeout);
+    }));
+    // TIMER.add_timer(tcb, time, Event::Timeout);
+}
+
+pub fn add_timer_with_func(time: Duration, func: Box<dyn FnOnce()>) {
+    TIMER.add_timer(time, func);
 }
 
 pub fn interrupt() {

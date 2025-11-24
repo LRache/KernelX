@@ -4,10 +4,9 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
-use crate::kernel::mm::uptr::UPtr;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::Task;
-use crate::kernel::usync::futex::{self, RobustListHead};
+use crate::kernel::usync::futex;
 use crate::kernel::config;
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::tid::Tid;
@@ -18,9 +17,9 @@ use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
+use crate::kernel::scheduler::TaskState;
 use crate::fs::file::{File, FileFlags, CharFile};
 use crate::fs::{Perm, PermFlags, vfs};
-use crate::kinfo;
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::arch;
@@ -28,15 +27,6 @@ use crate::driver;
 use crate::ktrace;
 
 use super::kernelstack::KernelStack;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    Running,
-    Ready,
-    Blocked,
-    BlockedUninterruptible,
-    Exited,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct TaskStateSet {
@@ -78,7 +68,7 @@ pub struct TCB {
     pub tid: Tid,
     pub parent: Arc<PCB>,
     tid_address: Mutex<Option<usize>>,
-    pub robust_list: SpinLock<Option<UPtr<RobustListHead>>>,
+    pub robust_list: SpinLock<Option<usize>>,
     
     user_context_ptr: *mut UserContext,
     user_context_uaddr: usize,

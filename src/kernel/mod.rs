@@ -1,7 +1,7 @@
 mod main;
 pub mod mm;
 pub mod task;
-pub mod ktask;
+pub mod kthread;
 pub mod scheduler;
 pub mod errno;
 pub mod trap;

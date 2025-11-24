@@ -1,13 +1,7 @@
 use alloc::vec::Vec;
-use alloc::sync::Arc;
 
 use crate::kernel::mm::PhysPageFrame;
 use crate::klib::SpinLock;
-
-pub enum ShmPageFrame {
-    Allocated(PhysPageFrame),
-    Unallocated,
-}
 
 pub struct ShmFrames {
     pub frames: SpinLock<Vec<PhysPageFrame>>

@@ -7,10 +7,10 @@ use crate::fs::file::FileOps;
 use crate::kernel::event::{Event, PollEvent, PollEventSet, timer};
 use crate::kernel::ipc::SignalSet;
 use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::{UArray, UPtr};
+use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
-use crate::kernel::uapi::Timespec32;
+use crate::kernel::uapi::{self, Timespec32};
 
 const FD_SET_SIZE: usize = 1024;
 
@@ -19,8 +19,16 @@ const FD_SET_SIZE: usize = 1024;
 pub struct FdSet {
     fds_bits: [usize; FD_SET_SIZE / (8 * core::mem::size_of::<usize>())], // support up to 512 fds
 }
+impl UserStruct for FdSet {}
 
-pub fn pselect6_time32(nfds: usize, uptr_readfds: UPtr<FdSet>, uptr_writefds: UPtr<FdSet>, uptr_exceptfds: UPtr<FdSet>, uptr_timeout: UPtr<Timespec32>, _uptr_sigmask: UPtr<SignalSet>) -> SysResult<usize> {
+pub fn pselect6_time32(
+    nfds: usize, 
+    uptr_readfds: UPtr<FdSet>, 
+    uptr_writefds: UPtr<FdSet>, 
+    uptr_exceptfds: UPtr<FdSet>, 
+    uptr_timeout: UPtr<Timespec32>, 
+    _uptr_sigmask: UPtr<SignalSet>
+) -> SysResult<usize> {
     if nfds == 0 || nfds > FD_SET_SIZE {
         return Err(Errno::EINVAL);
     }
@@ -33,8 +41,6 @@ pub fn pselect6_time32(nfds: usize, uptr_readfds: UPtr<FdSet>, uptr_writefds: UP
         ts.into()
     });
 
-
-
     Ok(0)
 }
 
@@ -45,6 +51,7 @@ pub struct Pollfd {
     pub events: i16,
     pub revents: i16,
 }
+impl UserStruct for Pollfd {}
 
 impl Pollfd {
     pub fn default() -> Self {
@@ -155,3 +162,12 @@ pub fn ppoll_time32(uptr_ufds: UArray<Pollfd>, nfds: usize, uptr_timeout: UPtr<T
 
     Ok(r)
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ITimerValue {
+    pub it_interval: uapi::TimeVal,
+    pub it_value:    uapi::TimeVal,
+}
+
+// pub fn setitimer(which: usize, )

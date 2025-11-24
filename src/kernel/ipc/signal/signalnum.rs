@@ -1,6 +1,6 @@
 use core::ops::{BitAnd, BitOr, BitOrAssign, Not};
 
-use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::{errno::{Errno, SysResult}, syscall::UserStruct};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalDefaultAction {
@@ -174,3 +174,5 @@ impl Into<usize> for SignalSet {
         self.0
     }
 }
+
+impl UserStruct for SignalSet {}

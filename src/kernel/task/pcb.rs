@@ -6,7 +6,8 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{get_initprocess, manager};
-use crate::kernel::scheduler::{self, Task, current};
+use crate::kernel::scheduler::{Task, TaskState, current};
+use crate::kernel::scheduler;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::tid;
 use crate::kernel::event::Event;
@@ -16,7 +17,7 @@ use crate::fs::vfs;
 use crate::fs::Dentry;
 use crate::klib::SpinLock;
 
-use super::tcb::{TCB, TaskState};
+use super::tcb::TCB;
 
 struct Signal {
     actions: Mutex<SignalActionTable>,
@@ -63,7 +64,6 @@ impl PCB {
 
     pub fn new_initprocess(file: File, cwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
         let new_tid = tid::alloc();
-        // assert!(new_tid == 1);
 
         let cwd = vfs::load_dentry(cwd)?;
 

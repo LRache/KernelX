@@ -13,6 +13,7 @@ mod num;
 mod uptr;
 
 pub use num::syscall;
+pub use uptr::UserStruct;
 
 use crate::kernel::errno::SysResult;
 
