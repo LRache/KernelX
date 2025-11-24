@@ -1,10 +1,10 @@
 use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
 
+use crate::arch;
+use crate::kernel::event::Event;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::task::Task;
-use crate::kernel::event::Event;
-use crate::arch;
 use crate::klib::SpinLock;
 
 use super::processor::Processor;
@@ -23,7 +23,11 @@ impl Scheduler {
     fn push_task(&self, task: Arc<dyn Task>) {
         let mut ready_queue = self.ready_queue.lock();
         ready_queue.iter().for_each(|t| {
-            debug_assert!(t.tid() != task.tid(), "Task {} is already in ready queue!", t.tid());
+            debug_assert!(
+                t.tid() != task.tid(),
+                "Task {} is already in ready queue!",
+                t.tid()
+            );
         });
         ready_queue.push_back(task);
     }
@@ -68,7 +72,7 @@ pub fn run_tasks(_hartid: u8) -> ! {
             }
 
             let mut processor = Processor::new(&task);
-            
+
             processor.switch_to_task();
 
             if task.state_running_to_ready() {

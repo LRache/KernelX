@@ -1,22 +1,24 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::kernel::errno::SysResult;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
 use crate::driver::BlockDriverOps;
+use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::kernel::errno::SysResult;
 
 pub struct SuperBlockTable {
-    table: Vec<Option<Arc<dyn SuperBlockOps>>>
+    table: Vec<Option<Arc<dyn SuperBlockOps>>>,
 }
 
 impl SuperBlockTable {
     pub const fn new() -> Self {
-        SuperBlockTable {
-            table: Vec::new(),
-        }
+        SuperBlockTable { table: Vec::new() }
     }
 
-    pub fn alloc(&mut self, fs: &'static dyn FileSystemOps, driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<u32> {
+    pub fn alloc(
+        &mut self,
+        fs: &'static dyn FileSystemOps,
+        driver: Option<Arc<dyn BlockDriverOps>>,
+    ) -> SysResult<u32> {
         let sno = self.table.len();
         let superblock = fs.create(sno as u32, driver)?;
         self.table.push(Some(superblock));

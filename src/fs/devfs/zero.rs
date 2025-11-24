@@ -1,7 +1,7 @@
-use crate::kernel::uapi::FileStat;
-use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::inode::{Mode, InodeOps};
 use crate::fs::file::DirResult;
+use crate::fs::inode::{InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::FileStat;
 
 use super::def::ZERO_INO;
 pub struct ZeroInode {
@@ -49,6 +49,8 @@ impl InodeOps for ZeroInode {
     }
 
     fn mode(&self) -> SysResult<Mode> {
-        Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() as u32 | 0o666))
+        Ok(Mode::from_bits_truncate(
+            Mode::S_IFCHR.bits() as u32 | 0o666,
+        ))
     }
 }

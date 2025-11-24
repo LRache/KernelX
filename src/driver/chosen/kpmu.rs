@@ -1,4 +1,4 @@
-pub trait KPMU : Send + Sync {
+pub trait KPMU: Send + Sync {
     fn shutdown(&self) -> !;
 }
 

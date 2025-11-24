@@ -5,9 +5,9 @@ use core::cmp::Reverse;
 use core::time::Duration;
 use spin::Mutex;
 
+use crate::arch;
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::{self, Task};
-use crate::arch;
 
 use super::event::TimerEvent;
 
@@ -25,8 +25,10 @@ impl Timer {
     pub fn add_timer(&self, time: Duration, expired_func: Box<dyn FnOnce()>) {
         let time = arch::get_time_us() + time.as_micros() as u64;
         // self.wait_queue.lock().push(Reverse(TimerEvent { time, task: task, expired_func }));
-        self.wait_queue.lock().push(Reverse(TimerEvent { time, expired_func }));
-    } 
+        self.wait_queue
+            .lock()
+            .push(Reverse(TimerEvent { time, expired_func }));
+    }
 
     pub fn wakeup_expired(&self, current_time: u64) {
         let mut wait_queue = self.wait_queue.lock();
@@ -58,9 +60,12 @@ pub fn now() -> Duration {
 }
 
 pub fn add_timer(tcb: Arc<dyn Task>, time: Duration) {
-    TIMER.add_timer(time, Box::new(move || {
-        scheduler::wakeup_task(tcb, Event::Timeout);
-    }));
+    TIMER.add_timer(
+        time,
+        Box::new(move || {
+            scheduler::wakeup_task(tcb, Event::Timeout);
+        }),
+    );
     // TIMER.add_timer(tcb, time, Event::Timeout);
 }
 

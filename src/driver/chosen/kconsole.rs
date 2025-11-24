@@ -1,6 +1,6 @@
 use spin::RwLock;
 
-pub trait KConsole : Sync {
+pub trait KConsole: Sync {
     fn kputs(&self, s: &str);
 }
 

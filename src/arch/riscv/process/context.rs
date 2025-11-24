@@ -1,6 +1,6 @@
 use crate::arch::arch::UserContextTrait;
 use crate::arch::riscv::pagetable::get_kernel_satp;
-use crate::arch::riscv::process::traphandle::{usertrap_handler, return_to_user};
+use crate::arch::riscv::process::traphandle::{return_to_user, usertrap_handler};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::task::KernelStack;
 
@@ -8,7 +8,7 @@ use crate::kernel::task::KernelStack;
 #[derive(Debug, Clone, Copy)]
 pub struct UserContext {
     /*  0 */ pub gpr: [usize; 32],
-    /* 32 */ pub kernel_tp: usize,    
+    /* 32 */ pub kernel_tp: usize,
     /* 33 */ pub kernel_sp: usize,
     /* 34 */ pub user_satp: usize,
     /* 35 */ pub kernel_satp: usize,
@@ -19,7 +19,7 @@ pub struct UserContext {
 impl UserContextTrait for UserContext {
     fn new() -> Self {
         let kernel_satp = get_kernel_satp();
-        
+
         UserContext {
             gpr: [0; 32],
             kernel_tp: 0,
@@ -38,7 +38,7 @@ impl UserContextTrait for UserContext {
         new_context.kernel_tp = 0; // Reset kernel thread pointer
 
         new_context.gpr[10] = 0; // clone returns 0 to the child process
-        
+
         new_context
     }
 
@@ -80,7 +80,7 @@ impl UserContextTrait for UserContext {
     fn get_user_entry(&self) -> usize {
         self.user_entry
     }
-    
+
     fn set_user_entry(&mut self, entry: usize) -> &mut Self {
         self.user_entry = entry;
         self
@@ -100,10 +100,10 @@ impl UserContextTrait for UserContext {
 pub struct KernelContext {
     pub ra: usize,
     pub sp: usize,
-    pub s : [usize; 12],
+    pub s: [usize; 12],
     pub a0: usize,
 }
- 
+
 impl KernelContext {
     pub fn new(kernel_stack: &KernelStack) -> Self {
         KernelContext {
@@ -113,12 +113,12 @@ impl KernelContext {
             a0: 0,
         }
     }
-    
+
     pub fn new_idle() -> Self {
         KernelContext {
             ra: 0,
             sp: 0,
-            s : [0; 12],
+            s: [0; 12],
             a0: 0,
         }
     }
@@ -133,8 +133,8 @@ impl KernelContext {
 #[derive(Clone, Copy, Debug)]
 pub struct SigContext {
     pub pc: usize,
-    pub gregs:  [usize; 31], // General registers
-    pub fpregs: [u64; 66]    // Floating point registers
+    pub gregs: [usize; 31], // General registers
+    pub fpregs: [u64; 66],  // Floating point registers
 }
 
 impl SigContext {

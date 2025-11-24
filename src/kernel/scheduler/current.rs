@@ -1,24 +1,24 @@
 use alloc::sync::Arc;
 use spin::Mutex;
 
+use crate::arch;
+use crate::fs::Dentry;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::SignalActionTable;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::task::Task;
+use crate::kernel::scheduler::{Processor, current};
+use crate::kernel::task::fdtable::FDTable;
 use crate::kernel::task::tid::Tid;
 use crate::kernel::task::{PCB, TCB};
-use crate::kernel::task::fdtable::FDTable;
-use crate::kernel::scheduler::{current, Processor};
-use crate::arch;
-use crate::fs::Dentry;
 use crate::kernel::uapi::Uid;
 use crate::klib::SpinLock;
 
 pub fn processor() -> &'static mut Processor<'static> {
     let p = arch::get_percpu_data() as *mut Processor;
-    
+
     debug_assert!(!p.is_null());
-    
+
     unsafe { &mut *p }
 }
 
@@ -45,19 +45,11 @@ pub fn tcb() -> &'static TCB {
 }
 
 pub fn tid() -> Tid {
-    if is_clear() {
-        -1
-    } else {
-        task().tid()
-    }
+    if is_clear() { -1 } else { task().tid() }
 }
 
 pub fn pid() -> Tid {
-    if is_clear() {
-        -1
-    } else {
-        pcb().get_pid()
-    }
+    if is_clear() { -1 } else { pcb().get_pid() }
 }
 
 pub fn uid() -> Uid {
@@ -83,15 +75,17 @@ pub fn fdtable() -> &'static SpinLock<FDTable> {
     tcb.fdtable()
 }
 
-pub fn with_cwd<F, R>(f: F) -> R 
-where F: FnOnce(&Arc<Dentry>) -> R {
+pub fn with_cwd<F, R>(f: F) -> R
+where
+    F: FnOnce(&Arc<Dentry>) -> R,
+{
     let pcb = pcb();
     pcb.with_cwd(f)
 }
 
 pub mod copy_to_user {
-    use crate::kernel::errno::SysResult;
     use super::addrspace;
+    use crate::kernel::errno::SysResult;
 
     pub fn buffer(uaddr: usize, buf: &[u8]) -> SysResult<()> {
         addrspace().copy_to_user_buffer(uaddr, buf)
@@ -119,9 +113,9 @@ pub mod copy_to_user {
 }
 
 pub mod copy_from_user {
-    use alloc::string::String;
-    use crate::kernel::errno::SysResult;
     use super::addrspace;
+    use crate::kernel::errno::SysResult;
+    use alloc::string::String;
 
     pub fn buffer(uaddr: usize, buf: &mut [u8]) -> SysResult<()> {
         addrspace().copy_from_user_buffer(uaddr, buf)

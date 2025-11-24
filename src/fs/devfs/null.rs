@@ -1,7 +1,7 @@
+use crate::fs::file::DirResult;
+use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
-use crate::fs::{InodeOps, Mode};
-use crate::fs::file::DirResult;
 
 pub const INO: u32 = 1;
 
@@ -58,6 +58,8 @@ impl InodeOps for NullInode {
     }
 
     fn mode(&self) -> SysResult<Mode> {
-        Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() as u32 | 0o666))
+        Ok(Mode::from_bits_truncate(
+            Mode::S_IFCHR.bits() as u32 | 0o666,
+        ))
     }
 }

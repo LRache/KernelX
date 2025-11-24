@@ -20,10 +20,18 @@ pub struct Perm {
 
 impl Perm {
     pub fn new(flags: PermFlags) -> Self {
-        Self { uid: 0, gid: 0, flags }
+        Self {
+            uid: 0,
+            gid: 0,
+            flags,
+        }
     }
 
     pub fn dontcare() -> Self {
-        Self { uid: 0, gid: 0, flags: PermFlags::empty() }
+        Self {
+            uid: 0,
+            gid: 0,
+            flags: PermFlags::empty(),
+        }
     }
 }

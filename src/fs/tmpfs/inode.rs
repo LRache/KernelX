@@ -1,16 +1,16 @@
-use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use crate::kernel::errno::{SysResult, Errno};
+use crate::arch;
 use crate::fs::InodeOps;
 use crate::fs::inode::Mode;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::SpinLock;
-use crate::arch;
 
 use super::superblock::SuperBlockInner;
 
@@ -21,7 +21,10 @@ struct Timespec {
 
 impl Default for Timespec {
     fn default() -> Self {
-        Timespec { tv_sec: 0, tv_nsec: 0 }
+        Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        }
     }
 }
 
@@ -40,8 +43,8 @@ impl FileMeta {
 }
 
 enum Meta {
-    File (FileMeta),
-    Directory(BTreeMap<String, u32>)
+    File(FileMeta),
+    Directory(BTreeMap<String, u32>),
 }
 
 pub struct InodeMeta {
@@ -60,8 +63,8 @@ impl InodeMeta {
         } else {
             Meta::File(FileMeta::new())
         };
-        Self { 
-            meta, 
+        Self {
+            meta,
             mode,
             owner: (0, 0),
             mtime: Timespec::default(),
@@ -79,14 +82,18 @@ pub struct Inode {
 }
 
 impl Inode {
-    pub fn new(ino: u32, sno: u32, meta: Arc<SpinLock<InodeMeta>>, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
+    pub fn new(
+        ino: u32,
+        sno: u32,
+        meta: Arc<SpinLock<InodeMeta>>,
+        superblock: Arc<SpinLock<SuperBlockInner>>,
+    ) -> Self {
         Self {
             ino,
             sno,
             meta,
             superblock,
         }
-
     }
 }
 
@@ -131,7 +138,7 @@ impl InodeOps for Inode {
             if offset >= file_meta.filesize {
                 return Ok(0);
             }
-            
+
             let mut total_read = 0;
             let mut current_offset = offset;
             let mut left = core::cmp::min(buf.len(), file_meta.filesize - offset);
@@ -147,7 +154,7 @@ impl InodeOps for Inode {
                 let page = &file_meta.pages[page_index];
                 let to_read = core::cmp::min(left, 4096 - page_offset);
 
-                page.copy_to_slice(page_offset, &mut buf[total_read..total_read+to_read]);
+                page.copy_to_slice(page_offset, &mut buf[total_read..total_read + to_read]);
 
                 left -= to_read;
                 total_read += to_read;
@@ -161,7 +168,7 @@ impl InodeOps for Inode {
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
-        if let Meta::File ( ref mut meta ) = self.meta.lock().meta {
+        if let Meta::File(ref mut meta) = self.meta.lock().meta {
             let mut written_bytes = 0;
             let mut current_offset = offset;
 
@@ -176,7 +183,7 @@ impl InodeOps for Inode {
                 let page = &meta.pages[page_index];
                 let to_write = core::cmp::min(buf.len() - written_bytes, 4096 - page_offset);
 
-                page.copy_from_slice(page_offset, &buf[written_bytes..written_bytes+to_write]);
+                page.copy_from_slice(page_offset, &buf[written_bytes..written_bytes + to_write]);
 
                 written_bytes += to_write;
                 current_offset += to_write;

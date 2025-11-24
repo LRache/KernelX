@@ -1,13 +1,13 @@
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use spin::RwLock;
 
+use crate::arch;
+use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::frame::PhysPageFrame;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
-use crate::arch::{PageTable, PageTableTrait};
-use crate::arch;
 
 use super::area::Frame;
 
@@ -21,12 +21,12 @@ impl AnonymousArea {
     pub fn new(ubase: usize, perm: MapPerm, page_count: usize) -> Self {
         // Anonymous areas should be page-aligned
         assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
-        
+
         let frames = Vec::from_iter((0..page_count).map(|_| Frame::Unallocated));
         Self {
             ubase,
             perm,
-            frames
+            frames,
         }
     }
 
@@ -35,12 +35,14 @@ impl AnonymousArea {
         assert!(self.frames[page_index].is_unallocated());
 
         let area_offset = page_index * arch::PGSIZE;
-        
+
         // Create a new zeroed page for anonymous memory
         let frame = PhysPageFrame::alloc_zeroed();
         let page = frame.get_page();
 
-        pagetable.write().mmap(self.ubase + area_offset, page, self.perm);
+        pagetable
+            .write()
+            .mmap(self.ubase + area_offset, page, self.perm);
         self.frames[page_index] = Frame::Allocated(Arc::new(frame));
 
         page
@@ -54,7 +56,7 @@ impl AnonymousArea {
         let new_frame = if let Frame::Cow(frame) = cow_frame {
             match Arc::try_unwrap(frame) {
                 Ok(only) => only,
-                Err(cow) => cow.copy()
+                Err(cow) => cow.copy(),
             }
         } else {
             unreachable!();
@@ -62,7 +64,9 @@ impl AnonymousArea {
 
         let page = new_frame.get_page();
 
-        pagetable.write().mmap_replace(self.ubase + page_index * arch::PGSIZE, page, self.perm);
+        pagetable
+            .write()
+            .mmap_replace(self.ubase + page_index * arch::PGSIZE, page, self.perm);
         self.frames[page_index] = Frame::Allocated(Arc::new(new_frame));
 
         page
@@ -75,19 +79,15 @@ impl Area for AnonymousArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-        
+
         if let Some(page_frame) = self.frames.get(page_index) {
             let page = match page_frame {
                 Frame::Unallocated => {
                     // Lazy allocation: allocate page on first access
                     self.allocate_page(page_index, pagetable)
                 }
-                Frame::Allocated(frame) => {
-                    frame.get_page()
-                }
-                Frame::Cow(frame) => {
-                    frame.get_page()
-                }
+                Frame::Allocated(frame) => frame.get_page(),
+                Frame::Cow(frame) => frame.get_page(),
             };
 
             Some(page + page_offset)
@@ -105,15 +105,11 @@ impl Area for AnonymousArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-        
+
         if let Some(page_frame) = self.frames.get_mut(page_index) {
             let page = match page_frame {
-                Frame::Unallocated => {
-                    self.allocate_page(page_index, pagetable)
-                }
-                Frame::Allocated(frame) => {
-                    frame.get_page()
-                }
+                Frame::Unallocated => self.allocate_page(page_index, pagetable),
+                Frame::Allocated(frame) => frame.get_page(),
                 Frame::Cow(_) => {
                     // Copy-on-write: create a new copy for this process
                     self.copy_on_write_page(page_index, pagetable)
@@ -126,37 +122,47 @@ impl Area for AnonymousArea {
         }
     }
 
-    fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+    fn fork(
+        &mut self,
+        self_pagetable: &RwLock<PageTable>,
+        new_pagetable: &RwLock<PageTable>,
+    ) -> Box<dyn Area> {
         let perm = self.perm - MapPerm::W;
         let mut new_pagetable = new_pagetable.write();
-        let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
-            match frame {
+        let frames = self
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(page_index, frame)| match frame {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
                     new_pagetable.mmap(
                         self.ubase + page_index * arch::PGSIZE,
                         frame.get_page(),
-                        perm
+                        perm,
                     );
                     Frame::Cow(frame.clone())
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut self_pagetable = self_pagetable.write();
-        self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
-            *frame = match frame {
-                Frame::Unallocated => Frame::Unallocated,
-                Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    self_pagetable.mmap_replace(
-                        self.ubase + page_index * arch::PGSIZE,
-                        frame.get_page(),
-                        MapPerm::R | MapPerm::U
-                    );
-                    Frame::Cow(frame.clone())
+        self.frames
+            .iter_mut()
+            .enumerate()
+            .for_each(|(page_index, frame)| {
+                *frame = match frame {
+                    Frame::Unallocated => Frame::Unallocated,
+                    Frame::Allocated(frame) | Frame::Cow(frame) => {
+                        self_pagetable.mmap_replace(
+                            self.ubase + page_index * arch::PGSIZE,
+                            frame.get_page(),
+                            MapPerm::R | MapPerm::U,
+                        );
+                        Frame::Cow(frame.clone())
+                    }
                 }
-            }
-        });
+            });
 
         // let frames = self.fork_pages(self_pagetable, new_pagetable, index_to_uaddr);
 
@@ -169,7 +175,12 @@ impl Area for AnonymousArea {
         Box::new(new_area)
     }
 
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
+    fn try_to_fix_memory_fault(
+        &mut self,
+        uaddr: usize,
+        access_type: MemAccessType,
+        pagetable: &RwLock<PageTable>,
+    ) -> bool {
         debug_assert!(uaddr >= self.ubase);
 
         if access_type == MemAccessType::Read && !self.perm.contains(MapPerm::R) {
@@ -192,7 +203,10 @@ impl Area for AnonymousArea {
                 Frame::Allocated(_) => {
                     // Page is already allocated, this shouldn't happen
                     // ktrace!("Memory fault on already allocated page at address: {:#x}", uaddr);
-                    panic!("Memory fault on already allocated page at address: {:#x}, access_type: {:?}, perm: {:?}", uaddr, access_type, self.perm);
+                    panic!(
+                        "Memory fault on already allocated page at address: {:#x}, access_type: {:?}, perm: {:?}",
+                        uaddr, access_type, self.perm
+                    );
                 }
                 Frame::Cow(_) => {
                     if access_type == MemAccessType::Write {
@@ -203,7 +217,7 @@ impl Area for AnonymousArea {
                     }
                 }
             }
-            
+
             true
         } else {
             false
@@ -221,11 +235,17 @@ impl Area for AnonymousArea {
 
     fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
         debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
-        debug_assert!(uaddr >= self.ubase && uaddr < self.ubase + self.size(), "uaddr out of range for split, urange: [{:#x}, {:#x}), uaddr: {:#x}", self.ubase, self.ubase + self.size(), uaddr);
+        debug_assert!(
+            uaddr >= self.ubase && uaddr < self.ubase + self.size(),
+            "uaddr out of range for split, urange: [{:#x}, {:#x}), uaddr: {:#x}",
+            self.ubase,
+            self.ubase + self.size(),
+            uaddr
+        );
 
         let split_index = (uaddr - self.ubase) / arch::PGSIZE;
         let new_ubase = self.ubase + split_index * arch::PGSIZE;
-        
+
         let new_frames = self.frames.split_off(split_index);
         let new_area = AnonymousArea {
             ubase: new_ubase,
@@ -233,10 +253,7 @@ impl Area for AnonymousArea {
             frames: new_frames,
         };
 
-        (
-            self, 
-            Box::new(new_area)
-        )
+        (self, Box::new(new_area))
     }
 
     fn page_frames(&mut self) -> &mut [Frame] {
@@ -247,11 +264,19 @@ impl Area for AnonymousArea {
         self.ubase
     }
 
-    fn alloc_new_page(&mut self, _page_index: usize, _pagetable: &RwLock<PageTable>) -> PhysPageFrame {
+    fn alloc_new_page(
+        &mut self,
+        _page_index: usize,
+        _pagetable: &RwLock<PageTable>,
+    ) -> PhysPageFrame {
         PhysPageFrame::alloc_zeroed()
     }
 
-    fn alloc_for_cow_page(&mut self, _page_index: usize, old_frame: Arc<PhysPageFrame>) -> PhysPageFrame {
+    fn alloc_for_cow_page(
+        &mut self,
+        _page_index: usize,
+        old_frame: Arc<PhysPageFrame>,
+    ) -> PhysPageFrame {
         old_frame.copy()
     }
 

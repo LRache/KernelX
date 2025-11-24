@@ -1,20 +1,22 @@
-use alloc::vec::Vec;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::time::Duration;
 use spin::Mutex;
 
-use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::{get_initprocess, manager};
-use crate::kernel::scheduler::{Task, TaskState, current};
-use crate::kernel::scheduler;
-use crate::kernel::task::tid::Tid;
-use crate::kernel::task::tid;
-use crate::kernel::event::Event;
-use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum};
+use crate::fs::Dentry;
 use crate::fs::file::File;
 use crate::fs::vfs;
-use crate::fs::Dentry;
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::Event;
+use crate::kernel::ipc::{
+    KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum,
+};
+use crate::kernel::scheduler;
+use crate::kernel::scheduler::{Task, TaskState, current};
+use crate::kernel::task::def::TaskCloneFlags;
+use crate::kernel::task::tid;
+use crate::kernel::task::tid::Tid;
+use crate::kernel::task::{get_initprocess, manager};
 use crate::klib::SpinLock;
 
 use super::tcb::TCB;
@@ -29,7 +31,7 @@ pub struct PCB {
     pub parent: SpinLock<Option<Arc<PCB>>>,
     is_zombie: SpinLock<bool>,
     exit_code: SpinLock<u8>,
-    
+
     pub tasks: SpinLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
@@ -47,7 +49,7 @@ impl PCB {
             parent: SpinLock::new(Some(parent.clone())),
             is_zombie: SpinLock::new(false),
             exit_code: SpinLock::new(0),
-            
+
             tasks: SpinLock::new(Vec::new()),
             cwd: SpinLock::new(parent.cwd.lock().clone()),
             umask: SpinLock::new(*parent.umask.lock()),
@@ -62,7 +64,12 @@ impl PCB {
         })
     }
 
-    pub fn new_initprocess(file: File, cwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
+    pub fn new_initprocess(
+        file: File,
+        cwd: &str,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> Result<Arc<Self>, Errno> {
         let new_tid = tid::alloc();
 
         let cwd = vfs::load_dentry(cwd)?;
@@ -72,7 +79,7 @@ impl PCB {
             parent: SpinLock::new(None),
             is_zombie: SpinLock::new(false),
             exit_code: SpinLock::new(0),
-            
+
             tasks: SpinLock::new(Vec::new()),
             cwd: SpinLock::new(cwd.clone()),
             umask: SpinLock::new(0o022),
@@ -110,8 +117,10 @@ impl PCB {
         self.tasks.lock().iter().any(|tcb| tcb.get_tid() == tid)
     }
 
-    pub fn with_cwd<F, R>(&self, f: F) -> R 
-    where F: FnOnce(&Arc<Dentry>) -> R {
+    pub fn with_cwd<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Arc<Dentry>) -> R,
+    {
         let cwd = self.cwd.lock();
         f(&cwd)
     }
@@ -129,8 +138,8 @@ impl PCB {
     }
 
     pub fn clone_task(
-        self: &Arc<Self>, 
-        tcb: &TCB, 
+        self: &Arc<Self>,
+        tcb: &TCB,
         userstack: usize,
         flags: &TaskCloneFlags,
         tls: Option<usize>,
@@ -153,17 +162,17 @@ impl PCB {
     }
 
     pub fn exec(
-        self: &Arc<Self>, 
-        tcb: &TCB, 
-        file: File, 
-        argv: &[&str], 
-        envp: &[&str]
-    ) -> Result<(), Errno> {        
+        self: &Arc<Self>,
+        tcb: &TCB,
+        file: File,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> Result<(), Errno> {
         let first_task = tcb.new_exec(file, argv, envp)?;
 
         let mut tasks = self.tasks.lock();
         tasks.iter_mut().for_each(|tcb| {
-            tcb.with_state_mut(|state| state.state = TaskState::Exited );
+            tcb.with_state_mut(|state| state.state = TaskState::Exited);
         });
         tasks.clear();
         tasks.push(first_task.clone());
@@ -176,7 +185,7 @@ impl PCB {
     pub fn exit(self: &Arc<Self>, code: u8) {
         let mut task = self.tasks.lock();
         task.iter().for_each(|t| {
-            t.with_state_mut(|state| state.state = TaskState::Exited );
+            t.with_state_mut(|state| state.state = TaskState::Exited);
         });
         task.clear();
 
@@ -188,22 +197,24 @@ impl PCB {
         if self.pid == 0 {
             panic!("Init process exited with code {}, system will halt.", code);
         }
-        
+
         if let Some(parent) = self.parent.lock().as_ref() {
             parent.waiting_task.lock().drain(..).for_each(|t| {
                 scheduler::wakeup_task(t, Event::Process { child: self.pid });
             });
-            
-            let fields = KSiFields::SigChld(SiSigChld { 
-                si_pid: self.pid, 
-                si_uid: current::uid(), 
-                si_status: code as i32, 
+
+            let fields = KSiFields::SigChld(SiSigChld {
+                si_pid: self.pid,
+                si_uid: current::uid(),
+                si_status: code as i32,
                 si_utime: 0,
-                si_stime: 0
+                si_stime: 0,
             });
-            parent.send_signal(signum::SIGCHLD, SiCode::SI_KERNEL, fields, None).unwrap_or(());
+            parent
+                .send_signal(signum::SIGCHLD, SiCode::SI_KERNEL, fields, None)
+                .unwrap_or(());
         }
-        
+
         let mut children = self.children.lock();
         children.iter_mut().for_each(|c| {
             *c.parent.lock() = Some(get_initprocess().clone());
@@ -219,18 +230,18 @@ impl PCB {
             let children = self.children.lock();
             children.iter().find(|c| c.get_pid() == pid).cloned()
         };
-        
+
         if let Some(child) = child {
             if child.is_zombie() {
                 let exit_code = child.get_exit_code();
                 // self.children.lock().retain(|c| c.get_pid() != pid);
                 return Ok(Some(exit_code));
             }
-            
+
             if blocked {
                 loop {
                     self.waiting_task.lock().push(current::task().clone());
-                    
+
                     let event = current::block("wait_child");
 
                     match event {
@@ -247,18 +258,19 @@ impl PCB {
                         _ => unreachable!(),
                     }
                 }
-                
+
                 let exit_code = child.get_exit_code();
                 {
                     let mut children = self.children.lock();
                     children.retain(|c| c.get_pid() != pid);
                 }
-                
+
                 return Ok(Some(exit_code));
             } else {
                 return Ok(None);
             }
-        } else { // No child found
+        } else {
+            // No child found
             if blocked {
                 return Err(Errno::ECHILD);
             } else {
@@ -269,7 +281,7 @@ impl PCB {
 
     pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, u8)>> {
         let mut children = self.children.lock();
-    
+
         if let Some(child) = children.iter().find(|c| c.is_zombie()) {
             let pid = child.get_pid();
             let exit_code = child.get_exit_code();
@@ -278,7 +290,7 @@ impl PCB {
         }
 
         drop(children);
-        
+
         if !blocked {
             return Ok(None);
         }
@@ -293,10 +305,10 @@ impl PCB {
                 let exit_code;
                 let mut children = self.children.lock();
 
-                match children.iter().find(|c| c.get_pid() == child){
+                match children.iter().find(|c| c.get_pid() == child) {
                     Some(child_pcb) => {
                         exit_code = child_pcb.get_exit_code();
-                    },
+                    }
                     None => unreachable!(), // The child must exist
                 }
 
@@ -304,9 +316,7 @@ impl PCB {
 
                 Ok(Some((pid, exit_code)))
             }
-            Event::Signal => {
-                Err(Errno::EINTR)
-            }
+            Event::Signal => Err(Errno::EINTR),
             _ => unreachable!(),
         }
     }

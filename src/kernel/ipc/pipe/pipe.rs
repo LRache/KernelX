@@ -1,10 +1,10 @@
 use alloc::sync::Arc;
 
-use crate::kernel::event::{PollEvent, PollEventSet};
-use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::uapi::FileStat;
-use crate::fs::{Dentry, InodeOps};
 use crate::fs::file::{FileOps, SeekWhence};
+use crate::fs::{Dentry, InodeOps};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{PollEvent, PollEventSet};
+use crate::kernel::uapi::FileStat;
 
 use super::PipeInner;
 

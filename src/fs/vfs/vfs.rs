@@ -1,16 +1,16 @@
-use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::mutex::Mutex;
 
-use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::inode::InodeOps;
-use crate::fs::inode;
 use crate::fs::filesystem::FileSystemOps;
+use crate::fs::inode;
+use crate::fs::inode::InodeOps;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::InitedCell;
 
-use super::dentry::Dentry;
 use super::SuperBlockTable;
+use super::dentry::Dentry;
 
 pub struct VirtualFileSystem {
     pub(super) cache: inode::Cache,
@@ -40,24 +40,30 @@ impl VirtualFileSystem {
     pub fn lookup_dentry(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
         let mut current = match path.chars().next() {
             Some('/') => self.get_root().clone(),
-            _ => dir.clone()
+            _ => dir.clone(),
         };
 
         // TODO: Link to
         current = current.get_mount_to();
         current = current.walk_link()?;
 
-        path.split('/').filter(|s| !(s.is_empty() || *s == ".")).try_for_each(|part| {
-            let next = current.lookup(part)?;
-            current = next.get_mount_to().walk_link()?;
+        path.split('/')
+            .filter(|s| !(s.is_empty() || *s == "."))
+            .try_for_each(|part| {
+                let next = current.lookup(part)?;
+                current = next.get_mount_to().walk_link()?;
 
-            Ok(())
-        })?;
+                Ok(())
+            })?;
 
         Ok(current)
     }
 
-    pub fn lookup_parent_dentry<'a>(&self, dir: &Arc<Dentry>, path: &'a str) -> SysResult<(Arc<Dentry>, &'a str)> {
+    pub fn lookup_parent_dentry<'a>(
+        &self,
+        dir: &Arc<Dentry>,
+        path: &'a str,
+    ) -> SysResult<(Arc<Dentry>, &'a str)> {
         let mut current = match path.chars().next() {
             Some('/') => self.get_root().clone(),
             _ => dir.clone(),
@@ -72,17 +78,15 @@ impl VirtualFileSystem {
         //            .map(|p| (p, String::from("/")));
         // }
         if parts.is_empty() {
-            return current.get_parent()
-                   .ok_or(Errno::ENOENT)
-                   .map(|p| (p, "/"));
+            return current.get_parent().ok_or(Errno::ENOENT).map(|p| (p, "/"));
         }
 
-        for part in &parts[0..parts.len()-1] {
+        for part in &parts[0..parts.len() - 1] {
             let next = current.lookup(part)?;
             current = next.get_mount_to().walk_link()?;
         }
 
-        Ok((current, parts[parts.len()-1]))
+        Ok((current, parts[parts.len() - 1]))
     }
 
     pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
@@ -95,11 +99,10 @@ impl VirtualFileSystem {
 
             let inode: Arc<dyn InodeOps> = Arc::from(superblock.get_inode(ino)?);
             self.cache.insert(&index, inode.clone())?;
-            
+
             Ok(inode)
         }
     }
 }
 
 unsafe impl Sync for VirtualFileSystem {}
- 

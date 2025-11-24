@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::fs::file::FileOps;
 use crate::kernel::config;
@@ -82,11 +82,16 @@ impl FDTable {
     }
 
     pub fn fork(&self) -> Self {
-        let new_table = self.table.iter().map(|item| {
-            item.as_ref().map(|fd_item| fd_item.clone())
-        }).collect();
-        
-        Self { table: new_table, max_fd: self.max_fd }
+        let new_table = self
+            .table
+            .iter()
+            .map(|item| item.as_ref().map(|fd_item| fd_item.clone()))
+            .collect();
+
+        Self {
+            table: new_table,
+            max_fd: self.max_fd,
+        }
     }
 
     pub fn cloexec(&mut self) {

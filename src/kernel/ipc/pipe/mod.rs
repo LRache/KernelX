@@ -1,6 +1,6 @@
 mod inner;
-mod pipe;
 mod manager;
+mod pipe;
 
 use inner::*;
 pub use pipe::*;

@@ -30,7 +30,10 @@ impl PhysPageFrame {
     }
 
     pub fn copy_to_slice(&self, offset: usize, dst: &mut [u8]) {
-        debug_assert!(offset + dst.len() <= arch::PGSIZE, "Slice exceeds page frame bounds");
+        debug_assert!(
+            offset + dst.len() <= arch::PGSIZE,
+            "Slice exceeds page frame bounds"
+        );
         unsafe {
             let src_ptr = (self.page + offset) as *const u8;
             let dst_ptr = dst.as_mut_ptr();

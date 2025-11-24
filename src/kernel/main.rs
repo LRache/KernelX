@@ -1,31 +1,31 @@
 use alloc::collections::btree_map::BTreeMap;
 
-use crate::kernel::event::timer;
+use crate::arch;
+use crate::driver;
+use crate::fs;
+use crate::fs::vfs;
 use crate::kernel::config;
+use crate::kernel::event::timer;
 use crate::kernel::kthread;
 use crate::kernel::mm;
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::current;
 use crate::kernel::task;
-use crate::fs::vfs;
-use crate::arch;
-use crate::fs;
-use crate::driver;
-use crate::klib::{kalloc, InitedCell};
+use crate::klib::{InitedCell, kalloc};
 use crate::{kinfo, println};
 
 pub fn fini() {
     kinfo!("Deinitializing KernelX...");
-    
+
     fs::fini();
-    
+
     kinfo!("KernelX deinitialized successfully!");
 }
 
 fn free_init() {
     unsafe extern "C" {
         static __init_start: u8;
-        static __init_end:   u8;
+        static __init_end: u8;
     }
 
     let kstart = core::ptr::addr_of!(__init_start) as usize;
@@ -63,9 +63,9 @@ pub fn parse_boot_args(bootargs: &'static str) {
 #[unsafe(no_mangle)]
 extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
     kinfo!("Welcome to KernelX!");
-    
+
     kinfo!("Initializing KernelX...");
-    
+
     kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
     mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
     driver::init();
@@ -74,27 +74,34 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
 
     kinfo!("Welcome to KernelX!");
 
-    kinfo!("Frame space: {:#x} - {:#x}, total {:#x}", heap_start + config::KERNEL_HEAP_SIZE, memory_top, memory_top - (heap_start + config::KERNEL_HEAP_SIZE));
+    kinfo!(
+        "Frame space: {:#x} - {:#x}, total {:#x}",
+        heap_start + config::KERNEL_HEAP_SIZE,
+        memory_top,
+        memory_top - (heap_start + config::KERNEL_HEAP_SIZE)
+    );
 
     fs::init();
     fs::mount_init_fs(
-        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT), 
-        BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE)
+        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT),
+        BOOT_ARGS
+            .get("rootfstype")
+            .unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE),
     );
 
     task::create_initprocess(
         BOOT_ARGS.get("init").unwrap_or(&config::DEFAULT_INITPATH),
-        BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD)
+        BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD),
     );
-    
+
     timer::init();
 
     // kthread::spawn(kthread_test);
 
     // free_init();
-    
+
     kinfo!("KernelX initialized successfully!");
-    
+
     scheduler::run_tasks(hartid as u8);
 }
 
@@ -112,6 +119,6 @@ pub fn exit() -> ! {
     vfs::sync_all().unwrap_or_else(|e| {
         println!("Failed to sync filesystem: {:?}", e);
     });
-    
+
     driver::chosen::kpmu::shutdown();
 }

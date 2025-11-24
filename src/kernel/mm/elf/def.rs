@@ -41,20 +41,20 @@ pub const EM_RISCV: u16 = 243; // RISC-V
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Elf64Ehdr {
-    pub e_ident: [u8; EI_NIDENT],    // Magic number and other info
-    pub e_type: Elf64Half,           // Object file type
-    pub e_machine: Elf64Half,        // Architecture
-    pub e_version: Elf64Word,        // Object file version
-    pub e_entry: Elf64Addr,          // Entry point virtual address
-    pub e_phoff: Elf64Off,           // Program header table file offset
-    pub e_shoff: Elf64Off,           // Section header table file offset
-    pub e_flags: Elf64Word,          // Processor-specific flags
-    pub e_ehsize: Elf64Half,         // ELF header size in bytes
-    pub e_phentsize: Elf64Half,      // Program header table entry size
-    pub e_phnum: Elf64Half,          // Program header table entry count
-    pub e_shentsize: Elf64Half,      // Section header table entry size
-    pub e_shnum: Elf64Half,          // Section header table entry count
-    pub e_shstrndx: Elf64Half,       // Section header string table index
+    pub e_ident: [u8; EI_NIDENT], // Magic number and other info
+    pub e_type: Elf64Half,        // Object file type
+    pub e_machine: Elf64Half,     // Architecture
+    pub e_version: Elf64Word,     // Object file version
+    pub e_entry: Elf64Addr,       // Entry point virtual address
+    pub e_phoff: Elf64Off,        // Program header table file offset
+    pub e_shoff: Elf64Off,        // Section header table file offset
+    pub e_flags: Elf64Word,       // Processor-specific flags
+    pub e_ehsize: Elf64Half,      // ELF header size in bytes
+    pub e_phentsize: Elf64Half,   // Program header table entry size
+    pub e_phnum: Elf64Half,       // Program header table entry count
+    pub e_shentsize: Elf64Half,   // Section header table entry size
+    pub e_shnum: Elf64Half,       // Section header table entry count
+    pub e_shstrndx: Elf64Half,    // Section header string table index
 }
 
 pub const PT_NULL: u32 = 0;
@@ -71,14 +71,14 @@ pub const PF_R: u32 = 1 << 2;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Elf64Phdr {
-    pub p_type  : Elf64Word , // Segment type
-    pub p_flags : Elf64Word , // Segment flags
-    pub p_offset: Elf64Off  , // Segment file offset
-    pub p_vaddr : Elf64Addr , // Segment virtual address
-    pub p_paddr : Elf64Addr , // Segment physical address
+    pub p_type: Elf64Word,    // Segment type
+    pub p_flags: Elf64Word,   // Segment flags
+    pub p_offset: Elf64Off,   // Segment file offset
+    pub p_vaddr: Elf64Addr,   // Segment virtual address
+    pub p_paddr: Elf64Addr,   // Segment physical address
     pub p_filesz: Elf64Xword, // Segment size in file
-    pub p_memsz : Elf64Xword, // Segment size in memory
-    pub p_align : Elf64Xword, // Segment alignment
+    pub p_memsz: Elf64Xword,  // Segment size in memory
+    pub p_align: Elf64Xword,  // Segment alignment
 }
 
 // // 段头类型 (sh_type)
@@ -118,24 +118,24 @@ pub struct Elf64Phdr {
 
 impl Elf64Ehdr {
     pub fn is_valid_elf(&self) -> bool {
-        self.e_ident[EI_MAG0] == ELFMAG0 &&
-        self.e_ident[EI_MAG1] == ELFMAG1 &&
-        self.e_ident[EI_MAG2] == ELFMAG2 &&
-        self.e_ident[EI_MAG3] == ELFMAG3
+        self.e_ident[EI_MAG0] == ELFMAG0
+            && self.e_ident[EI_MAG1] == ELFMAG1
+            && self.e_ident[EI_MAG2] == ELFMAG2
+            && self.e_ident[EI_MAG3] == ELFMAG3
     }
-    
+
     pub fn is_64bit(&self) -> bool {
         self.e_ident[EI_CLASS] == ELFCLASS64
     }
-    
+
     pub fn is_little_endian(&self) -> bool {
         self.e_ident[EI_DATA] == ELFDATA2LSB
     }
-    
+
     pub fn is_riscv(&self) -> bool {
         self.e_machine == EM_RISCV
     }
-    
+
     pub fn is_executable(&self) -> bool {
         self.e_type == ET_EXEC
     }
@@ -161,15 +161,15 @@ impl Elf64Phdr {
     pub const fn is_phdr(&self) -> bool {
         self.p_type == PT_PHDR
     }
-    
+
     pub const fn is_readable(&self) -> bool {
         (self.p_flags & PF_R) != 0
     }
-    
+
     pub const fn is_writable(&self) -> bool {
         (self.p_flags & PF_W) != 0
     }
-    
+
     pub const fn is_executable(&self) -> bool {
         (self.p_flags & PF_X) != 0
     }
@@ -177,7 +177,17 @@ impl Elf64Phdr {
 
 impl Display for Elf64Phdr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Elf64Phdr {{ p_type: {}, p_flags: {}, p_offset: {}, p_vaddr: {}, p_paddr: {}, p_filesz: {}, p_memsz: {}, p_align: {} }}",
-               self.p_type, self.p_flags, self.p_offset, self.p_vaddr, self.p_paddr, self.p_filesz, self.p_memsz, self.p_align)
+        write!(
+            f,
+            "Elf64Phdr {{ p_type: {}, p_flags: {}, p_offset: {}, p_vaddr: {}, p_paddr: {}, p_filesz: {}, p_memsz: {}, p_align: {} }}",
+            self.p_type,
+            self.p_flags,
+            self.p_offset,
+            self.p_vaddr,
+            self.p_paddr,
+            self.p_filesz,
+            self.p_memsz,
+            self.p_align
+        )
     }
 }

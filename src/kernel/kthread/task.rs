@@ -1,12 +1,12 @@
 use alloc::sync::Arc;
 
-use crate::kernel::event::Event;
-use crate::kernel::task::{KernelStack, TCB, Tid};
-use crate::kernel::task::tid;
-use crate::kernel::scheduler::{Task, TaskState, current};
-use crate::kernel::scheduler;
-use crate::klib::SpinLock;
 use crate::arch::KernelContext;
+use crate::kernel::event::Event;
+use crate::kernel::scheduler;
+use crate::kernel::scheduler::{Task, TaskState, current};
+use crate::kernel::task::tid;
+use crate::kernel::task::{KernelStack, TCB, Tid};
+use crate::klib::SpinLock;
 
 pub struct KThread {
     tid: Tid,
@@ -74,7 +74,7 @@ impl Task for KThread {
         debug_assert!(current::tid() == self.tid);
         let mut state = self.state.lock();
         match *state {
-            TaskState::Ready | TaskState::Running => {},
+            TaskState::Ready | TaskState::Running => {}
             _ => return false,
         }
         *state = TaskState::Blocked;
@@ -85,7 +85,7 @@ impl Task for KThread {
         debug_assert!(current::tid() == self.tid);
         let mut state = self.state.lock();
         match *state {
-            TaskState::Ready | TaskState::Running => {},
+            TaskState::Ready | TaskState::Running => {}
             _ => return false,
         }
         *state = TaskState::BlockedUninterruptible;
@@ -105,7 +105,7 @@ impl Task for KThread {
     fn wakeup_uninterruptible(&self, event: Event) {
         let mut state = self.state.lock();
         match *state {
-            TaskState::Blocked | TaskState::BlockedUninterruptible => {},
+            TaskState::Blocked | TaskState::BlockedUninterruptible => {}
             _ => return,
         }
         *state = TaskState::Ready;

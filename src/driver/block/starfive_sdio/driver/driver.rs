@@ -1,15 +1,15 @@
-use core::time::Duration;
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::format;
-use visionfive2_sd::{Vf2SdDriver, SDIo, SleepOps};
+use core::time::Duration;
+use visionfive2_sd::{SDIo, SleepOps, Vf2SdDriver};
 
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
 use crate::kernel::event::timer;
 use crate::klib::SpinLock;
 
 struct SDIOImpls {
-    pub base: usize
+    pub base: usize,
 }
 
 impl SDIo for SDIOImpls {
@@ -53,16 +53,16 @@ impl SleepOps for SleepOpsImpls {
 pub struct Driver {
     base: usize,
     num: i32,
-    inner: SpinLock<Vf2SdDriver<SDIOImpls, SleepOpsImpls>>
+    inner: SpinLock<Vf2SdDriver<SDIOImpls, SleepOpsImpls>>,
 }
 
 impl Driver {
     pub fn new(num: i32, base: usize) -> Self {
         let inner = Vf2SdDriver::new(SDIOImpls { base });
-        Driver { 
-            num, 
-            base, 
-            inner: SpinLock::new(inner) 
+        Driver {
+            num,
+            base,
+            inner: SpinLock::new(inner),
         }
     }
 

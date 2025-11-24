@@ -1,18 +1,18 @@
 use alloc::sync::Arc;
 
 use crate::arch::UserContextTrait;
-use crate::kernel::{config, scheduler};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
 use crate::kernel::mm::vdso;
-use crate::kernel::task::{Tid, PCB, TCB};
 use crate::kernel::scheduler::current;
-use crate::kernel::errno::{SysResult, Errno};
+use crate::kernel::task::{PCB, TCB, Tid};
+use crate::kernel::{config, scheduler};
 
-use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};
+use super::{PendingSignal, SignalActionFlags, SignalDefaultAction, SignalNum};
 
-impl TCB {    
+impl TCB {
     pub fn handle_signal(&self) {
         let mut state = self.state().lock();
         let signal = match state.pending_signal.take() {
@@ -25,24 +25,26 @@ impl TCB {
         if signum.is_empty() {
             return;
         }
-        
+
         if signum.is_kill() {
             self.parent.exit(128 + signum.num() as u8);
             current::schedule();
 
             unreachable!();
         }
-        
+
         let action = self.parent.signal_actions().lock().get(signal.signum);
         if action.is_default() {
             match signum.default_action() {
-                SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
+                SignalDefaultAction::Term
+                | SignalDefaultAction::Stop
+                | SignalDefaultAction::Core => {
                     self.parent.exit(128 + signum.num() as u8);
                     current::schedule();
 
                     unreachable!();
-                },
-                _ => return
+                }
+                _ => return,
             }
         } else if action.is_ignore() {
             return;
@@ -62,12 +64,14 @@ impl TCB {
         sigframe.info.si_errno = 0;
         sigframe.ucontext.uc_sigmask = old_mask;
         sigframe.ucontext.uc_mcontext = (*self.user_context()).into();
-        
+
         let mut stack_top = self.user_context().get_user_stack_top();
         stack_top -= core::mem::size_of::<SigFrame>();
         stack_top &= !0xf; // Align to 16 bytes
-        self.get_addrspace().copy_to_user(stack_top, sigframe).expect("Failed to copy sigframe to user stack");
-        
+        self.get_addrspace()
+            .copy_to_user(stack_top, sigframe)
+            .expect("Failed to copy sigframe to user stack");
+
         self.user_context()
             .set_sigaction_restorer(vdso::addr_of("sigreturn_trampoline") + config::VDSO_BASE)
             .set_arg(0, signum.into())
@@ -77,7 +81,7 @@ impl TCB {
         // kinfo!("flags={:?}, signum={}, ucontext={:?}", action.flags, signum.num(), sigframe.ucontext);
 
         if action.flags.contains(SignalActionFlags::SA_SIGINFO) {
-            let siginfo_uaddr  = stack_top + core::mem::offset_of!(SigFrame, info);
+            let siginfo_uaddr = stack_top + core::mem::offset_of!(SigFrame, info);
             let ucontext_uaddr = stack_top + core::mem::offset_of!(SigFrame, ucontext);
             self.user_context()
                 .set_arg(1, siginfo_uaddr)
@@ -86,12 +90,14 @@ impl TCB {
     }
 
     pub fn return_from_signal(&self) {
-        let sigframe = self.get_addrspace()
-                           .copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
-                           .expect("Failed to copy sigframe from user stack");
+        let sigframe = self
+            .get_addrspace()
+            .copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
+            .expect("Failed to copy sigframe from user stack");
         // kinfo!("return_from_signal: sigframe.ucontext={:?}", sigframe.ucontext);
-        self.user_context().restore_from_signal(&sigframe.ucontext.uc_mcontext);
-    }  
+        self.user_context()
+            .restore_from_signal(&sigframe.ucontext.uc_mcontext);
+    }
 
     pub fn try_recive_pending_signal(self: &Arc<Self>, pending: PendingSignal) -> bool {
         let mut state = self.state().lock();
@@ -111,15 +117,15 @@ impl TCB {
 
             return true;
         }
-        
+
         if state.pending_signal.is_some() {
             return false;
         }
-        
+
         if signum.is_unignorable() {
             state.pending_signal = Some(pending);
             drop(state);
-            
+
             scheduler::wakeup_task(self.clone(), Event::Signal);
 
             return true;
@@ -129,10 +135,10 @@ impl TCB {
         if !signum.is_masked(mask) {
             state.pending_signal = Some(pending);
             drop(state);
-            
+
             // self.wakeup(Event::Signal);
             scheduler::wakeup_task(self.clone(), Event::Signal);
-            
+
             return true;
         } else {
             return false;
@@ -141,7 +147,13 @@ impl TCB {
 }
 
 impl PCB {
-    pub fn send_signal(&self, signum: SignalNum, si_code: SiCode, fields: KSiFields, dest: Option<Tid>) -> SysResult<()> {
+    pub fn send_signal(
+        &self,
+        signum: SignalNum,
+        si_code: SiCode,
+        fields: KSiFields,
+        dest: Option<Tid>,
+    ) -> SysResult<()> {
         let pending = PendingSignal {
             signum,
             si_code,
@@ -164,7 +176,7 @@ impl PCB {
 
         for task in self.tasks.lock().iter() {
             if task.try_recive_pending_signal(pending) {
-                return Ok(())
+                return Ok(());
             }
         }
 

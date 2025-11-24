@@ -31,12 +31,12 @@ impl Futex {
         if *self.kvalue != expected {
             return Err(Errno::EAGAIN);
         }
-        
+
         self.wait_list.push_back(FutexWaitQueueItem {
             tcb: current::task().clone(),
             bitset,
         });
-        
+
         Ok(())
     }
 
@@ -50,9 +50,9 @@ impl Futex {
                 //     let mut state = item.tcb.state().lock();
                 //     state.event = None;
                 // }
-                
+
                 scheduler::wakeup_task(item.tcb.clone(), Event::Futex);
-                
+
                 woken += 1;
                 if woken >= num {
                     break;
@@ -80,8 +80,10 @@ impl FutexManager {
     fn wait_current(&self, kaddr: usize, expected: i32, mask: u32) -> SysResult<()> {
         // kinfo!("wait {:#x}", kaddr);
         let mut futexes = self.futexes.lock();
-        let futex = futexes.entry(kaddr).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) })));
-        
+        let futex = futexes
+            .entry(kaddr)
+            .or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) })));
+
         let mut futex = futex.lock();
         futex.wait_current(expected, mask)
     }
@@ -97,7 +99,13 @@ impl FutexManager {
         }
     }
 
-    fn requeue(&self, kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> SysResult<usize> {
+    fn requeue(
+        &self,
+        kaddr: usize,
+        kaddr2: usize,
+        num: usize,
+        val: Option<i32>,
+    ) -> SysResult<usize> {
         let mut futexes = self.futexes.lock();
         let mut pending = LinkedList::new();
 
@@ -123,7 +131,9 @@ impl FutexManager {
             return Ok(0);
         };
 
-        let futex2_spinlock = futexes.entry(kaddr2).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) })));
+        let futex2_spinlock = futexes
+            .entry(kaddr2)
+            .or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) })));
         let mut futex2 = futex2_spinlock.lock();
         futex2.wait_list.append(&mut pending);
 

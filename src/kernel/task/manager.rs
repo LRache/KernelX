@@ -1,17 +1,17 @@
-use core::cell::UnsafeCell;
-use core::mem::MaybeUninit;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 
 use crate::fs::Perm;
 use crate::fs::PermFlags;
-use crate::kernel::task::Tid;
-use crate::klib::SpinLock;
 use crate::fs::file::FileFlags;
 use crate::fs::vfs;
+use crate::kernel::task::Tid;
+use crate::klib::SpinLock;
 
-use super::Pid;
 use super::PCB;
+use super::Pid;
 
 pub struct Manager {
     pcbs: SpinLock<BTreeMap<Pid, Arc<PCB>>>,
@@ -28,7 +28,7 @@ impl Manager {
 
     fn create_initprocess(&self, initpath: &str, initcwd: &str) {
         let initargv: &[&str] = &[
-            initpath, 
+            initpath,
             "sh",
             "/glibc/libctest_testcode.sh",
             // "main.c"
@@ -37,12 +37,18 @@ impl Manager {
         let initenvp: &[&str] = &[];
 
         let initfile = vfs::open_file(
-            initpath, 
-            FileFlags { readable: true, writable: false, blocked: true },
-            &Perm::new(PermFlags::X)
-        ).expect("Failed to open init file");
-        let pcb = PCB::new_initprocess(initfile, initcwd, initargv, initenvp).expect("Failed to initialize init process from ELF");
-        
+            initpath,
+            FileFlags {
+                readable: true,
+                writable: false,
+                blocked: true,
+            },
+            &Perm::new(PermFlags::X),
+        )
+        .expect("Failed to open init file");
+        let pcb = PCB::new_initprocess(initfile, initcwd, initargv, initenvp)
+            .expect("Failed to initialize init process from ELF");
+
         self.pcbs.lock().insert(0, pcb.clone());
 
         unsafe {
@@ -51,9 +57,7 @@ impl Manager {
     }
 
     fn get_initprocess(&self) -> &Arc<PCB> {
-        unsafe {
-            (&*self.initprocess.get()).assume_init_ref()
-        }
+        unsafe { (&*self.initprocess.get()).assume_init_ref() }
     }
 
     fn insert_pcb(&self, pcb: Arc<PCB>) {
@@ -72,9 +76,11 @@ impl Manager {
     }
 
     fn find_task_parent(&self, tid: Tid) -> Option<Arc<PCB>> {
-        self.pcbs.lock().iter().find(|(_, pcb)| {
-            pcb.has_child(tid)
-        }).map(|(_, pcb)| pcb.clone())
+        self.pcbs
+            .lock()
+            .iter()
+            .find(|(_, pcb)| pcb.has_child(tid))
+            .map(|(_, pcb)| pcb.clone())
     }
 }
 

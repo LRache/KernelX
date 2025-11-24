@@ -17,8 +17,8 @@ pub const PGMASK: usize = arch_impl::PGMASK;
 pub const TRAMPOLINE_BASE: usize = arch_impl::TRAMPOLINE_BASE;
 
 mod arch;
-pub use arch::{PageTableTrait, UserContextTrait};
 use arch::{Arch, ArchTrait};
+pub use arch::{PageTableTrait, UserContextTrait};
 
 macro_rules! arch_export {
     ($($func:ident($($arg:ident: $type:ty),*) -> $ret:ty);* $(;)?) => {
@@ -34,7 +34,7 @@ use crate::kernel::mm::MapPerm;
 
 arch_export! {
     init() -> ();
-    
+
     /* ----- Per-CPU Data ----- */
     set_percpu_data(data: usize) -> ();
     get_percpu_data() -> usize;
@@ -43,7 +43,7 @@ arch_export! {
     kernel_switch(from: *mut KernelContext, to: *mut KernelContext) -> ();
     get_user_pc() -> usize;
     return_to_user() -> !;
-    
+
     /* ----- Interrupt ------ */
     wait_for_interrupt() -> ();
     enable_interrupt  () -> ();

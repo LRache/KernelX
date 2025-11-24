@@ -6,7 +6,7 @@ use spin::RwLock;
 
 use crate::{kinfo, kwarn};
 
-use super::{DriverMatcher, Device, DriverOps, BlockDriverOps, CharDriverOps, DeviceType};
+use super::{BlockDriverOps, CharDriverOps, Device, DeviceType, DriverMatcher, DriverOps};
 
 pub struct DriverManager {
     matchers: RwLock<Vec<&'static dyn DriverMatcher>>,
@@ -39,7 +39,12 @@ impl DriverManager {
 
     fn found_device(&self, device: &Device) {
         if let Some(driver) = self.try_match(device) {
-            kinfo!("Registering driver: {} for device {}: {:?}", driver.name(), driver.device_name(), device);
+            kinfo!(
+                "Registering driver: {} for device {}: {:?}",
+                driver.name(),
+                driver.device_name(),
+                device
+            );
             match driver.device_type() {
                 DeviceType::Block => {
                     self.register_block_device(driver.as_block_driver());
@@ -57,7 +62,7 @@ impl DriverManager {
             DeviceType::Char => {
                 self.register_char_device(driver.as_char_driver());
             }
-            _ => unimplemented!()
+            _ => unimplemented!(),
         }
     }
 
@@ -70,17 +75,11 @@ impl DriverManager {
     }
 
     fn get_block_driver(&self, name: &str) -> Option<Arc<dyn BlockDriverOps>> {
-        self.block
-            .read()
-            .get(name)
-            .map(|driver| driver.clone())
+        self.block.read().get(name).map(|driver| driver.clone())
     }
 
     fn get_char_driver(&self, name: &str) -> Option<Arc<dyn CharDriverOps>> {
-        self.char
-            .read()
-            .get(name)
-            .map(|driver| driver.clone())
+        self.char.read().get(name).map(|driver| driver.clone())
     }
 }
 

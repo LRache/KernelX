@@ -1,29 +1,29 @@
-use core::time::Duration;
 use alloc::sync::Arc;
 use alloc::vec;
+use core::time::Duration;
 use spin::Mutex;
 
-use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
-use crate::kernel::scheduler::current;
-use crate::kernel::scheduler::Task;
-use crate::kernel::usync::futex;
+use crate::arch;
+use crate::arch::{KernelContext, UserContext, UserContextTrait};
+use crate::driver;
+use crate::fs::file::{CharFile, File, FileFlags};
+use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::config;
-use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::tid::Tid;
-use crate::kernel::task::PCB;
-use crate::kernel::task::fdtable::{FDFlags, FDTable};
-use crate::kernel::mm::{AddrSpace, elf};
-use crate::kernel::mm::maparea::{AuxKey, Auxv};
+use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
+use crate::kernel::errno::Errno;
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::{PendingSignal, SignalSet};
-use crate::kernel::errno::Errno;
+use crate::kernel::mm::maparea::{AuxKey, Auxv};
+use crate::kernel::mm::{AddrSpace, elf};
+use crate::kernel::scheduler::Task;
 use crate::kernel::scheduler::TaskState;
-use crate::fs::file::{File, FileFlags, CharFile};
-use crate::fs::{Perm, PermFlags, vfs};
+use crate::kernel::scheduler::current;
+use crate::kernel::task::PCB;
+use crate::kernel::task::def::TaskCloneFlags;
+use crate::kernel::task::fdtable::{FDFlags, FDTable};
+use crate::kernel::task::tid::Tid;
+use crate::kernel::usync::futex;
 use crate::klib::SpinLock;
-use crate::arch::{UserContext, KernelContext, UserContextTrait};
-use crate::arch;
-use crate::driver;
 use crate::ktrace;
 
 use super::kernelstack::KernelStack;
@@ -31,7 +31,7 @@ use super::kernelstack::KernelStack;
 #[derive(Debug, Clone, Copy)]
 pub struct TaskStateSet {
     pub state: TaskState,
-    
+
     pub pending_signal: Option<PendingSignal>,
     pub signal_to_wait: SignalSet,
 }
@@ -41,7 +41,7 @@ impl TaskStateSet {
         Self {
             state: TaskState::Ready,
             pending_signal: None,
-            signal_to_wait: SignalSet::empty()
+            signal_to_wait: SignalSet::empty(),
         }
     }
 }
@@ -69,7 +69,7 @@ pub struct TCB {
     pub parent: Arc<PCB>,
     tid_address: Mutex<Option<usize>>,
     pub robust_list: SpinLock<Option<usize>>,
-    
+
     user_context_ptr: *mut UserContext,
     user_context_uaddr: usize,
     kernel_context: KernelContext,
@@ -88,15 +88,15 @@ pub struct TCB {
 
 impl TCB {
     pub fn new(
-        tid: i32, 
-        parent: &Arc<PCB>, 
-        
+        tid: i32,
+        parent: &Arc<PCB>,
+
         mut user_context: UserContext,
-        
+
         addrspace: Arc<AddrSpace>,
         fdtable: Arc<SpinLock<FDTable>>,
     ) -> Arc<Self> {
-        let kernel_stack = KernelStack::new(UTASK_KSTACK_PAGE_COUNT); 
+        let kernel_stack = KernelStack::new(UTASK_KSTACK_PAGE_COUNT);
         user_context.set_kernel_stack_top(kernel_stack.get_top());
 
         let (user_context_uaddr, user_context_ptr) = addrspace.alloc_usercontext_page();
@@ -111,7 +111,7 @@ impl TCB {
             parent: parent.clone(),
             tid_address: Mutex::new(None),
             robust_list: SpinLock::new(None),
-            
+
             user_context_ptr,
             user_context_uaddr,
             kernel_context: KernelContext::new(&kernel_stack),
@@ -121,7 +121,7 @@ impl TCB {
             fdtable,
 
             signal_mask: SpinLock::new(SignalSet::empty()),
-            
+
             state: SpinLock::new(TaskStateSet::new()),
             wakeup_event: SpinLock::new(None),
             parent_waiting_vfork: SpinLock::new(None),
@@ -132,7 +132,7 @@ impl TCB {
     }
 
     pub fn new_inittask(
-        tid: i32, 
+        tid: i32,
         parent: &Arc<PCB>,
         file: File,
         argv: &[&str],
@@ -140,7 +140,9 @@ impl TCB {
     ) -> Arc<Self> {
         // Read the shebang
         let mut first_line = [0u8; 128];
-        let n = file.read_at(&mut first_line, 0).expect("Failed to read first line of init file");
+        let n = file
+            .read_at(&mut first_line, 0)
+            .expect("Failed to read first line of init file");
         let first_line = core::str::from_utf8(&first_line[..n]).unwrap_or("");
         let first_line = first_line.lines().next().unwrap_or("");
         let first_line = first_line.trim_end_matches('\n');
@@ -156,20 +158,18 @@ impl TCB {
                     new_argv.push(arg);
                 }
 
-                let interpreter_file = vfs::open_file(
-                    interpreter, 
-                    FileFlags::dontcare(),
-                    &Perm::new(PermFlags::X)
-                ).expect("Failed to open.");
+                let interpreter_file =
+                    vfs::open_file(interpreter, FileFlags::dontcare(), &Perm::new(PermFlags::X))
+                        .expect("Failed to open.");
                 return Self::new_inittask(tid, parent, interpreter_file, &new_argv, envp);
             }
         }
 
         let file = Arc::new(file);
-        
+
         let mut addrspace = AddrSpace::new();
-        let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)
-            .expect("Failed to load ELF for init task");
+        let (user_entry, dyn_info) =
+            elf::loader::load_elf(&file, &mut addrspace).expect("Failed to load ELF for init task");
 
         let mut auxv = Auxv::new();
         if let Some(dyn_info) = dyn_info {
@@ -185,27 +185,34 @@ impl TCB {
         auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
         auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
 
-        let userstack_top = addrspace.create_user_stack(argv, envp, &auxv).expect("Failed to push args and envp to userstack");
+        let userstack_top = addrspace
+            .create_user_stack(argv, envp, &auxv)
+            .expect("Failed to push args and envp to userstack");
 
         let mut fdtable = FDTable::new();
         let stdout_dev = driver::get_char_driver("sbi-console").unwrap();
         for _ in 0..3 {
-            fdtable.push(Arc::new(CharFile::new(stdout_dev.clone())), FDFlags::empty()).unwrap();
+            fdtable
+                .push(
+                    Arc::new(CharFile::new(stdout_dev.clone())),
+                    FDFlags::empty(),
+                )
+                .unwrap();
         }
         fdtable.push(file.clone(), FDFlags::empty()).unwrap();
 
         let mut user_context = UserContext::new();
         user_context.set_user_stack_top(userstack_top);
         user_context.set_user_entry(user_entry);
-        
+
         let tcb = Self::new(
-            tid, 
+            tid,
             parent,
-            user_context, 
+            user_context,
             Arc::new(addrspace),
-            Arc::new(SpinLock::new(fdtable))
+            Arc::new(SpinLock::new(fdtable)),
         );
-        
+
         tcb
     }
 
@@ -218,7 +225,7 @@ impl TCB {
         tls: Option<usize>,
     ) -> Arc<Self> {
         let mut new_user_context = UserContext::new();
-        self.with_user_context(|user_context  | {
+        self.with_user_context(|user_context| {
             new_user_context = user_context.new_clone();
         });
 
@@ -253,12 +260,7 @@ impl TCB {
         new_tcb
     }
 
-    pub fn new_exec(
-        &self,
-        file: File,
-        argv: &[&str],
-        envp: &[&str],
-    ) -> Result<Arc<Self>, Errno> {
+    pub fn new_exec(&self, file: File, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file.read_at(&mut first_line, 0)?;
@@ -277,17 +279,14 @@ impl TCB {
                     new_argv.push(arg);
                 }
 
-                let interpreter_file = vfs::open_file(
-                    interpreter, 
-                    FileFlags::dontcare(),
-                    &Perm::new(PermFlags::X)
-                )?;
+                let interpreter_file =
+                    vfs::open_file(interpreter, FileFlags::dontcare(), &Perm::new(PermFlags::X))?;
                 return self.new_exec(interpreter_file, &new_argv, envp);
             }
         }
 
         let file = Arc::new(file);
-        
+
         let mut addrspace = AddrSpace::new();
         let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)?;
 
@@ -385,7 +384,7 @@ impl TCB {
     //     }
     //     state.state = TaskState::Ready;
     //     *self.wakeup_event.lock() = Some(event);
-        
+
     //     scheduler::push_task(Task::User(self.clone()));
     // }
 
@@ -397,7 +396,7 @@ impl TCB {
     //     }
     //     state.state = TaskState::Ready;
     //     *self.wakeup_event.lock() = Some(event);
-        
+
     //     scheduler::push_task(Task::User(self.clone()));
     // }
 
@@ -497,10 +496,10 @@ impl Task for TCB {
 
     fn block(&self, _reason: &str) -> bool {
         debug_assert!(current::tid() == self.tid);
-        
+
         let mut state = self.state.lock();
         match state.state {
-            TaskState::Ready | TaskState::Running => {},
+            TaskState::Ready | TaskState::Running => {}
             _ => return false,
         }
         state.state = TaskState::Blocked;
@@ -510,10 +509,10 @@ impl Task for TCB {
 
     fn block_uninterruptible(&self, _reason: &str) -> bool {
         debug_assert!(current::tid() == self.tid);
-        
+
         let mut state = self.state.lock();
         match state.state {
-            TaskState::Ready | TaskState::Running => {},
+            TaskState::Ready | TaskState::Running => {}
             _ => return false,
         }
         state.state = TaskState::BlockedUninterruptible;
@@ -533,7 +532,7 @@ impl Task for TCB {
     fn wakeup_uninterruptible(&self, event: Event) {
         let mut state = self.state().lock();
         match state.state {
-            TaskState::Blocked | TaskState::BlockedUninterruptible => {},
+            TaskState::Blocked | TaskState::BlockedUninterruptible => {}
             _ => return,
         }
         state.state = TaskState::Ready;

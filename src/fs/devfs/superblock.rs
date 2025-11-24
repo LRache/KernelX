@@ -1,18 +1,22 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use crate::kernel::errno::SysResult;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
-use crate::fs::InodeOps;
 use crate::driver::BlockDriverOps;
+use crate::fs::InodeOps;
+use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::kernel::errno::SysResult;
 
-use super::{root, null, zero};
 use super::def::*;
+use super::{null, root, zero};
 
 pub struct DevFileSystem;
 
 impl FileSystemOps for DevFileSystem {
-    fn create(&self, sno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
+    fn create(
+        &self,
+        sno: u32,
+        _driver: Option<Arc<dyn BlockDriverOps>>,
+    ) -> SysResult<Arc<dyn SuperBlockOps>> {
         return Ok(DevSuperBlock::new(sno) as Arc<dyn SuperBlockOps>);
     }
 }
@@ -31,7 +35,7 @@ impl SuperBlockOps for DevSuperBlock {
     fn get_root_ino(&self) -> u32 {
         ROOT_INO
     }
-    
+
     fn get_inode(&self, ino: u32) -> SysResult<Box<dyn InodeOps>> {
         match ino {
             ROOT_INO => Ok(Box::new(root::RootInode::new(self.sno))),

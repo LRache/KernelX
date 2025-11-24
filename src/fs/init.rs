@@ -1,6 +1,6 @@
-use crate::fs::vfs;
 use crate::driver;
 use crate::fs::Mode;
+use crate::fs::vfs;
 use crate::kinfo;
 
 #[unsafe(link_section = ".text.init")]
@@ -20,7 +20,7 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
     // Mount devfs at /dev
     let _ = vfs::load_dentry("/").unwrap().create("dev", Mode::S_IFDIR);
     vfs::mount("/dev", "devfs", None).unwrap();
-    
+
     // Mount tmpfs at /tmp
     let _ = vfs::load_dentry("/").unwrap().create("tmp", Mode::S_IFDIR);
     vfs::mount("/tmp", "tmpfs", None).unwrap();

@@ -1,10 +1,10 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 
+use crate::driver::chosen::kconsole::KConsole;
+use crate::driver::{CharDriverOps, DeviceType, DriverOps};
 use crate::kernel::errno::SysResult;
 use crate::kernel::event::{PollEvent, PollEventSet};
-use crate::driver::{CharDriverOps, DeviceType, DriverOps};
-use crate::driver::chosen::kconsole::KConsole;
 
 use super::sbi;
 
@@ -32,7 +32,7 @@ impl CharDriverOps for SBIConsoleDriver {
     fn putchar(&self, c: u8) {
         sbi::putchar(c);
     }
-    
+
     fn getchar(&self) -> Option<u8> {
         None
     }

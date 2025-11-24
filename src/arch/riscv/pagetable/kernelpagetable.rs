@@ -1,8 +1,8 @@
-use crate::kernel::mm::MapPerm;
-use crate::arch::riscv::{PGSIZE, TRAMPOLINE_BASE};
 use crate::arch::PageTableTrait;
-use crate::klib::{InitedCell, SpinLock};
+use crate::arch::riscv::{PGSIZE, TRAMPOLINE_BASE};
+use crate::kernel::mm::MapPerm;
 use crate::kinfo;
+use crate::klib::{InitedCell, SpinLock};
 
 use super::pagetable::PageTable;
 
@@ -17,13 +17,17 @@ static KERNEL_SATP: InitedCell<usize> = InitedCell::uninit();
 
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
-    kinfo!("root=0x{:x}, offset=0x{:x}", unsafe { __riscv_kpgtable_root }, core::ptr::addr_of!(__riscv_kaddr_offset) as usize);
+    kinfo!(
+        "root=0x{:x}, offset=0x{:x}",
+        unsafe { __riscv_kpgtable_root },
+        core::ptr::addr_of!(__riscv_kaddr_offset) as usize
+    );
     let mut pagetable = PageTable::from_root(unsafe { __riscv_kpgtable_root });
 
     pagetable.mmap(
         TRAMPOLINE_BASE,
         core::ptr::addr_of!(__trampoline_start) as usize,
-        MapPerm::R | MapPerm::X
+        MapPerm::R | MapPerm::X,
     );
 
     KERNEL_SATP.init(pagetable.get_satp());
@@ -33,7 +37,7 @@ pub fn init() {
 pub fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) {
     let mut kaddr = kstart;
     let kend = kstart + size;
-    
+
     let mut pagetable = KERNEL_PAGETABLE.lock();
     let mut paddr = pstart;
     while kaddr < kend {
@@ -42,28 +46,20 @@ pub fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm)
         paddr += PGSIZE;
     }
 
-    unsafe {
-        core::arch::asm!(
-            "sfence.vma zero, zero"
-        )
-    }
+    unsafe { core::arch::asm!("sfence.vma zero, zero") }
 }
 
 pub unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
     let mut kaddr = kstart;
     let kend = kstart + size;
-    
+
     let mut pagetable = KERNEL_PAGETABLE.lock();
     while kaddr < kend {
         pagetable.munmap(kaddr);
         kaddr += PGSIZE;
     }
 
-    unsafe {
-        core::arch::asm!(
-            "sfence.vma zero, zero"
-        )
-    }
+    unsafe { core::arch::asm!("sfence.vma zero, zero") }
 }
 
 pub fn get_kernel_satp() -> usize {

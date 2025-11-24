@@ -1,9 +1,9 @@
-use core::sync::atomic::{AtomicI32, Ordering};
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicI32, Ordering};
 
-use crate::driver::{Device, DriverMatcher, DriverOps};
 use crate::arch::{self, map_kernel_addr};
-use crate::kernel::mm::MapPerm; 
+use crate::driver::{Device, DriverMatcher, DriverOps};
+use crate::kernel::mm::MapPerm;
 use crate::kwarn;
 
 use super::driver::Driver;
@@ -25,11 +25,14 @@ impl DriverMatcher for Matcher {
         if device.compatible() != "snps,dw-mshc" {
             return None;
         }
-            
+
         let pages = arch::page_count(device.mmio_size());
         map_kernel_addr(pages, device.mmio_base(), device.mmio_size(), MapPerm::RW);
-        
-        let driver = Driver::new(self.count.fetch_add(1, Ordering::Relaxed), device.mmio_base());
+
+        let driver = Driver::new(
+            self.count.fetch_add(1, Ordering::Relaxed),
+            device.mmio_base(),
+        );
         let r = driver.init();
         if let Err(e) = r {
             kwarn!("Failed to init starfive_sdio driver: {:?}", e);
