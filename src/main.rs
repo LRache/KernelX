@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 #![feature(linked_list_cursors)]
+#![feature(linked_list_retain)]
 
 extern crate alloc;
 

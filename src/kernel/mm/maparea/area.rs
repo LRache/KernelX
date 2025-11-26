@@ -3,9 +3,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
 
-use crate::kernel::mm::{MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::kernel::mm::PhysPageFrame;
-use crate::arch::{self, PageTable, PageTableTrait};
+use crate::arch::{PageTable, PageTableTrait};
+use crate::arch;
 
 #[derive(Debug)]
 pub enum Frame {
@@ -25,12 +26,8 @@ impl Frame {
 }
 
 pub trait Area {
-    fn translate_read (&mut self, uaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize>;
-    fn translate_write(&mut self, uaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize>;
-
-    fn page_frames(&mut self) -> &mut [Frame] {
-        unimplemented!();
-    }
+    fn translate_read (&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize>;
+    fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize>;
     
     fn ubase(&self) -> usize;
     
@@ -49,6 +46,10 @@ pub trait Area {
     }
 
     fn fork(&mut self, self_pagetable: &RwLock<PageTable>, fork_pagetable: &RwLock<PageTable>) -> Box<dyn Area>;
+
+    fn page_frames(&mut self) -> &mut [Frame] {
+        unimplemented!();
+    }
 
     fn fork_pages(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>, index_to_uaddr: fn(usize, usize) -> usize) -> Vec<Frame> {
         let cow_perm = self.perm() - MapPerm::W;
@@ -89,44 +90,50 @@ pub trait Area {
         forked_pages_frames
     }
 
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
-        if !self.perm().contains(MapPerm::W) && access_type == MemAccessType::Write {
-            return false;
-        }
+    // fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
+    //     if !self.perm().contains(MapPerm::W) && access_type == MemAccessType::Write {
+    //         return false;
+    //     }
 
-        let page_index = (uaddr - self.ubase()) / crate::arch::PGSIZE;
-        let perm = self.perm();
-        if page_index >= self.page_count() {
-            return false;
-        }
+    //     let page_index = (uaddr - self.ubase()) / crate::arch::PGSIZE;
+    //     let perm = self.perm();
+    //     if page_index >= self.page_count() {
+    //         return false;
+    //     }
 
-        let old_frame = core::mem::replace(&mut self.page_frames()[page_index], Frame::Unallocated);
+    //     let old_frame = core::mem::replace(&mut self.page_frames()[page_index], Frame::Unallocated);
 
-        let new_frame = match old_frame {
-            Frame::Unallocated => {
-                let allocated_page = self.alloc_new_page(page_index, pagetable);
-                pagetable.write().mmap(
-                    uaddr & !arch::PGMASK, 
-                    allocated_page.get_page(), 
-                    perm
-                );
-                Frame::Allocated(Arc::new(allocated_page))
-            }
-            Frame::Allocated(_) => { unreachable!(); }
-            Frame::Cow(cow_frame) => {
-                // Copy-on-write: create a new copy for this process
-                debug_assert!(access_type == MemAccessType::Write, "COW page accessed for read");
-                Frame::Allocated(Arc::new(match Arc::try_unwrap(cow_frame) {
-                    Ok(only_cow_frame) => only_cow_frame,
-                    Err(cow_frame) => { self.alloc_for_cow_page(page_index, cow_frame) }
-                }))
-            }
-        };
+    //     let new_frame = match old_frame {
+    //         Frame::Unallocated => {
+    //             let allocated_page = self.alloc_new_page(page_index, pagetable);
+    //             pagetable.write().mmap(
+    //                 uaddr & !arch::PGMASK, 
+    //                 allocated_page.get_page(), 
+    //                 perm
+    //             );
+    //             Frame::Allocated(Arc::new(allocated_page))
+    //         }
+    //         Frame::Allocated(_) => { unreachable!(); }
+    //         Frame::Cow(cow_frame) => {
+    //             // Copy-on-write: create a new copy for this process
+    //             debug_assert!(access_type == MemAccessType::Write, "COW page accessed for read");
+    //             Frame::Allocated(Arc::new(match Arc::try_unwrap(cow_frame) {
+    //                 Ok(only_cow_frame) => only_cow_frame,
+    //                 Err(cow_frame) => { self.alloc_for_cow_page(page_index, cow_frame) }
+    //             }))
+    //         }
+    //     };
 
-        self.page_frames()[page_index] = new_frame;
+    //     self.page_frames()[page_index] = new_frame;
 
-        true
-    }
+    //     true
+    // }
+    fn try_to_fix_memory_fault(
+        &mut self, 
+        uaddr: usize, 
+        access_type: MemAccessType, 
+        addrspace: &Arc<AddrSpace>
+    ) -> bool;
 
     fn page_count(&self) -> usize;
     fn size(&self) -> usize {

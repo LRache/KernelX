@@ -8,7 +8,7 @@ mod arch;
 pub use context::{UserContext, KernelContext, SigContext};
 pub use switch::kernel_switch;
 pub use process::*;
-pub use pagetable::PageTable;
+pub use pagetable::*;
 pub use fdt::{load_device_tree, time_frequency};
 
 pub const PGBITS: usize = 12; // 4KB page size

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::kernel::mm::frame::PhysPageFrame;
+use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
 use crate::arch;
@@ -100,7 +100,7 @@ impl ELFArea {
 }
 
 impl Area for ELFArea {
-    fn translate_read(&mut self, uaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -109,7 +109,7 @@ impl Area for ELFArea {
         if let Some(page_frame) = self.frames.get(page_index) {
             let page = match page_frame {
                 Frame::Unallocated => {
-                    self.load_page(page_index, pagetable)
+                    self.load_page(page_index, addrspace.pagetable())
                 }
                 Frame::Allocated(frame) => {
                     frame.get_page()
@@ -125,7 +125,7 @@ impl Area for ELFArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize> {
+    fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -134,13 +134,13 @@ impl Area for ELFArea {
         if let Some(page_frame) = self.frames.get(page_index) {
             let page = match page_frame {
                 Frame::Unallocated => {
-                    self.load_page(page_index, pagetable)
+                    self.load_page(page_index, addrspace.pagetable())
                 }
                 Frame::Allocated(frame) => {
                     frame.get_page()
                 }
                 Frame::Cow(_) => {
-                    self.copy_on_write_page(page_index, pagetable)
+                    self.copy_on_write_page(page_index, addrspace.pagetable())
                 }
             };
 
@@ -195,7 +195,7 @@ impl Area for ELFArea {
         Box::new(new_area)
     }
 
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
+    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
         assert!(uaddr >= self.ubase);
 
         if access_type == MemAccessType::Execute && !self.perm.contains(MapPerm::X) {
@@ -209,14 +209,14 @@ impl Area for ELFArea {
         if page_index < self.frames.len() {
             match &self.frames[page_index] {
                 Frame::Unallocated => {
-                    self.load_page(page_index, pagetable);
+                    self.load_page(page_index, addrspace.pagetable());
                 }
                 Frame::Allocated(_) => {
                     panic!("Page is already allocated.");
                 }
                 Frame::Cow(_) => {
                     if access_type == MemAccessType::Write {
-                        self.copy_on_write_page(page_index, pagetable);
+                        self.copy_on_write_page(page_index, addrspace.pagetable());
                     } else {
                         panic!("Page is already allocated for read and execute access.");
                     }

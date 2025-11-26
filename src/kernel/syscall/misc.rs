@@ -148,6 +148,8 @@ pub fn get_mempolicy() -> SyscallRet {
     // TODO: Not implemented yet
     Ok(0)
 }
+
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Rusage {
     ru_utime: uapi::TimeVal, // user CPU time used

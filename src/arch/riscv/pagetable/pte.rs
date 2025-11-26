@@ -141,7 +141,18 @@ impl From<MapPerm> for PTEFlags {
     }
 }
 
-impl PTE {
+impl Into<MapPerm> for PTEFlags {
+    fn into(self) -> MapPerm {
+        let mut perm = MapPerm::empty();
+        if self.contains(PTEFlags::R) { perm |= MapPerm::R; }
+        if self.contains(PTEFlags::W) { perm |= MapPerm::W; }
+        if self.contains(PTEFlags::X) { perm |= MapPerm::X; }
+        if self.contains(PTEFlags::U) { perm |= MapPerm::U; }
+        perm
+    }
+}
+
+impl PTE {    
     pub fn from_ptr(ptr: NonNull<usize>) -> Self {
         let pte = unsafe { ptr.read() };
         Self {

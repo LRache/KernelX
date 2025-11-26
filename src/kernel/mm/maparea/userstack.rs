@@ -5,7 +5,7 @@ use spin::RwLock;
 
 use crate::kernel::config;
 use crate::kernel::mm::maparea::area::Area;
-use crate::kernel::mm::{MemAccessType, PhysPageFrame};
+use crate::kernel::mm::{MemAccessType, PhysPageFrame, AddrSpace};
 use crate::kernel::mm::MapPerm;
 use crate::kernel::errno::Errno;
 use crate::arch::{PageTable, PageTableTrait};
@@ -237,12 +237,12 @@ impl UserStack {
 }
 
 impl Area for UserStack {
-    fn translate_read(&mut self, vaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize> {
+    fn translate_read(&mut self, vaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
         let page_index = (config::USER_STACK_TOP - vaddr - 1) / arch::PGSIZE;
         if page_index < self.get_max_page_count() {            
             let page = match &self.frames[page_index] {
                 Frame::Unallocated => {
-                    self.allocate_page(page_index, &mut pagetable.write())
+                    self.allocate_page(page_index, &mut addrspace.pagetable().write())
                 }
                 Frame::Allocated(frame) | Frame::Cow(frame) => frame.get_page(),
             };
@@ -253,17 +253,17 @@ impl Area for UserStack {
         }
     }
 
-    fn translate_write(&mut self, vaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize> {
+    fn translate_write(&mut self, vaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
         let page_index = (config::USER_STACK_TOP - vaddr - 1) / arch::PGSIZE;
         if page_index < self.get_max_page_count() {
             let page = match &self.frames[page_index] {
                 Frame::Unallocated => {
-                    let mut pagetable = pagetable.write();
+                    let mut pagetable = addrspace.pagetable().write();
                     self.allocate_page(page_index, &mut pagetable)
                 }
                 Frame::Allocated(frame) => frame.get_page(),
                 Frame::Cow(_) => {
-                    self.copy_on_write_page(page_index, &mut pagetable.write())
+                    self.copy_on_write_page(page_index, &mut addrspace.pagetable().write())
                 }
             };
             
@@ -312,7 +312,7 @@ impl Area for UserStack {
         })
     }
 
-    fn try_to_fix_memory_fault(&mut self, addr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
+    fn try_to_fix_memory_fault(&mut self, addr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
         ktrace!("UserStack::try_to_fix_memory_fault: addr={:#x}, access_type={:?}, frames={:x?}", addr, access_type, self.frames);
         
         if addr >= config::USER_STACK_TOP {
@@ -331,7 +331,7 @@ impl Area for UserStack {
 
         match &self.frames[page_index] {
             Frame::Allocated(_) => {
-                panic!("Page at index {} is already allocated, addr={:#x}, flags={:?}", page_index, addr, pagetable.read().mapped_flag(addr));
+                panic!("Page at index {} is already allocated, addr={:#x}, flags={:?}", page_index, addr, addrspace.pagetable().read().mapped_flag(addr));
                 // pagetable.write().mmap_replace(
                 //     addr & !arch::PGMASK,
                 //     frame.get_page(),
@@ -340,13 +340,13 @@ impl Area for UserStack {
             }
             Frame::Cow(_) => {
                 if access_type != MemAccessType::Write {
-                    panic!("Access type is not write for COW page at index {}, addr={:#x}, flags={:?}", page_index, addr, pagetable.read().mapped_flag(addr));
+                    panic!("Access type is not write for COW page at index {}, addr={:#x}, flags={:?}", page_index, addr, addrspace.pagetable().read().mapped_flag(addr));
                 }
-                let mut pagetable = pagetable.write();
+                let mut pagetable = addrspace.pagetable().write();
                 self.copy_on_write_page(page_index, &mut pagetable);
             }
             Frame::Unallocated => {
-                let mut pagetable = pagetable.write();
+                let mut pagetable = addrspace.pagetable().write();
                 self.allocate_page(page_index, &mut pagetable);
             }
         }

@@ -21,6 +21,7 @@ pub struct FdSet {
 }
 impl UserStruct for FdSet {}
 
+// TODO: implement this
 pub fn pselect6_time32(
     nfds: usize, 
     uptr_readfds: UPtr<FdSet>, 
@@ -33,11 +34,11 @@ pub fn pselect6_time32(
         return Err(Errno::EINVAL);
     }
 
-    let mut readfds = uptr_readfds.read_optional()?;
-    let mut writefds = uptr_writefds.read_optional()?;
-    let mut exceptfds = uptr_exceptfds.read_optional()?;
+    let mut _readfds = uptr_readfds.read_optional()?;
+    let mut _writefds = uptr_writefds.read_optional()?;
+    let mut _exceptfds = uptr_exceptfds.read_optional()?;
 
-    let timeout: Option<Duration> = uptr_timeout.read_optional()?.map(|ts| {
+    let _timeout: Option<Duration> = uptr_timeout.read_optional()?.map(|ts| {
         ts.into()
     });
 
@@ -163,6 +164,8 @@ pub fn ppoll_time32(uptr_ufds: UArray<Pollfd>, nfds: usize, uptr_timeout: UPtr<T
     Ok(r)
 }
 
+
+// TODO: implement the setitimer syscall
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ITimerValue {
@@ -170,4 +173,8 @@ pub struct ITimerValue {
     pub it_value:    uapi::TimeVal,
 }
 
-// pub fn setitimer(which: usize, )
+impl UserStruct for ITimerValue {}
+
+pub fn setitimer(_which: usize, _uptr_new_value: UPtr<ITimerValue>, _uptr_old_value: UPtr<ITimerValue>) -> SysResult<usize> {
+    Err(Errno::ENOSYS)
+}

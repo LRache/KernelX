@@ -219,6 +219,8 @@ pub fn exit(code: usize) -> Result<usize, Errno> {
 pub fn exit_group(code: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
     pcb.exit(code as u8);
+
+    current::tcb().wake_parent_waiting_vfork();
     
     current::schedule();
     

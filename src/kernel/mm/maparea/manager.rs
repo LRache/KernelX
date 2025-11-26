@@ -1,12 +1,13 @@
 use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
 
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::AnonymousArea;
-use crate::kernel::mm::{MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::arch::{self, PageTable};
 use crate::{ktrace, print};
 
@@ -419,25 +420,25 @@ impl Manager {
         Ok(top)
     }
 
-    pub fn translate_read(&mut self, uaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize> {
+    pub fn translate_read(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
         if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
-            area.translate_read(uaddr, pagetable)
+            area.translate_read(uaddr, addrspace)
         } else {
             None
         }
     }
 
-    pub fn translate_write(&mut self, uaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize> {
+    pub fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
         if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
-            area.translate_write(uaddr, pagetable)
+            area.translate_write(uaddr, addrspace)
         } else {
             None
         }
     }
 
-    pub fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
-        if let Some((ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
-            area.try_to_fix_memory_fault(uaddr, access_type, pagetable)
+    pub fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
+        if let Some((_ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
+            area.try_to_fix_memory_fault(uaddr, access_type, addrspace)
         } else {
             false
         }

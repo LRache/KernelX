@@ -7,9 +7,9 @@ use crate::{kdebug, ktrace, kwarn};
 use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
 use crate::kernel::errno::Errno;
-use crate::kernel::mm::frame::PhysPageFrame;
+use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::maparea::area::Area;
-use crate::kernel::mm::{MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::fs::file::File;
 
 enum Frame {
@@ -159,7 +159,7 @@ impl FileMapArea {
 }
 
 impl Area for FileMapArea {
-    fn translate_read(&mut self, uaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -169,7 +169,7 @@ impl Area for FileMapArea {
             let page = match page_frame {
                 Frame::Unallocated => {
                     // Lazy loading: load page from file on first access
-                    self.load_page(page_index, pagetable)
+                    self.load_page(page_index, addrspace.pagetable())
                 }
                 Frame::Allocated(frame) => {
                     frame.get_page()
@@ -185,7 +185,7 @@ impl Area for FileMapArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, pagetable: &RwLock<PageTable>) -> Option<usize> {
+    fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         if !self.perm.contains(MapPerm::W) {
@@ -199,14 +199,14 @@ impl Area for FileMapArea {
             let page = match page_frame {
                 Frame::Unallocated => {
                     // Lazy loading: load page from file on first write
-                    self.load_page(page_index, pagetable)
+                    self.load_page(page_index, addrspace.pagetable())
                 }
                 Frame::Allocated(frame) => {
                     frame.get_page()
                 }
                 Frame::Cow(_) => {
                     // Copy-on-write: create a new copy for this process
-                    self.copy_on_write_page(page_index, pagetable)
+                    self.copy_on_write_page(page_index, addrspace.pagetable())
                 }
             };
 
@@ -269,7 +269,7 @@ impl Area for FileMapArea {
         Box::new(new_area)
     }
 
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
+    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
         assert!(uaddr >= self.ubase);
 
         if !self.perm.contains(MapPerm::W) && access_type == MemAccessType::Write {
@@ -283,7 +283,7 @@ impl Area for FileMapArea {
             match &self.frames[page_index] {
                 Frame::Unallocated => {
                     // ktrace!("Fixing memory fault by loading file page at address: {:#x}, page index: {}", uaddr, page_index);
-                    self.load_page(page_index, pagetable);
+                    self.load_page(page_index, addrspace.pagetable());
                     // ktrace!("Memory fault fixed by loading page at address: {:#x}", uaddr);
                 }
                 Frame::Allocated(_) => {
@@ -292,7 +292,7 @@ impl Area for FileMapArea {
                 }
                 Frame::Cow(_) => {
                     assert!(access_type == MemAccessType::Write, "Memory fault on CoW file page for read access at address: {:#x}", uaddr);
-                    self.copy_on_write_page(page_index, pagetable);
+                    self.copy_on_write_page(page_index, addrspace.pagetable());
                 }
             }
             

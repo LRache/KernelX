@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use spin::RwLock;
 
-use crate::kernel::mm::{MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::arch::{self, PageTable, PageTableTrait};
 use crate::kernel::mm::maparea::area::{Area, Frame};
 use crate::kernel::ipc::shm::ShmFrames;
@@ -24,7 +24,7 @@ impl ShmArea {
 }
 
 impl Area for ShmArea {
-    fn translate_read(&mut self, uaddr: usize, _pagetable: &RwLock<PageTable>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, _addrspace: &Arc<AddrSpace>) -> Option<usize> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index < frames.len() {
@@ -34,8 +34,8 @@ impl Area for ShmArea {
         }
     }
     
-    fn translate_write(&mut self, uaddr: usize, _pagetable: &RwLock<PageTable>) -> Option<usize> {
-        self.translate_read(uaddr, _pagetable)
+    fn translate_write(&mut self, uaddr: usize, _addrspace: &Arc<AddrSpace>) -> Option<usize> {
+        self.translate_read(uaddr, _addrspace)
     }
 
     fn page_frames(&mut self) -> &mut [Frame] {
@@ -62,7 +62,7 @@ impl Area for ShmArea {
         })
     }
     
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, pagetable: &RwLock<PageTable>) -> bool {
+    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index >= frames.len() {
@@ -77,7 +77,7 @@ impl Area for ShmArea {
         }
 
         let frame = &frames[page_index];
-        pagetable.write().mmap(uaddr & !arch::PGMASK, frame.get_page(), self.perm);
+        addrspace.pagetable().write().mmap(uaddr & !arch::PGMASK, frame.get_page(), self.perm);
         true
     }
     

@@ -28,7 +28,7 @@ impl Manager {
 
     fn create_initprocess(&self, initpath: &str, initcwd: &str) {
         let initargv: &[&str] = &[
-            initpath, 
+            initpath,
             "sh",
             "/glibc/libctest_testcode.sh",
             // "main.c"

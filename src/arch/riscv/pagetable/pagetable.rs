@@ -1,6 +1,5 @@
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm;
-use crate::arch::riscv::PGBITS;
 use crate::arch::PageTableTrait;
 
 use super::pte::{Addr, PTE, PTEFlags, PTETable};
@@ -9,12 +8,29 @@ const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
 
 pub trait PageAllocator {
-    fn alloc_page() -> usize;
+    fn alloc_zero() -> usize;
 }
 
-unsafe extern "C"{
-    static __trampoline_start: usize;
-}
+// pub struct MappedPage<'a> {
+//     pte: PTE,
+//     _marker: core::marker::PhantomData<&'a ()>,
+// }
+
+// impl<'a> MappedPage<'a> {
+//     pub fn page(&self) -> usize {
+//         self.pte.ppn().to_addr().kaddr()
+//     }
+
+//     pub fn perm(&self) -> MapPerm {
+//         self.pte.flags().into()
+//     }
+
+//     pub fn set_perm(&mut self, perm: MapPerm) {
+//         let flags: PTEFlags = perm.into();
+//         self.pte.set_flags(flags);
+//         self.pte.write_back().expect("Failed to write back PTE");
+//     }
+// }
 
 pub struct PageTableImpls<T: PageAllocator> {
     pub root: usize,
@@ -34,12 +50,6 @@ impl<T: PageAllocator> PageTableImpls<T> {
             root,
             _marker: core::marker::PhantomData,
         }
-    }
-
-    pub fn from_satp(satp: usize) -> Self {
-        let ppn = satp & 0x0000_0fff_ffff_ffff;
-        let root = ppn << PGBITS;
-        Self::from_root(root)
     }
 
     pub fn find_pte(&self, vaddr: usize) -> Option<PTE> {        
@@ -84,7 +94,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
             
             if !pte.is_valid() {
                 // Create a new page table entry
-                let page = mm::page::alloc_zero();
+                let page = T::alloc_zero();
                 let paddr = Addr::from_kaddr(page);
                 pte.set_ppn(paddr.ppn());
                 pte.set_flags(PTEFlags::V);
@@ -101,8 +111,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
         if level != LEAF_LEVEL {
             for i in 0..512 {
                 let pte = ptetable.get(i);
-                let ppn = pte.ppn();
-                // debug_assert!(ppn.value() << PGBITS <= 0x88000000, "PPN out of range: 0x{:x}, level={}, i={}", ppn.value() << PGBITS, level, i);
+                // debug_assert!(pte.ppn().value() << PGBITS <= 0x88000000, "PPN out of range: 0x{:x}, level={}, i={}", pte.ppn().value() << PGBITS, level, i);
                 if pte.is_valid() {
                     self.free_pagetable(&pte.next_level(), level + 1);
                 }
@@ -125,6 +134,14 @@ impl<T: PageAllocator> PageTableImpls<T> {
     pub fn mapped_flag(&self, uaddr: usize) -> Option<PTEFlags> {
         self.find_pte(uaddr).map(|pte| pte.flags())
     }
+
+    // pub fn mapped_page(&self, uaddr: usize) -> Option<MappedPage<'_>> {
+    //     if let Some(pte) = self.find_pte(uaddr) {
+    //         Some(MappedPage { pte, _marker: core::marker::PhantomData })
+    //     } else {
+    //         None
+    //     }
+    // }
 }
 
 impl<T: PageAllocator> Drop for PageTableImpls<T> {
@@ -173,12 +190,46 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_flags(PTEFlags::empty());
         pte.write_back().expect("Failed to write back PTE for munmap");
     }
+
+    fn munmap_with_check(&mut self, uaddr: usize, kaddr: usize) -> bool {
+        if let Some(mut pte) = self.find_pte(uaddr) {
+            // Using atomic opearation is unnessary here,
+            // because pagetable is write-locked during munmap_with_check.
+            if pte.ppn().to_addr().kaddr() == kaddr {
+                pte.set_flags(PTEFlags::empty());
+                pte.write_back().expect("Failed to write back PTE for munmap_with_check");
+                return true;
+            }
+            false
+        } else {
+            false
+        }
+    }
+
+    fn take_access_bit(&mut self, uaddr: usize) -> Option<bool> {
+        self.find_pte(uaddr).map(|mut pte| {
+            let flags = pte.flags();
+            let accessed = flags.contains(PTEFlags::A);
+            pte.set_flags(flags.difference(PTEFlags::A));
+            accessed
+        })
+    }
+
+    // fn mapped_page(&self, uaddr: usize) -> Option<MappedPage> {
+    //     if let Some(pte) = self.find_pte(uaddr) {
+    //         let kaddr = pte.ppn().to_addr().kaddr();
+    //         let perm: MapPerm = pte.flags().into();
+    //         Some(crate::arch::arch::MappedPage { kaddr, perm })
+    //     } else {
+    //         None
+    //     }
+    // }
 }
 
 pub struct NormalPageAllocator;
 
 impl PageAllocator for NormalPageAllocator {
-    fn alloc_page() -> usize {
+    fn alloc_zero() -> usize {
         mm::page::alloc_zero()
     }
 }

@@ -1,4 +1,4 @@
-use alloc::collections::btree_map::BTreeMap;
+use alloc::collections::BTreeMap;
 
 use crate::kernel::event::timer;
 use crate::kernel::config;
@@ -72,6 +72,9 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
     arch::init();
     arch::scan_device();
 
+    #[cfg(feature = "swap-memory")]
+    mm::swappable::init();
+
     kinfo!("Welcome to KernelX!");
 
     kinfo!("Frame space: {:#x} - {:#x}, total {:#x}", heap_start + config::KERNEL_HEAP_SIZE, memory_top, memory_top - (heap_start + config::KERNEL_HEAP_SIZE));
@@ -112,6 +115,9 @@ pub fn exit() -> ! {
     vfs::sync_all().unwrap_or_else(|e| {
         println!("Failed to sync filesystem: {:?}", e);
     });
+
+    #[cfg(feature = "swap-memory")]
+    crate::kernel::mm::swappable::fini();
     
     driver::chosen::kpmu::shutdown();
 }

@@ -36,7 +36,10 @@ impl DriverMatcher for VirtIODriverMatcher {
 
         match transport.device_type() {
             DeviceType::Block => {
-                Some(Arc::new(VirtIOBlockDriver::new(self.block_count.load(core::sync::atomic::Ordering::Relaxed), transport)))
+                Some(Arc::new(VirtIOBlockDriver::new(
+                    self.block_count.fetch_add(1, core::sync::atomic::Ordering::SeqCst), 
+                    transport
+                )))
             }
             _ => None,
         }

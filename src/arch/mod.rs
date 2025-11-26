@@ -11,6 +11,7 @@ pub type UserContext = arch_impl::UserContext;
 pub type KernelContext = arch_impl::KernelContext;
 pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
+// pub type MappedPage<'a> = arch_impl::MappedPage<'a>;
 
 pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;

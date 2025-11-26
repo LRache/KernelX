@@ -4,6 +4,7 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
+use crate::kernel::scheduler;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::Task;
 use crate::kernel::usync::futex;
@@ -20,6 +21,7 @@ use crate::kernel::errno::Errno;
 use crate::kernel::scheduler::TaskState;
 use crate::fs::file::{File, FileFlags, CharFile};
 use crate::fs::{Perm, PermFlags, vfs};
+use crate::kinfo;
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::arch;
@@ -202,7 +204,7 @@ impl TCB {
             tid, 
             parent,
             user_context, 
-            Arc::new(addrspace),
+            addrspace,
             Arc::new(SpinLock::new(fdtable))
         );
         
@@ -233,7 +235,7 @@ impl TCB {
         } else {
             let addrspace = self.addrspace.fork();
             new_user_context.set_addrspace(&addrspace);
-            new_addrspace = Arc::new(addrspace);
+            new_addrspace = addrspace;
         }
 
         new_user_context.skip_syscall_instruction();
@@ -315,7 +317,7 @@ impl TCB {
             self.tid,
             &self.parent,
             new_user_context,
-            Arc::new(addrspace),
+            addrspace,
             self.fdtable().clone(),
         );
 
@@ -453,7 +455,8 @@ impl TCB {
 
     pub fn wake_parent_waiting_vfork(&self) {
         if let Some(parent) = self.parent_waiting_vfork.lock().take() {
-            parent.wakeup_uninterruptible(Event::VFork);
+            // kinfo!("Waking up parent task {} waiting for vfork", parent.tid());
+            scheduler::wakeup_task_uninterruptible(parent, Event::VFork);
         }
     }
 }

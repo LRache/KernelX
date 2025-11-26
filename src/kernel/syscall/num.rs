@@ -268,5 +268,6 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         // Event
         72  => event::pselect6_time32(6),
         73  => event::ppoll_time32(5),
+        103 => event::setitimer(3),
     }
 }

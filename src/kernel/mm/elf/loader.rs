@@ -45,7 +45,7 @@ pub fn read_phdr(file: &Arc<File>) -> Result<Elf64Phdr, Errno> {
     Ok(*phdr)
 }
 
-pub fn load_elf(file: &Arc<File>, addrspace: &mut AddrSpace) -> Result<(usize, Option<DynInfo>), Errno> {
+pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace) -> Result<(usize, Option<DynInfo>), Errno> {
     let ehdr = read_ehdr(file)?;
     
     if !ehdr.is_valid_elf() {
@@ -138,7 +138,7 @@ pub fn load_loadable_phdr(
     ph_offset: usize,
     ph_num: usize,
     file: &Arc<File>,
-    addrspace: &mut AddrSpace,
+    addrspace: &AddrSpace,
     addr_base: usize
 ) -> Result<(), Errno> {
     for i in 0..ph_num {
@@ -156,7 +156,7 @@ pub fn load_loadable_phdr(
 pub fn load_program_from_file(
     phdr: &Elf64Phdr,
     file: &Arc<File>,
-    addrspace: &mut AddrSpace,
+    addrspace: &AddrSpace,
     addr_base: usize
 ) -> Result<(), Errno> {
     let mut perm = MapPerm::U | MapPerm::R;
@@ -184,7 +184,7 @@ pub fn load_program_from_file(
     Ok(())
 }
 
-fn load_interpreter(path: &str, addrspace: &mut AddrSpace) -> Result<(usize, usize), Errno> {
+fn load_interpreter(path: &str, addrspace: &AddrSpace) -> Result<(usize, usize), Errno> {
     let file_flags = FileFlags::readonly();
     let file = vfs::open_file(path, file_flags, &Perm::new(PermFlags::X))?;
     let file = Arc::new(file);

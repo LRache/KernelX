@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::{Lazy, Mutex, RwLock};
 
@@ -13,6 +14,13 @@ use crate::arch;
 
 use super::{MemAccessType, MapPerm};
 use super::vdso;
+
+cfg_if::cfg_if! {
+    if #[cfg(feature="swap-memory")] {
+        use alloc::collections::LinkedList;
+        use crate::klib::SpinLock;
+    }
+}
 
 unsafe extern "C"{
     static __trampoline_start: u8;
@@ -41,32 +49,64 @@ fn create_pagetable() -> PageTable {
     pagetable
 }
 
+#[cfg(feature = "swap-memory")]
+use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
+
 pub struct AddrSpace {
     map_manager: Mutex<maparea::Manager>,
     pagetable: RwLock<PageTable>,
     usercontext_frames: Mutex<Vec<PhysPageFrame>>,
+
+    #[cfg(feature = "swap-memory")]
+    family_chain: AddrSpaceFamilyChain,
 }
 
 impl AddrSpace {
-    pub fn new() -> Self {        
-        AddrSpace {
+    pub fn new() -> Arc<Self> {        
+        let addrspace = Arc::new(AddrSpace {
             map_manager: Mutex::new(maparea::Manager::new()),
             pagetable: RwLock::new(create_pagetable()),
             usercontext_frames: Mutex::new(Vec::new()),
-        }
-    }
 
+            #[cfg(feature = "swap-memory")]
+            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new())),
+        });
+
+        #[cfg(feature = "swap-memory")]
+        addrspace.family_chain.lock().push_back(Arc::downgrade(&addrspace));
+
+        addrspace
+    }
     
-    pub fn fork(&self) -> AddrSpace {
+    pub fn fork(self: &Arc<Self>) -> Arc<AddrSpace> {
         let new_pagetable = RwLock::new(create_pagetable());
 
         let new_map_manager = self.map_manager.lock().fork(&self.pagetable, &new_pagetable);
+
+        #[cfg(feature = "swap-memory")]
+        {
+            let mut chain = self.family_chain.lock();
+            chain.push_back(Arc::downgrade(self));
+        }
         
-        AddrSpace {
+        let addrspace = Arc::new(AddrSpace {
             map_manager: Mutex::new(new_map_manager),
             pagetable: new_pagetable,
             usercontext_frames: Mutex::new(Vec::new()),
-        }
+
+            #[cfg(feature = "swap-memory")]
+            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new())),
+        });
+        
+        #[cfg(feature = "swap-memory")]
+        addrspace.family_chain.lock().push_back(Arc::downgrade(&addrspace));
+        
+        addrspace
+    }
+
+    #[cfg(feature = "swap-memory")]
+    pub fn family_chain(&self) -> &AddrSpaceFamilyChain {
+        &self.family_chain
     }
 
     pub fn alloc_usercontext_page(&self) -> (usize, *mut UserContext) {
@@ -108,18 +148,18 @@ impl AddrSpace {
         map_manager.increase_userbrk(ubrk)
     }
 
-    pub fn translate_write(&self, uaddr: usize) -> SysResult<usize> {
-        self.map_manager.lock().translate_write(uaddr, &self.pagetable).ok_or(Errno::EFAULT)
+    pub fn translate_write(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
+        self.map_manager.lock().translate_write(uaddr, self).ok_or(Errno::EFAULT)
     }
 
-    pub fn copy_to_user_buffer(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
+    pub fn copy_to_user_buffer(self: &Arc<Self>, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
         let mut left = buffer.len();
         let mut copied: usize = 0;
 
         let mut map_manager = self.map_manager.lock();
 
         while left > 0 {
-            let kaddr = map_manager.translate_write(uaddr, &self.pagetable).ok_or(Errno::EFAULT)?;
+            let kaddr = map_manager.translate_write(uaddr, self).ok_or(Errno::EFAULT)?;
             
             let page_offset = uaddr & (arch::PGSIZE - 1);
             let write_len = core::cmp::min(left, arch::PGSIZE - page_offset);
@@ -134,7 +174,7 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn copy_to_user<T: Copy>(&self, uaddr: usize, value: T) -> Result<(), Errno> {
+    pub fn copy_to_user<T: Copy>(self: &Arc<Self>, uaddr: usize, value: T) -> Result<(), Errno> {
         let buffer = unsafe {
             core::slice::from_raw_parts((&value as *const T) as *const u8, core::mem::size_of::<T>())
         };
@@ -142,35 +182,24 @@ impl AddrSpace {
     }
 
     /// Copy a slice to user space
-    pub fn copy_to_user_slice<T>(&self, uaddr: usize, slice: &[T]) -> SysResult<()> {
-        let buffer = unsafe {
-            core::slice::from_raw_parts(
-                slice.as_ptr() as *const u8, 
-                slice.len() * core::mem::size_of::<T>()
-            )
-        };
+    pub fn copy_to_user_slice<T>(self: &Arc<Self>, uaddr: usize, slice: &[T]) -> SysResult<()> {
+        let buffer = unsafe { core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice)) };
         self.copy_to_user_buffer(uaddr, buffer)
     }
 
-    /// Copy a fixed-size array to user space
-    pub fn copy_to_user_array<T, const N: usize>(&self, uaddr: usize, array: &[T; N]) -> SysResult<()> {
-        let buffer = unsafe {
-            core::slice::from_raw_parts(
-                array.as_ptr() as *const u8, 
-                N * core::mem::size_of::<T>()
-            )
-        };
+    pub fn copy_to_user_array<T, const N: usize>(self: &Arc<Self>, uaddr: usize, array: &[T; N]) -> SysResult<()> {
+        let buffer = unsafe { core::slice::from_raw_parts(array.as_ptr() as *const u8, core::mem::size_of_val(array)) };
         self.copy_to_user_buffer(uaddr, buffer)
     }
 
-    pub fn copy_from_user_buffer(&self, mut uaddr: usize, buffer: &mut [u8]) -> Result<(), Errno> {
+    pub fn copy_from_user_buffer(self: &Arc<Self>, mut uaddr: usize, buffer: &mut [u8]) -> Result<(), Errno> {
         let mut left = buffer.len();
         let mut copied: usize = 0;
 
         let mut map_manager = self.map_manager.lock();
 
         while left > 0 {
-            let kaddr = map_manager.translate_read(uaddr, &self.pagetable).ok_or(Errno::EFAULT)?;
+            let kaddr = map_manager.translate_read(uaddr, self).ok_or(Errno::EFAULT)?;
 
             let page_offset = uaddr & (arch::PGSIZE - 1);
             let read_len = core::cmp::min(left, arch::PGSIZE - page_offset);
@@ -186,27 +215,24 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn copy_from_user<T: Copy>(&self, uaddr: usize) -> Result<T, Errno> {
+    pub fn copy_from_user<T: Copy>(self: &Arc<Self>, uaddr: usize) -> Result<T, Errno> {
         let mut value: T = unsafe { core::mem::zeroed() };
         let buffer = unsafe {
-            core::slice::from_raw_parts_mut((&mut value as *mut T) as *mut u8, core::mem::size_of::<T>())
+            core::slice::from_raw_parts_mut(
+                &mut value as *mut T as *mut u8,
+                core::mem::size_of::<T>()
+            )
         };
         self.copy_from_user_buffer(uaddr, buffer)?;
         Ok(value)
     }
 
-    /// Copy data from user space to a fixed-size array
-    pub fn copy_from_user_array<T, const N: usize>(&self, uaddr: usize, array: &mut [T; N]) -> SysResult<()> {
-        let buffer = unsafe {
-            core::slice::from_raw_parts_mut(
-                array.as_mut_ptr() as *mut u8, 
-                N * core::mem::size_of::<T>()
-            )
-        };
+    pub fn copy_from_user_array<T, const N: usize>(self: &Arc<Self>, uaddr: usize, array: &mut [T; N]) -> SysResult<()> {
+        let buffer = unsafe { core::slice::from_raw_parts_mut(array.as_mut_ptr() as *mut u8, core::mem::size_of_val(array)) };
         self.copy_from_user_buffer(uaddr, buffer)
     }
 
-    pub fn get_user_string(&self, mut uaddr: usize) -> Result<String, Errno> {
+    pub fn get_user_string(self: &Arc<Self>, mut uaddr: usize) -> Result<String, Errno> {
         let mut map_manager = self.map_manager.lock();
 
         let mut result = String::new();
@@ -216,7 +242,7 @@ impl AddrSpace {
         loop {
             let page_offset = uaddr & arch::PGMASK;
             let to_read = arch::PGSIZE - page_offset;
-            let kaddr = map_manager.translate_read(uaddr, &self.pagetable).ok_or(Errno::EFAULT)?;
+            let kaddr = map_manager.translate_read(uaddr, self).ok_or(Errno::EFAULT)?;
 
             let slice = unsafe { core::slice::from_raw_parts(kaddr as *const u8, to_read) };
             if let Some(pos) = slice.iter().position(|&b| b == 0) {
@@ -235,13 +261,8 @@ impl AddrSpace {
         Ok(result)
     }
 
-    pub fn copy_from_user_slice<T: Copy>(&self, uaddr: usize, slice: &mut [T]) -> SysResult<()> {
-        let buffer = unsafe {
-            core::slice::from_raw_parts_mut(
-                slice.as_mut_ptr() as *mut u8, 
-                slice.len() * core::mem::size_of::<T>()
-            )
-        };
+    pub fn copy_from_user_slice<T: Copy>(self: &Arc<Self>, uaddr: usize, slice: &mut [T]) -> SysResult<()> {
+        let buffer = unsafe { core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, core::mem::size_of_val(slice)) };
         self.copy_from_user_buffer(uaddr, buffer)
     }
 
@@ -263,9 +284,9 @@ impl AddrSpace {
         f(&mut self.map_manager.lock())
     }
 
-    pub fn try_to_fix_memory_fault(&self, uaddr: usize, access_type: MemAccessType) -> bool {
+    pub fn try_to_fix_memory_fault(self: &Arc<Self>, uaddr: usize, access_type: MemAccessType) -> bool {
         let map_manager = &mut self.map_manager.lock();
-        if !map_manager.try_to_fix_memory_fault(uaddr, access_type, &self.pagetable) {
+        if !map_manager.try_to_fix_memory_fault(uaddr, access_type, self) {
             map_manager.print_all_areas();
             false
         } else {
@@ -275,6 +296,16 @@ impl AddrSpace {
 
     pub fn find_mmap_ubase(&self, page_count: usize) -> Option<usize> {
         self.map_manager.lock().find_mmap_ubase(page_count)
+    }
+
+    #[cfg(feature = "swap-memory")]
+    pub fn unmap_swap_page(&self, uaddr: usize, kaddr: usize) {
+        self.pagetable.write().munmap_with_check(uaddr, kaddr);
+    }
+
+    #[cfg(feature = "swap-memory")]
+    pub fn take_page_access_bit(&self, uaddr: usize) -> Option<bool> {
+        self.pagetable.write().take_access_bit(uaddr)
     }
 }
 

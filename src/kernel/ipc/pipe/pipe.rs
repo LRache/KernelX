@@ -17,7 +17,7 @@ pub struct Pipe {
     inner: Arc<PipeInner>,
     meta: Option<Meta>,
     writable: bool,
-    blocked: bool,
+    _blocked: bool,
 }
 
 impl Pipe {
@@ -29,7 +29,7 @@ impl Pipe {
             inner,
             meta: None,
             writable,
-            blocked: true,
+            _blocked: true,
         }
     }
 

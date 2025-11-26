@@ -43,10 +43,6 @@ pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
     SCHEDULER.fetch_next_task()
 }
 
-pub fn block_task(task: &Arc<dyn Task>, reason: &str) {
-    task.block(reason);
-}
-
 pub fn block_task_uninterruptible(task: &Arc<dyn Task>, reason: &str) {
     task.block_uninterruptible(reason);
 }
@@ -55,6 +51,11 @@ pub fn wakeup_task(task: Arc<dyn Task>, event: Event) {
     if task.wakeup(event) {
         push_task(task);
     }
+}
+
+pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) {
+    task.wakeup_uninterruptible(event);
+    push_task(task);
 }
 
 pub fn run_tasks(_hartid: u8) -> ! {

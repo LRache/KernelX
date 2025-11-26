@@ -15,6 +15,8 @@ pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 32; // Kernel stack page count for user tasks
 pub const KTASK_KSTACK_PAGE_COUNT: usize = 16; // Kernel stack page count for kernel tasks
 pub const KERNEL_HEAP_SIZE: usize = 0x4000000;
+pub const KERNEL_PAGE_SHRINK_WATERLEVEL_LOW : usize = 70; // Threshold for kernel page shrinker, /1024
+pub const KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH: usize = 85; // Threshold for kernel page shrinker, /1024
 
 pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 
