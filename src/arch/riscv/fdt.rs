@@ -1,14 +1,15 @@
 use fdt::node::FdtNode;
 use fdt::Fdt;
+use alloc::vec::Vec;
 
 use crate::kernel::parse_boot_args;
 use crate::driver::Device;
 use crate::driver::found_device;
-use crate::kinfo;
 use crate::klib::initcell::InitedCell;
-use crate::kwarn;
+use crate::{kinfo, kwarn};
 
 static TIME_FREQ: InitedCell<u32> = InitedCell::uninit();
+static SVADU_EXTENSION_ENABLED: InitedCell<bool> = InitedCell::uninit();
 
 pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     let data = unsafe { core::slice::from_raw_parts(fdt as *const u32, 2) };
@@ -35,6 +36,9 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     for child in soc_node.children() {
         load_soc_node(&child);
     }
+
+    let cpu_node = fdt.find_node("/cpus").unwrap();
+    load_cpu_node(&cpu_node.children().next().unwrap());
 
     let chosen_node = fdt.find_node("/chosen").unwrap();
     if let Some(bootargs_prop) = chosen_node.property("bootargs") {
@@ -63,6 +67,18 @@ fn load_soc_node(child: &FdtNode) -> Option<()> {
         found_device(&device);
     }
     Some(())
+}
+
+fn load_cpu_node(child: &FdtNode) {
+    let isa_support = child.property("riscv,isa").and_then(|p| p.as_str()).unwrap_or("");
+    let extensions: Vec<&str> = isa_support.split('_').collect();
+    if extensions.iter().find(|&&ext| ext == "svadu").is_some() {
+        SVADU_EXTENSION_ENABLED.init(true);
+        kinfo!("SVADU extension is enabled");
+    } else {
+        SVADU_EXTENSION_ENABLED.init(false);
+        kinfo!("SVADU extension is disabled");
+    };
 }
 
 pub fn time_frequency() -> u32 {
