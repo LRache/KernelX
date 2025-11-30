@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 pub struct InitedCell<T> {
     value: UnsafeCell<MaybeUninit<T>>,
-    #[cfg(debug_assertions)]
     is_inited: AtomicBool,
 }
 

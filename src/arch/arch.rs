@@ -14,7 +14,7 @@ pub trait PageTableTrait {
     fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
     fn munmap(&mut self, uaddr: usize);
     fn munmap_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> bool;
-    fn take_access_bit(&mut self, uaddr: usize) -> Option<bool>;
+    fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)>;
 
     // fn mapped_page(&self, uaddr: usize) -> Option<MappedPage>;
     // fn munmap_if_mapped(&mut self, uaddr: usize) -> bool;

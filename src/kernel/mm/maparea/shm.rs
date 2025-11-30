@@ -4,8 +4,9 @@ use spin::RwLock;
 
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::arch::{self, PageTable, PageTableTrait};
-use crate::kernel::mm::maparea::area::{Area, Frame};
 use crate::kernel::ipc::shm::ShmFrames;
+
+use super::Area;
 
 pub struct ShmArea {
     ubase: usize,
@@ -38,9 +39,9 @@ impl Area for ShmArea {
         self.translate_read(uaddr, _addrspace)
     }
 
-    fn page_frames(&mut self) -> &mut [Frame] {
-        unimplemented!("ShmArea does not support page_frames")
-    }
+    // fn page_frames(&mut self) -> &mut [Frame] {
+    //     unimplemented!("ShmArea does not support page_frames")
+    // }
 
     fn ubase(&self) -> usize {
         self.ubase

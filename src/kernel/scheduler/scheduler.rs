@@ -43,10 +43,6 @@ pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
     SCHEDULER.fetch_next_task()
 }
 
-pub fn block_task_uninterruptible(task: &Arc<dyn Task>, reason: &str) {
-    task.block_uninterruptible(reason);
-}
-
 pub fn wakeup_task(task: Arc<dyn Task>, event: Event) {
     if task.wakeup(event) {
         push_task(task);
@@ -63,7 +59,6 @@ pub fn run_tasks(_hartid: u8) -> ! {
     loop {
         arch::disable_interrupt();
         if let Some(task) = fetch_next_task() {
-            // crate::kinfo!("Switching to task {}", task.tid());
             if !task.run_if_ready() {
                 continue;
             }
@@ -73,10 +68,7 @@ pub fn run_tasks(_hartid: u8) -> ! {
             processor.switch_to_task();
 
             if task.state_running_to_ready() {
-                // kinfo!("Task {} yielded CPU, push back to ready queue", task.tid());
                 push_task(task);
-            } else {
-                // kinfo!("Task {} switched out of CPU", task.tid());
             }
         } else {
             arch::enable_interrupt();

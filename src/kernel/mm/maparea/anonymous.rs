@@ -3,146 +3,78 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use spin::RwLock;
 
-use crate::kernel::mm::{AddrSpace, PhysPageFrame};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
 use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature="swap-memory")] {
-        use crate::kernel::mm::swappable;
-        type PageFrame = swappable::AnonymousFrame;
-    } else {
-        struct PageFrame {
-            frame: PhysPageFrame,
-            uaddr: usize,
-        }
-    }
-}
+use super::nofilemap::FrameState;
 
-fn frame_get_page(frame: &PageFrame) -> usize {
-    #[cfg(feature = "swap-memory")]
-    {
-        if let Some(page) = frame.page() {
-            page
-        } else {
-            frame.swap_in()
-            // panic!("Trying to get page of a swapped-out anonymous frame");
-        }
-    }
-    #[cfg(not(feature = "swap-memory"))]
-    {
-        frame.frame.get_page()
-    }
-}
-
-fn alloc_frame(_addrspace: &AddrSpace, uaddr: usize) -> PageFrame {
-    #[cfg(feature = "swap-memory")]
-    {
-        use crate::kernel::mm::swappable::AnonymousFrame;
-
-        AnonymousFrame::alloc(_uaddr, _addrspace.family_chain().clone())
-    }
-    #[cfg(not(feature = "swap-memory"))]
-    {
-        PageFrame {
-            frame: PhysPageFrame::alloc_zeroed(),
-            uaddr,
-        }
-    }
-}
-
-fn copy_frame(frame: &PageFrame, _addrspace: &AddrSpace) -> PageFrame {
-    #[cfg(feature = "swap-memory")]
-    {
-        frame.copy(_addrspace.family_chain().clone())
-    }
-    #[cfg(not(feature = "swap-memory"))]
-    {
-        PageFrame { frame: frame.frame.copy(), uaddr: frame.uaddr }
-    }
-}
-
-enum Frame {
-    Unallocated,
-    Allocated(Arc<PageFrame>),
-    Cow(Arc<PageFrame>),
-}
-
-impl Frame {
-    fn is_unallocated(&self) -> bool {
-        matches!(self, Frame::Unallocated)
-    }
-
-    fn is_cow(&self) -> bool {
-        matches!(self, Frame::Cow(_))
-    }
-}
+#[cfg(feature = "swap-memory")]
+use super::nofilemap::PageFrame;
 
 pub struct AnonymousArea {
     ubase: usize,
     perm: MapPerm,
-    frames: Vec<Frame>,
+    frames: Vec<FrameState>,
+    shared: bool
 }
 
 impl AnonymousArea {
-    pub fn new(ubase: usize, perm: MapPerm, page_count: usize) -> Self {
+    pub fn new(ubase: usize, perm: MapPerm, page_count: usize, shared: bool) -> Self {
         // Anonymous areas should be page-aligned
-        assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
+        debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
         
-        let frames = Vec::from_iter((0..page_count).map(|_| Frame::Unallocated));
+        let frames = Vec::from_iter((0..page_count).map(|_| FrameState::Unallocated));
         Self {
             ubase,
             perm,
-            frames
+            frames,
+            shared
         }
     }
 
     fn allocate_page(&mut self, page_index: usize, addrspace: &Arc<AddrSpace>) -> usize {
-        assert!(page_index < self.frames.len());
-        assert!(self.frames[page_index].is_unallocated());
+        debug_assert!(page_index < self.frames.len());
+        debug_assert!(self.frames[page_index].is_unallocated());
 
         // Create a new zeroed page for anonymous memory
         let uaddr = self.ubase + page_index * arch::PGSIZE;
-        let frame = alloc_frame(addrspace, uaddr);
-        let page = frame_get_page(&frame);
+        let (allocated, kpage) = FrameState::allocate(uaddr, addrspace);
 
-        addrspace.pagetable().write().mmap(uaddr, page, self.perm);
-        self.frames[page_index] = Frame::Allocated(Arc::new(frame));
+        addrspace.pagetable().write().mmap(uaddr, kpage, self.perm);
+        self.frames[page_index] = allocated;
 
-        page
+        kpage
     }
 
     fn copy_on_write_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
-        assert!(page_index < self.frames.len());
-        assert!(self.frames[page_index].is_cow());
+        debug_assert!(page_index < self.frames.len());
+        debug_assert!(self.frames[page_index].is_cow());
 
-        let cow_frame = core::mem::replace(&mut self.frames[page_index], Frame::Unallocated);
-        let new_frame = if let Frame::Cow(frame) = cow_frame {
-            match Arc::try_unwrap(frame) {
-                Ok(only) => only,
-                Err(cow) => copy_frame(&cow, addrspace),
-            }
-        } else {
-            unreachable!();
-        };
+        let kpage = self.frames[page_index].cow_to_allocated(addrspace);
 
-        let page = frame_get_page(&new_frame);
+        addrspace.pagetable().write().mmap_replace(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
 
-        addrspace.pagetable().write().mmap_replace(self.ubase + page_index * arch::PGSIZE, page, self.perm);
-        self.frames[page_index] = Frame::Allocated(Arc::new(new_frame));
-
-        page
+        kpage
     }
 
     #[cfg(feature = "swap-memory")]
-    fn handle_memory_fault_on_swap(&self, frame: &PageFrame, addrspace: &AddrSpace) {
-        // TODO: Now we can't judge whether there
-        // is a bug of mapping or a swapped-out page.
-        // So we just swap in the page unconditionally.
-        let page = frame.swap_in();
+    fn handle_memory_fault_on_swapped_allocated(&self, frame: &PageFrame, addrspace: &AddrSpace) {
+        let page = frame.get_page_swap_in();
         addrspace.pagetable().write().mmap(frame.uaddr(), page, self.perm);
+    }
+
+    #[cfg(feature = "swap-memory")]
+    fn handle_cow_read_swapped_out(&self, frame: &PageFrame, addrspace: &AddrSpace) {
+        debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
+        let kpage = frame.get_page_swap_in();
+        addrspace.pagetable().write().mmap(
+            frame.uaddr(), 
+            kpage, 
+            self.perm - MapPerm::W
+        );
     }
 }
 
@@ -155,15 +87,11 @@ impl Area for AnonymousArea {
         
         if let Some(page_frame) = self.frames.get(page_index) {
             let page = match page_frame {
-                Frame::Unallocated => {
-                    // Lazy allocation: allocate page on first access
+                FrameState::Unallocated => {
                     self.allocate_page(page_index, addrspace)
                 }
-                Frame::Allocated(frame) => {
-                    frame_get_page(frame)
-                }
-                Frame::Cow(frame) => {
-                    frame_get_page(frame)
+                FrameState::Allocated(frame) | FrameState::Cow(frame) => {
+                    frame.get_page_swap_in()
                 }
             };
 
@@ -185,13 +113,14 @@ impl Area for AnonymousArea {
         
         if let Some(page_frame) = self.frames.get_mut(page_index) {
             let page = match page_frame {
-                Frame::Unallocated => {
+                FrameState::Unallocated => {
                     self.allocate_page(page_index, addrspace)
                 }
-                Frame::Allocated(frame) => {
-                    frame_get_page(frame)
+                FrameState::Allocated(frame) => {
+                    // frame_get_page_swapped(frame)
+                    frame.get_page_swap_in()
                 }
-                Frame::Cow(_) => {
+                FrameState::Cow(_) => {
                     // Copy-on-write: create a new copy for this process
                     self.copy_on_write_page(page_index, addrspace)
                 }
@@ -203,84 +132,108 @@ impl Area for AnonymousArea {
         }
     }
 
+    fn perm(&self) -> MapPerm {
+        self.perm
+    }
+
     fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
         let perm = self.perm - MapPerm::W;
         let mut new_pagetable = new_pagetable.write();
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
-                Frame::Unallocated => Frame::Unallocated,
-                Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    new_pagetable.mmap(
-                        self.ubase + page_index * arch::PGSIZE,
-                        frame_get_page(frame),
-                        perm
-                    );
-                    Frame::Cow(frame.clone())
+                FrameState::Unallocated => FrameState::Unallocated,
+                FrameState::Allocated(frame) => {
+                    if self.shared {
+                        if let Some(kpage) = frame.get_page() {
+                            new_pagetable.mmap(
+                                self.ubase + page_index * arch::PGSIZE,
+                                kpage,
+                                self.perm
+                            );
+                        }
+                        FrameState::Allocated(frame.clone())
+                    } else {
+                        if let Some(kpage) = frame.get_page() {
+                            new_pagetable.mmap(
+                                self.ubase + page_index * arch::PGSIZE,
+                                kpage,
+                                perm
+                            );
+                        }
+                        FrameState::Cow(frame.clone())
+                    }
+                },
+                FrameState::Cow(frame) => {
+                    debug_assert!(!self.shared, "Shared frames should not be CoW");
+                    if let Some(kpage) = frame.get_page() {
+                        new_pagetable.mmap(
+                            self.ubase + page_index * arch::PGSIZE,
+                            kpage,
+                            perm
+                        );
+                    }
+                    FrameState::Cow(frame.clone())
                 }
             }
         }).collect();
 
-        let mut self_pagetable = self_pagetable.write();
-        self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
-            *frame = match frame {
-                Frame::Unallocated => Frame::Unallocated,
-                Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    self_pagetable.mmap_replace(
-                        self.ubase + page_index * arch::PGSIZE,
-                        frame_get_page(frame),
-                        MapPerm::R | MapPerm::U
-                    );
-                    Frame::Cow(frame.clone())
+        if !self.shared {
+            let mut self_pagetable = self_pagetable.write();
+            self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
+                match frame {
+                    FrameState::Allocated(allocated) => {
+                        if let Some(kpage) = allocated.get_page() {
+                            if self.perm.contains(MapPerm::W) {
+                                self_pagetable.mmap_replace(
+                                    self.ubase + page_index * arch::PGSIZE,
+                                    kpage,
+                                    perm
+                                );
+                            }
+                        }
+                        *frame = FrameState::Cow(allocated.clone());
+                    },
+                    _ => {}
                 }
-            }
-        });
-
-        // let frames = self.fork_pages(self_pagetable, new_pagetable, index_to_uaddr);
+            });
+        }
 
         let new_area = AnonymousArea {
             ubase: self.ubase,
             perm: self.perm,
             frames,
+            shared: self.shared
         };
 
         Box::new(new_area)
     }
 
+    #[allow(unused_variables)]
     fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
         debug_assert!(uaddr >= self.ubase);
-
-        if access_type == MemAccessType::Read && !self.perm.contains(MapPerm::R) {
-            return false;
-        }
-        if access_type == MemAccessType::Write && !self.perm.contains(MapPerm::W) {
-            return false;
-        }
-        if access_type == MemAccessType::Execute && !self.perm.contains(MapPerm::X) {
-            return false;
-        }
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index < self.frames.len() {
             match &self.frames[page_index] {
-                Frame::Unallocated => {
-                    // ktrace!("Fixing memory fault by allocating page at address: {:#x}, page index: {}", uaddr, page_index);
+                FrameState::Unallocated => {
                     self.allocate_page(page_index, addrspace);
                 }
-                Frame::Allocated(frame) => {
-                    // Page is already allocated, this shouldn't happen
-                    // ktrace!("Memory fault on already allocated page at address: {:#x}", uaddr);
+                FrameState::Allocated(frame) => {
                     #[cfg(feature = "swap-memory")]
-                    self.handle_memory_fault_on_swap(frame, addrspace);
+                    self.handle_memory_fault_on_swapped_allocated(frame, addrspace);
                     
                     #[cfg(not(feature = "swap-memory"))]
+                    // Page is already allocated, this shouldn't happen
                     panic!("Memory fault on already allocated page at address: {:#x}, access_type: {:?}, perm: {:?}", uaddr, access_type, self.perm);
                 }
-                Frame::Cow(_) => {
-                    if access_type == MemAccessType::Write {
-                        self.copy_on_write_page(page_index, addrspace);
+                FrameState::Cow(frame) => {
+                    if access_type != MemAccessType::Write {
+                        #[cfg(feature = "swap-memory")]
+                        self.handle_cow_read_swapped_out(frame, addrspace);
+                        #[cfg(not(feature = "swap-memory"))]
+                        panic!("Memory fault on CoW page without write access at address: {:#x}, access_type: {:?}, perm: {:?}", uaddr, access_type, self.perm);
                     } else {
-                        // ktrace!("Memory fault on CoW page for read access at address: {:#x}", uaddr);
-                        panic!("Read access fault on CoW page at address: {:#x}", uaddr);
+                        self.copy_on_write_page(page_index, addrspace);
                     }
                 }
             }
@@ -292,7 +245,7 @@ impl Area for AnonymousArea {
     }
 
     fn set_ubase(&mut self, ubase: usize) {
-        assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
+        debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
         self.ubase = ubase;
     }
 
@@ -312,6 +265,7 @@ impl Area for AnonymousArea {
             ubase: new_ubase,
             perm: self.perm,
             frames: new_frames,
+            shared: self.shared
         };
 
         (
@@ -324,30 +278,19 @@ impl Area for AnonymousArea {
         self.ubase
     }
 
-    fn alloc_new_page(&mut self, _page_index: usize, _pagetable: &RwLock<PageTable>) -> PhysPageFrame {
-        PhysPageFrame::alloc_zeroed()
-    }
-
-    fn alloc_for_cow_page(&mut self, _page_index: usize, old_frame: Arc<PhysPageFrame>) -> PhysPageFrame {
-        old_frame.copy()
-    }
-
-    fn perm(&self) -> MapPerm {
-        self.perm
-    }
-
     fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
+        if perm == self.perm {
+            return;
+        }
+        
         self.perm = perm;
 
-        // kinfo!("Setting permissions for AnonymousArea at ubase {:#x} to {:?}", self.ubase, perm);
-
         let mut pagetable = pagetable.write();
-        for (page_index, frame) in self.frames.iter().enumerate() {
-            if let Frame::Allocated(frame) = frame {
-                let vaddr = self.ubase + page_index * arch::PGSIZE;
-                let paddr = frame_get_page(frame);
-                pagetable.mmap_replace(vaddr, paddr, perm);
-                // kinfo!("Updated page table permissions for anonymous page at {:#x} to {:?}", vaddr, perm);
+        for frame in self.frames.iter() {
+            if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
+                if let Some(kpage) = frame.get_page() {
+                    pagetable.mmap_replace(frame.uaddr(), kpage, perm);
+                }
             }
             // Note: We don't update COW pages here as they should maintain
             // their current permission state until the next write access
@@ -356,21 +299,22 @@ impl Area for AnonymousArea {
 
     fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
         let mut pagetable = pagetable.write();
-        for (page_index, frame) in self.frames.iter_mut().enumerate() {
+        for frame in self.frames.iter_mut() {
             #[cfg(feature = "swap-memory")]
-            if let Frame::Allocated(frame) | Frame::Cow(frame) = frame {
-                if frame.is_swapped_out() {
-                    continue;
-                } else {
+            if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
+                if !frame.is_swapped_out() {
                     pagetable.munmap(frame.uaddr());
                 }
             }
             #[cfg(not(feature = "swap-memory"))]
-            if let Frame::Allocated(_) | Frame::Cow(_) = frame {
-                let uaddr = self.ubase + page_index * arch::PGSIZE;
-                pagetable.munmap(uaddr);
+            if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
+                pagetable.munmap(frame.uaddr());
             }
-            *frame = Frame::Unallocated;
+            *frame = FrameState::Unallocated;
         }
+    }
+
+    fn type_name(&self) -> &'static str {
+        "anonymous"
     }
 }

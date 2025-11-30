@@ -4,7 +4,8 @@
         "riscv64gc-unknown-none-elf",
     ],
     "rust-analyzer.cargo.features": [
-        "log-trace"
+        "log-trace",
+        "swap-memory",
     ],
     "rust-analyzer.cargo.extraArgs": [
         "--target",

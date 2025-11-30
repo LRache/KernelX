@@ -7,11 +7,10 @@ use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
-use crate::kernel::scheduler::{current, Task};
+use crate::kernel::scheduler::{current, Task, Tid};
 use crate::kernel::scheduler;
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr, UString};
-use crate::kernel::task::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
 
 pub fn sched_yield() -> SyscallRet {
@@ -70,8 +69,6 @@ bitflags! {
 
 pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
-
-    // kinfo!("clone: flags={:?}", flags);
     
     let task_flags = TaskCloneFlags {
         vm: flags.contains(CloneFlags::VM),
@@ -102,14 +99,10 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
     }
 
     if flags.contains(CloneFlags::VFORK) {
-        // timer::add_timer(current::tcb().clone(), Duration::from_secs(1));
-        // current::tcb().block_uninterruptible("vfork");
-        scheduler::block_task_uninterruptible(current::task(), "vfork");
-
         child.set_parent_waiting_vfork(Some(current::task().clone()));
         scheduler::push_task(child);
 
-        current::schedule();
+        current::block_uninterruptible("vfork");
 
         match current::tcb().take_wakeup_event().unwrap() {
             Event::VFork => {}

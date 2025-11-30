@@ -1,4 +1,5 @@
-use crate::kernel::{ipc::SignalNum, task::Tid};
+use crate::kernel::ipc::SignalNum;
+use crate::kernel::scheduler::Tid;
 
 use super::PollEvent;
 

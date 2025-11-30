@@ -3,7 +3,6 @@ use spin::Mutex;
 use crate::kernel::syscall::UserStruct;
 
 pub type Tid = i32;
-pub type Pid = Tid;
 
 impl UserStruct for Tid {}
 

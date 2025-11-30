@@ -57,11 +57,10 @@ pub fn now() -> Duration {
     Duration::from_micros(arch::get_time_us())
 }
 
-pub fn add_timer(tcb: Arc<dyn Task>, time: Duration) {
+pub fn add_timer(task: Arc<dyn Task>, time: Duration) {
     TIMER.add_timer(time, Box::new(move || {
-        scheduler::wakeup_task(tcb, Event::Timeout);
+        scheduler::wakeup_task(task, Event::Timeout);
     }));
-    // TIMER.add_timer(tcb, time, Event::Timeout);
 }
 
 pub fn add_timer_with_func(time: Duration, func: Box<dyn FnOnce()>) {

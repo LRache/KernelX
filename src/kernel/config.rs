@@ -1,8 +1,7 @@
 pub const USER_STACK_TOP: usize = 1 << 38; // Example user stack top address
 pub const USER_STACK_PAGE_COUNT_MAX: usize = 2048; // Example user stack page count
 
-pub const USER_BRK_BASE: usize = 0x1_0000_0000;
-pub const USER_BRK_PAGE_COUNT_MAX: usize = 16384; // Max pages for user heap (brk)
+pub const USER_BRK_BASE: usize = 0x1_0000_0000; // Base address for user brk
 
 pub const USER_MAP_BASE: usize = 0x2_0000_0000; // Base address for user mappings
 

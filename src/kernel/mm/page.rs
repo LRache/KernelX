@@ -1,5 +1,4 @@
 use core::alloc::Layout;
-use crate::kernel::config;
 use crate::klib::{InitedCell, SpinLock};
 use crate::arch;
 
@@ -13,14 +12,15 @@ struct FrameAllocator {
 }
 
 impl FrameAllocator {
+    #[allow(unused_variables)]
     fn new(allocator: buddy_system_allocator::FrameAllocator, total: usize) -> Self {
         Self {
             allocator,
             allocated: 0,
             #[cfg(feature = "swap-memory")]
-            waterlevel_high: total * config::KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH / 100,
+            waterlevel_high: total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH / 100,
             #[cfg(feature = "swap-memory")]
-            waterlevel_low:  total * config::KERNEL_PAGE_SHRINK_WATERLEVEL_LOW / 100,
+            waterlevel_low:  total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_LOW / 100,
         }
     }
 
@@ -78,6 +78,12 @@ pub fn init(frame_start: usize, frame_end: usize) {
 //     unsafe { &mut *(meta_ptr_addr as *mut *const ()) }
 // }
 
+#[cfg(feature = "swap-memory")]
+pub fn need_to_shrink() -> bool {
+    let allocator = FRAME_ALLOCATOR.lock();
+    allocator.allocated >= allocator.waterlevel_high
+}
+
 pub fn alloc() -> usize {
     if let Some(page) = FRAME_ALLOCATOR.lock().alloc() {
         page
@@ -92,9 +98,10 @@ pub fn alloc_with_shrink() -> usize {
 
     if allocator.allocated >= allocator.waterlevel_high {
         let to_shrink = allocator.allocated - allocator.waterlevel_low + 1;
+        let min_to_shrink = to_shrink / 4 + 1;
         drop(allocator);
 
-        swappable::shrink(to_shrink);
+        crate::kernel::mm::swappable::shrink(to_shrink, min_to_shrink);
         
         return FRAME_ALLOCATOR.lock().alloc().unwrap()
     }

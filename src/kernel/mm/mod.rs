@@ -32,6 +32,16 @@ bitflags! {
     }
 }
 
+impl MemAccessType {
+    pub fn match_perm(&self, perm: MapPerm) -> bool {
+        match self {
+            MemAccessType::Read => perm.contains(MapPerm::R),
+            MemAccessType::Write => perm.contains(MapPerm::W),
+            MemAccessType::Execute => perm.contains(MapPerm::X),
+        }
+    }
+}
+
 #[unsafe(link_section = ".text.init")]
 pub fn init(frame_start: usize, frame_end: usize) {
     page::init(frame_start, frame_end);

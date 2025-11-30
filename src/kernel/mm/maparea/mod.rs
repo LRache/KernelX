@@ -1,4 +1,5 @@
 mod area;
+mod nofilemap;
 mod anonymous;
 mod elf;
 mod filemap;

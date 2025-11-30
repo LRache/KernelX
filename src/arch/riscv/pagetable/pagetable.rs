@@ -1,4 +1,4 @@
-use crate::kernel::mm::MapPerm;
+use crate::{kernel::mm::MapPerm};
 use crate::kernel::mm;
 use crate::arch::PageTableTrait;
 
@@ -127,12 +127,24 @@ impl<T: PageAllocator> PageTableImpls<T> {
         (MODE_SV39 << 60) | ppn
     }
 
+    #[allow(dead_code)]
     pub fn is_mapped(&self, uaddr: usize) -> bool {
         self.find_pte(uaddr).is_some()
     }
 
     pub fn mapped_flag(&self, uaddr: usize) -> Option<PTEFlags> {
         self.find_pte(uaddr).map(|pte| pte.flags())
+    }
+
+    pub fn mmap_kernel(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
+        let mut flags = perm.into();
+        flags = flags | PTEFlags::A | PTEFlags::D;
+
+        let mut pte = self.find_pte_or_create(kaddr);
+        
+        pte.set_flags(flags);
+        pte.set_ppn(Addr::from_paddr(paddr).ppn());
+        pte.write_back().expect("Failed to write back PTE");
     }
 
     // pub fn mapped_page(&self, uaddr: usize) -> Option<MappedPage<'_>> {
@@ -182,7 +194,6 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
-        // kinfo!("mmap_replace: uaddr={:#x}, kaddr={:#x}, perm={:?}", uaddr, kaddr, perm);
     }
 
     fn munmap(&mut self, vaddr: usize) {
@@ -196,22 +207,23 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
             // Using atomic opearation is unnessary here,
             // because pagetable is write-locked during munmap_with_check.
             if pte.ppn().to_addr().kaddr() == kaddr {
-                pte.set_flags(PTEFlags::empty());
-                pte.write_back().expect("Failed to write back PTE for munmap_with_check");
+                pte.set_flags(PTEFlags::empty()).write_back().expect("Failed to write back PTE for munmap_with_check");
                 return true;
+            } else {
+                return false;
             }
-            false
         } else {
             false
         }
     }
 
-    fn take_access_bit(&mut self, uaddr: usize) -> Option<bool> {
+    fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)> {
         self.find_pte(uaddr).map(|mut pte| {
             let flags = pte.flags();
             let accessed = flags.contains(PTEFlags::A);
-            pte.set_flags(flags.difference(PTEFlags::A));
-            accessed
+            let dirty = flags.contains(PTEFlags::D);
+            pte.set_flags(flags.difference(PTEFlags::A | PTEFlags::D)).write_back().expect("Failed to write back PTE when taking access and dirty bits");
+            (accessed, dirty)
         })
     }
 

@@ -33,6 +33,5 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
 }
 
 pub fn fini() {
-    // vfs::fini();
-    // vfs::unmount_all().unwrap();
+    vfs::unmount_all().unwrap();
 }

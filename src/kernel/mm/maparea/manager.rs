@@ -406,13 +406,13 @@ impl Manager {
     //     unreachable!();
     // }
 
-    pub fn create_user_stack(&mut self, argv: &[&str], envp: &[&str], auxv: &Auxv, pagetable: &RwLock<PageTable>) -> Result<usize, Errno> {
+    pub fn create_user_stack(&mut self, argv: &[&str], envp: &[&str], auxv: &Auxv, addrspace: &AddrSpace) -> Result<usize, Errno> {
         assert!(self.userstack_ubase == 0, "User stack already created");
         
         let mut userstack = Box::new(UserStack::new());
         let ubase = config::USER_STACK_TOP - config::USER_STACK_PAGE_COUNT_MAX * arch::PGSIZE;
         
-        let top = userstack.push_argv_envp_auxv(argv, envp, auxv, pagetable)?;
+        let top = userstack.push_argv_envp_auxv(argv, envp, auxv, addrspace)?;
 
         self.map_area(ubase, userstack as Box<dyn Area>);
         self.userstack_ubase = ubase;
@@ -438,6 +438,9 @@ impl Manager {
 
     pub fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
         if let Some((_ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
+            if !access_type.match_perm(area.perm()) {
+                return false;
+            }
             area.try_to_fix_memory_fault(uaddr, access_type, addrspace)
         } else {
             false
@@ -455,16 +458,13 @@ impl Manager {
 
         let new_page_count = (new_ubrk - config::USER_BRK_BASE + arch::PGSIZE - 1) / arch::PGSIZE;
 
-        // if new_page_count >= config::USER_BRK_PAGE_COUNT_MAX {
-        //     return Err(Errno::ENOMEM);
-        // }
-
         if new_page_count > self.userbrk.page_count {
             let ubase = config::USER_BRK_BASE + self.userbrk.page_count * arch::PGSIZE;
             let new_area = Box::new(AnonymousArea::new(
                 ubase, 
                 MapPerm::R | MapPerm::W | MapPerm::U, 
-                new_page_count - self.userbrk.page_count
+                new_page_count - self.userbrk.page_count,
+                false
             ));
 
             self.map_area(ubase, new_area);

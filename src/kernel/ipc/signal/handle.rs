@@ -6,8 +6,8 @@ use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
 use crate::kernel::mm::vdso;
-use crate::kernel::task::{Tid, PCB, TCB};
-use crate::kernel::scheduler::current;
+use crate::kernel::task::{PCB, TCB};
+use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::errno::{SysResult, Errno};
 
 use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};
@@ -96,9 +96,6 @@ impl TCB {
     pub fn try_recive_pending_signal(self: &Arc<Self>, pending: PendingSignal) -> bool {
         let mut state = self.state().lock();
 
-        // if state.state != TaskState::Blocked {
-        //     return false;
-        // }
         let signum = pending.signum;
 
         let waiting = state.signal_to_wait;
@@ -138,6 +135,19 @@ impl TCB {
             return false;
         }
     }
+
+    pub fn recive_pending_signal_from_parent(&self) {
+        let mut state = self.state().lock();
+        
+        if state.pending_signal.is_some() {
+            drop(state);
+            return;
+        }
+
+        if let Some(signal) = self.parent.pending_signals().lock().pop_pending(*self.signal_mask.lock(), self.tid) {
+            state.pending_signal = Some(signal);
+        }
+    }
 }
 
 impl PCB {
@@ -149,7 +159,6 @@ impl PCB {
             dest,
         };
 
-        // kinfo!("send_signal: signum={:?}, dest={:?}", signum, dest);
         if let Some(dest) = dest {
             let tasks = self.tasks.lock();
             if let Some(task) = tasks.iter().find(|t| t.tid == dest).cloned() {
@@ -168,7 +177,7 @@ impl PCB {
             }
         }
 
-        // self.pending_signals().lock().add_pending(pending)?;
+        self.pending_signals().lock().add_pending(pending)?;
 
         Ok(())
     }

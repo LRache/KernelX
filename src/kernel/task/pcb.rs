@@ -4,12 +4,11 @@ use core::time::Duration;
 use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::tid::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{get_initprocess, manager};
-use crate::kernel::scheduler::{Task, TaskState, current};
+use crate::kernel::scheduler::{Task, TaskState, current, tid};
 use crate::kernel::scheduler;
-use crate::kernel::task::tid::Tid;
-use crate::kernel::task::tid;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum};
 use crate::fs::file::File;
@@ -18,6 +17,8 @@ use crate::fs::Dentry;
 use crate::klib::SpinLock;
 
 use super::tcb::TCB;
+
+pub type Pid = Tid;
 
 struct Signal {
     actions: Mutex<SignalActionTable>,

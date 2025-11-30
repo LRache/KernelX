@@ -2,26 +2,16 @@ use alloc::collections::BTreeMap;
 
 use crate::kernel::event::timer;
 use crate::kernel::config;
-use crate::kernel::kthread;
 use crate::kernel::mm;
 use crate::kernel::scheduler;
-use crate::kernel::scheduler::current;
 use crate::kernel::task;
-use crate::fs::vfs;
 use crate::arch;
 use crate::fs;
 use crate::driver;
 use crate::klib::{kalloc, InitedCell};
-use crate::{kinfo, println};
+use crate::kinfo;
 
-pub fn fini() {
-    kinfo!("Deinitializing KernelX...");
-    
-    fs::fini();
-    
-    kinfo!("KernelX deinitialized successfully!");
-}
-
+#[allow(dead_code)]
 fn free_init() {
     unsafe extern "C" {
         static __init_start: u8;
@@ -92,7 +82,10 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
     
     timer::init();
 
-    // kthread::spawn(kthread_test);
+    #[cfg(feature = "swap-memory")]
+    {
+        crate::kernel::mm::swappable::spawn_kswapd();
+    }
 
     // free_init();
     
@@ -101,20 +94,8 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
     scheduler::run_tasks(hartid as u8);
 }
 
-fn kthread_test() {
-    let mut sec = 0;
-    loop {
-        timer::add_timer(current::task().clone(), core::time::Duration::from_secs(1));
-        current::block("sleep");
-        sec += 1;
-        kinfo!("kthread_test: {} seconds elapsed", sec);
-    }
-}
-
 pub fn exit() -> ! {
-    vfs::sync_all().unwrap_or_else(|e| {
-        println!("Failed to sync filesystem: {:?}", e);
-    });
+    fs::fini();
 
     #[cfg(feature = "swap-memory")]
     crate::kernel::mm::swappable::fini();

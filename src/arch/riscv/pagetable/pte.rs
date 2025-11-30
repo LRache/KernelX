@@ -126,13 +126,12 @@ bitflags! {
         const G = 1 << 5; // Global page
         const A = 1 << 6; // Accessed bit
         const D = 1 << 7; // Dirty bit
-        const N = 1 << 8; // Don't Clone
     }
 }
 
 impl From<MapPerm> for PTEFlags {
     fn from(perm: MapPerm) -> Self {
-        let mut flags = PTEFlags::V | PTEFlags::A | PTEFlags::D;
+        let mut flags = PTEFlags::V;
         if perm.contains(MapPerm::R) { flags |= PTEFlags::R; }
         if perm.contains(MapPerm::W) { flags |= PTEFlags::W; }
         if perm.contains(MapPerm::X) { flags |= PTEFlags::X; }
@@ -169,8 +168,9 @@ impl PTE {
         PTEFlags::from_bits_truncate((self.pte & 0x1ff) as u16)
     }
 
-    pub fn set_flags(&mut self, flags: PTEFlags) {
+    pub fn set_flags(&mut self, flags: PTEFlags) -> &mut Self {
         self.pte = (self.pte & !0x1ff) | (flags.bits() as usize);
+        self
     }
 
     pub fn ppn(self) -> PPN {

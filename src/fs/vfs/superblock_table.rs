@@ -28,13 +28,10 @@ impl SuperBlockTable {
         fs.clone()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.table.is_empty()
-    }
-
     pub fn unmount_all(&self) -> SysResult<()> {
         for fs in &self.table {
             if let Some(sb) = fs {
+                sb.sync()?;
                 sb.unmount()?;
             }
         }
@@ -44,7 +41,7 @@ impl SuperBlockTable {
     pub fn sync_all(&self) -> SysResult<()> {
         for fs in &self.table {
             if let Some(sb) = fs {
-                sb.sync();
+                let _ = sb.sync();
             }
         }
         Ok(())

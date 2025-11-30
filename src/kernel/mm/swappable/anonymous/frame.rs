@@ -1,18 +1,31 @@
+use core::usize;
 use alloc::sync::Arc;
 
-use crate::kernel::mm::PhysPageFrame;
+use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
 use crate::klib::SpinLock;
 
 use super::swapper;
 
-pub enum AnonymousFrameStatus {
-    Allocated(PhysPageFrame),
-    SwappedOut(usize), /* `diskpos: usize` The start block that stored the page  */
+pub(super) struct AllocatedFrame {
+    pub(super) frame: PhysPageFrame,
+    pub(super) dirty: bool,
+}
+
+pub(super) enum State {
+    Allocated(AllocatedFrame),
+    SwappedOut,
+}
+
+pub(super) const NO_DISK_BLOCK: usize = usize::MAX;
+
+pub(super) struct FrameState {
+    pub(super) state: State,
+    pub(super) disk_block: usize,
 }
 
 pub struct AnonymousFrameInner {
-    pub(super) status: SpinLock<AnonymousFrameStatus>,
+    pub(super) state: SpinLock<FrameState>,
     pub(super) family_chain: AddrSpaceFamilyChain,
     pub uaddr: usize,
 }
@@ -20,8 +33,13 @@ pub struct AnonymousFrameInner {
 impl AnonymousFrameInner {
     pub fn allocated(frame: PhysPageFrame, family_chain: AddrSpaceFamilyChain, uaddr: usize) -> Self {
         Self {
-            status: SpinLock::new(AnonymousFrameStatus::Allocated(frame)),
-            family_chain,
+            state: SpinLock::new(
+                FrameState { 
+                    state: State::Allocated(AllocatedFrame { frame, dirty: false }), 
+                    disk_block: NO_DISK_BLOCK 
+                }
+            ),
+            family_chain,       
             uaddr,
         }
     }
@@ -41,38 +59,58 @@ impl AnonymousFrame {
         Self::new(inner)
     }
 
-    pub fn alloc(uaddr: usize, family_chain: AddrSpaceFamilyChain) -> Self {
-        let frame = swapper::alloc(family_chain, uaddr);
-        frame
+    pub fn alloc(uaddr: usize, addrspace: &AddrSpace) -> (Self, usize) {
+        let frame = PhysPageFrame::alloc_with_shrink_zeroed();
+        let kpage = frame.get_page();
+        let frame = Self::allocated(uaddr, frame, addrspace.family_chain().clone());
+        swapper::push_lru(kpage, frame.inner.clone());
+        (frame, kpage)
     }
 
-    pub fn copy(&self, new_family_chain: AddrSpaceFamilyChain) -> AnonymousFrame {
-        match &*self.inner.status.lock() {
-            AnonymousFrameStatus::Allocated(allocated) => {
-                let new_frame = allocated.copy();
-                AnonymousFrame::allocated(self.inner.uaddr, new_frame, new_family_chain)
+    pub fn copy(&self, addrspace: &AddrSpace) -> (AnonymousFrame, usize) {
+        let state = self.inner.state.lock();
+        let new_frame = match &state.state {
+            State::Allocated(allocated) => {
+                allocated.frame.copy()
             }
-            AnonymousFrameStatus::SwappedOut(diskpos) => {
+            State::SwappedOut => {
                 let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
-                swapper::read_swapped_page(*diskpos, &new_frame);
-                AnonymousFrame::allocated(self.inner.uaddr, new_frame, new_family_chain)
+                debug_assert!(state.disk_block != NO_DISK_BLOCK);
+                swapper::read_swapped_page(state.disk_block, &new_frame);
+                new_frame
             }
-        }
+        };
+        let kpage = new_frame.get_page();
+        let allocated = AnonymousFrame::allocated(self.inner.uaddr, new_frame, addrspace.family_chain().clone());
+        swapper::push_lru(kpage, allocated.inner.clone());
+        (allocated, kpage)
     }
 
-    pub fn page(&self) -> Option<usize> {
-        match &*self.inner.status.lock() {
-            AnonymousFrameStatus::Allocated(allocated) => {
-                Some(allocated.get_page())
+    pub fn get_page(&self) -> Option<usize> {
+        match &self.inner.state.lock().state {
+            State::Allocated(allocated) => {
+                Some(allocated.frame.get_page())
             },
-            AnonymousFrameStatus::SwappedOut(_) => {
+            State::SwappedOut => {
                 None
             }
         }
     }
 
-    pub fn swap_in(&self) -> usize {
-        swapper::swap_in_page(&self.inner)
+    pub fn get_page_swap_in(&self) -> usize {
+        let mut state = self.inner.state.lock();
+        match &state.state {
+            State::Allocated(allocated) => {
+                allocated.frame.get_page()
+            },
+            State::SwappedOut => {
+                let frame = swapper::swap_in_page(state.disk_block, &self.inner);
+                let page = frame.get_page();
+                state.state = State::Allocated(AllocatedFrame { frame, dirty: false });
+
+                page
+            }
+        }
     }
 
     pub fn uaddr(&self) -> usize {
@@ -80,7 +118,7 @@ impl AnonymousFrame {
     }
 
     pub fn is_swapped_out(&self) -> bool {
-        matches!(&*self.inner.status.lock(), AnonymousFrameStatus::SwappedOut(_))
+        matches!(&self.inner.state.lock().state, State::SwappedOut)
     }
 }
 

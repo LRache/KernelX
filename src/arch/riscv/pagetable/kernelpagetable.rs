@@ -37,7 +37,7 @@ pub fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm)
     let mut pagetable = KERNEL_PAGETABLE.lock();
     let mut paddr = pstart;
     while kaddr < kend {
-        pagetable.mmap_paddr(kaddr, paddr, perm);
+        pagetable.mmap_kernel(kaddr, paddr, perm);
         kaddr += PGSIZE;
         paddr += PGSIZE;
     }

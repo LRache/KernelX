@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet};
-use crate::kernel::task::Tid;
+use crate::kernel::scheduler::Tid;
 use crate::kernel::errno::SysResult;
 
 #[derive(Clone, Copy, Debug)]
@@ -28,10 +28,10 @@ impl PendingSignalQueue {
         Ok(())
     }
 
-    pub fn pop_pending(&mut self, mask: SignalSet) -> Option<PendingSignal> {
+    pub fn pop_pending(&mut self, mask: SignalSet, tid: Tid) -> Option<PendingSignal> {
         let mut index = None;
         for (i, signal) in self.pending.iter().enumerate() {
-            if !signal.signum.is_masked(mask) || signal.signum.is_unignorable() {
+            if !signal.signum.is_masked(mask) || signal.signum.is_unignorable() && (signal.dest == Some(tid) || signal.dest.is_none()) {
                 index = Some(i);
                 break;
             }

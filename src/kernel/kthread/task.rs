@@ -1,41 +1,32 @@
 use alloc::sync::Arc;
 
 use crate::kernel::event::Event;
-use crate::kernel::task::{KernelStack, TCB, Tid};
-use crate::kernel::task::tid;
-use crate::kernel::scheduler::{Task, TaskState, current};
+use crate::kernel::scheduler::{Task, TaskState, Tid, KernelStack, tid, current};
 use crate::kernel::scheduler;
+use crate::kernel::task::TCB;
 use crate::klib::SpinLock;
 use crate::arch::KernelContext;
 
 pub struct KThread {
     tid: Tid,
     kcontext: KernelContext,
-    _kstack: KernelStack,
+    kstack: KernelStack,
     state: SpinLock<TaskState>,
     wakeup_event: SpinLock<Option<Event>>,
 }
 
 impl KThread {
-    pub fn new(tid: Tid, entry: fn()) -> Self {
+    fn new(tid: Tid, entry: fn()) -> Self {
         let kstack = KernelStack::new(crate::kernel::config::KTASK_KSTACK_PAGE_COUNT);
         let mut kcontext = KernelContext::new(&kstack);
         kcontext.set_entry(entry as usize);
         Self {
             tid,
             kcontext,
-            _kstack: kstack,
+            kstack,
             state: SpinLock::new(TaskState::Ready),
             wakeup_event: SpinLock::new(None),
         }
-    }
-
-    pub fn spawn(entry: fn()) -> Arc<Self> {
-        let tid = tid::alloc();
-        let kthread = Self::new(tid, entry);
-        let task = Arc::new(kthread);
-        scheduler::push_task(task.clone());
-        task
     }
 }
 
@@ -46,6 +37,10 @@ impl Task for KThread {
 
     fn tcb(&self) -> &TCB {
         unreachable!("KThread is not a TCB")
+    }
+
+    fn kstack(&self) -> &KernelStack {
+        &self.kstack
     }
 
     fn get_kcontext_ptr(&self) -> *mut crate::arch::KernelContext {
@@ -118,7 +113,7 @@ impl Task for KThread {
 }
 
 pub fn spawn(entry: fn()) -> Arc<KThread> {
-    let tid = crate::kernel::task::tid::alloc();
+    let tid = tid::alloc();
     let kthread = KThread::new(tid, entry);
     let task = Arc::new(kthread);
     scheduler::push_task(task.clone());

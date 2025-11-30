@@ -1,9 +1,10 @@
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
+
+#[cfg(not(feature = "no-smp"))]
 use core::sync::atomic::AtomicBool;
 
-use crate::kernel::scheduler::current;
-use crate::kernel::task::Tid;
+use crate::kernel::scheduler::{current, Tid};
 
 pub trait LockerTrait {
     fn is_locked(&self) -> bool;
@@ -59,7 +60,6 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             panic!("Deadlock detected in Mutex: current thread {} is trying to lock a mutex it already holds", tid);
         }
         
-        #[cfg(not(feature = "no-smp"))]
         self.lock.lock();
         *self.holder() = current::tid();
         
@@ -82,12 +82,20 @@ unsafe impl<T: Send, R: LockerTrait + Send> Send for Mutex<T, R> {}
 unsafe impl<T: Send, R: LockerTrait + Send> Sync for Mutex<T, R> {}
 
 pub struct SpinLocker {
+    #[cfg(feature = "no-smp")]
+    lock: UnsafeCell<bool>,
+
+    #[cfg(not(feature = "no-smp"))]
     lock: AtomicBool,
 }
 
 impl SpinLocker {
     pub const fn new() -> Self {
         SpinLocker {
+            #[cfg(feature = "no-smp")]
+            lock: UnsafeCell::new(false),
+
+            #[cfg(not(feature = "no-smp"))]
             lock: AtomicBool::new(false),
         }
     }
@@ -95,14 +103,30 @@ impl SpinLocker {
 
 impl LockerTrait for SpinLocker {
     fn is_locked(&self) -> bool {
+        #[cfg(feature = "no-smp")]
+        { unsafe { *self.lock.get() } }
+        #[cfg(not(feature = "no-smp"))]
         self.lock.load(core::sync::atomic::Ordering::Relaxed)
     }
     
     fn lock(&self) {
+        #[cfg(feature = "no-smp")]
+        unsafe {
+            if *self.lock.get() {
+                panic!("Deadlock detected in SpinLocker: single-core system cannot re-lock an already locked SpinLocker");
+            }
+            *self.lock.get() = true;
+        }
+        #[cfg(not(feature = "no-smp"))]
         while self.lock.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {}
     }
 
     fn unlock(&self) {
+        #[cfg(feature = "no-smp")]
+        unsafe {
+            *self.lock.get() = false;
+        }
+        #[cfg(not(feature = "no-smp"))]
         self.lock.store(false, core::sync::atomic::Ordering::Release);
     }
 }

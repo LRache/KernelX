@@ -1,7 +1,9 @@
 mod anonymous;
 mod lru;
+mod kswapd;
 
 pub use anonymous::AnonymousFrame;
+pub use kswapd::spawn_kswapd;
 
 use lru::LRUCache;
 
@@ -25,6 +27,6 @@ pub fn fini() {
     anonymous::print_perf_info();
 }
 
-pub fn shrink(mut page_count: usize) {
-    anonymous::shrink(&mut page_count);
+pub fn shrink(mut page_count: usize, min_to_shrink: usize) {
+    anonymous::shrink(&mut page_count, min_to_shrink);
 }

@@ -1,20 +1,15 @@
 use core::time::Duration;
-
 use alloc::sync::Arc;
-use alloc::vec::Vec;
-use alloc::vec;
 use bitvec::vec::BitVec;
 
 use crate::driver::BlockDriverOps;
 use crate::arch;
-use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::swappable::LRUCache;
-use crate::kernel::mm::swappable::anonymous::frame::{AnonymousFrameInner, AnonymousFrameStatus};
+use crate::kernel::mm::swappable::anonymous::frame::NO_DISK_BLOCK;
+use crate::kernel::mm::swappable::anonymous::frame::{AnonymousFrameInner, State};
 use crate::kernel::mm::PhysPageFrame;
 use crate::klib::{InitedCell, SpinLock};
-
-use super::AnonymousFrame;
 
 struct Counter {
     swap_in_count: usize,
@@ -42,22 +37,26 @@ pub fn print_perf_info() {
     crate::kinfo!("  Shrink: {} times, total time: {:?}", counter.shrink_count, counter.shrink_time);
 }
 
+struct BitMap {
+    allocated: BitVec,
+    cached: BitVec, // `1` means this block has a cached page in memory `0` means this block only has a swapped out page on disk
+}
+
 struct Swapper {
-    bitmap: SpinLock<BitVec>,
+    bitmap: SpinLock<BitMap>,
     driver: Arc<dyn BlockDriverOps>,
     lru: SpinLock<LRUCache<usize, Arc<AnonymousFrameInner>>>,
-    // frames: SpinLock<BTreeMap<usize, Arc<AnonymousFrameInner>>>,
     block_per_page: usize,
-    block_size: usize,
 }
 
 impl Swapper {
     fn new(driver: Arc<dyn BlockDriverOps>) -> Self {
         let block_size = driver.get_block_size() as usize;
         let len = block_size * driver.get_block_count() as usize / arch::PGSIZE;
-        let bitmap = SpinLock::new(BitVec::repeat(false, len));
+        let bitmap = SpinLock::new(BitMap { allocated: BitVec::repeat(false, len), cached: BitVec::repeat(false, len) });
         let lru = LRUCache::new();
         let block_per_page = arch::PGSIZE / block_size;
+        
         debug_assert!(block_per_page * block_size == arch::PGSIZE);
         crate::kinfo!("Anonymous swapper: {} pages ({} KB) available.", len, len * arch::PGSIZE / 1024);
         
@@ -66,155 +65,225 @@ impl Swapper {
             driver, 
             lru: SpinLock::new(lru),
             block_per_page,
-            block_size
         }
-    }
-
-    fn alloc(&self, family_chain: AddrSpaceFamilyChain, uaddr: usize) -> AnonymousFrame {
-        let frame = PhysPageFrame::alloc_with_shrink_zeroed();
-        let key = frame.get_page();
-        let inner = Arc::new(AnonymousFrameInner::allocated(frame, family_chain, uaddr));
-        self.lru.lock().put(key, inner.clone());
-        AnonymousFrame::new(inner)
     }
 
     fn free(&self, inner: &AnonymousFrameInner) {
-        match &*inner.status.lock() {
-            AnonymousFrameStatus::Allocated(allocated) => {
-                let key = allocated.get_page();
+        let state = inner.state.lock();
+        match &state.state {
+            State::Allocated(allocated) => {
+                let key = allocated.frame.get_page();
                 self.lru.lock().remove(&key);
             }
-            AnonymousFrameStatus::SwappedOut(disk_offset) => {
-                self.bitmap.lock().set(disk_offset / arch::PGSIZE, false);
+            State::SwappedOut => {
+                let mut bitmap = self.bitmap.lock();
+                let pos = state.disk_block / arch::PGSIZE;
+                bitmap.allocated.set(pos, false);
+                bitmap.cached.set(pos, false);
             }
-        }
-    }
-
-    fn swap_out(&self, inner: &AnonymousFrameInner) -> SysResult<()> {
-        let swap_start = crate::kernel::event::timer::now();
-        let mut bitmap = self.bitmap.lock();
-        if let Some(pos) = bitmap.first_zero() {
-            let mut status = inner.status.lock();
-            bitmap.set(pos, true);
-            let allocated = match &*status {
-                AnonymousFrameStatus::Allocated(alloc) => alloc,
-                AnonymousFrameStatus::SwappedOut(_) => panic!("Trying to swap out an already swapped-out frame"),
-            };
-
-            let block_start = pos * self.block_per_page;
-            for i in 0..self.block_per_page {
-                let block_index = block_start + i;
-                self.driver.write_block(
-                    block_index, 
-                    &allocated.slice()[i * self.block_size..(i + 1) * self.block_size]
-                ).map_err(|_| Errno::ENOMEM)?;
-            }
-
-            let page = allocated.get_page();
-
-            let mut family_chain = inner.family_chain.lock();
-            family_chain.retain(|member| {
-                if let Some(addrspace) = member.upgrade() {
-                    addrspace.unmap_swap_page(inner.uaddr, page);
-                    true
-                } else {
-                    false
-                }
-            });
-            
-            // The physical page will be freed here because of the drop of `allocated`
-            *status = AnonymousFrameStatus::SwappedOut(block_start);
-            
-            let mut counter = COUNTER.lock();
-            counter.swap_out_count += 1;
-            counter.swap_out_time += crate::kernel::event::timer::now() - swap_start;
-
-            Ok(())
-        } else {
-            Err(Errno::ENOMEM)
         }
     }
 
     fn read_swapped_out(&self, diskpos: usize, frame: &PhysPageFrame) {
-        for i in 0..self.block_per_page {
-            let block_index = diskpos + i;
-            self.driver.read_block(
-                block_index, 
-                &mut frame.slice()[i * self.block_size..(i + 1) * self.block_size]
-            ).expect("Failed to read swapped out page from block device");
-        }
+        let start = crate::kernel::event::timer::now();
+        self.driver.read_blocks(
+            diskpos, 
+            frame.slice()
+        ).expect("Failed to read swapped out page from block device");
+        let mut counter = COUNTER.lock();
+        counter.swap_in_count += 1;
+        counter.swap_in_time += crate::kernel::event::timer::now() - start;
     }
 
-    fn swap_in(&self, inner: &Arc<AnonymousFrameInner>) -> SysResult<usize> {
+    fn swap_in(&self, block_start: usize, inner: &Arc<AnonymousFrameInner>) -> SysResult<PhysPageFrame> {
         let swap_start = crate::kernel::event::timer::now();
-        let mut status = inner.status.lock();
-        let diskpos = match &*status {
-            AnonymousFrameStatus::SwappedOut(offset) => *offset,
-            AnonymousFrameStatus::Allocated(_) => panic!("Trying to swap in an already allocated frame"),
-        };
-
+        
         let frame = PhysPageFrame::alloc_with_shrink_zeroed();
-        self.read_swapped_out(diskpos, &frame);
+        self.read_swapped_out(block_start, &frame);
 
         let page = frame.get_page();
         self.lru.lock().put(page, inner.clone());
 
-        *status = AnonymousFrameStatus::Allocated(frame);
-
+        // Cached the swap page in disk
         let mut bitmap = self.bitmap.lock();
-        bitmap.set(diskpos / self.block_per_page, false);
+        let pos = block_start / self.block_per_page;
+        bitmap.cached.set(pos, true);
+        debug_assert!(
+            bitmap.allocated.get(pos).map(|b| *b).unwrap_or(false), 
+            "Swapped in page must be allocated in bitmap, pos={}, uaddr={:#x}", pos, inner.uaddr
+        );
 
         let mut counter = COUNTER.lock();
         counter.swap_in_count += 1;
         counter.swap_in_time += crate::kernel::event::timer::now() - swap_start;
 
-        Ok(page)
+        Ok(frame)
     }
 
-    fn shrink(&self, page_count: &mut usize) {
+    fn shrink(&self, page_count: &mut usize, min_to_shrink: usize) {
         let shrink_start = crate::kernel::event::timer::now();
         let mut lru = self.lru.lock();
-        let mut to_swap_out: Vec<Option<Arc<AnonymousFrameInner>>> = vec![None; *page_count];
-        for i in 0..*page_count {
-            if let Some((_, frame)) = lru.pop_lru() {
-                let status = frame.status.lock();
-                let page = match &*status {
-                    AnonymousFrameStatus::Allocated(allocated) => { allocated.get_page() },
-                    AnonymousFrameStatus::SwappedOut(_) => { unreachable!() }
+        let mut bitmap = self.bitmap.lock();
+        
+        let mut swapped_count = 0;
+        for _ in 0..(*page_count * 2) {
+            if let Some((kpage, frame)) = lru.tail() {
+                let mut state = frame.state.lock();
+                let disk_block = state.disk_block;
+                
+                let allocated = match &mut state.state {
+                    State::Allocated(allocated) => { allocated },
+                    State::SwappedOut => { unreachable!() }
                 };
 
-                let mut tag = false;
+                let mut page_accessed = false;
+                let mut page_dirty = allocated.dirty;
                 for member in &*frame.family_chain.lock() {
                     let addrspace = match member.upgrade() {
                         Some(addrspace) => addrspace,
                         None => { continue; }
                     };
 
-                    if addrspace.take_page_access_bit(page).unwrap_or(false) {
-                        tag = true;
-                        lru.access(&page);
-                        break;
-                    }
+                    let (accessed, dirty) = addrspace.take_page_access_dirty_bit(frame.uaddr).unwrap_or((false, false));
+                    page_accessed |= accessed;
+                    page_dirty |= dirty;
                 }
-                if !tag {
-                    to_swap_out[i] = Some(frame.clone());
+
+                if page_accessed {
+                    allocated.dirty = page_dirty;
+                    drop(state);
+                    lru.access(&kpage);
                     continue;
+                } 
+                    
+                let pos = if disk_block != NO_DISK_BLOCK {
+                    disk_block / self.block_per_page
+                } else if let Some(pos) = bitmap.allocated.first_zero() {
+                    pos
+                } else if let Some(pos) = bitmap.cached.first_one() {
+                    pos
+                } else {
+                    panic!("No space available in swapper during shrinking");
+                };
+                    
+                // Swap out this frame
+                let block_start = pos * self.block_per_page;
+                
+                // Page is dirty or the block does not have a cached page in memory
+                if page_dirty || !bitmap.cached.get(pos).map(|b| *b).unwrap() {
+                    self.driver.write_blocks(
+                        block_start, 
+                        allocated.frame.slice()
+                    ).expect("Failed to write swapped out page to block device");
+                    // kinfo!("Write back swapped out page to block device at block {}", block_start);
+                }
+
+                bitmap.allocated.set(pos, true);
+                bitmap.cached.set(pos, false); // This block does not saved a page cache but a swapped out page
+
+                frame.family_chain.lock().retain(|member| {
+                    if let Some(addrspace) = member.upgrade() {
+                        addrspace.unmap_swap_page(frame.uaddr, kpage);
+                        true
+                    } else {
+                        false
+                    }
+                });
+
+                state.state = State::SwappedOut;
+                state.disk_block = block_start;
+
+                drop(state);
+                // debug_assert!(lru.pop_lru().unwrap() == kpage);
+                lru.pop_lru();
+
+                swapped_count += 1;
+
+                if swapped_count >= *page_count {
+                    break;
                 }
             } else {
                 break;
             }
         }
 
-        let mut swapped_count = 0;
-        to_swap_out.iter().for_each(|i| {
-            if let Some(frame) = i {
-                if let Err(e) = self.swap_out(frame) {
-                    crate::kwarn!("Failed to swap out anonymous frame during shrinking: {:?}", e);
-                } else {
+        if swapped_count < min_to_shrink {
+            for _ in swapped_count..min_to_shrink {
+                if let Some((kpage, frame)) = lru.tail() {
+                    let mut state = frame.state.lock();
+                    let disk_block = state.disk_block;
+                    
+                    let allocated = match &mut state.state {
+                        State::Allocated(allocated) => { allocated },
+                        State::SwappedOut => { unreachable!() }
+                    };
+
+                    let pos = if disk_block != NO_DISK_BLOCK {
+                        disk_block / self.block_per_page
+                    } else if let Some(pos) = bitmap.allocated.first_zero() {
+                        pos
+                    } else if let Some(pos) = bitmap.cached.first_zero() {
+                        pos
+                    } else {
+                        panic!("No space available in swapper during shrinking");
+                    };
+                    
+                    // Swap out this frame
+                    let block_start = pos * self.block_per_page;
+
+                    let page_dirty = if allocated.dirty {
+                        true
+                    } else {
+                        let mut dirty = false;
+                        for member in &*frame.family_chain.lock() {
+                            let addrspace = match member.upgrade() {
+                                Some(addrspace) => addrspace,
+                                None => { continue; }
+                            };
+
+                            let (_accessed, d) = addrspace.take_page_access_dirty_bit(frame.uaddr)
+                                                                      .unwrap_or((false, false));
+                            if d {
+                                dirty = true;
+                                break;
+                            }
+                        }
+                        dirty
+                    };
+                    
+                    if page_dirty || !bitmap.cached.get(pos).map(|b| *b).unwrap() {
+                        self.driver.write_blocks(
+                            block_start, 
+                            allocated.frame.slice()
+                        ).expect("Failed to write swapped out page to block device");
+                    }
+
+                    bitmap.allocated.set(pos, true);
+                    bitmap.cached.set(pos, false); // This block does not saved a page cache but a swapped out page
+
+                    frame.family_chain.lock().retain(|member| {
+                        if let Some(addrspace) = member.upgrade() {
+                            addrspace.unmap_swap_page(frame.uaddr, kpage);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+
+                    state.state = State::SwappedOut;
+                    state.disk_block = block_start;
+
+                    drop(state);
+                    // debug_assert!(lru.pop_lru().unwrap() == kpage);
+                    lru.pop_lru();
+
                     swapped_count += 1;
+                } else {
+                    break;
                 }
             }
-        });
+        }
+
         *page_count -= swapped_count;
 
         let mut counter = COUNTER.lock();
@@ -229,22 +298,22 @@ pub fn init_swapper(driver: Arc<dyn BlockDriverOps>) {
     SWAPPER.init(Swapper::new(driver));
 }
 
-pub fn alloc(family_chain: AddrSpaceFamilyChain, uaddr: usize) -> AnonymousFrame {
-    SWAPPER.alloc(family_chain, uaddr)
+pub fn push_lru(kpage: usize, frame: Arc<AnonymousFrameInner>) {
+    SWAPPER.lru.lock().put(kpage, frame);
 }
 
 pub fn dealloc(frame: &AnonymousFrameInner) {
     SWAPPER.free(frame);
 }
 
-pub(super) fn swap_in_page(inner: &Arc<AnonymousFrameInner>) -> usize {
-    SWAPPER.swap_in(inner).expect("swap in page failed")
+pub(super) fn swap_in_page(block_start: usize, inner: &Arc<AnonymousFrameInner>) -> PhysPageFrame {
+    SWAPPER.swap_in(block_start, inner).expect("swap in page failed")
 }
 
 pub(super) fn read_swapped_page(diskpos: usize, frame: &PhysPageFrame) {
     SWAPPER.read_swapped_out(diskpos, frame);
 }
 
-pub fn shrink(page_count: &mut usize) {
-    SWAPPER.shrink(page_count);
+pub fn shrink(page_count: &mut usize, min_to_shrink: usize) {
+    SWAPPER.shrink(page_count, min_to_shrink);
 }

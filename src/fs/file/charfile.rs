@@ -7,7 +7,7 @@ use crate::driver::CharDriverOps;
 use crate::fs::file::FileOps;
 use crate::fs::{InodeOps, Mode};
 
-use super::{SeekWhence, DirResult};
+use super::SeekWhence;
 
 pub struct CharFile {
     driver: Arc<dyn CharDriverOps>,

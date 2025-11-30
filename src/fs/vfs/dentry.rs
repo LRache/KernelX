@@ -6,22 +6,13 @@ use alloc::collections::BTreeMap;
 
 use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::inode::{Index, InodeOps, Mode};
-use crate::kinfo;
 use crate::klib::SpinLock;
 
 use super::vfs;
 
-struct DentryInner {
-    parent: Option<Arc<Dentry>>,
-    children: BTreeMap<String, Weak<Dentry>>,
-    inode: Weak<dyn InodeOps>,
-    mount_to: Option<Arc<Dentry>>,
-}
-
 pub struct Dentry {
     inode_index: Index,
     name: String,
-    // inner: SpinLock<DentryInner>,
     parent: SpinLock<Option<Arc<Dentry>>>,
     children: SpinLock<BTreeMap<String, Weak<Dentry>>>,
     inode: SpinLock<Weak<dyn InodeOps>>,
@@ -33,12 +24,6 @@ impl Dentry {
         Self {
             inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
             name: name.into(),
-            // inner: SpinLock::new(DentryInner {
-            //     parent: Some(parent.clone()),
-            //     children: BTreeMap::new(),
-            //     inode: Arc::downgrade(inode),
-            //     mount_to: None,
-            // })
             parent: SpinLock::new(Some(parent.clone())),
             children: SpinLock::new(BTreeMap::new()),
             inode: SpinLock::new(Arc::downgrade(inode)),
@@ -50,12 +35,6 @@ impl Dentry {
         Self {
             inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
             name: "/".into(),
-            // inner: SpinLock::new(DentryInner {
-            //     parent: None,
-            //     children: BTreeMap::new(),
-            //     inode: Arc::downgrade(inode),
-            //     mount_to: None,
-            // })
             parent: SpinLock::new(None),
             children: SpinLock::new(BTreeMap::new()),
             inode: SpinLock::new(Arc::downgrade(inode)),
@@ -71,27 +50,7 @@ impl Dentry {
         self.inode_index.ino
     }
 
-    fn get_inode_inner(&self, inner: &mut DentryInner) -> SysResult<Arc<dyn InodeOps>> {
-        match inner.inode.upgrade() {
-            None => {
-                let inode =  vfs().load_inode(self.sno(), self.ino())?;
-                inner.inode = Arc::downgrade(&inode);
-                Ok(inode)
-            }
-            Some(inode) => Ok(inode),
-        }
-    }
-
-    fn with_inode_inner<F, R>(&self, inner: &mut DentryInner, f: F) -> SysResult<R>
-    where
-        F: FnOnce(&Arc<dyn InodeOps>) -> R,
-    {
-        let inode = self.get_inode_inner(inner)?;
-        Ok(f(&inode))
-    }
-
     pub fn get_inode(&self) -> Arc<dyn InodeOps> {
-        // self.get_inode_inner(&mut self.inner.lock()).expect("Failed to get inode from dentry")
         let inode = self.inode.lock();
         match inode.upgrade() {
             None => {
@@ -105,13 +64,10 @@ impl Dentry {
     }
 
     pub fn get_parent(&self) -> Option<Arc<Dentry>> {
-        // let inner = self.inner.lock();
-        // inner.parent.clone()
         (*self.parent.lock()).clone()
     }
 
     pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
-        // let mut inner = self.inner.lock();
         let mut children = self.children.lock();
 
         if let Some(child) = children.get(name) {
@@ -119,48 +75,17 @@ impl Dentry {
                 return Ok(child);
             }
         }
-        
-        // if let Some(child) = inner.children.get(name) {
-        //     if let Some(child) = child.upgrade() {
-        //         return Ok(child);
-        //     }
-        // }
-
-        // let inode = match inner.inode.upgrade() {
-        //     None => {
-        //         let inode = vfs().load_inode(self.sno(), self.ino())?;
-        //         inner.inode = Arc::downgrade(&inode);
-        //         inode
-        //     }
-        //     Some(inode) => inode,
-        // };
-        // let mut inode = self.inode.lock();
-        // let inode = match self.inode.lock().upgrade() {
-        //     None => {
-        //         let inode = vfs().load_inode(self.sno(), self.ino())?;
-        //         *self.inode.lock() = Arc::downgrade(&inode);
-        //         inode
-        //     }
-        //     Some(inode) => inode,
-        // };
-
         let lookup_ino = self.get_inode().lookup(name)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
 
         let new_child = Arc::new(Self::new(name, self, &inode));
-        // inner.children.insert(name.into(), Arc::downgrade(&new_child));
         children.insert(name.into(), Arc::downgrade(&new_child));
         
         Ok(new_child)
     }
 
     pub fn get_mount_to(self: Arc<Self>) -> Arc<Dentry> {
-        // if let Some(mount_to) = &self.inner.lock().mount_to {
-        //     mount_to.clone()
-        // } else {
-        //     self
-        // }
         if let Some(mount_to) = &*self.mount_to.lock() {
             mount_to.clone()
         } else {
@@ -169,26 +94,6 @@ impl Dentry {
     }
 
     pub fn walk_link(self: Arc<Self>) -> SysResult<Arc<Dentry>> {
-        // let mut inner = self.inner.lock();
-        // if inner.parent.is_some() {
-        //     let r = self.with_inode_inner(&mut inner, |inode| -> SysResult<Option<Arc<Dentry>>> {
-        //                 kinfo!("walk_link: dentry={:?}", self);
-
-        //         if inode.mode()?.contains(Mode::S_IFLNK) {
-        //             let mut buffer = [0u8; 256];
-        //             let count = inode.readat(&mut buffer, 0)?;
-        //             let link_path = core::str::from_utf8(&buffer[..count]).map_err(|_| Errno::EINVAL)?;
-        //             Ok(Some(vfs().lookup_dentry(&inner.parent.as_ref().unwrap(), &link_path)?))
-        //         } else {
-        //             Ok(None)
-        //         }
-        //     })??;
-        //     drop(inner);
-        //     Ok(r.unwrap_or(self))
-        // } else {
-        //     drop(inner);
-        //     Ok(self)
-        // }
         let parent = self.parent.lock();
         if let Some(p) = &*parent {
             let inode = self.get_inode();
@@ -209,29 +114,10 @@ impl Dentry {
     }
 
     pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>) {
-        // let mut inner = self.inner.lock();
-        // inner.mount_to = Some(Arc::new(
-        //     Dentry { 
-        //         inode_index: Index { sno: mount_to.get_sno(), ino: mount_to.get_ino() },
-        //         name: self.name.clone(),
-        //         inner: SpinLock::new(DentryInner {
-        //             parent: inner.parent.clone(),
-        //             children: BTreeMap::new(),
-        //             inode: Arc::downgrade(mount_to),
-        //             mount_to: None,
-        //         })
-        //     }
-        // ));
         *self.mount_to.lock() =  Some(Arc::new(
             Dentry { 
                 inode_index: Index { sno: mount_to.get_sno(), ino: mount_to.get_ino() },
                 name: self.name.clone(),
-                // inner: SpinLock::new(DentryInner {
-                //     parent: inner.parent.clone(),
-                //     children: BTreeMap::new(),
-                //     inode: Arc::downgrade(mount_to),
-                //     mount_to: None,
-                // })
                 parent: SpinLock::new(self.parent.lock().clone()),
                 children: SpinLock::new(BTreeMap::new()),
                 inode: SpinLock::new(Arc::downgrade(mount_to)),

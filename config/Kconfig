@@ -11,41 +11,28 @@ config KERNELX_VERSION
 menu "Platform Configuration"
 
 choice
-	prompt "Target Platform"
-	default PLATFORM_QEMU_VIRT_RISCV64
+	prompt "Target Architecture"
+	default RISCV64
 	help
-	  Select the target platform for KernelX kernel.
+	  Select the target architecture for KernelX kernel.
 
-config PLATFORM_QEMU_VIRT_RISCV64
-	bool "QEMU RISC-V 64-bit Virtual Machine"
+config RISCV64
+	bool "RISC-V 64-bit"
 	help
-	  Support for QEMU RISC-V 64-bit virtual machine platform.
-	  This is the primary development and testing platform.
-
-config PLATFORM_STARFIVE_JH7110_RISCV64
-	bool "StarFive JH7110 RISC-V 64-bit"
-	help
-	  Support for StarFive JH7110 RISC-V 64-bit platform.
+	  Support for RISC-V 64-bit architecture.
 
 endchoice
 
-config PLATFORM
-	string
-	default "qemu-virt-riscv64" if PLATFORM_QEMU_VIRT_RISCV64
-	default "starfive-jh7110-riscv64" if PLATFORM_STARFIVE_JH7110_RISCV64
-
 config ARCH
 	string
-	default "riscv" if PLATFORM_QEMU_VIRT_RISCV64
-	default "riscv" if PLATFORM_STARFIVE_JH7110_RISCV64
+	default "riscv" if RISCV64
 	help
 	  Target architecture for the kernel.
 	  Automatically selected based on the chosen platform.
 
 config ARCH_BITS
 	int
-	default 64 if PLATFORM_QEMU_VIRT_RISCV64
-	default 64 if PLATFORM_STARFIVE_JH7110_RISCV64
+	default 64 if RISCV64
 	help
 	  Architecture bit width (32 or 64).
 	  Automatically selected based on the chosen platform.
@@ -151,19 +138,28 @@ config WARN_UNIMPLEMENTED_SYSCALL
 
 endmenu
 
+menu "Experimental Features"
+
+config ENABLE_SWAP_MEMORY
+	bool "Enable Swap Memory"
+	default n
+	help
+	  Enable swap memory support in the kernel.
+	  This feature allows the kernel to swap memory pages to disk when physical memory is low.
+
+endmenu
+
 menu "QEMU Configuration"
 
 config QEMU_MACHINE
 	string "QEMU machine type"
 	default "virt"
-	depends on PLATFORM_QEMU_VIRT_RISCV64
 	help
 	  QEMU machine type for virtualization.
 
 config QEMU_MEMORY
 	string "QEMU memory size"
 	default "256M"
-	depends on PLATFORM_QEMU_VIRT_RISCV64
 	help
 	  Amount of memory to allocate for QEMU virtual machine.
 
@@ -171,7 +167,6 @@ config QEMU_CPUS
 	int "Number of CPUs"
 	range 1 8
 	default 1
-	depends on PLATFORM_QEMU_VIRT_RISCV64
 	help
 	  Number of CPU cores for QEMU virtual machine.
 

@@ -88,7 +88,6 @@ pub fn usertrap_handler() -> ! {
                     kinfo!("Counter interrupt occurred");
                 },
             }
-            // println!("Interrupt occurred, returning to user mode");
         },
     }
     
@@ -140,11 +139,12 @@ pub fn kerneltrap_handler() {
             match trap {
                 scause::Trap::StorePageFault => {
                     let stval = stval::read();
-                    let tcb = current::tcb();
-                    if tcb.kernel_stack.stack_overflow(stval) {
+                    let task = current::task();
+                    let kstack = task.kstack();
+                    if kstack.check_stack_overflow(stval) {
                         panic!("Kernel stack overflow detected at address: {:#x}, tid={}", stval, current::tid());
                     } else {
-                        panic!("Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}, kstack_top={:#x}", stval, sepc, trap, tcb.kernel_stack.get_top());
+                        panic!("Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}, kstack_top={:#x}", stval, sepc, trap, kstack.get_top());
                     }
                 }
                 _ => {

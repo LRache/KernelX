@@ -1,7 +1,7 @@
 include config/config.mk
 
-IMAGE = build/$(PLATFORM)/Image
-VMKERNELX = build/$(PLATFORM)/vmkernelx
+IMAGE = build/$(ARCH)$(ARCH_BITS)/Image
+VMKERNELX = build/$(ARCH)$(ARCH_BITS)/vmkernelx
 
 TMPDISK_SIZE ?= 1G
 TMPDISK      := $(shell mktemp /tmp/qemu-tmpdisk-XXXXXX)

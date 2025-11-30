@@ -24,15 +24,28 @@ pub trait DriverOps {
 use downcast_rs::{impl_downcast, Downcast};
 
 pub trait BlockDriverOps: DriverOps + Downcast {
-    fn open(&mut self) -> Result<(), ()> {
-        Ok(())
-    }
-    fn close(&mut self) -> Result<(), ()> {
+    fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()>;
+    fn write_block(&self, block: usize, buf: &[u8]) -> Result<(), ()>;
+
+    fn read_blocks(&self, start_block: usize, buf: &mut [u8]) -> Result<(), ()> {
+        let block_size = self.get_block_size() as usize;
+        debug_assert!(block_size <= 512);
+        let block_count = buf.len() / block_size;
+        for i in 0..block_count {
+            self.read_block(start_block + i, &mut buf[i * block_size..(i + 1) * block_size])?;
+        }
         Ok(())
     }
 
-    fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()>;
-    fn write_block(&self, block: usize, buf: &[u8]) -> Result<(), ()>;
+    fn write_blocks(&self, start_block: usize, buf: &[u8]) -> Result<(), ()> {
+        let block_size = self.get_block_size() as usize;
+        debug_assert!(block_size <= 512);
+        let block_count = buf.len() / block_size;
+        for i in 0..block_count {
+            self.write_block(start_block + i, &buf[i * block_size..(i + 1) * block_size])?;
+        }
+        Ok(())
+    }
 
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<(), ()> {
         let block_size = self.get_block_size() as usize;

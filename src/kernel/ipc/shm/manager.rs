@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use bitflags::bitflags;
 
 use crate::kernel::mm::{MapPerm, AddrSpace};
-use crate::kernel::mm::maparea::shm::ShmArea;
+use crate::kernel::mm::maparea::ShmArea;
 use crate::arch::PGSIZE;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::SpinLock;

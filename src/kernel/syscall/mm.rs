@@ -69,7 +69,8 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         }
 
         let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
-        Box::new(AnonymousArea::new(0, perm, page_count))
+        let shared = flags.contains(MMapFlags::SHARED);
+        Box::new(AnonymousArea::new(0, perm, page_count, shared))
     } else {
         if offset % arch::PGSIZE != 0 {
             return Err(Errno::EINVAL);

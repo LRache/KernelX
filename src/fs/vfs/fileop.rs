@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use alloc::string::String;
 
 use crate::fs::inode::{InodeOps, Mode};
 use crate::fs::perm::Perm;
@@ -15,8 +14,6 @@ fn new_file(dentry: &Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Fi
     if mode.contains(Mode::S_IFIFO) {
         unimplemented!() // return Pipe::new_fifo(...);
     }
-
-    // kinfo!("perm={:?}, mode={:?}", perm, mode);
 
     let (uid, gid) = inode.owner()?;
     if !mode.check_perm(perm, uid, gid) {

@@ -3,15 +3,12 @@ use core::mem::MaybeUninit;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
-use crate::fs::Perm;
-use crate::fs::PermFlags;
-use crate::kernel::task::Tid;
-use crate::klib::SpinLock;
+use crate::fs::{Perm, PermFlags, vfs};
 use crate::fs::file::FileFlags;
-use crate::fs::vfs;
+use crate::kernel::scheduler::Tid;
+use crate::klib::SpinLock;
 
-use super::Pid;
-use super::PCB;
+use super::{PCB, Pid};
 
 pub struct Manager {
     pcbs: SpinLock<BTreeMap<Pid, Arc<PCB>>>,

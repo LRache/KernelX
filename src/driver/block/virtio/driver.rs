@@ -52,6 +52,14 @@ impl BlockDriverOps for VirtIOBlockDriver {
         self.driver.lock().write_blocks(block, buf).map_err(|_| ())
     }
 
+    fn read_blocks(&self, start_block: usize, buf: &mut [u8]) -> Result<(), ()> {
+        self.driver.lock().read_blocks(start_block, buf).map_err(|_| ())
+    }
+
+    fn write_blocks(&self, start_block: usize, buf: &[u8]) -> Result<(), ()> {
+        self.driver.lock().write_blocks(start_block, buf).map_err(|_| ())
+    }
+
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<(), ()> {
         let mut length = buf.len();
         let mut block = offset / BLOCK_SIZE;

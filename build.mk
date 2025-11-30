@@ -2,7 +2,7 @@ COMPILE_MODE ?= debug
 
 KERNELX_HOME := $(strip $(patsubst %/, %, $(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 
-BUILD = $(abspath build/$(PLATFORM))
+BUILD = $(abspath build/$(ARCH)$(ARCH_BITS))
 KERNEL_VM = $(BUILD)/vmkernelx
 KERNEL_IMAGE = $(BUILD)/Image
 
@@ -39,15 +39,25 @@ $(warning Invalid LOG_LEVEL: $(LOG_LEVEL). Valid values: trace, debug, info, war
 endif
 # ------ Configure log level features using a more elegant lookup ------ #
 
-ifeq ($(LOG_SYSCALL),y)
+ifeq ($(CONFIG_LOG_SYSCALL),y)
 RUST_FEATURES += log-trace-syscall
 endif
 
-ifeq ($(WARN_UNIMPLEMENTED_SYSCALL),y)
+ifeq ($(CONFIG_ENABLE_SWAP_MEMORY),y)
+RUST_FEATURES += swap-memory
+endif
+
+ifeq ($(CONFIG_WARN_UNIMPLEMENTED_SYSCALL),y)
 RUST_FEATURES += warn-unimplemented-syscall
 endif
 
 RUST_FEATURES += no-smp
+
+CARGO_FLAGS += --target $(RUST_TARGET)
+CARGO_FLAGS += --features "$(RUST_FEATURES)"
+ifeq ($(COMPILE_MODE),release)
+CARGO_FLAGS += --release
+endif
 
 all: kernel
 
@@ -76,10 +86,10 @@ $(VDSO):
 	@ $(BUILD_ENV) make -C vdso all
 
 $(RUST_KERNEL): $(CLIB) $(VDSO)
-	$(BUILD_ENV) cargo build --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
+	$(BUILD_ENV) cargo build $(CARGO_FLAGS)
 
 check:
-	@ $(BUILD_ENV) cargo check --target $(RUST_TARGET) --features "$(RUST_FEATURES)"
+	@ $(BUILD_ENV) cargo check $(CARGO_FLAGS)
 
 objcopy:
 	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) build/$(PLATFORM)/kernel.bin

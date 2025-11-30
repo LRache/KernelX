@@ -10,7 +10,6 @@ use crate::kernel::scheduler::Task;
 use crate::kernel::usync::futex;
 use crate::kernel::config;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::tid::Tid;
 use crate::kernel::task::PCB;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::mm::{AddrSpace, elf};
@@ -18,17 +17,14 @@ use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
-use crate::kernel::scheduler::TaskState;
+use crate::kernel::scheduler::{TaskState, Tid, KernelStack};
 use crate::fs::file::{File, FileFlags, CharFile};
 use crate::fs::{Perm, PermFlags, vfs};
-use crate::kinfo;
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::arch;
 use crate::driver;
 use crate::ktrace;
-
-use super::kernelstack::KernelStack;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TaskStateSet {
@@ -445,10 +441,6 @@ impl TCB {
         }
     }
 
-    pub fn get_kernel_stack_top(&self) -> usize {
-        self.kernel_stack.get_top()
-    }
-
     pub fn set_parent_waiting_vfork(&self, parent: Option<Arc<dyn Task>>) {
         *self.parent_waiting_vfork.lock() = parent;
     }
@@ -461,12 +453,6 @@ impl TCB {
     }
 }
 
-impl Drop for TCB {
-    fn drop(&mut self) {
-        // kinfo!("Dropping TCB of task {}", self.tid);
-    }
-}
-
 impl Task for TCB {
     fn tid(&self) -> Tid {
         self.tid
@@ -474,6 +460,10 @@ impl Task for TCB {
 
     fn get_kcontext_ptr(&self) -> *mut KernelContext {
         &self.kernel_context as *const KernelContext as *mut KernelContext
+    }
+
+    fn kstack(&self) -> &KernelStack {
+        &self.kernel_stack
     }
 
     fn tcb(&self) -> &TCB {
@@ -507,7 +497,6 @@ impl Task for TCB {
             _ => return false,
         }
         state.state = TaskState::Blocked;
-        // kinfo!("Task {} blocked: {}", self.tid, _reason);
         true
     }
 

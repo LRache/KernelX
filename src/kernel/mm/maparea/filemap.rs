@@ -216,6 +216,10 @@ impl Area for FileMapArea {
         }
     }
 
+    fn perm(&self) -> MapPerm {
+        self.perm
+    }
+
     fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
         

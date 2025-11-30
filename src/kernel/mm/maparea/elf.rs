@@ -60,11 +60,8 @@ impl ELFArea {
         
         let frame = PhysPageFrame::alloc_zeroed();
         if area_offset < self.file_length {
-            // let mut buffer = [0u8; arch::PGSIZE];
             // Read up to a page, but not beyond the file length for this segment.
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
-            // self.file.read_at(&mut buffer[..length], file_offset).expect("Failed to read file");
-            // frame.copy_from_slice(0, &buffer[..length]);
             self.file.read_at(&mut frame.slice()[..length], file_offset).expect("Failed to read file");
         }
 
@@ -148,6 +145,10 @@ impl Area for ELFArea {
         } else {
             None
         }
+    }
+
+    fn perm(&self) -> MapPerm {
+        self.perm
     }
 
     fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {

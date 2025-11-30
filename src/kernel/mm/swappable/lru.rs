@@ -133,10 +133,6 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
     pub fn put(&mut self, key: K, value: V) {
         if let Some(node) = self.map.get(&key) {
             unsafe {
@@ -152,19 +148,6 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         self.map.insert(key, new_node);
     }
 
-    pub fn get(&mut self, key: &K) -> Option<V>
-    where
-        V: Clone,
-    {
-        if let Some(node) = self.map.get(key) {
-            let node_clone = node.clone();
-            self.list.move_to_front(node_clone.clone());
-            Some(node_clone.value.clone())
-        } else {
-            None
-        }
-    }
-
     pub fn access(&mut self, key: &K) -> bool {
         if let Some(node) = self.map.get(key) {
             self.list.move_to_front(node.clone());
@@ -174,18 +157,20 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         }
     }
 
-    pub fn pop_lru(&mut self) -> Option<(K, V)>
+    pub fn pop_lru(&mut self) -> Option<K>
     where
         V: Clone,
     {
         if let Some(lru_node) = self.list.pop_back() {
-            let key = lru_node.key;
-            let value = lru_node.value.clone();
-            self.map.remove(&key);
-            Some((key, value))
+            self.map.remove(&lru_node.key);
+            Some(lru_node.key)
         } else {
-            None
+            None    
         }
+    }
+
+    pub fn tail(&self) -> Option<(K, &V)> {
+        self.list.tail.as_ref().map(|node| (node.key, &node.value))
     }
 
     pub fn remove(&mut self, key: &K) -> bool {

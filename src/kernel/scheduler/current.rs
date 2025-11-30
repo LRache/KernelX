@@ -1,18 +1,21 @@
+use core::time::Duration;
+
 use alloc::sync::Arc;
 use spin::Mutex;
 
-use crate::kernel::event::Event;
+use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::SignalActionTable;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::task::Task;
-use crate::kernel::task::tid::Tid;
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::task::fdtable::FDTable;
-use crate::kernel::scheduler::{current, Processor};
+use crate::kernel::scheduler::Processor;
+use crate::kernel::uapi::Uid;
 use crate::arch;
 use crate::fs::Dentry;
-use crate::kernel::uapi::Uid;
 use crate::klib::SpinLock;
+
+use super::Tid;
 
 pub fn processor() -> &'static mut Processor<'static> {
     let p = arch::get_percpu_data() as *mut Processor;
@@ -105,10 +108,6 @@ pub mod copy_to_user {
         addrspace().copy_to_user_slice(uaddr, slice)
     }
 
-    pub fn array<T: Copy, const N: usize>(uaddr: usize, arr: &[T; N]) -> SysResult<()> {
-        addrspace().copy_to_user_array(uaddr, arr)
-    }
-
     pub fn string(uaddr: usize, s: &str, max_size: usize) -> SysResult<usize> {
         let bytes = s.as_bytes();
         let len = core::cmp::min(bytes.len(), max_size - 1);
@@ -156,13 +155,13 @@ pub fn block_uninterruptible(reason: &'static str) -> Event {
     task().take_wakeup_event().unwrap()
 }
 
-pub fn umask() -> u32 {
-    pcb().umask() as u32
+pub fn sleep(durations: Duration) -> Event {
+    timer::add_timer(task().clone(), durations);
+    task().block("sleep");
+    schedule();
+    task().take_wakeup_event().unwrap()
 }
 
-pub fn kernel_stack_used() -> usize {
-    if is_clear() {
-        return 0;
-    }
-    current::tcb().get_kernel_stack_top() - arch::get_kernel_stack_top()
+pub fn umask() -> u32 {
+    pcb().umask() as u32
 }

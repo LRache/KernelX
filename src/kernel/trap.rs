@@ -16,6 +16,7 @@ pub fn trap_enter() {
 
 pub fn trap_return() {
     let tcb = current::tcb();
+    tcb.recive_pending_signal_from_parent();
     tcb.handle_signal();
 
     let counter = &mut tcb.time_counter.lock();

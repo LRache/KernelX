@@ -109,9 +109,6 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     };
 
     let path = uptr_filename.read()?;
-    if !path.starts_with("/tmp") {
-        // crate::kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:#o}", dirfd, path, open_flags, mode);
-    }
     
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
