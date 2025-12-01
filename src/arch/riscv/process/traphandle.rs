@@ -1,3 +1,4 @@
+use crate::arch::riscv::fdt::svadu_enable;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -33,6 +34,16 @@ fn handle_syscall() {
     });
 }
 
+fn svadu_mark_page_accessed(uaddr: usize) -> bool {
+    let mut pagetable = current::addrspace().pagetable().write();
+    pagetable.mark_page_accessed(uaddr)
+}
+
+fn svadu_mark_page_dirty(uaddr: usize) -> bool {
+    let mut pagetable = current::addrspace().pagetable().write();
+    pagetable.mark_page_dirty(uaddr)
+}
+
 unsafe extern "C" {
     fn asm_kerneltrap_entry() -> !;
 }
@@ -49,15 +60,21 @@ pub fn usertrap_handler() -> ! {
                 scause::Trap::EcallU => handle_syscall(),
                 scause::Trap::InstPageFault => {
                     let addr = stval::read();
-                    trap::memory_fault(addr, MemAccessType::Execute);
+                    if svadu_enable() || !svadu_mark_page_accessed(addr) {
+                        trap::memory_fault(addr, MemAccessType::Execute);
+                    }
                 },
                 scause::Trap::LoadPageFault => {
                     let addr = stval::read();
-                    trap::memory_fault(addr, MemAccessType::Read);
+                    if svadu_enable() || !svadu_mark_page_accessed(addr) {
+                        trap::memory_fault(addr, MemAccessType::Read);
+                    }
                 },
                 scause::Trap::StorePageFault => {
                     let addr = stval::read();
-                    trap::memory_fault(addr, MemAccessType::Write);
+                    if svadu_enable() || !svadu_mark_page_dirty(addr) || !svadu_mark_page_dirty(addr) {
+                        trap::memory_fault(addr, MemAccessType::Write);
+                    }
                 },
                 scause::Trap::IllegalInst => {
                     trap::illegal_inst();

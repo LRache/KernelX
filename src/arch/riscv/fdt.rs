@@ -84,3 +84,7 @@ fn load_cpu_node(child: &FdtNode) {
 pub fn time_frequency() -> u32 {
     *TIME_FREQ
 }
+
+pub fn svadu_enable() -> bool {
+    *SVADU_EXTENSION_ENABLED
+}

@@ -154,6 +154,30 @@ impl<T: PageAllocator> PageTableImpls<T> {
     //         None
     //     }
     // }
+
+    pub fn mark_page_accessed(&mut self, uaddr: usize) -> bool {
+        if let Some(mut pte) = self.find_pte(uaddr) {
+            let flags = pte.flags();
+            if !flags.contains(PTEFlags::A) {
+                pte.set_flags(flags | PTEFlags::A);
+                pte.write_back().expect("Failed to write back PTE when marking page accessed");
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn mark_page_dirty(&mut self, uaddr: usize) -> bool {
+        if let Some(mut pte) = self.find_pte(uaddr) {
+            let flags = pte.flags();
+            if !flags.contains(PTEFlags::D) {
+                pte.set_flags(flags | PTEFlags::D);
+                pte.write_back().expect("Failed to write back PTE when marking page dirty");
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl<T: PageAllocator> Drop for PageTableImpls<T> {
@@ -193,6 +217,20 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         let mut pte = self.find_pte_or_create(uaddr);
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
+        pte.write_back().expect("Failed to write back PTE");
+    }
+    
+    fn mmap_replace_kaddr(&mut self, uaddr: usize, kaddr: usize) {
+        let mut pte = self.find_pte_or_create(uaddr);
+        pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
+        pte.write_back().expect("Failed to write back PTE");
+    }
+
+    fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {
+        let flags = perm.into();
+
+        let mut pte = self.find_pte_or_create(uaddr);
+        pte.set_flags(flags);
         pte.write_back().expect("Failed to write back PTE");
     }
 
