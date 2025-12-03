@@ -38,7 +38,7 @@ impl InodeOps for NullInode {
         Ok(buf.len())
     }
 
-    fn get_dent(&self, _index: usize) -> SysResult<Option<DirResult>> {
+    fn get_dent(&self, _index: usize) -> SysResult<Option<(DirResult, usize)>> {
         // /dev/null is not a directory
         Err(Errno::ENOTDIR)
     }

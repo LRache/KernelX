@@ -14,7 +14,7 @@ use crate::arch;
 use super::nofilemap::FrameState;
 
 #[cfg(feature="swap-memory")]
-use super::nofilemap::PageFrame;
+use super::nofilemap::SwappableNoFileFrame;
 
 pub enum AuxKey {
     _NULL   = 0,
@@ -51,7 +51,7 @@ impl Auxv {
     }
 
     pub fn push(&mut self, key: AuxKey, value: usize) {
-        assert!(self.length < AUX_MAX, "Auxiliary vector is full, cannot add more entries.");
+        debug_assert!(self.length < AUX_MAX, "Auxiliary vector is full, cannot add more entries.");
         self.auxv[self.length * 2] = key as usize;
         self.auxv[self.length * 2 + 1] = value;
         self.length += 1;
@@ -76,7 +76,6 @@ impl UserStack {
 
     fn allocate_page(&mut self, page_index: usize, pagetable: &mut PageTable, addrspace: &AddrSpace) -> usize {
         debug_assert!(page_index < self.get_max_page_count(), "Page index out of bounds: {}", page_index);
-        
         debug_assert!(self.frames[page_index].is_unallocated(), "Page at index {} is already allocated", page_index);
         
         let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
@@ -109,7 +108,7 @@ impl UserStack {
     }
 
     #[cfg(feature = "swap-memory")]
-    fn handle_memory_fault_on_swapped_allocated(&self, frame: &PageFrame, addrspace: &AddrSpace) {
+    fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
         let kpage = frame.get_page_swap_in();
         addrspace.pagetable().write().mmap(
@@ -120,7 +119,7 @@ impl UserStack {
     }
 
     #[cfg(feature = "swap-memory")]
-    fn handle_cow_read_swapped_out(&self, frame: &PageFrame, addrspace: &AddrSpace) {
+    fn handle_cow_read_swapped_out(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
         let kpage = frame.get_page_swap_in();
         addrspace.pagetable().write().mmap(
@@ -171,6 +170,7 @@ impl UserStack {
     }
 
     fn push_usize(&mut self, top: &mut usize, value: usize, pagetable: &mut PageTable, addrspace: &AddrSpace) -> Result<(), Errno> {
+        // *top &= !(core::mem::size_of::<usize>() - 1);
         self.push_buffer(top, &value.to_le_bytes(), pagetable, addrspace)
     }
 
@@ -310,10 +310,9 @@ impl Area for UserStack {
                     FrameState::Unallocated
                 }
                 FrameState::Allocated(frame) | FrameState::Cow(frame) => {
-                    if let Some(kpage) = frame.get_page() {
-                        self_pagetable.mmap_replace(
+                    if !frame.is_swapped_out() {
+                        self_pagetable.mmap_replace_perm(
                             config::USER_STACK_TOP - (index + 1) * arch::PGSIZE,
-                            kpage,
                             MapPerm::R | MapPerm::U
                         );
                     }

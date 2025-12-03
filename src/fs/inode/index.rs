@@ -1,4 +1,4 @@
-#[derive(Eq, PartialEq, PartialOrd, Hash, Clone, Copy)]
+#[derive(Eq, PartialEq, PartialOrd, Hash, Clone, Copy, Debug)]
 pub struct Index {
     pub sno: u32,
     pub ino: u32,

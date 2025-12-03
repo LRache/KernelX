@@ -12,7 +12,7 @@ use crate::arch;
 use super::nofilemap::FrameState;
 
 #[cfg(feature = "swap-memory")]
-use super::nofilemap::PageFrame;
+use super::nofilemap::SwappableNoFileFrame;
 
 pub struct AnonymousArea {
     ubase: usize,
@@ -61,13 +61,13 @@ impl AnonymousArea {
     }
 
     #[cfg(feature = "swap-memory")]
-    fn handle_memory_fault_on_swapped_allocated(&self, frame: &PageFrame, addrspace: &AddrSpace) {
+    fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         let page = frame.get_page_swap_in();
         addrspace.pagetable().write().mmap(frame.uaddr(), page, self.perm);
     }
 
     #[cfg(feature = "swap-memory")]
-    fn handle_cow_read_swapped_out(&self, frame: &PageFrame, addrspace: &AddrSpace) {
+    fn handle_cow_read_swapped_out(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
         let kpage = frame.get_page_swap_in();
         addrspace.pagetable().write().mmap(
@@ -182,11 +182,10 @@ impl Area for AnonymousArea {
             self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
                 match frame {
                     FrameState::Allocated(allocated) => {
-                        if let Some(kpage) = allocated.get_page() {
+                        if let Some(_) = allocated.get_page() {
                             if self.perm.contains(MapPerm::W) {
-                                self_pagetable.mmap_replace(
+                                self_pagetable.mmap_replace_perm(
                                     self.ubase + page_index * arch::PGSIZE,
-                                    kpage,
                                     perm
                                 );
                             }
@@ -288,8 +287,8 @@ impl Area for AnonymousArea {
         let mut pagetable = pagetable.write();
         for frame in self.frames.iter() {
             if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
-                if let Some(kpage) = frame.get_page() {
-                    pagetable.mmap_replace(frame.uaddr(), kpage, perm);
+                if !frame.is_swapped_out() {
+                    pagetable.mmap_replace_perm(frame.uaddr(), perm);
                 }
             }
             // Note: We don't update COW pages here as they should maintain

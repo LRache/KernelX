@@ -70,15 +70,17 @@ impl File {
         self.inode.truncate(new_size)
     }
 
-    pub fn get_dent(&self) -> SysResult<Option<DirResult>> {
+    /// Return the dirent and the old file pos.
+    pub fn get_dent(&self) -> SysResult<Option<(DirResult, usize)>> {
         let mut pos = self.pos.lock();
-        let dent = match self.inode.get_dent(*pos)? {
+        let old_pos = *pos;
+        let (dent, next_pos) = match self.inode.get_dent(*pos)? {
             Some(d) => d,
             None => return Ok(None),
         };
-        *pos += dent.len as usize;
+        *pos = next_pos;
         
-        Ok(Some(dent))
+        Ok(Some((dent, old_pos)))
     }
 }
 

@@ -27,13 +27,18 @@ impl InodeOps for RootInode {
         "devfs"
     }
 
-    fn get_dent(&self, index: usize) -> SysResult<Option<DirResult>> {
-        match index {
-            0 => Ok(Some(DirResult { ino: ROOT_INO, name: ".".into(), file_type: FileType::Directory, len: 1})),
-            1 => Ok(Some(DirResult { ino: NULL_INO, name: "null".into(), file_type: FileType::Regular, len: 1 })),
-            2 => Ok(Some(DirResult { ino: ZERO_INO, name: "zero".into(), file_type: FileType::Regular, len: 1 })),
-            _ => Ok(None),
-        }
+    fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        let r = match index {
+            // 0 => DirResult { ino: ROOT_INO, name: ".".into(), file_type: FileType::Directory, len: 1},
+            // 1 => DirResult { ino: NULL_INO, name: "null".into(), file_type: FileType::Regular, len: 1 },
+            // 2 => DirResult { ino: ZERO_INO, name: "zero".into(), file_type: FileType::Regular, len: 1 },
+            0 => DirResult { ino: ROOT_INO, name: ".".into(), file_type: FileType::Directory},
+            1 => DirResult { ino: NULL_INO, name: "null".into(), file_type: FileType::Regular},
+            2 => DirResult { ino: ZERO_INO, name: "zero".into(), file_type: FileType::Regular},
+            _ => return Ok(None),
+        };
+
+        Ok(Some((r, index + 1)))
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {

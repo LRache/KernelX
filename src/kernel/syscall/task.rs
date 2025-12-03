@@ -7,7 +7,7 @@ use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
-use crate::kernel::scheduler::{current, Task, Tid};
+use crate::kernel::scheduler::{current, Tid};
 use crate::kernel::scheduler;
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr, UString};
@@ -102,9 +102,9 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
         child.set_parent_waiting_vfork(Some(current::task().clone()));
         scheduler::push_task(child);
 
-        current::block_uninterruptible("vfork");
+        let event = current::block_uninterruptible("vfork");
 
-        match current::tcb().take_wakeup_event().unwrap() {
+        match event {
             Event::VFork => {}
             _ => unreachable!(),
         }

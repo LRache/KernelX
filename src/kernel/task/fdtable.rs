@@ -56,6 +56,25 @@ impl FDTable {
         Ok(())
     }
 
+    pub fn get_fd_flags(&self, fd: usize) -> SysResult<FDFlags> {
+        if fd < self.table.len() {
+            let item = self.table[fd].as_ref().ok_or(Errno::EBADF)?;
+            Ok(item.flags)
+        } else {
+            Err(Errno::EBADF)
+        }
+    }
+
+    pub fn set_fd_flags(&mut self, fd: usize, flags: FDFlags) -> SysResult<()> {
+        if fd < self.table.len() {
+            let item = self.table[fd].as_mut().ok_or(Errno::EBADF)?;
+            item.flags = flags;
+            Ok(())
+        } else {
+            Err(Errno::EBADF)
+        }
+    }
+
     pub fn push(&mut self, file: Arc<dyn FileOps>, flags: FDFlags) -> Result<usize, Errno> {
         if let Some(pos) = self.table.iter().position(|f| f.is_none()) {
             self.table[pos] = Some(FDItem { file, flags });

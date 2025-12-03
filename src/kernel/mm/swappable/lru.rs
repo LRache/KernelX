@@ -169,8 +169,17 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         }
     }
 
-    pub fn tail(&self) -> Option<(K, &V)> {
-        self.list.tail.as_ref().map(|node| (node.key, &node.value))
+    pub fn tail(&mut self) -> Option<(K, &mut V)> {
+        self.list.tail.as_ref().map(|node| unsafe {
+            // SAFETY: We have `&mut self`, which guarantees exclusive access to the `LRUCache`.
+            // Although the nodes are stored in `Arc`s (which normally implies shared ownership and immutability),
+            // the `LRUCache` maintains the invariant that it is the sole logical owner of the data.
+            // No references to the internal nodes or values are leaked outside the cache.
+            // Therefore, it is safe to cast the pointer to mutable and modify the value,
+            // as no other references to this value can exist while we hold `&mut self`.
+            let n = &mut *(Arc::as_ptr(node) as *mut Node<K, V>);
+            (n.key, &mut n.value)
+        })
     }
 
     pub fn remove(&mut self, key: &K) -> bool {

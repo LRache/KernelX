@@ -218,10 +218,12 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         221 => task::execve(3),
         260 => task::wait4(4),
         
+        // Memory
         214 => mm::brk(1),
         215 => mm::munmap(2),
         222 => mm::mmap(6),
         226 => mm::mprotect(3),
+        227 => mm::msync(3),
         233 => mm::madvise(0),
         
         // futex

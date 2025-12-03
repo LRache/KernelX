@@ -26,9 +26,13 @@ impl Manager {
     fn create_initprocess(&self, initpath: &str, initcwd: &str) {
         let initargv: &[&str] = &[
             initpath,
+            // "find",
+            // "main.c",
+            // "-name",
+            // "\"busybox_cmd.txt\""
             "sh",
-            "/glibc/libctest_testcode.sh",
-            // "main.c"
+            // "/runall.sh",
+            "lmbench_testcode.sh"
         ];
 
         let initenvp: &[&str] = &[];

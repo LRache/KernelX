@@ -28,12 +28,15 @@ impl Cache {
         
         if cache.len() >= config::INODE_CACHE_SIZE {
             let initial_size = cache.len();
-            cache.retain(|_, inode| Arc::strong_count(inode) > 1);
+            cache.retain(|_, inode| {
+                kinfo!("strong count {}", Arc::strong_count(inode));
+                Arc::strong_count(inode) > 1
+            });
             let final_size = cache.len();
             kinfo!("Uncached {} unused inodes, {} remaining", initial_size - final_size, final_size);
 
             if final_size >= config::INODE_CACHE_SIZE {
-                return Err(Errno::ENOMEM);
+                return Err(Errno::ENOSPC);
             }
         }
         

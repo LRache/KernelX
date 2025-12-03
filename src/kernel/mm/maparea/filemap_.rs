@@ -44,8 +44,8 @@ impl FileMapArea {
         file_length: usize
     ) -> Self {
         // File mapping areas should be page-aligned
-        assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
-        assert!(file_offset % arch::PGSIZE == 0, "file_offset should be page-aligned");
+        debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
+        debug_assert!(file_offset % arch::PGSIZE == 0, "file_offset should be page-aligned");
 
         let page_count = (file_length + arch::PGSIZE - 1) / arch::PGSIZE;
         let frames = Vec::from_iter((0..page_count).map(|_| Frame::Unallocated));
@@ -60,8 +60,8 @@ impl FileMapArea {
     }
 
     fn load_page(&mut self, page_index: usize, pagetable: &RwLock<PageTable>) -> usize {
-        assert!(page_index < self.frames.len());
-        assert!(self.frames[page_index].is_unallocated());
+        debug_assert!(page_index < self.frames.len());
+        debug_assert!(self.frames[page_index].is_unallocated());
 
         let area_offset = page_index * arch::PGSIZE;
         let file_offset = self.file_offset + area_offset;

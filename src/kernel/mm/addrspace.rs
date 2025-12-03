@@ -109,7 +109,7 @@ impl AddrSpace {
 
     pub fn alloc_usercontext_page(&self) -> (usize, *mut UserContext) {
         let mut frames = self.usercontext_frames.lock();
-        let frame = PhysPageFrame::alloc();
+        let frame = PhysPageFrame::alloc_zeroed();
         
         let uaddr = TRAMPOLINE_BASE - (frames.len() + 1) * arch::PGSIZE;
         let kaddr = frame.get_page();

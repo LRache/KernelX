@@ -52,8 +52,8 @@ impl ELFArea {
     }
 
     fn load_page(&mut self, page_index: usize, pagetable: &RwLock<PageTable>) -> usize {
-        assert!(page_index < self.frames.len());
-        assert!(self.frames[page_index].is_unallocated());
+        debug_assert!(page_index < self.frames.len());
+        debug_assert!(self.frames[page_index].is_unallocated());
 
         let area_offset = page_index * arch::PGSIZE;
         let file_offset = self.file_offset + area_offset;
@@ -152,7 +152,7 @@ impl Area for ELFArea {
     }
 
     fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
-        let perm = self.perm - MapPerm::W;
+        let cow_perm = self.perm - MapPerm::W;
         let mut new_pagetable = new_pagetable.write();
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
@@ -161,7 +161,7 @@ impl Area for ELFArea {
                     new_pagetable.mmap(
                         self.ubase + page_index * arch::PGSIZE, 
                         frame.get_page(),
-                        perm
+                        cow_perm
                     );
                     Frame::Cow(frame.clone())
                 }
@@ -173,10 +173,9 @@ impl Area for ELFArea {
             *frame = match frame {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    self_pagetable.mmap_replace(
+                    self_pagetable.mmap_replace_perm(
                         self.ubase + page_index * arch::PGSIZE,
-                        frame.get_page(),
-                        perm
+                        cow_perm
                     );
                     Frame::Cow(frame.clone())
                 }
@@ -284,10 +283,18 @@ impl Area for ELFArea {
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
         self.perm = perm;
+        let cow_perm = perm - MapPerm::W;
+        let mut pagetable = pagetable.write();
         self.frames.iter().enumerate().for_each(|(page_index, frame)| {
-            if let Frame::Allocated(frame) = frame {
-                let uaddr = self.ubase + page_index * arch::PGSIZE;
-                pagetable.write().mmap_replace(uaddr, frame.get_page(), perm);
+            // if let Frame::Allocated(_) = !frame.is_unallocated() {
+            //     let uaddr = self.ubase + page_index * arch::PGSIZE;
+            //     pagetable.write().mmap_replace_perm(uaddr, perm);
+            // }
+            let uaddr = self.ubase + page_index * arch::PGSIZE;
+            match frame {
+                Frame::Allocated(_) => pagetable.mmap_replace_perm(uaddr, perm),
+                Frame::Cow(_) => pagetable.mmap_replace_perm(uaddr, cow_perm),
+                Frame::Unallocated => {}
             }
         });
     }

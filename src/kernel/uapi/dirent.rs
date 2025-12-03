@@ -1,7 +1,7 @@
 use crate::fs::FileType;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Dirent {
     pub d_ino: u64,
     pub d_off: i64,

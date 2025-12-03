@@ -50,6 +50,10 @@ impl Dentry {
         self.inode_index.ino
     }
 
+    pub fn get_inode_index(&self) -> Index {
+        self.inode_index
+    }
+
     pub fn get_inode(&self) -> Arc<dyn InodeOps> {
         let inode = self.inode.lock();
         match inode.upgrade() {
@@ -191,10 +195,5 @@ impl Dentry {
 impl Debug for Dentry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Dentry {{ sno: {}, ino: {}, name: {} }}", self.sno(), self.ino(), self.name)
-    }
-}
-
-impl Drop for Dentry {
-    fn drop(&mut self) {
     }
 }

@@ -15,10 +15,10 @@ fn new_file(dentry: &Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Fi
         unimplemented!() // return Pipe::new_fifo(...);
     }
 
-    let (uid, gid) = inode.owner()?;
-    if !mode.check_perm(perm, uid, gid) {
-        return Err(Errno::EACCES);
-    }
+    // let (uid, gid) = inode.owner()?;
+    // if !mode.check_perm(perm, uid, gid) {
+    //     return Err(Errno::EACCES);
+    // }
 
     Ok(File::new(dentry, flags))
 }

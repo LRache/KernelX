@@ -1,11 +1,9 @@
-use core::usize;
-
 use alloc::boxed::Box;
 use bitflags::bitflags;
 
-use crate::fs::file::File;
+use crate::fs::file::{File, FileOps};
 use crate::kernel::mm::MapPerm;
-use crate::kernel::mm::maparea::{Area, AnonymousArea, FileMapArea};
+use crate::kernel::mm::maparea::{Area, AnonymousArea, PrivateFileMapArea, SharedFileMapArea};
 use crate::kernel::scheduler::*;
 use crate::kernel::errno::Errno;
 use crate::kernel::syscall::SyscallRet;
@@ -77,30 +75,46 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         }
 
         let file = current::fdtable()
-                                        .lock()
-                                        .get(fd)?
-                                        .downcast_arc::<File>()
-                                        .map_err(|_| Errno::EINVAL)?;
+                            .lock()
+                            .get(fd)?
+                            .downcast_arc::<File>()
+                            .map_err(|_| Errno::EINVAL)?;
 
-        Box::new(FileMapArea::new(
-            0,
-            perm,
-            file,
-            offset,
-            length
-        ))
+        let inode = file.get_inode().unwrap().clone();
+        let index = file.get_dentry().unwrap().get_inode_index();
+
+        if flags.contains(MMapFlags::SHARED) {
+            // if length % arch::PGSIZE != 0 {
+            //     return Err(Errno::EINVAL);
+            // }
+            
+            let pagecount = (length + arch::PGSIZE - 1) / arch::PGSIZE;
+            Box::new(SharedFileMapArea::new(
+                0,
+                perm,
+                inode,
+                index,
+                offset,
+                pagecount,
+            ))
+        } else {
+            Box::new(PrivateFileMapArea::new(
+                0,
+                perm,
+                file,
+                offset,
+                length
+            ))
+        }
     };
 
     current::addrspace().with_map_manager_mut(|map_manager| {
         let fixed = flags.contains(MMapFlags::FIXED);
-        
-        let ubase;
-        if addr == 0 || (!fixed && map_manager.is_range_mapped(addr, length)) {
-            ubase = map_manager.find_mmap_ubase((length + arch::PGSIZE - 1) / arch::PGSIZE)
-                .ok_or(Errno::ENOMEM)?;
+        let ubase = if addr == 0 || (!fixed && map_manager.is_range_mapped(addr, length)) {
+            map_manager.find_mmap_ubase((length + arch::PGSIZE - 1) / arch::PGSIZE).ok_or(Errno::ENOMEM)?
         } else {
-            ubase = addr;
-        }
+            addr
+        };
 
         area.set_ubase(ubase);
         
@@ -142,6 +156,11 @@ pub fn mprotect(addr: usize, length: usize, prot: usize) -> SyscallRet {
 
     current::addrspace().set_area_perm(addr, page_count, prot.into())?;
 
+    Ok(0)
+}
+
+pub fn msync(addr: usize, length: usize, flags: usize) -> SyscallRet {
+    // Currently no-op
     Ok(0)
 }
 

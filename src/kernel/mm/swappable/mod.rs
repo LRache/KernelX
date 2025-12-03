@@ -1,11 +1,15 @@
-mod anonymous;
+mod nofile;
+mod swapper;
 mod lru;
 mod kswapd;
+mod swappable;
 
-pub use anonymous::AnonymousFrame;
+pub use nofile::SwappableNoFileFrame;
 pub use kswapd::spawn_kswapd;
+pub use swapper::shrink;
 
 use lru::LRUCache;
+use swappable::SwappableFrame;
 
 use alloc::collections::LinkedList;
 use alloc::sync::{Arc, Weak};
@@ -20,13 +24,10 @@ use crate::driver::get_block_driver;
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
     let driver = get_block_driver("virtio_block0").expect("Swap driver not found");
-    anonymous::init_swapper(driver);
+    nofile::init_swapper(driver);
+    swapper::init_swapper();
 }
 
 pub fn fini() {
-    anonymous::print_perf_info();
-}
-
-pub fn shrink(mut page_count: usize, min_to_shrink: usize) {
-    anonymous::shrink(&mut page_count, min_to_shrink);
+    swapper::print_perf_info();
 }

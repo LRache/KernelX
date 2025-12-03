@@ -131,10 +131,11 @@ impl InodeOps for Ext4Inode {
         // self.superblock.write_at(self.ino, offset, buf).map_err(map_error)
     }
 
-    fn get_dent(&self, offset: usize) -> SysResult<Option<DirResult>> {
+    fn get_dent(&self, offset: usize) -> SysResult<Option<(DirResult, usize)>> {
         // Directory enumeration not yet migrated to `lwext4_rust`.
-        let reader = self.superblock.lock().read_dir(self.ino, offset as u64).map_err(map_error_to_kernel)?;
+        let mut reader = self.superblock.lock().read_dir(self.ino, offset as u64).map_err(map_error_to_kernel)?;
         let result = reader.current().map(|entry| {
+            // kinfo!("Ext4Inode::get_dent ino={} offset={} entry_ino={} name={}", self.ino, offset, entry.ino(), String::from_utf8_lossy(entry.name()));
             DirResult {
                 ino: entry.ino(),
                 name: String::from_utf8_lossy(entry.name()).into_owned(),
@@ -147,10 +148,23 @@ impl InodeOps for Ext4Inode {
                     InodeType::Fifo            => FileType::FIFO,
                     _                          => FileType::Unknown,
                 },
-                len: entry.len()
+                // len: entry.len()
             }
         });
-        Ok(result)
+        
+        // if let Some(ref dent) = result {
+        //     if dent.ino == 0 {
+        //         return Ok(None);
+        //     }
+        // }
+
+        if let Some(r) = &result {
+            reader.step().map_err(map_error_to_kernel)?;
+            let next_offset = reader.offset() as usize;
+            Ok(Some((r.clone(), next_offset)))
+        } else {
+            Ok(None)
+        }
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {

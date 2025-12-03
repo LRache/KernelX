@@ -36,7 +36,7 @@ impl InodeOps for ZeroInode {
         Ok(buf.len())
     }
 
-    fn get_dent(&self, _index: usize) -> SysResult<Option<DirResult>> {
+    fn get_dent(&self, _index: usize) -> SysResult<Option<(DirResult, usize)>> {
         Err(Errno::ENOTDIR)
     }
 

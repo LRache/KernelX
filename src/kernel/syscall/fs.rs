@@ -52,6 +52,13 @@ pub enum FcntlCmd {
     F_DUPFD_CLOEXEC = 1030,
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct FDArgs: usize {
+        const FD_CLOEXEC = 1;
+    }
+}
+
 pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     match FcntlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)? {
         FcntlCmd::F_DUPFD_CLOEXEC => {
@@ -73,18 +80,22 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
 
         FcntlCmd::F_SETFL => {
-            // let file = current::fdtable().lock().get(fd)?;
-            // let flags = OpenFlags::from_bits(_arg).ok_or(Errno::EINVAL)?;
+            let file = current::fdtable().lock().get(fd)?;
+            let flags = FDArgs::from_bits(arg).ok_or(Errno::EINVAL)?;
+            current::fdtable().lock().set(fd, file, FDFlags {
+                cloexec: flags.contains(FDArgs::FD_CLOEXEC),
+            })?;
             
             Ok(0)
         }
 
         FcntlCmd::F_SETFD => {
-            let _file = current::fdtable().lock().get(fd)?;
-            let _flags = OpenFlags::from_bits(arg).ok_or(Errno::EINVAL)?;
-            // if flags.contains(OpenFlags::O_WRONLY) {
-            //     file.readable()
-            // }
+            let flags = FDArgs::from_bits(arg).ok_or(Errno::EINVAL)?;
+            
+            let mut fdtable = current::fdtable().lock();
+            let mut fdflags = fdtable.get_fd_flags(fd)?;
+            fdflags.cloexec = flags.contains(FDArgs::FD_CLOEXEC);
+            fdtable.set_fd_flags(fd, fdflags)?;
             
             Ok(0)
         }
@@ -490,22 +501,26 @@ pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
 
 pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, _flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
-    uptr_stat.should_not_null()?;
+    // uptr_stat.should_not_null()?;
     
     let path = uptr_path.read()?;
 
     // crate::kinfo!("fstatat: dirfd={}, path=\"{}\"", dirfd, path);
 
-    let fstat = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare(), &Perm::dontcare()))?
+    let fstat = if path.is_empty() {
+        current::fdtable().lock().get(dirfd)?.fstat()?
     } else {
-        vfs::openat_file(
-            current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
-            &path, 
-            FileFlags::dontcare(),
-            &Perm::dontcare()
-        )?
-    }.fstat()?;
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| vfs::openat_file(cwd, &path, FileFlags::dontcare(), &Perm::dontcare()))?
+        } else {
+            vfs::openat_file(
+                current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
+                &path, 
+                FileFlags::dontcare(),
+                &Perm::dontcare()
+            )?
+        }.fstat()?
+    };
 
     uptr_stat.write(fstat)?;
 
@@ -619,7 +634,7 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     let mut total_copied = 0;
     
     loop {
-        let dent = match file.get_dent() {
+        let (dent, old_pos) = match file.get_dent() {
             Ok(Some(d)) => d,
             Ok(None) => {
                 if total_copied == 0 {
@@ -638,10 +653,10 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
         let name_len = core::cmp::min(name_bytes.len(), 255);
         let reclen = DIRENT_NAME_OFFSET + name_len + 1;
         let reclen_aligned = (reclen + 7) & !7; // Align to 8 bytes
-        let len = dent.len as usize;
 
         if total_copied + reclen_aligned > count {
-            file.seek(-(len as isize), SeekWhence::CUR)?; // Rewind one entry
+            // crate::kinfo!("getdents64: reached count limit total_copied={} reclen_aligned={} count={}", total_copied, reclen_aligned, count);
+            file.seek(old_pos as isize, SeekWhence::BEG)?; // Rewind one entry
             break; 
         }
 

@@ -188,33 +188,6 @@ impl Manager {
         
         // Find all areas that overlap with the new area's range
         // let mut overlapping_areas = Vec::new();
-        
-        // for (&area_base, existing_area) in &self.areas {
-        //     let area_end = area_base + existing_area.size();
-            
-        //     // Check if this area overlaps with the new area's range
-        //     if area_base < new_area_end && area_end > uaddr {
-        //         overlapping_areas.push(area_base);
-        //         ktrace!("Found overlapping area at {:#x}-{:#x}", area_base, area_end);
-        //     }
-        // }
-
-        // let iter_start = self.areas.range(..uaddr).next_back().map(|(k, _)| *k).unwrap_or(0);
-        // let mut area_to_process = Vec::new();
-
-        // for (&area_base, area) in self.areas.range(iter_start..) {
-        //     let area_end = area_base + area.size();
-
-        //     // If the current area starts after the new area ends, we can stop.
-        //     if area_base >= new_area_end {
-        //         break;
-        //     }
-
-        //     // Check for intersection.
-        //     if area_end > uaddr {
-        //         area_to_process.push(area_base);
-        //     }
-        // }
 
         for overlapping_base in self.find_overlapped_areas(uaddr, new_area_end) {
             let mut middle = self.areas.remove(&overlapping_base).unwrap();
@@ -243,33 +216,10 @@ impl Manager {
     }
 
     pub fn unmap_area(&mut self, uaddr: usize, page_count: usize, pagetable: &RwLock<PageTable>) -> SysResult<()> {
-        assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
-        assert!(page_count > 0, "page_count should be greater than 0");
-
-        // Start iterating from our candidate, or from the beginning of the map if no such candidate exists.
-        // let iter_start = self.areas.range(uaddr..).next().map(|(k, _)| *k).unwrap_or(0);
-        // kinfo!("unmap_area: uaddr={:#x}, page_count={}, iter_start={:#x}", uaddr, page_count, iter_start);
-        // let mut overlapped_areas = Vec::new();
+        debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
+        debug_assert!(page_count > 0, "page_count should be greater than 0");
 
         let uaddr_end = uaddr + page_count * arch::PGSIZE;
-        // // let mut last_area_end = usize::MAX;
-        // for (&area_base, area) in self.areas.range(iter_start..) {
-        //     // If the current area starts after the unmap range ends, we can stop.
-        //     if area_base >= uaddr_end {
-        //         break;
-        //     }
-            
-        //     // if last_area_end < area_base {
-        //     //     unreachable!("last_area_end < area_base in unmap_area, last_area_end: {:#x}, area_base: {:#x}", last_area_end, area_base);
-        //     //     // return Err(Errno::EINVAL);
-        //     // }
-            
-        //     // let area_end = area_base + area.size();
-
-        //     overlapped_areas.push(area_base);
-
-        //     // last_area_end = area_end;
-        // }
 
         // Process each intersecting area
         for area_base in self.find_overlapped_areas(uaddr, uaddr_end) {
@@ -441,6 +391,7 @@ impl Manager {
             if !access_type.match_perm(area.perm()) {
                 return false;
             }
+            // kinfo!("Trying to fix memory fault at address {:#x} with access type {:?}", uaddr, access_type);
             area.try_to_fix_memory_fault(uaddr, access_type, addrspace)
         } else {
             false
