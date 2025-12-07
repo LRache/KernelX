@@ -31,7 +31,7 @@ impl PendingSignalQueue {
     pub fn pop_pending(&mut self, mask: SignalSet, tid: Tid) -> Option<PendingSignal> {
         let mut index = None;
         for (i, signal) in self.pending.iter().enumerate() {
-            if !signal.signum.is_masked(mask) || signal.signum.is_unignorable() && (signal.dest == Some(tid) || signal.dest.is_none()) {
+            if (!signal.signum.is_masked(mask) || signal.signum.is_unignorable()) && (signal.dest == Some(tid) || signal.dest.is_none()) {
                 index = Some(i);
                 break;
             }

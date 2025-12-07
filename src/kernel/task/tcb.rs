@@ -372,42 +372,16 @@ impl TCB {
         *self.signal_mask.lock() = mask;
     }
 
+    pub fn swap_signal_mask(&self, mask: SignalSet) -> SignalSet {
+        let mut signal_mask = self.signal_mask.lock();
+        let old_mask = *signal_mask;
+        *signal_mask = mask;
+        old_mask
+    }
+
     pub fn set_tid_address(&self, addr: usize) {
         *self.tid_address.lock() = Some(addr);
     }
-
-    // pub fn wakeup(self: &Arc<Self>, event: Event) {
-    //     let mut state = self.state().lock();
-    //     if state.state != TaskState::Blocked {
-    //         return;
-    //     }
-    //     state.state = TaskState::Ready;
-    //     *self.wakeup_event.lock() = Some(event);
-        
-    //     scheduler::push_task(Task::User(self.clone()));
-    // }
-
-    // pub fn wakeup_uninterruptible(self: &Arc<Self>, event: Event) {
-    //     let mut state = self.state().lock();
-    //     match state.state {
-    //         TaskState::Blocked | TaskState::BlockedUninterruptible => {},
-    //         _ => return,
-    //     }
-    //     state.state = TaskState::Ready;
-    //     *self.wakeup_event.lock() = Some(event);
-        
-    //     scheduler::push_task(Task::User(self.clone()));
-    // }
-
-    // pub fn take_wakeup_event(&self) -> Option<Event> {
-    //     self.wakeup_event.lock().take()
-    // }
-
-    // pub fn run(&self) {
-    //     let mut state = self.state.lock();
-    //     // assert!(state.state == TaskState::Ready);
-    //     state.state = TaskState::Running;
-    // }
 
     pub fn state(&self) -> &SpinLock<TaskStateSet> {
         &self.state

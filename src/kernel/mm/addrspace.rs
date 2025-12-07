@@ -275,7 +275,7 @@ impl AddrSpace {
     pub fn try_to_fix_memory_fault(self: &Arc<Self>, uaddr: usize, access_type: MemAccessType) -> bool {
         let map_manager = &mut self.map_manager.lock();
         if !map_manager.try_to_fix_memory_fault(uaddr, access_type, self) {
-            map_manager.print_all_areas();
+            // map_manager.print_all_areas();
             false
         } else {
             true

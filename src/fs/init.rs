@@ -25,6 +25,10 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
     let _ = vfs::load_dentry("/").unwrap().create("tmp", Mode::S_IFDIR);
     vfs::mount("/tmp", "tmpfs", None).unwrap();
 
+    let _ = vfs::load_dentry("/").unwrap().create("var", Mode::S_IFDIR);
+    let _ = vfs::load_dentry("/var").unwrap().create("tmp", Mode::S_IFDIR);
+    vfs::mount("/var/tmp", "tmpfs", None).unwrap();
+
     // Try to access /dev/null and /dev/zero to ensure they are working
     vfs::load_dentry("/dev/null").unwrap();
     vfs::load_dentry("/dev/zero").unwrap();

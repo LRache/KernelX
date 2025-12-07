@@ -4,7 +4,6 @@ use spin::Mutex;
 
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kinfo;
 
 use super::{InodeOps, Index};
 
@@ -27,13 +26,10 @@ impl Cache {
         let mut cache = self.cache.lock();
         
         if cache.len() >= config::INODE_CACHE_SIZE {
-            let initial_size = cache.len();
             cache.retain(|_, inode| {
-                kinfo!("strong count {}", Arc::strong_count(inode));
                 Arc::strong_count(inode) > 1
             });
             let final_size = cache.len();
-            kinfo!("Uncached {} unused inodes, {} remaining", initial_size - final_size, final_size);
 
             if final_size >= config::INODE_CACHE_SIZE {
                 return Err(Errno::ENOSPC);

@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use core::time::Duration;
@@ -11,8 +12,8 @@ use crate::kernel::scheduler::{Task, TaskState, current, tid};
 use crate::kernel::scheduler;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum};
-use crate::fs::file::File;
-use crate::fs::vfs;
+use crate::fs::file::{File, FileFlags};
+use crate::fs::{Perm, PermFlags, vfs};
 use crate::fs::Dentry;
 use crate::klib::SpinLock;
 
@@ -25,11 +26,16 @@ struct Signal {
     pending: Mutex<PendingSignalQueue>,
 }
 
+enum State {
+    Running,
+    Exited(u8),
+}
+
 pub struct PCB {
     pid: Tid,
     pub parent: SpinLock<Option<Arc<PCB>>>,
-    is_zombie: SpinLock<bool>,
-    exit_code: SpinLock<u8>,
+    state: SpinLock<State>,
+    exec_path: SpinLock<String>,
     
     pub tasks: SpinLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
@@ -39,6 +45,8 @@ pub struct PCB {
     signal: Signal,
 
     children: Mutex<Vec<Arc<PCB>>>,
+
+    pub itimer_ids: SpinLock<[Option<u64>; 3]>,
 }
 
 impl PCB {
@@ -46,8 +54,8 @@ impl PCB {
         Arc::new(Self {
             pid,
             parent: SpinLock::new(Some(parent.clone())),
-            is_zombie: SpinLock::new(false),
-            exit_code: SpinLock::new(0),
+            state: SpinLock::new(State::Running),
+            exec_path: SpinLock::new(parent.exec_path.lock().clone()),
             
             tasks: SpinLock::new(Vec::new()),
             cwd: SpinLock::new(parent.cwd.lock().clone()),
@@ -60,10 +68,12 @@ impl PCB {
             },
 
             children: Mutex::new(Vec::new()),
+
+            itimer_ids: SpinLock::new([None; 3]),
         })
     }
 
-    pub fn new_initprocess(file: File, cwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
+    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
         let new_tid = tid::alloc();
 
         let cwd = vfs::load_dentry(cwd)?;
@@ -71,8 +81,8 @@ impl PCB {
         let pcb = Arc::new(Self {
             pid: 0,
             parent: SpinLock::new(None),
-            is_zombie: SpinLock::new(false),
-            exit_code: SpinLock::new(0),
+            state: SpinLock::new(State::Running),
+            exec_path: SpinLock::new(String::from(initpath)),
             
             tasks: SpinLock::new(Vec::new()),
             cwd: SpinLock::new(cwd.clone()),
@@ -85,7 +95,15 @@ impl PCB {
             },
 
             children: Mutex::new(Vec::new()),
+
+            itimer_ids: SpinLock::new([None; 3]),
         });
+
+        let file = vfs::open_file(
+            initpath, 
+            FileFlags { readable: true, writable: false, blocked: true },
+            &Perm::new(PermFlags::X)
+        ).expect("Failed to open init file");
 
         let first_task = TCB::new_inittask(new_tid, &pcb, file, argv, envp);
         pcb.tasks.lock().push(first_task.clone());
@@ -99,12 +117,19 @@ impl PCB {
         self.pid
     }
 
-    fn is_zombie(&self) -> bool {
-        *self.is_zombie.lock()
+    pub fn exec_path(&self) -> String {
+        self.exec_path.lock().clone()
     }
 
-    fn get_exit_code(&self) -> u8 {
-        *self.exit_code.lock()
+    pub fn is_exited(&self) -> bool {
+         matches!(*self.state.lock(), State::Exited(_))
+    }
+
+    fn get_exit_code(&self) -> Option<u8> {
+        match *self.state.lock() {
+            State::Exited(code) => Some(code),
+            _ => None,
+        }
     }
 
     pub fn has_child(&self, tid: Tid) -> bool {
@@ -156,7 +181,8 @@ impl PCB {
     pub fn exec(
         self: &Arc<Self>, 
         tcb: &TCB, 
-        file: File, 
+        file: File,
+        exec_path: String, 
         argv: &[&str], 
         envp: &[&str]
     ) -> Result<(), Errno> {        
@@ -168,6 +194,8 @@ impl PCB {
         });
         tasks.clear();
         tasks.push(first_task.clone());
+
+        *self.exec_path.lock() = exec_path;
 
         scheduler::push_task(first_task);
 
@@ -183,8 +211,7 @@ impl PCB {
 
         drop(task);
 
-        *self.is_zombie.lock() = true;
-        *self.exit_code.lock() = code;
+        *self.state.lock() = State::Exited(code);
 
         if self.pid == 0 {
             panic!("Init process exited with code {}, system will halt.", code);
@@ -222,9 +249,7 @@ impl PCB {
         };
         
         if let Some(child) = child {
-            if child.is_zombie() {
-                let exit_code = child.get_exit_code();
-                // self.children.lock().retain(|c| c.get_pid() != pid);
+            if let Some(exit_code) = child.get_exit_code() {
                 return Ok(Some(exit_code));
             }
             
@@ -245,11 +270,15 @@ impl PCB {
                             return Err(Errno::EINTR);
                         }
 
-                        _ => unreachable!(),
+                        Event::Timeout => {
+                            
+                        }
+
+                        _ => unreachable!("Unexpected event in wait_child: {:?}", event),
                     }
                 }
                 
-                let exit_code = child.get_exit_code();
+                let exit_code = child.get_exit_code().unwrap();
                 {
                     let mut children = self.children.lock();
                     children.retain(|c| c.get_pid() != pid);
@@ -271,9 +300,9 @@ impl PCB {
     pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, u8)>> {
         let mut children = self.children.lock();
     
-        if let Some(child) = children.iter().find(|c| c.is_zombie()) {
+        if let Some(child) = children.iter().find(|c| c.is_exited()) {
             let pid = child.get_pid();
-            let exit_code = child.get_exit_code();
+            let exit_code = child.get_exit_code().unwrap();
             children.retain(|c| c.get_pid() != pid);
             return Ok(Some((pid, exit_code)));
         }
@@ -296,7 +325,7 @@ impl PCB {
 
                 match children.iter().find(|c| c.get_pid() == child){
                     Some(child_pcb) => {
-                        exit_code = child_pcb.get_exit_code();
+                        exit_code = child_pcb.get_exit_code().unwrap();
                     },
                     None => unreachable!(), // The child must exist
                 }

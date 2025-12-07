@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use spin::Mutex;
 
 use crate::kernel::event::{Event, timer};
-use crate::kernel::ipc::SignalActionTable;
+use crate::kernel::ipc::{SignalActionTable, SignalSet};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::{PCB, TCB};
@@ -146,6 +146,14 @@ pub fn schedule() {
 pub fn block(reason: &'static str) -> Event {
     task().block(reason);
     schedule();
+    task().take_wakeup_event().unwrap()
+}
+
+pub fn block_sigmask(reason: &'static str, mask: SignalSet) -> Event {
+    let old_mask = tcb().swap_signal_mask(mask);
+    task().block(reason);
+    schedule();
+    tcb().set_signal_mask(old_mask);
     task().take_wakeup_event().unwrap()
 }
 

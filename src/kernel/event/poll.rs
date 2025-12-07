@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct PollEventSet: i16 {
         const POLLIN   = 0x0001; // There is data to read.
         const POLLPRI  = 0x0002; // There is urgent data to read.
@@ -12,7 +13,7 @@ bitflags! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PollEvent {
+pub enum FileEvent {
     ReadReady,
     WriteReady,
     Priority,

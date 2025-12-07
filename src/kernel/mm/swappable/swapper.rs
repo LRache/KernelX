@@ -126,8 +126,6 @@ impl Swapper {
                     lru.pop_lru();
                     let end = crate::kernel::event::timer::now();
                     counter_swap_out(end - start);
-
-                    swapped_count += 1;
                 } else {
                     break;
                 }

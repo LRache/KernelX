@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::kernel::event::{PollEvent, PollEventSet};
+use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::errno::SysResult;
 use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, InodeOps};
@@ -30,10 +30,10 @@ pub trait FileOps: DowncastSync {
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>>;
     fn get_dentry(&self) -> Option<&Arc<Dentry>>;
 
-    fn poll(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<PollEvent>> {
+    fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
         Ok(None)
     }
-    fn poll_cancel(&self) {}
+    fn wait_event_cancel(&self) {}
 
     fn type_name(&self) -> &'static str {
         "unknown"

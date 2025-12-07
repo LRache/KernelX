@@ -74,8 +74,6 @@ impl TCB {
             .set_user_entry(action.handler)
             .set_user_stack_top(stack_top);
 
-        // kinfo!("flags={:?}, signum={}, ucontext={:?}", action.flags, signum.num(), sigframe.ucontext);
-
         if action.flags.contains(SignalActionFlags::SA_SIGINFO) {
             let siginfo_uaddr  = stack_top + core::mem::offset_of!(SigFrame, info);
             let ucontext_uaddr = stack_top + core::mem::offset_of!(SigFrame, ucontext);
@@ -89,7 +87,7 @@ impl TCB {
         let sigframe = self.get_addrspace()
                            .copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
                            .expect("Failed to copy sigframe from user stack");
-        // kinfo!("return_from_signal: sigframe.ucontext={:?}", sigframe.ucontext);
+        self.set_signal_mask(sigframe.ucontext.uc_sigmask);
         self.user_context().restore_from_signal(&sigframe.ucontext.uc_mcontext);
     }  
 
@@ -127,7 +125,6 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
             
-            // self.wakeup(Event::Signal);
             scheduler::wakeup_task(self.clone(), Event::Signal);
             
             return true;

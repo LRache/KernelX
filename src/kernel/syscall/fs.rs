@@ -146,7 +146,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                 if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
                     // Create the file
                     let mode = Mode::from_bits(mode as u32 & 0o777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
-                    let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?;
+                    let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?.unwrap(); // SAFETY: The root must exist
                     parent_dentry.create(&child_name, mode)?;
                     vfs::openat_file(parent, &path, file_flags, &Perm::new(perm_flags))
                 } else {
@@ -209,8 +209,14 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UString, bufsize: usiz
     ubuf.should_not_null()?;
 
     let path = uptr_path.read()?;
+    
+    // TODO: Implement /proc/self/exe properly
+    if path == "/proc/self/exe" {
+        let exe_path = current::pcb().exec_path();
+        return ubuf.write(&exe_path, bufsize)
+    }
 
-    // crate::kinfo!("readlinkat: dirfd={}, path=\"{}\"", dirfd as isize, path);
+    crate::kinfo!("readlinkat: dirfd={}, path=\"{}\"", dirfd as isize, path);
     
     let path = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
@@ -555,11 +561,6 @@ const UTIME_NOW:  u64 = 0x3fffffff;
 const UTIME_OMIT: u64 = 0x3ffffffe;
 
 pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, _flags: usize) -> SyscallRet {
-    uptr_times.should_not_null()?;
-
-    let atime = uptr_times.index(0).read()?;
-    let mtime = uptr_times.index(1).read()?;
-
     let path = if uptr_path.is_null() {
         ""
     } else {
@@ -574,7 +575,18 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
         )?
     };
     let inode = dentry.get_inode();
+    
     let now = get_time_us();
+    
+    if uptr_times.is_null() {
+        let duration = Duration::new((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u32);
+        inode.update_atime(&duration)?;
+        inode.update_mtime(&duration)?;
+        return Ok(0);
+    }
+    
+    let atime = uptr_times.index(0).read()?;
+    let mtime = uptr_times.index(1).read()?;
     if atime.tv_nsec != UTIME_OMIT {
         if atime.tv_nsec == UTIME_NOW {
             let duration = Duration::new((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u32);
@@ -607,13 +619,15 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     
     let path = uptr_path.read()?;
 
+    // crate::kinfo!("mkdirat: dirfd={}, path=\"{}\", mode=0o{:o}", dirfd as isize, path, mode.bits() & 0o7777);
+
     let (parent, name) = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?.ok_or(Errno::EEXIST)?
     } else {
         vfs::load_parent_dentry_at(
             current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
             &path
-        )?
+        )?.ok_or(Errno::EEXIST)?
     };
 
     parent.create(name, mode)?;
@@ -689,10 +703,10 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
     let path = uptr_path.read()?;
 
     let parent_dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&path)?
-    };
+        vfs::load_parent_dentry(&path)?.ok_or(Errno::EOPNOTSUPP)
+    }?;
 
     let parent = parent_dentry.0;
     let name = &parent_dentry.1;
@@ -719,16 +733,16 @@ pub fn renameat2(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_n
     let new_path = uptr_newpath.read()?;
 
     let old_parent_dentry = if olddirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &old_path))?
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &old_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&old_path)?
-    };
+        vfs::load_parent_dentry(&old_path)?.ok_or(Errno::EOPNOTSUPP)
+    }?;
     let new_parent_dentry = if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &new_path))?
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&new_path)?
-    };
-
+        vfs::load_parent_dentry(&new_path)?.ok_or(Errno::EOPNOTSUPP)
+    }?;
+    
     let old_parent = old_parent_dentry.0;
     let old_name = old_parent_dentry.1;
     let new_parent = new_parent_dentry.0;

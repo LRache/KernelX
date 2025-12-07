@@ -1,12 +1,10 @@
-// use alloc::sync::Arc;
 use alloc::boxed::Box;
- 
-// use crate::kernel::scheduler::Task;
 
 pub struct TimerEvent {
     pub time: u64,
     // pub task: Arc<dyn Task>,
-    pub expired_func: Box<dyn FnOnce()>,
+    pub callback: Box<dyn FnOnce()>,
+    pub id: u64,
 }
 
 impl PartialEq for TimerEvent {

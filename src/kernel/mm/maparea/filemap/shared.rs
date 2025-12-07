@@ -14,7 +14,7 @@ use crate::kernel::mm::{MapPerm, PhysPageFrame, AddrSpace, MemAccessType};
 use crate::kernel::mm::maparea::Area;
 use crate::klib::SpinLock;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::{arch, kinfo};
+use crate::arch;
 
 struct MappedFileEntry {
     inode: Arc<dyn InodeOps>,
@@ -86,7 +86,6 @@ impl Manager {
             }
         }
         if should_remove {
-            kinfo!("Closing mapped file {:?}", index);
             mapped.remove(&index);
         }
     }
@@ -227,7 +226,6 @@ impl Area for SharedFileMapArea {
                 pagetable.munmap(uaddr);
             }
         });
-        kinfo!("Unmapping SharedFileMapArea at ubase {:#x}", self.ubase);
         MANAGER.close_mapped_file(self.inode_index);
     }
 

@@ -141,6 +141,10 @@ impl<T> SpinLock<T> {
             holder: UnsafeCell::new(-1),
         }
     }
+
+    pub fn is_locked(&self) -> bool {
+        self.lock.is_locked()
+    }
 }
 
 #[macro_export]

@@ -6,7 +6,7 @@ pub type Tid = i32;
 
 impl UserStruct for Tid {}
 
-static NEXT_TID: Mutex<Tid> = Mutex::new(0);
+static NEXT_TID: Mutex<Tid> = Mutex::new(1);
 
 pub fn alloc() -> Tid {
     let mut next_tid = NEXT_TID.lock();

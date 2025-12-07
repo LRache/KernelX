@@ -57,7 +57,7 @@ impl VirtualFileSystem {
         Ok(current)
     }
 
-    pub fn lookup_parent_dentry<'a>(&self, dir: &Arc<Dentry>, path: &'a str) -> SysResult<(Arc<Dentry>, &'a str)> {
+    pub fn lookup_parent_dentry<'a>(&self, dir: &Arc<Dentry>, path: &'a str) -> SysResult<Option<(Arc<Dentry>, &'a str)>> {
         let mut current = match path.chars().next() {
             Some('/') => self.get_root().clone(),
             _ => dir.clone(),
@@ -65,16 +65,9 @@ impl VirtualFileSystem {
         current = current.get_mount_to().walk_link()?;
 
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-
-        // if parts.is_empty() {
-        //     return current.get_parent()
-        //            .ok_or(Errno::ENOENT)
-        //            .map(|p| (p, String::from("/")));
-        // }
+        
         if parts.is_empty() {
-            return current.get_parent()
-                   .ok_or(Errno::ENOENT)
-                   .map(|p| (p, "/"));
+            return Ok(current.get_parent().map(|p| (p, "/")));
         }
 
         for part in &parts[0..parts.len()-1] {
@@ -82,7 +75,7 @@ impl VirtualFileSystem {
             current = next.get_mount_to().walk_link()?;
         }
 
-        Ok((current, parts[parts.len()-1]))
+        Ok(Some((current, parts[parts.len()-1])))
     }
 
     pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {

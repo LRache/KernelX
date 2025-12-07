@@ -44,28 +44,11 @@ impl<T: Copy> WaitQueue<T> {
         self.wait(current.clone(), arg);
     }
 
-    // pub fn wake_one(&mut self, e: Event) -> Option<Arc<dyn Task>> {
-    // pub fn wake_one(&mut self, e: Event) {
-    //     let r = self.waiters.pop_front();
-    //     match r {
-    //         Some(item) => {
-    //             item.wakeup(e);
-    //             // Some(item.task)
-    //         }
-    //         // None => None,
-    //         None => {}
-    //     }
-    // }
-
-    // pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) -> Vec<Arc<dyn Task>> {
     pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) {
-        // self.waiters.iter().for_each(|i| i.wakeup(map_arg_to_event(i.arg)));
         self.waiters.drain(..).for_each(|item| {
             let arg = item.arg;
             item.wakeup(map_arg_to_event(arg));
-            // item.task
         });
-        // }).collect()
     }
 
     pub fn remove(&mut self, task: &Arc<dyn Task>) {

@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::kernel::errno::SysResult;
-use crate::kernel::event::{PollEvent, PollEventSet};
+use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::driver::{CharDriverOps, DeviceType, DriverOps};
 use crate::driver::chosen::kconsole::KConsole;
 
@@ -37,12 +37,12 @@ impl CharDriverOps for SBIConsoleDriver {
         None
     }
 
-    fn poll(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<PollEvent>> {
+    fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
         // unimplemented!()
         Ok(None)
     }
 
-    fn poll_cancel(&self) {
+    fn wait_event_cancel(&self) {
         unimplemented!()
     }
 }

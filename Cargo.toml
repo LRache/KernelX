@@ -23,6 +23,7 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+lto = true
 
 [dependencies]
 buddy_system_allocator = { version = "0.9", default-features = false, features = ["use_spin"] }

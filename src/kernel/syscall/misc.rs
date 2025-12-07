@@ -196,7 +196,7 @@ impl Default for Rusage {
 }
 
 #[repr(usize)]
-#[derive(TryFromPrimitive)]
+#[derive(TryFromPrimitive, Debug)]
 pub enum RusageWho {
     SELF = 0,
 }
@@ -213,6 +213,8 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
             rusage.ru_stime = stime.into();
         }
     };
+
+    // crate::kinfo!("getrusage: who={:?}, rusage={:?}", who, rusage);
     
     uptr_rusage.write(rusage)?;
 

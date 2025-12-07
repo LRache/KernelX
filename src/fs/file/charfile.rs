@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::kernel::errno::{SysResult, Errno};
 use crate::kernel::uapi::FileStat;
-use crate::kernel::event::{PollEvent, PollEventSet};
+use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::driver::CharDriverOps;
 use crate::fs::file::FileOps;
 use crate::fs::{InodeOps, Mode};
@@ -84,8 +84,12 @@ impl FileOps for CharFile {
         Err(Errno::ENOSYS)
     }
 
-    fn poll(&self, waker: usize, event: PollEventSet) -> SysResult<Option<PollEvent>> {
-        self.driver.poll(waker, event)
+    fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
+        self.driver.wait_event(waker, event)
+    }
+
+    fn wait_event_cancel(&self) {
+        self.driver.wait_event_cancel();
     }
 
     fn type_name(&self) -> &'static str {

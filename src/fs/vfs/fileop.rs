@@ -27,7 +27,7 @@ pub fn load_dentry(path: &str) -> Result<Arc<Dentry>, Errno> {
     vfs().lookup_dentry(vfs().get_root(), path)
 }
 
-pub fn load_parent_dentry<'a>(path: &'a str) -> SysResult<(Arc<Dentry>, &'a str)> {
+pub fn load_parent_dentry<'a>(path: &'a str) -> SysResult<Option<(Arc<Dentry>, &'a str)>> {
     vfs().lookup_parent_dentry(vfs().get_root(), path)
 }
 
@@ -40,7 +40,7 @@ pub fn load_dentry_at(dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
     vfs().lookup_dentry(dir, path)
 }
 
-pub fn load_parent_dentry_at<'a>(dir: &Arc<Dentry>, path: &'a str) -> SysResult<(Arc<Dentry>, &'a str)> {
+pub fn load_parent_dentry_at<'a>(dir: &Arc<Dentry>, path: &'a str) -> SysResult<Option<(Arc<Dentry>, &'a str)>> {
     vfs().lookup_parent_dentry(dir, path)
 }
 

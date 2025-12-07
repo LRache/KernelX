@@ -1,11 +1,11 @@
 use crate::kernel::ipc::SignalNum;
 use crate::kernel::scheduler::Tid;
 
-use super::PollEvent;
+use super::FileEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    Poll { event: PollEvent, waker: usize },
+    Poll { event: FileEvent, waker: usize },
     PipeReadReady,
     PipeWriteReady,
     Timeout,

@@ -1,8 +1,8 @@
 use alloc::collections::VecDeque;
 use spin::Mutex;
 
-use crate::kernel::errno::SysResult;
-use crate::kernel::event::{Event, PollEvent, PollEventSet, WaitQueue};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
 use crate::kernel::scheduler::current;
 
 pub struct PipeInner {
@@ -73,33 +73,74 @@ impl PipeInner {
     }
 
     pub fn write(&self, buf: &[u8]) -> SysResult<usize> {
-        let mut total_written = 0;
-        // kinfo!("Pipe write: buffer size {}, capacity {}", self.buffer.len(), self.capacity);
-        while total_written < buf.len() {
-            let mut fifo = self.buffer.lock();
-            let capacity = self.capacity.lock();
+        let cap = self.capacity.lock();
 
-            if fifo.len() == *capacity {
-                drop(capacity);
-                drop(fifo);
-                
-                // If buffer is full, wait for space
-                self.write_waiter.lock().wait_current(Event::PipeWriteReady);
-                current::schedule();
-            } else {
-                let to_write = core::cmp::min(buf.len() - total_written, *capacity - fifo.len());
-                for i in 0..to_write {
-                    fifo.push_back(buf[total_written + i]);
-                }
-                total_written += to_write;
-                self.read_waiter.lock().wake_all(|e| e); // Wake up readers waiting for data
+        if buf.len() >= *cap {
+            let mut fifo = self.buffer.lock();
+            let to_write = buf.len() - fifo.len();
+            for i in 0..to_write {
+                fifo.push_back(buf[i]);
             }
+            self.read_waiter.lock().wake_all(|e| e); // Wake up readers waiting
+
+            Ok(to_write)
+        } else {
+            drop(cap);
+            let mut fifo;
+            loop {
+                let cap = self.capacity.lock();
+                fifo = self.buffer.lock();
+                if *cap - fifo.len() >= buf.len() {
+                    break;
+                } else {
+                    drop(cap);
+                    drop(fifo);
+                    // If buffer is full, wait for space
+                    self.write_waiter.lock().wait_current(Event::PipeWriteReady);
+                    current::schedule();
+
+                    match current::task().take_wakeup_event().unwrap() {
+                        Event::PipeWriteReady => {},
+                        Event::Signal => return Err(Errno::EINTR),
+                        _ => unreachable!()
+                    }
+                }
+            }
+
+            for i in 0..buf.len() {
+                fifo.push_back(buf[i]);
+            }
+
+            self.read_waiter.lock().wake_all(|e| e); // Wake up readers waiting for data
+
+            Ok(buf.len())
         }
+
+        // while total_written < buf.len() {
+        //     let mut fifo = self.buffer.lock();
+        //     let capacity = self.capacity.lock();
+
+        //     if fifo.len() == *capacity {
+        //         drop(capacity);
+        //         drop(fifo);
+                
+        //         // If buffer is full, wait for space
+        //         self.write_waiter.lock().wait_current(Event::PipeWriteReady);
+        //         current::schedule();
+        //     } else {
+        //         let to_write = core::cmp::min(buf.len() - total_written, *capacity - fifo.len());
+        //         for i in 0..to_write {
+        //             fifo.push_back(buf[total_written + i]);
+        //         }
+        //         total_written += to_write;
+        //         self.read_waiter.lock().wake_all(|e| e); // Wake up readers waiting for data
+        //     }
+        // }
         
-        Ok(total_written)
+        // Ok(total_written)
     }
 
-    pub fn poll(&self, waker: usize, event: PollEventSet, writable: bool) -> SysResult<Option<PollEvent>> {
+    pub fn wait_event(&self, waker: usize, event: PollEventSet, writable: bool) -> SysResult<Option<FileEvent>> {
         if event.contains(PollEventSet::POLLIN) && writable {
             return Ok(None);
         }
@@ -111,27 +152,27 @@ impl PipeInner {
         let buffer = self.buffer.lock();
         if event.contains(PollEventSet::POLLIN) {
             if buffer.len() > 0 && !writable {
-                return Ok(Some(PollEvent::ReadReady));
+                return Ok(Some(FileEvent::ReadReady));
             } else {
                 if *self.writer_count.lock() == 0 {
-                    return Ok(Some(PollEvent::HangUp)); // No writers left, indicate EOF
+                    return Ok(Some(FileEvent::HangUp)); // No writers left, indicate EOF
                 }
-                self.read_waiter.lock().wait(current::task().clone(), Event::Poll{event: PollEvent::ReadReady, waker});
+                self.read_waiter.lock().wait(current::task().clone(), Event::Poll{event: FileEvent::ReadReady, waker});
             }
         }
 
         if event.contains(PollEventSet::POLLOUT) {
             if buffer.len() < *self.capacity.lock() {
-                return Ok(Some(PollEvent::WriteReady));
+                return Ok(Some(FileEvent::WriteReady));
             } else {
-                self.write_waiter.lock().wait(current::task().clone(), Event::Poll{event: PollEvent::WriteReady, waker});
+                self.write_waiter.lock().wait(current::task().clone(), Event::Poll{event: FileEvent::WriteReady, waker});
             }
         }
 
         Ok(None)
     }
 
-    pub fn poll_cancel(&self) {
+    pub fn wait_event_cancel(&self) {
         self.read_waiter.lock().remove(current::task());
         self.write_waiter.lock().remove(current::task());
     }
@@ -151,7 +192,7 @@ impl PipeInner {
         if *writer_count == 0 {
             self.read_waiter.lock().wake_all(|e| {
                 match e {
-                    Event::Poll{ event: PollEvent::ReadReady, waker } => {Event::Poll{event: PollEvent::HangUp, waker} },
+                    Event::Poll{ event: FileEvent::ReadReady, waker } => { Event::Poll{event: FileEvent::HangUp, waker} },
                     _ => e
                 }
             }); // Wake up readers to notify them of EOF

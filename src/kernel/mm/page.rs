@@ -176,13 +176,16 @@ pub fn copy(src: usize, dst: usize) {
     debug_assert!(src != dst, "Source and destination addresses must be different: {:#x}", src);
     
     unsafe {
-        core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, arch::PGSIZE);
+        core::ptr::copy_nonoverlapping(src as *const usize, dst as *mut usize, arch::PGSIZE / core::mem::size_of::<usize>());
     }
 }
 
-pub fn zero(addr: usize) {
-    unsafe { 
-        core::ptr::write_bytes(addr as *mut u8, 0, arch::PGSIZE);
+pub fn zero(kpage: usize) {
+    unsafe {
+        if kpage & arch::PGMASK != 0 {
+            core::hint::unreachable_unchecked();
+        }
+        core::ptr::write_bytes(kpage as *mut usize, 0, arch::PGSIZE / core::mem::size_of::<usize>());
     }
 }
 

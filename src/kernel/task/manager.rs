@@ -36,13 +36,8 @@ impl Manager {
         ];
 
         let initenvp: &[&str] = &[];
-
-        let initfile = vfs::open_file(
-            initpath, 
-            FileFlags { readable: true, writable: false, blocked: true },
-            &Perm::new(PermFlags::X)
-        ).expect("Failed to open init file");
-        let pcb = PCB::new_initprocess(initfile, initcwd, initargv, initenvp).expect("Failed to initialize init process from ELF");
+        
+        let pcb = PCB::new_initprocess(initpath, initcwd, initargv, initenvp).expect("Failed to initialize init process from ELF");
         
         self.pcbs.lock().insert(0, pcb.clone());
 

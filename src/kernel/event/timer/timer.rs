@@ -6,40 +6,57 @@ use core::time::Duration;
 use spin::Mutex;
 
 use crate::kernel::event::Event;
-use crate::kernel::scheduler::{self, Task};
+use crate::kernel::scheduler;
+use crate::kernel::scheduler::Task;
 use crate::arch;
+use crate::klib::SpinLock;
 
 use super::event::TimerEvent;
 
 struct Timer {
     wait_queue: Mutex<BinaryHeap<Reverse<TimerEvent>>>,
+    next_timer_id: SpinLock<u64>,
 }
 
 impl Timer {
     const fn new() -> Self {
         Self {
             wait_queue: Mutex::new(BinaryHeap::new()),
+            next_timer_id: SpinLock::new(0),
         }
     }
 
-    pub fn add_timer(&self, time: Duration, expired_func: Box<dyn FnOnce()>) {
+    pub fn add_timer(&self, time: Duration, callback: Box<dyn FnOnce()>) -> u64 {
         let time = arch::get_time_us() + time.as_micros() as u64;
-        // self.wait_queue.lock().push(Reverse(TimerEvent { time, task: task, expired_func }));
-        self.wait_queue.lock().push(Reverse(TimerEvent { time, expired_func }));
+        let new_id = {
+            let mut id_lock = self.next_timer_id.lock();
+            *id_lock += 1;
+            *id_lock
+        };
+        self.wait_queue.lock().push(Reverse(TimerEvent { time, callback, id: new_id }));
+        new_id
     } 
 
     pub fn wakeup_expired(&self, current_time: u64) {
-        let mut wait_queue = self.wait_queue.lock();
-        while let Some(Reverse(event)) = wait_queue.peek() {
-            if event.time <= current_time {
-                let event = wait_queue.pop().unwrap().0;
-                (event.expired_func)();
-                // scheduler::wakeup_task(event.tcb.clone(), Event::Timeout);
-                // event.tcb.wakeup(Event::Timeout);
+        loop {
+            let mut wait_queue = self.wait_queue.lock();
+            if let Some(Reverse(event)) = wait_queue.peek() {
+                if event.time <= current_time {
+                    let event = wait_queue.pop().unwrap().0;
+                    drop(wait_queue);
+                    (event.callback)();
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
         }
+    }
+
+    pub fn remove(&self, timer_id: u64) {
+        self.wait_queue.lock()
+                       .retain(|event| event.0.id != timer_id);
     }
 }
 
@@ -57,14 +74,18 @@ pub fn now() -> Duration {
     Duration::from_micros(arch::get_time_us())
 }
 
-pub fn add_timer(task: Arc<dyn Task>, time: Duration) {
+pub fn add_timer(task: Arc<dyn Task>, time: Duration) -> u64 {
     TIMER.add_timer(time, Box::new(move || {
         scheduler::wakeup_task(task, Event::Timeout);
-    }));
+    }))
 }
 
-pub fn add_timer_with_func(time: Duration, func: Box<dyn FnOnce()>) {
-    TIMER.add_timer(time, func);
+pub fn add_timer_with_callback(time: Duration, callback: Box<dyn FnOnce()>) -> u64 {
+    TIMER.add_timer(time, callback)
+}
+
+pub fn remove_timer(timer_id: u64) {
+    TIMER.remove(timer_id);
 }
 
 pub fn interrupt() {
