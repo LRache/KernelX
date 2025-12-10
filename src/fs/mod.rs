@@ -7,6 +7,7 @@ mod perm;
 mod filesystem;
 mod ext4;
 mod devfs;
+mod procfs;
 mod rootfs;
 mod tmpfs;
 

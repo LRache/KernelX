@@ -4,7 +4,6 @@ use crate::kernel::scheduler::current;
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::syscall;
 use crate::kernel::event::timer;
-use crate::kwarn;
 
 pub fn trap_enter() {
     let tcb = current::tcb();
@@ -52,7 +51,7 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
     let fixed = current::addrspace().try_to_fix_memory_fault(addr, access_type);
 
     if !fixed {
-        kwarn!("Failed to fix memory fault at address: {:#x}, access_type={:?}, pc={:#x}, tid={}, KILLED", addr, access_type, crate::arch::get_user_pc(), current::tid());
+        // kwarn!("Failed to fix memory fault at address: {:#x}, access_type={:?}, pc={:#x}, tid={}, KILLED", addr, access_type, crate::arch::get_user_pc(), current::tid());
         // TODO: Implement the sicode and fields for memory fault
         current::pcb().send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, KSiFields::Empty, None).unwrap();
         current::schedule();

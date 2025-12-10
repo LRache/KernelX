@@ -224,3 +224,15 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
 pub fn sync() -> SyscallRet {
     vfs::sync_all().map(|_| 0)
 }
+
+// TODO: implement sched_getaffinity syscall
+pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UPtr<u8>) -> SyscallRet {
+    // kinfo!("sched_getaffinity: pid={}, cpusetsize={}, mask={:?}", _pid, _cpusetsize, _mask);
+    if cpusetsize == 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    uptr_mask.write(1)?; // only one CPU (CPU 0) is available
+
+    Ok(0)
+}

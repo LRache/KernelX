@@ -3,8 +3,6 @@ use core::mem::MaybeUninit;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
-use crate::fs::{Perm, PermFlags, vfs};
-use crate::fs::file::FileFlags;
 use crate::kernel::scheduler::Tid;
 use crate::klib::SpinLock;
 
@@ -30,9 +28,10 @@ impl Manager {
             // "main.c",
             // "-name",
             // "\"busybox_cmd.txt\""
-            "sh",
+            "ash",
             // "/runall.sh",
-            "lmbench_testcode.sh"
+            // "lmbench_testcode.sh"
+            // "cyclictest_testcode.sh"
         ];
 
         let initenvp: &[&str] = &[];

@@ -29,6 +29,7 @@ struct Signal {
 enum State {
     Running,
     Exited(u8),
+    Dead,
 }
 
 pub struct PCB {
@@ -125,11 +126,14 @@ impl PCB {
          matches!(*self.state.lock(), State::Exited(_))
     }
 
-    fn get_exit_code(&self) -> Option<u8> {
-        match *self.state.lock() {
+    fn recycle(&self) -> Option<u8> {
+        let mut state = self.state.lock();
+        let code = match *state {
             State::Exited(code) => Some(code),
             _ => None,
-        }
+        };
+        *state = State::Dead;
+        code
     }
 
     pub fn has_child(&self, tid: Tid) -> bool {
@@ -249,7 +253,7 @@ impl PCB {
         };
         
         if let Some(child) = child {
-            if let Some(exit_code) = child.get_exit_code() {
+            if let Some(exit_code) = child.recycle() {
                 return Ok(Some(exit_code));
             }
             
@@ -270,19 +274,18 @@ impl PCB {
                             return Err(Errno::EINTR);
                         }
 
-                        Event::Timeout => {
-                            
-                        }
-
                         _ => unreachable!("Unexpected event in wait_child: {:?}", event),
                     }
                 }
                 
-                let exit_code = child.get_exit_code().unwrap();
-                {
-                    let mut children = self.children.lock();
-                    children.retain(|c| c.get_pid() != pid);
-                }
+                let exit_code = if let Some(exit_code) = child.recycle() {
+                    exit_code
+                } else {
+                    return Err(Errno::ECHILD); // The child process was recycled by other waiters
+                };
+                    
+                let mut children = self.children.lock();
+                children.retain(|c| c.get_pid() != pid);
                 
                 return Ok(Some(exit_code));
             } else {
@@ -302,9 +305,10 @@ impl PCB {
     
         if let Some(child) = children.iter().find(|c| c.is_exited()) {
             let pid = child.get_pid();
-            let exit_code = child.get_exit_code().unwrap();
-            children.retain(|c| c.get_pid() != pid);
-            return Ok(Some((pid, exit_code)));
+            if let Some(exit_code) = child.recycle() {
+                children.retain(|c| c.get_pid() != pid);
+                return Ok(Some((pid, exit_code)));
+            }
         }
 
         drop(children);
@@ -320,15 +324,18 @@ impl PCB {
         match event {
             Event::Process { child } => {
                 let pid = child;
-                let exit_code;
                 let mut children = self.children.lock();
 
-                match children.iter().find(|c| c.get_pid() == child){
+                let exit_code = match children.iter().find(|c| c.get_pid() == child) {
                     Some(child_pcb) => {
-                        exit_code = child_pcb.get_exit_code().unwrap();
+                        if let Some(exit_code) = child_pcb.recycle() {
+                            exit_code
+                        } else {
+                            return Err(Errno::ECHILD);
+                        }
                     },
-                    None => unreachable!(), // The child must exist
-                }
+                    None => return Err(Errno::ECHILD), // The child process was recycled by other waiters
+                };
 
                 children.retain(|c| c.get_pid() != pid);
 

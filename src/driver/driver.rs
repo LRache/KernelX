@@ -1,8 +1,9 @@
 use alloc::sync::Arc;
 use alloc::string::String;
 
-use crate::kernel::errno::SysResult;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::mm::AddrSpace;
 
 use super::DeviceType;
 
@@ -136,6 +137,9 @@ pub trait CharDriverOps: DriverOps + Downcast{
     fn getchar(&self) -> Option<u8>;
     fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>>;
     fn wait_event_cancel(&self);
+    fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
+        Err(Errno::EINVAL)
+    }
 }
 
 impl_downcast!(CharDriverOps);

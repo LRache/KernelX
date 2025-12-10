@@ -82,10 +82,6 @@ impl FileOps for Pipe {
         Ok(())
     }
 
-    fn ioctl(&self, _request: usize, _arg: usize) -> SysResult<usize> {
-        Err(Errno::ENOSYS) // Placeholder for unimplemented ioctl commands
-    }
-
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
         // self.meta.as_ref().map(|m| &m.inode)
         unimplemented!()

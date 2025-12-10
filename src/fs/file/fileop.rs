@@ -2,7 +2,8 @@ use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::kernel::event::{FileEvent, PollEventSet};
-use crate::kernel::errno::SysResult;
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, InodeOps};
 
@@ -22,7 +23,9 @@ pub trait FileOps: DowncastSync {
     fn writable(&self) -> bool;
     
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize>;
-    fn ioctl(&self, request: usize, arg: usize) -> SysResult<usize>;
+    fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
+        Err(Errno::ENOSYS)
+    }
     fn fstat(&self) -> SysResult<FileStat>;
     fn fsync(&self) -> SysResult<()>;
     // fn get_dent(&self) -> SysResult<Option<DirResult>>;

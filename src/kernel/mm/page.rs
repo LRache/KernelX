@@ -100,7 +100,7 @@ pub fn alloc_with_shrink() -> usize {
         let to_shrink = allocator.allocated - allocator.waterlevel_low + 1;
         let min_to_shrink = to_shrink / 4 + 1;
         drop(allocator);
-
+        
         crate::kernel::mm::swappable::shrink(to_shrink, min_to_shrink);
         
         return FRAME_ALLOCATOR.lock().alloc().unwrap()
@@ -238,6 +238,9 @@ impl PhysPageFrame {
 
     #[cfg(feature = "swap-memory")]
     pub fn alloc_with_shrink_zeroed() -> Self {
+        use crate::kinfo;
+
+        // kinfo!("Allocating physical page frame with shrink");
         Self::new(alloc_with_shrink_zero())
     }
 

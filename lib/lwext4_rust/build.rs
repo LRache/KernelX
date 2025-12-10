@@ -35,7 +35,8 @@ fn main() {
         let sysroot = core::str::from_utf8(&output.stdout).unwrap();
         let sysroot = sysroot.trim_end();
         // let sysroot_inc = &format!("-I{sysroot}/usr/include/");
-        let sysroot_inc = &format!("-I/opt/riscv64-linux-musl-cross/riscv64-linux-musl/include");
+        // let sysroot_inc = &format!("-I/opt/riscv64-linux-musl-cross/riscv64-linux-musl/include");
+        let sysroot_inc = &format!("-I/opt/riscv64-unknown-linux-gnu/sysroot/usr/include");
 
         generates_bindings_to_rust(sysroot_inc);
     }

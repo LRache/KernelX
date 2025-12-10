@@ -55,7 +55,7 @@ impl SwappableNoFileFrame {
     }
 
     pub fn alloc_zeroed(uaddr: usize, addrspace: &AddrSpace) -> (Self, usize) {
-        let frame = PhysPageFrame::alloc_zeroed();
+        let frame = PhysPageFrame::alloc_with_shrink_zeroed();
         let kpage = frame.get_page();
         let frame = Self::allocated(uaddr, frame, addrspace);
         swapper::push_lru(kpage, frame.inner.clone());

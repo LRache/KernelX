@@ -159,7 +159,7 @@ pub fn mprotect(addr: usize, length: usize, prot: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn msync(addr: usize, length: usize, flags: usize) -> SyscallRet {
+pub fn msync(_addr: usize, _length: usize, _flags: usize) -> SyscallRet {
     // Currently no-op
     Ok(0)
 }

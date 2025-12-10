@@ -54,17 +54,12 @@ asm_usertrap_entry:
     LOAD(tp, 32)
 
     # load the kernel stack pointer
-    # LOAD sp, 256(a0)
     LOAD(sp, 33)
 
     # load the usertrap handler
-    # LOAD t0, 280(a0)
     LOAD(t0, 36)
-    # load the TCB pointer
-    # LOAD t1, 288(a0)
     
     # load the kernel page table
-    # LOAD t2, 272(a0)
     LOAD(t1, 35)
     sfence.vma
     csrw satp, t1

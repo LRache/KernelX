@@ -87,6 +87,12 @@ impl Task for KThread {
         true
     }
 
+    fn unblock(&self) {
+        let mut state = self.state.lock();
+        debug_assert!(matches!(*state, TaskState::Blocked | TaskState::BlockedUninterruptible));
+        *state = TaskState::Ready;
+    }
+
     fn wakeup(&self, event: Event) -> bool {
         let mut state = self.state.lock();
         if *state != TaskState::Blocked {

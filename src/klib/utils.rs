@@ -8,8 +8,16 @@ impl<F: FnOnce()> Drop for Defer<F> {
     }
 }
 
+impl<F: FnOnce()> Defer<F> {
+    fn cancel(&mut self) {
+        self.0.take();
+    }
+}
+
 pub fn defer<F: FnOnce()>(f: F) -> Defer<F> {
     Defer(Some(f))
 }
 
-
+pub fn cancel_defer<F: FnOnce()>(mut defer: Defer<F>) {
+    defer.cancel();
+}

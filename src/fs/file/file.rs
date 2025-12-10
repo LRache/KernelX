@@ -151,10 +151,6 @@ impl FileOps for File {
         Ok(*pos)
     }
 
-    fn ioctl(&self, _request: usize, _arg: usize) -> SysResult<usize> {
-        Err(Errno::ENOSYS) // Placeholder for unimplemented ioctl commands
-    }
-
     fn fstat(&self) -> SysResult<FileStat> {
         self.inode.fstat()
     }

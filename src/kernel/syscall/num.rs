@@ -233,6 +233,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         // misc
         81  => misc::sync(0),
+        123 => misc::sched_getaffinity(3),
         160 => misc::newuname(1),
         165 => misc::getrusage(2),
         236 => misc::get_mempolicy(0),

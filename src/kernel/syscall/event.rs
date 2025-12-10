@@ -14,7 +14,7 @@ use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
 use crate::kernel::task::PCB;
 use crate::kernel::uapi;
-use crate::klib::utils::defer;
+use crate::klib::utils::{cancel_defer, defer};
 
 const FD_SET_SIZE: usize = 1024;
 
@@ -125,8 +125,7 @@ fn select(
 
     let tcb = current::tcb();
     tcb.block("select");
-
-    let _d = defer(|| { tcb.state().lock().state = TaskState::Running; });
+    let defer = defer(|| { tcb.unblock(); });
     
     let mut ready_count = 0;
     let mut waiting_files = Vec::new();
@@ -172,9 +171,6 @@ fn select(
             }
             write_back_fdsets(&uptr_readfds, &uptr_writefds, &uptr_exceptfds, &readfds, &writefds, &exceptfds)?;
             
-            // Set task state back to running
-            // tcb.state().lock().state = TaskState::Running;
-            
             return Ok(0);
         }
     } else {
@@ -183,6 +179,7 @@ fn select(
 
     let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
 
+    cancel_defer(defer);
     current::schedule();
 
     old_signal_mask.map(|mask| {
@@ -255,12 +252,15 @@ impl Pollfd {
     }
 }
 
-// BUG
 fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     let mut fdtable = current::fdtable().lock();
 
     let mut count = 0u32;
     let mut i = 0;
+
+    let tcb = current::tcb();
+    tcb.block("poll");
+    let defer = defer(|| { tcb.unblock(); });
 
     let mut poll_files: Vec<(Arc<dyn FileOps>, &mut Pollfd)> = pollfds.iter_mut()
         .filter_map(|pfd| {
@@ -302,10 +302,12 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     if let Some(timeout) = timeout {
         timer::add_timer(current::task().clone(), timeout);
     }
+
+    cancel_defer(defer);
+    current::schedule();
     
     // start polling
-    let event = current::block("poll");
-
+    let event = current::task().take_wakeup_event().unwrap();
     let (poll_event, waker) = match event {
         Event::Poll{ event, waker} => (event, waker),
         Event::Timeout => return Ok(0), // Timeout occurred
@@ -359,8 +361,6 @@ pub fn ppoll_time32(uptr_ufds: UArray<Pollfd>, nfds: usize, uptr_timeout: UPtr<u
     Ok(r)
 }
 
-
-// TODO: implement the setitimer syscall
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ITimerValue {

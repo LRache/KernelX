@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::kernel::errno::{SysResult, Errno};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::driver::CharDriverOps;
@@ -80,8 +81,8 @@ impl FileOps for CharFile {
         None
     }
 
-    fn ioctl(&self, _request: usize, _arg: usize) -> SysResult<usize> {
-        Err(Errno::ENOSYS)
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        self.driver.ioctl(request, arg, addrspace)
     }
 
     fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {

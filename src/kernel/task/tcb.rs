@@ -186,9 +186,11 @@ impl TCB {
         let userstack_top = addrspace.create_user_stack(argv, envp, &auxv).expect("Failed to push args and envp to userstack");
 
         let mut fdtable = FDTable::new();
+        // TODO: open devfs /dev/tty{n} as stdin, stdout, stderr
         let stdout_dev = driver::get_char_driver("sbi-console").unwrap();
+        let tty = Arc::new(CharFile::new(Arc::new(driver::char::Tty::new(0, stdout_dev.clone()))));
         for _ in 0..3 {
-            fdtable.push(Arc::new(CharFile::new(stdout_dev.clone())), FDFlags::empty()).unwrap();
+            fdtable.push(tty.clone(), FDFlags::empty()).unwrap();
         }
         fdtable.push(file.clone(), FDFlags::empty()).unwrap();
 
@@ -484,6 +486,12 @@ impl Task for TCB {
         }
         state.state = TaskState::BlockedUninterruptible;
         true
+    }
+
+    fn unblock(&self) {
+        let mut state = self.state.lock();
+        debug_assert!(state.state == TaskState::Blocked);
+        state.state = TaskState::Running;
     }
 
     fn wakeup(&self, event: Event) -> bool {

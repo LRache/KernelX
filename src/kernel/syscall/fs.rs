@@ -485,7 +485,7 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
 pub fn ioctl(fd: usize, request: usize, arg: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
-    file.ioctl(request, arg)
+    file.ioctl(request, arg, &current::addrspace())
 }
 
 pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
