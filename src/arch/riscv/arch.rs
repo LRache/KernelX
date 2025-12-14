@@ -1,12 +1,14 @@
 use alloc::sync::Arc;
 
-use crate::arch::riscv::{csr, load_device_tree, process, sbi_driver};
+use crate::arch::riscv::fdt::core_count;
+use crate::arch::riscv::{csr, load_device_tree, plic, process, sbi_driver};
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
-use crate::arch::{Arch, ArchTrait, UserContextTrait};
+use crate::arch::{self, Arch, ArchTrait, UserContextTrait};
+use crate::kernel::config;
 use crate::kernel::scheduler::current;
-use crate::kernel::mm::MapPerm;
+use crate::kernel::mm::{MapPerm, page};
 use crate::driver::chosen;
-use crate::driver;
+use crate::{driver, kinfo};
 
 use super::KernelContext;
 use super::pagetable::kernelpagetable;
@@ -32,6 +34,27 @@ impl ArchTrait for Arch {
         chosen::kpmu::register(&SBIKPMU);
 
         driver::register_matched_driver(Arc::new(SBIConsoleDriver));
+    }
+
+    fn setup_all_cores(current_core: usize) {
+        unsafe extern "C" {
+            static __riscv_others_entry: u8;
+        }
+
+        kinfo!("Starting other harts...");
+        
+        plic::enable_interrupt_for_all_harts();
+
+        for hartid in 0..core_count() {
+            if hartid != current_core {
+                let stack = page::alloc_contiguous(config::SCHEDULER_KSTACK_PAGE_COUNT);
+                sbi_driver::hart_start(
+                    hartid, 
+                    unsafe { &__riscv_others_entry } as *const u8 as usize, 
+                    stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE
+                );
+            }
+        }
     }
     
     #[inline(always)]
@@ -74,6 +97,14 @@ impl ArchTrait for Arch {
 
     fn enable_timer_interrupt() {
         SIE::read().set_stie(true).write();
+    }
+
+    fn enable_device_interrupt() {
+        SIE::read().set_seie(true).write();
+    }
+
+    fn enable_device_interrupt_irq(irq: u32) {
+        plic::enable_irq_for_all_harts(irq);
     }
 
     fn get_kernel_stack_top() -> usize {

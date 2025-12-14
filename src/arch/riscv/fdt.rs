@@ -2,6 +2,7 @@ use fdt::node::FdtNode;
 use fdt::Fdt;
 use alloc::vec::Vec;
 
+use crate::arch::riscv::plic;
 use crate::kernel::parse_boot_args;
 use crate::driver::Device;
 use crate::driver::found_device;
@@ -10,6 +11,7 @@ use crate::{kinfo, kwarn};
 
 static TIME_FREQ: InitedCell<u32> = InitedCell::uninit();
 static SVADU_EXTENSION_ENABLED: InitedCell<bool> = InitedCell::uninit();
+static CORE_COUNT: InitedCell<usize> = InitedCell::uninit();
 
 pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     let data = unsafe { core::slice::from_raw_parts(fdt as *const u32, 2) };
@@ -30,14 +32,34 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
         TIME_FREQ.init(freq as u32);
     });
 
+    // let cpu_node = fdt.find_node("/cpus").unwrap();
+    // let core_count = cpu_node.children().count();
+    let core_count = 1;
+    CORE_COUNT.init(core_count);
+    kinfo!("Detected {} CPU cores", core_count);
+
     kinfo!("Init timebase frequency = {}Hz", *TIME_FREQ);
     
     let soc_node = fdt.find_node("/soc").unwrap();
+    if soc_node.children().find_map(|child| {
+        if child.compatible()?.all().into_iter().find(|compatible| *compatible == "riscv,plic0").is_some() {
+            let mut reg_prop = child.reg()?;
+            let reg = reg_prop.next()?;
+            let addr = reg.starting_address as usize;
+            let size = reg.size? as usize;
+            plic::init(addr, size);
+            Some(())
+        } else {
+            None
+        }
+    }).is_none() {
+        plic::not_found();
+    }
+    
     for child in soc_node.children() {
         load_soc_node(&child);
     }
 
-    let cpu_node = fdt.find_node("/cpus").unwrap();
     load_cpu_node(&cpu_node.children().next().unwrap());
 
     let chosen_node = fdt.find_node("/chosen").unwrap();
@@ -61,9 +83,18 @@ fn load_soc_node(child: &FdtNode) -> Option<()> {
         let addr = reg.starting_address as usize;
         let size = reg.size? as usize;
 
-        let compatible = child.compatible()?;
+        let compatible = child.compatible()?.first();
+        
+        let interrupts = child.property("interrupts").and_then(|p| p.as_usize()).map(|v| v as u32);
 
-        let device = Device::new(addr, size, child.name, compatible.first());
+        let device = Device::new(
+            addr, 
+            size, 
+            child.name, 
+            compatible,
+            interrupts
+        );
+        
         found_device(&device);
     }
     Some(())
@@ -87,4 +118,8 @@ pub fn time_frequency() -> u32 {
 
 pub fn svadu_enable() -> bool {
     *SVADU_EXTENSION_ENABLED
+}
+
+pub fn core_count() -> usize {
+    *CORE_COUNT
 }

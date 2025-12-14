@@ -7,19 +7,21 @@ pub enum DeviceType {
 
 #[derive(Debug)]
 pub struct Device<'a> {
-    pub mmio_base: usize,
-    pub mmio_size: usize,
-    pub name: &'a str,
-    pub compatible: &'a str,
+    mmio_base: usize,
+    mmio_size: usize,
+    name: &'a str,
+    compatible: &'a str,
+    interrupt_number: Option<u32>,
 }
 
 impl<'a> Device<'a> {
-    pub fn new(mmio_base: usize, mmio_size: usize, name: &'a str, compatible: &'a str) -> Device<'a> {
+    pub fn new(mmio_base: usize, mmio_size: usize, name: &'a str, compatible: &'a str, interrupt_number: Option<u32>) -> Device<'a> {
         Device {
             mmio_base,
             mmio_size,
             name,
             compatible,
+            interrupt_number,
         }
     }
 
@@ -37,5 +39,9 @@ impl<'a> Device<'a> {
 
     pub fn compatible(&self) -> &'a str {
         self.compatible
+    }
+
+    pub fn interrupt_number(&self) -> Option<u32> {
+        self.interrupt_number
     }
 }

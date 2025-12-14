@@ -6,4 +6,4 @@ pub mod def;
 
 pub use tcb::*;
 pub use pcb::*;
-pub use manager::{get_initprocess, create_initprocess};
+pub use manager::{with_initprocess, create_initprocess};

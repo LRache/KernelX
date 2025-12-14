@@ -65,10 +65,7 @@ unsafe impl Sync for Timer {}
 static TIMER: Timer = Timer::new();
 
 #[unsafe(link_section = ".text.init")]
-pub fn init() {
-    arch::set_next_time_event_us(10000); // Set first timer interrupt in 10ms
-    arch::enable_timer_interrupt();
-}
+pub fn init() {}
 
 pub fn now() -> Duration {
     Duration::from_micros(arch::get_time_us())

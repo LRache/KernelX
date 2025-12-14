@@ -37,6 +37,11 @@ pub fn is_clear() -> bool {
     arch::get_percpu_data() == 0
 }
 
+pub fn hart_id() -> usize {
+    let processor = processor();
+    processor.hart_id()
+}
+
 pub fn task() -> &'static Arc<dyn Task> {
     let processor = processor();
     &processor.task()

@@ -1,4 +1,5 @@
 use crate::arch::riscv::fdt::svadu_enable;
+use crate::arch::riscv::plic;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -33,6 +34,14 @@ fn handle_syscall() {
         user_context.gpr[10] = trap::syscall(syscall_num, &syscall_args) as usize;
     });
 }
+
+fn handle_external_interrupt() {
+    if let Some(irq) = plic::claim_irq(current::hart_id()) {
+        trap::external_interrupt(irq);
+        plic::complete_irq(current::hart_id(), irq);
+    }
+}
+
 
 fn svadu_mark_page_accessed(uaddr: usize) -> bool {
     let mut pagetable = current::addrspace().pagetable().write();
@@ -99,7 +108,7 @@ pub fn usertrap_handler() -> ! {
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
-                    kinfo!("External interrupt occurred");
+                    handle_external_interrupt();
                 },
                 scause::Interrupt::Counter => {
                     kinfo!("Counter interrupt occurred");

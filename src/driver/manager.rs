@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
 
-use crate::{kinfo, kwarn};
+use crate::{arch, kinfo, kwarn};
 
 use super::{DriverMatcher, Device, DriverOps, BlockDriverOps, CharDriverOps, DeviceType};
 
@@ -12,6 +12,7 @@ pub struct DriverManager {
     matchers: RwLock<Vec<&'static dyn DriverMatcher>>,
     block: RwLock<BTreeMap<String, Arc<dyn BlockDriverOps>>>,
     char: RwLock<BTreeMap<String, Arc<dyn CharDriverOps>>>,
+    interrupts: RwLock<BTreeMap<u32, Arc<dyn DriverOps>>>,
 }
 
 impl DriverManager {
@@ -20,6 +21,7 @@ impl DriverManager {
             matchers: RwLock::new(Vec::new()),
             block: RwLock::new(BTreeMap::new()),
             char: RwLock::new(BTreeMap::new()),
+            interrupts: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -30,6 +32,7 @@ impl DriverManager {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         for matcher in self.matchers.read().iter() {
             if let Some(driver) = matcher.try_match(device) {
+                kinfo!("Matched driver: {} for device: {:?}", driver.name(), device);
                 return Some(driver);
             }
         }
@@ -40,12 +43,22 @@ impl DriverManager {
     fn found_device(&self, device: &Device) {
         if let Some(driver) = self.try_match(device) {
             kinfo!("Registering driver: {} for device {}: {:?}", driver.name(), driver.device_name(), device);
+            
+            if let Some(irq) = device.interrupt_number() {
+                self.interrupts.write().insert(irq, driver.clone());
+                arch::enable_device_interrupt_irq(irq);
+                kinfo!("Enabled interrupt {} for device {}", irq, driver.device_name());
+            }
+            
             match driver.device_type() {
                 DeviceType::Block => {
                     self.register_block_device(driver.as_block_driver());
                 }
+                DeviceType::Char => {
+                    self.register_char_device(driver.as_char_driver());
+                }
                 _ => {}
-            }
+            };
         }
     }
 

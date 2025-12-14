@@ -7,7 +7,7 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::tid::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::{get_initprocess, manager};
+use crate::kernel::task::{with_initprocess, manager};
 use crate::kernel::scheduler::{Task, TaskState, current, tid};
 use crate::kernel::scheduler;
 use crate::kernel::event::Event;
@@ -80,7 +80,7 @@ impl PCB {
         let cwd = vfs::load_dentry(cwd)?;
 
         let pcb = Arc::new(Self {
-            pid: 0,
+            pid: new_tid,
             parent: SpinLock::new(None),
             state: SpinLock::new(State::Running),
             exec_path: SpinLock::new(String::from(initpath)),
@@ -235,15 +235,16 @@ impl PCB {
             });
             parent.send_signal(signum::SIGCHLD, SiCode::SI_KERNEL, fields, None).unwrap_or(());
         }
-        
-        let mut children = self.children.lock();
-        children.iter_mut().for_each(|c| {
-            *c.parent.lock() = Some(get_initprocess().clone());
+
+        with_initprocess(|init_process| {
+            let mut children = self.children.lock();
+            children.iter_mut().for_each(|c| {
+                *c.parent.lock() = Some(init_process.clone());
+            });
+            init_process.children.lock().append(&mut children);
         });
 
         manager::remove(self.pid);
-
-        get_initprocess().children.lock().append(&mut children);
     }
 
     pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<u8>, Errno> {

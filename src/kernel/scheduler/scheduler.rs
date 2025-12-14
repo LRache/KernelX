@@ -54,7 +54,7 @@ pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) {
     push_task(task);
 }
 
-pub fn run_tasks(_hartid: u8) -> ! {
+pub fn run_tasks(hartid: u8) -> ! {
     current::clear();
     loop {
         arch::disable_interrupt();
@@ -63,7 +63,7 @@ pub fn run_tasks(_hartid: u8) -> ! {
                 continue;
             }
 
-            let mut processor = Processor::new(&task);
+            let mut processor = Processor::new(&task, hartid as usize);
             
             processor.switch_to_task();
 

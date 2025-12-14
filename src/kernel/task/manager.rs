@@ -1,23 +1,19 @@
-use core::cell::UnsafeCell;
-use core::mem::MaybeUninit;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
-use crate::kernel::scheduler::Tid;
+use crate::kernel::scheduler::{Tid, tid};
 use crate::klib::SpinLock;
 
 use super::{PCB, Pid};
 
 pub struct Manager {
     pcbs: SpinLock<BTreeMap<Pid, Arc<PCB>>>,
-    initprocess: UnsafeCell<MaybeUninit<Arc<PCB>>>,
 }
 
 impl Manager {
     const fn new() -> Self {
         Self {
             pcbs: SpinLock::new(BTreeMap::new()),
-            initprocess: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
 
@@ -37,18 +33,30 @@ impl Manager {
         let initenvp: &[&str] = &[];
         
         let pcb = PCB::new_initprocess(initpath, initcwd, initargv, initenvp).expect("Failed to initialize init process from ELF");
-        
-        self.pcbs.lock().insert(0, pcb.clone());
 
-        unsafe {
-            *self.initprocess.get() = MaybeUninit::new(pcb);
-        }
+        debug_assert!(pcb.get_pid() == tid::TID_START, "Init process must have PID 1, got {}", pcb.get_pid());
+        
+        self.pcbs.lock().insert(tid::TID_START, pcb.clone());
+
+        // unsafe {
+        //     *self.initprocess.get() = MaybeUninit::new(pcb);
+        // }
     }
 
-    fn get_initprocess(&self) -> &Arc<PCB> {
-        unsafe {
-            (&*self.initprocess.get()).assume_init_ref()
-        }
+    // fn get_initprocess(&self) -> &Arc<PCB> {
+    //     // unsafe {
+    //     //     (&*self.initprocess.get()).assume_init_ref()
+    //     // }
+    //     self.pcbs.lock().get(&0).expect("Init process not created yet")
+    // }
+
+    fn with_initprocess<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Arc<PCB>) -> R,
+    {
+        let pcbs = self.pcbs.lock();
+        let initprocess = pcbs.get(&tid::TID_START).expect("Init process not created yet");
+        f(initprocess)
     }
 
     fn insert_pcb(&self, pcb: Arc<PCB>) {
@@ -81,8 +89,11 @@ pub fn create_initprocess(initpath: &str, initcwd: &str) {
     MANAGER.create_initprocess(initpath, initcwd);
 }
 
-pub fn get_initprocess() -> &'static Arc<PCB> {
-    MANAGER.get_initprocess()
+pub fn with_initprocess<F, R>(f: F) -> R
+where
+    F: FnOnce(&Arc<PCB>) -> R,
+{
+    MANAGER.with_initprocess(f)
 }
 
 pub fn insert(pcb: Arc<PCB>) {

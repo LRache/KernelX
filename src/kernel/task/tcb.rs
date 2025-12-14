@@ -24,6 +24,7 @@ use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::arch;
 use crate::driver;
+use crate::driver::char::Tty;
 use crate::ktrace;
 
 #[derive(Debug, Clone, Copy)]
@@ -187,8 +188,8 @@ impl TCB {
 
         let mut fdtable = FDTable::new();
         // TODO: open devfs /dev/tty{n} as stdin, stdout, stderr
-        let stdout_dev = driver::get_char_driver("sbi-console").unwrap();
-        let tty = Arc::new(CharFile::new(Arc::new(driver::char::Tty::new(0, stdout_dev.clone()))));
+        let stdout_dev = driver::get_char_driver("serial@10000000").unwrap();
+        let tty = Arc::new(CharFile::new(Arc::new(Tty::new(0, stdout_dev.clone()))));
         for _ in 0..3 {
             fdtable.push(tty.clone(), FDFlags::empty()).unwrap();
         }

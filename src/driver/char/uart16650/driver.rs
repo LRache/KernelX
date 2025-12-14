@@ -4,7 +4,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::driver::{DriverOps, CharDriverOps, DeviceType};
-use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::errno::SysResult;
 use crate::kernel::event::{PollEventSet, FileEvent};
 use crate::klib::SpinLock;
 
@@ -43,12 +43,14 @@ impl Inner {
 }
 
 pub struct Driver {
+    name: String,
     inner: SpinLock<Inner>,
 }
 
 impl Driver {
-    pub fn new(base: usize) -> Self {
+    pub fn new(base: usize, name: String) -> Self {
         Driver {
+            name,
             inner: SpinLock::new(Inner { base })
         }
     }
@@ -83,7 +85,7 @@ impl DriverOps for Driver {
     }
 
     fn device_name(&self) -> String {
-        "serial".into()
+        self.name.clone()
     }
 
     fn device_type(&self) -> DeviceType {
@@ -115,7 +117,8 @@ impl CharDriverOps for Driver {
     }
 
     fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
-        Err(Errno::ENOSYS)
+        // Err(Errno::ENOSYS)
+        Ok(None)
     }
 
     fn wait_event_cancel(&self) {}

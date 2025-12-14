@@ -1,5 +1,5 @@
-use alloc::sync::Arc;
 use alloc::string::String;
+use alloc::sync::Arc;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};

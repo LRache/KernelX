@@ -8,13 +8,15 @@ use crate::arch;
 pub struct Processor<'a> {
     idle_kernel_context: arch::KernelContext,
     task: &'a Arc<dyn Task>,
+    hart_id: usize,
 }
 
 impl<'a> Processor<'a> {
-    pub fn new(task: &'a Arc<dyn Task>) -> Self {
+    pub fn new(task: &'a Arc<dyn Task>, hart_id: usize) -> Self {
         Self {
             idle_kernel_context: arch::KernelContext::new_idle(),
-            task
+            task,
+            hart_id,
         }
     }
 
@@ -25,6 +27,11 @@ impl<'a> Processor<'a> {
     pub fn tcb(&self) -> &TCB {
         self.task.tcb()
     }
+
+    pub fn hart_id(&self) -> usize {
+        self.hart_id
+    }
+
 
     pub fn switch_to_task(&mut self){
         current::set(self);

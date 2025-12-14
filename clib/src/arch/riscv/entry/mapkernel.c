@@ -2,13 +2,23 @@
 #include <stdint.h>
 
 #define LEVEL 2
-#define PTE_V (1 << 0)
-#define PTE_R (1 << 1)
-#define PTE_W (1 << 2)
-#define PTE_X (1 << 3)
-#define PTE_G (1 << 5)
-#define PTE_A (1 << 6)
-#define PTE_D (1 << 7)
+// #define PTE_V (1 << 0)
+// #define PTE_R (1 << 1)
+// #define PTE_W (1 << 2)
+// #define PTE_X (1 << 3)
+// #define PTE_G (1 << 5)
+// #define PTE_A (1 << 6)
+// #define PTE_D (1 << 7)
+
+enum {
+    PTE_V = 1 << 0,
+    PTE_R = 1 << 1,
+    PTE_W = 1 << 2,
+    PTE_X = 1 << 3,
+    PTE_G = 1 << 5,
+    PTE_A = 1 << 6,
+    PTE_D = 1 << 7, 
+};
 
 __init_text
 static inline void *alloc_page() {
@@ -67,18 +77,22 @@ uintptr_t __riscv_map_kaddr(uintptr_t kaddr_offset, uintptr_t memory_top) {
         ((uintptr_t *)root)[i] = 0;
     }
 
+    uint8_t flags;
+    flags = PTE_V | PTE_R | PTE_W | PTE_X | PTE_G | PTE_A | PTE_D;
     for (uintptr_t kaddr = (uintptr_t)__init_start; kaddr < (uintptr_t)__init_end; kaddr += PGSIZE) {
-        map(root, kaddr - kaddr_offset, kaddr - kaddr_offset, PTE_V | PTE_R | PTE_W | PTE_X | PTE_G | PTE_A | PTE_D);
-        map(root, kaddr, kaddr - kaddr_offset, PTE_V | PTE_R | PTE_W | PTE_X | PTE_G | PTE_A | PTE_D);
+        map(root, kaddr - kaddr_offset, kaddr - kaddr_offset, flags);
+        map(root, kaddr, kaddr - kaddr_offset, flags);
     }
 
+    flags = PTE_V | PTE_R | PTE_X | PTE_G | PTE_A | PTE_D;
     for (uintptr_t kaddr = (uintptr_t)__text_start; kaddr < (uintptr_t)__text_end; kaddr += PGSIZE) {
-        map(root, kaddr, kaddr - kaddr_offset, PTE_V | PTE_R | PTE_X | PTE_G | PTE_A | PTE_D);
+        map(root, kaddr, kaddr - kaddr_offset, flags);
     }
 
+    flags = PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D;
     memory_top = (memory_top + PGSIZE - 1) & ~(PGSIZE - 1);
     for (uintptr_t paddr = (uintptr_t)__text_end - kaddr_offset; paddr < memory_top; paddr += PGSIZE) {
-        map(root, paddr + kaddr_offset, paddr, PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D);
+        map(root, paddr + kaddr_offset, paddr, flags);
     }
 
     uintptr_t satp = (8ULL << 60) | get_ppn(root);

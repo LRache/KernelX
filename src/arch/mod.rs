@@ -35,6 +35,7 @@ use crate::kernel::mm::MapPerm;
 
 arch_export! {
     init() -> ();
+    setup_all_cores(current_core: usize) -> ();
     
     /* ----- Per-CPU Data ----- */
     set_percpu_data(data: usize) -> ();
@@ -50,6 +51,8 @@ arch_export! {
     enable_interrupt  () -> ();
     disable_interrupt () -> ();
     enable_timer_interrupt() -> ();
+    enable_device_interrupt() -> ();
+    enable_device_interrupt_irq(irq: u32) -> ();
 
     get_kernel_stack_top() -> usize;
 

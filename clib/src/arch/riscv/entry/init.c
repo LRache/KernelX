@@ -73,8 +73,7 @@ static inline void sbi_shutdown() {
 
 __init_text
 void __riscv_init_die(const char *reason) {
-    const char *msg;
-    msg = "Kernel panic: ";
+    const char *msg = "Kernel panic: ";
     for (const char *p = msg; *p != '\0'; p++) {
         sbi_putchar(*p);
     }

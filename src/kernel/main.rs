@@ -51,7 +51,7 @@ pub fn parse_boot_args(bootargs: &'static str) {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
+extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     kinfo!("Welcome to KernelX!");
     
     kinfo!("Initializing KernelX...");
@@ -86,10 +86,19 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
     {
         crate::kernel::mm::swappable::spawn_kswapd();
     }
-
-    // free_init();
     
     kinfo!("KernelX initialized successfully!");
+
+    arch::setup_all_cores(hartid);
+
+    kentry(hartid);
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kentry(hartid: usize) -> ! {
+    arch::set_next_time_event_us(10000);
+    arch::enable_timer_interrupt();
+    arch::enable_device_interrupt();
     
     scheduler::run_tasks(hartid as u8);
 }

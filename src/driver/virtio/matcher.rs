@@ -1,27 +1,16 @@
 use alloc::sync::Arc;
 use core::ptr::NonNull;
-use core::sync::atomic::AtomicU32;
 use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
 use virtio_drivers::transport::{Transport, DeviceType};
 
 use crate::kernel::mm::{MapPerm, page};
-use crate::arch::{self, map_kernel_addr};
+use crate::arch::{self, map_kernel_addr}; 
 use crate::driver::block::VirtIOBlockDriver;
 use crate::driver::{Device, DriverOps, DriverMatcher};
 
-pub struct VirtIODriverMatcher {
-    block_count: AtomicU32,
-}
+pub struct Matcher;
 
-impl VirtIODriverMatcher {
-    pub const fn new() -> Self {
-        Self {
-            block_count: AtomicU32::new(0),
-        }
-    }
-}
-
-impl DriverMatcher for VirtIODriverMatcher {
+impl DriverMatcher for Matcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         if device.compatible() != "virtio,mmio" {
             return None;
@@ -37,7 +26,7 @@ impl DriverMatcher for VirtIODriverMatcher {
         match transport.device_type() {
             DeviceType::Block => {
                 Some(Arc::new(VirtIOBlockDriver::new(
-                    self.block_count.fetch_add(1, core::sync::atomic::Ordering::SeqCst), 
+                    device.name().into(), 
                     transport
                 )))
             }

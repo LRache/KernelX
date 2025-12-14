@@ -21,4 +21,13 @@ impl SIE {
         }
         self
     }
+
+    pub fn set_seie(&mut self, seie: bool) -> &mut Self {
+        if seie {
+            self.sie |= 1 << 9;
+        } else {
+            self.sie &= !(1 << 9);
+        }
+        self
+    }
 }

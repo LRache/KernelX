@@ -1,4 +1,3 @@
-use alloc::format;
 use alloc::sync::Arc;
 use alloc::string::String;
 use virtio_drivers::device::blk::VirtIOBlk;
@@ -7,19 +6,20 @@ use virtio_drivers::transport::mmio::MmioTransport;
 use crate::driver::BlockDriverOps;
 use crate::driver::{DeviceType, DriverOps};
 use crate::driver::virtio::VirtIOHal;
+use crate::kinfo;
 use crate::klib::SpinLock;
 
 const BLOCK_SIZE: usize = 512;
 
 pub struct VirtIOBlockDriver {
-    num: u32,
+    device_name: String,
     driver: SpinLock<VirtIOBlk<VirtIOHal, MmioTransport>>
 }
 
 impl VirtIOBlockDriver {
-    pub fn new(num: u32, transport: MmioTransport) -> Self {
+    pub fn new(device_name: String, transport: MmioTransport) -> Self {
         Self {
-            num,
+            device_name,
             driver: SpinLock::new(VirtIOBlk::new(transport).unwrap())
         }
     }
@@ -31,7 +31,7 @@ impl DriverOps for VirtIOBlockDriver {
     }
 
     fn device_name(&self) -> String {
-        format!("virtio_block{}", self.num)
+        self.device_name.clone()
     }
 
     fn device_type(&self) -> DeviceType {

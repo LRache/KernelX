@@ -4,6 +4,7 @@ use crate::kernel::scheduler::current;
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::syscall;
 use crate::kernel::event::timer;
+use crate::kinfo;
 
 pub fn trap_enter() {
     let tcb = current::tcb();
@@ -65,4 +66,8 @@ pub fn illegal_inst() {
 
 pub fn memory_misaligned() {
     current::pcb().send_signal(signum::SIGBUS, SiCode::SI_KERNEL, KSiFields::Empty, None).unwrap();
+}
+
+pub fn external_interrupt(irq: u32) {
+    kinfo!("External interrupt occurred: irq={}", irq);
 }

@@ -44,3 +44,8 @@ pub fn putchar(c: u8) -> () {
 pub fn set_timer(time: u64) {
     sbi_call(0x0, 0x0, time as usize, (time >> 32) as usize, 0, 0, 0, 0);
 }
+
+pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> isize {
+    let ret = sbi_call(0x0, 0x2, hartid, start_addr, opaque, 0, 0, 0);
+    ret._error as isize
+}
