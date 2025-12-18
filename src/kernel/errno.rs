@@ -17,6 +17,7 @@ pub enum Errno {
     EFAULT  = 14,  // Bad address
     EEXIST  = 17,  // File exists
     EXDEV   = 18,  // Cross-device link
+    ENODEV  = 19,  // No such device
     ENOTDIR = 20,  // Not a directory
     EISDIR  = 21,  // Is a directory
     EINVAL  = 22,  // Invalid argument
@@ -25,6 +26,7 @@ pub enum Errno {
     ENOSPC  = 28,  // No space left on device
     ESPIPE  = 29,  // Illegal seek
     EPIPE   = 32,  // Broken pipe
+    ENOTEMPTY = 39,  // Directory not empty
     ENOSYS  = 38,  // Function not implemented
     EOPNOTSUPP = 95, // Operation not supported on transport endpoint
     ETIMEDOUT = 110, // Connection timed out

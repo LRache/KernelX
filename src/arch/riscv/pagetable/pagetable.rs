@@ -11,26 +11,25 @@ pub trait PageAllocator {
     fn alloc_zero() -> usize;
 }
 
-// pub struct MappedPage<'a> {
-//     pte: PTE,
-//     _marker: core::marker::PhantomData<&'a ()>,
-// }
+pub struct MappedPage {
+    pte: PTE,
+}
 
-// impl<'a> MappedPage<'a> {
-//     pub fn page(&self) -> usize {
-//         self.pte.ppn().to_addr().kaddr()
-//     }
+impl MappedPage {
+    pub fn page(&self) -> usize {
+        self.pte.ppn().to_addr().kaddr()
+    }
 
-//     pub fn perm(&self) -> MapPerm {
-//         self.pte.flags().into()
-//     }
+    pub fn perm(&self) -> MapPerm {
+        self.pte.flags().into()
+    }
 
-//     pub fn set_perm(&mut self, perm: MapPerm) {
-//         let flags: PTEFlags = perm.into();
-//         self.pte.set_flags(flags);
-//         self.pte.write_back().expect("Failed to write back PTE");
-//     }
-// }
+    pub fn set_perm(&mut self, perm: MapPerm) {
+        let flags: PTEFlags = perm.into();
+        self.pte.set_flags(flags);
+        self.pte.write_back().expect("Failed to write back PTE");
+    }
+}
 
 pub struct PageTableImpls<T: PageAllocator> {
     pub root: usize,
@@ -177,6 +176,10 @@ impl<T: PageAllocator> PageTableImpls<T> {
             }
         }
         false
+    }
+
+    pub fn mapped_perm(&self, uaddr: usize) -> Option<MapPerm> {
+        self.find_pte(uaddr).map(|pte| pte.flags().into())
     }
 }
 

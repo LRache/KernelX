@@ -22,7 +22,6 @@ impl<T: Copy> WaitQueueItem<T> {
     }
 
     fn wakeup(self, e: Event) {
-        // self.task.wakeup(e);
         scheduler::wakeup_task(self.task, e);
     }
 }

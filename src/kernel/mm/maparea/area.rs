@@ -24,8 +24,8 @@ impl Frame {
 }
 
 pub trait Area {
-    fn translate_read (&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize>;
-    fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize>;
+    fn translate_read (&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize>;
+    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize>;
     
     fn ubase(&self) -> usize;
     

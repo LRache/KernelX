@@ -4,8 +4,8 @@ use alloc::sync::Arc;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::event::Event;
-use crate::arch;
 use crate::klib::SpinLock;
+use crate::arch;
 
 use super::processor::Processor;
 
@@ -54,8 +54,9 @@ pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) {
     push_task(task);
 }
 
-pub fn run_tasks(hartid: u8) -> ! {
-    current::clear();
+pub fn run_tasks(hartid: usize) -> ! {
+    let mut processor = Processor::new(hartid);
+    current::set(&processor);
     loop {
         arch::disable_interrupt();
         if let Some(task) = fetch_next_task() {
@@ -63,9 +64,7 @@ pub fn run_tasks(hartid: u8) -> ! {
                 continue;
             }
 
-            let mut processor = Processor::new(&task, hartid as usize);
-            
-            processor.switch_to_task();
+            processor.switch_to_task(&task);
 
             if task.state_running_to_ready() {
                 push_task(task);

@@ -6,10 +6,11 @@ mod init;
 mod perm;
 mod filesystem;
 mod ext4;
-mod devfs;
+pub mod devfs;
 mod procfs;
 mod rootfs;
 mod tmpfs;
+mod memtreefs;
 
 pub use init::{init, mount_init_fs, fini};
 pub use inode::{InodeOps, Mode, FileType};

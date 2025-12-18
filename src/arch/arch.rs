@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use crate::kernel::mm::MapPerm;
 
 use super::{KernelContext, SigContext};
@@ -52,6 +54,7 @@ pub trait ArchTrait {
     fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm);
     unsafe fn unmap_kernel_addr(kstart: usize, size: usize);
 
+    fn uptime() -> Duration;
     fn get_time_us() -> u64;
     fn set_next_time_event_us(interval: u64);
 }

@@ -33,7 +33,11 @@ impl TCB {
             unreachable!();
         }
         
-        let action = self.parent.signal_actions().lock().get(signal.signum);
+        let (action, stack) = {
+            let signal_actions = self.parent.signal_actions().lock();
+            (signal_actions.get(signal.signum), signal_actions.get_stack_top())
+        };
+        
         if action.is_default() {
             match signum.default_action() {
                 SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
@@ -63,7 +67,14 @@ impl TCB {
         sigframe.ucontext.uc_sigmask = old_mask;
         sigframe.ucontext.uc_mcontext = (*self.user_context()).into();
         
-        let mut stack_top = self.user_context().get_user_stack_top();
+        let mut stack_top = if action.flags.contains(SignalActionFlags::SA_ONSTACK) {
+            match stack {
+                Some(stack_top) => stack_top,
+                None => self.user_context().get_user_stack_top(),
+            }
+        } else {
+            self.user_context().get_user_stack_top()
+        };
         stack_top -= core::mem::size_of::<SigFrame>();
         stack_top &= !0xf; // Align to 16 bytes
         self.get_addrspace().copy_to_user(stack_top, sigframe).expect("Failed to copy sigframe to user stack");
@@ -92,9 +103,12 @@ impl TCB {
     }  
 
     pub fn try_recive_pending_signal(self: &Arc<Self>, pending: PendingSignal) -> bool {
-        let mut state = self.state().lock();
-
         let signum = pending.signum;
+        if signum.is_empty() {
+            return true;
+        }
+        
+        let mut state = self.state().lock();
 
         let waiting = state.signal_to_wait;
         if waiting.contains(signum) {

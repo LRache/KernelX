@@ -25,7 +25,7 @@ impl ShmArea {
 }
 
 impl Area for ShmArea {
-    fn translate_read(&mut self, uaddr: usize, _addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, _addrspace: &AddrSpace) -> Option<usize> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index < frames.len() {
@@ -35,7 +35,7 @@ impl Area for ShmArea {
         }
     }
     
-    fn translate_write(&mut self, uaddr: usize, _addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_write(&mut self, uaddr: usize, _addrspace: &AddrSpace) -> Option<usize> {
         self.translate_read(uaddr, _addrspace)
     }
 

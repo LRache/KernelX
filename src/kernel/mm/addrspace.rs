@@ -150,7 +150,7 @@ impl AddrSpace {
         self.map_manager.lock().translate_write(uaddr, self).ok_or(Errno::EFAULT)
     }
 
-    pub fn copy_to_user_buffer(self: &Arc<Self>, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
+    pub fn copy_to_user_buffer(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
         let mut left = buffer.len();
         let mut copied: usize = 0;
 
@@ -172,7 +172,7 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn copy_to_user<T: Copy>(self: &Arc<Self>, uaddr: usize, value: T) -> Result<(), Errno> {
+    pub fn copy_to_user<T: Copy>(&self, uaddr: usize, value: T) -> Result<(), Errno> {
         let buffer = unsafe {
             core::slice::from_raw_parts((&value as *const T) as *const u8, core::mem::size_of::<T>())
         };
@@ -180,12 +180,12 @@ impl AddrSpace {
     }
 
     /// Copy a slice to user space
-    pub fn copy_to_user_slice<T>(self: &Arc<Self>, uaddr: usize, slice: &[T]) -> SysResult<()> {
+    pub fn copy_to_user_slice<T>(&self, uaddr: usize, slice: &[T]) -> SysResult<()> {
         let buffer = unsafe { core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice)) };
         self.copy_to_user_buffer(uaddr, buffer)
     }
 
-    pub fn copy_from_user_buffer(self: &Arc<Self>, mut uaddr: usize, buffer: &mut [u8]) -> Result<(), Errno> {
+    pub fn copy_from_user_buffer(&self, mut uaddr: usize, buffer: &mut [u8]) -> Result<(), Errno> {
         let mut left = buffer.len();
         let mut copied: usize = 0;
 
@@ -208,7 +208,7 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn copy_from_user<T: Copy>(self: &Arc<Self>, uaddr: usize) -> Result<T, Errno> {
+    pub fn copy_from_user<T: Copy>(&self, uaddr: usize) -> Result<T, Errno> {
         let mut value: T = unsafe { core::mem::zeroed() };
         let buffer = unsafe {
             core::slice::from_raw_parts_mut(
@@ -220,7 +220,7 @@ impl AddrSpace {
         Ok(value)
     }
 
-    pub fn get_user_string(self: &Arc<Self>, mut uaddr: usize) -> Result<String, Errno> {
+    pub fn get_user_string(&self, mut uaddr: usize) -> Result<String, Errno> {
         let mut map_manager = self.map_manager.lock();
 
         let mut result = String::new();
@@ -249,7 +249,7 @@ impl AddrSpace {
         Ok(result)
     }
 
-    pub fn copy_from_user_slice<T: Copy>(self: &Arc<Self>, uaddr: usize, slice: &mut [T]) -> SysResult<()> {
+    pub fn copy_from_user_slice<T: Copy>(&self, uaddr: usize, slice: &mut [T]) -> SysResult<()> {
         let buffer = unsafe { core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, core::mem::size_of_val(slice)) };
         self.copy_from_user_buffer(uaddr, buffer)
     }
@@ -276,6 +276,7 @@ impl AddrSpace {
         let map_manager = &mut self.map_manager.lock();
         if !map_manager.try_to_fix_memory_fault(uaddr, access_type, self) {
             // map_manager.print_all_areas();
+            // unreachable!("Failed to fix memory fault at address {:#x} with access type {:?}, mapped={:?}", uaddr, access_type, self.pagetable().read().mapped_perm(uaddr));
             false
         } else {
             true

@@ -46,4 +46,5 @@ impl MemAccessType {
 pub fn init(frame_start: usize, frame_end: usize) {
     page::init(frame_start, frame_end);
     vdso::init();
+    crate::kinfo!("Frame space inited: {:#x} - {:#x}, total {:#x}", frame_start, frame_end, frame_end - frame_start);
 }

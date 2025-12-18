@@ -5,8 +5,10 @@ use alloc::sync::Arc;
 
 use crate::driver::{DriverOps, CharDriverOps, DeviceType};
 use crate::kernel::errno::SysResult;
-use crate::kernel::event::{PollEventSet, FileEvent};
+use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
+use crate::kernel::scheduler::current;
 use crate::klib::SpinLock;
+use crate::klib::ring::RingBuffer;
 
 mod regs {
     pub const RHR: usize = 0; // receive holding register (for input bytes)
@@ -26,11 +28,11 @@ mod regs {
     pub const LSR_TX_IDLE: u8 = 1 << 5; // THR can accept another character to send
 }
 
-struct Inner {
+struct MMIO {
     base: usize,
 }
 
-impl Inner {
+impl MMIO {
     #[inline(always)]
     fn read_reg(&mut self, offset: usize) -> u8 {
         unsafe { core::ptr::read_volatile((self.base + offset) as *const u8) }
@@ -44,38 +46,41 @@ impl Inner {
 
 pub struct Driver {
     name: String,
-    inner: SpinLock<Inner>,
+    mmio: SpinLock<MMIO>,
+    recv_buffer: SpinLock<RingBuffer<u8, 1024>>,
+    waiters: SpinLock<WaitQueue<usize>>,
 }
 
 impl Driver {
     pub fn new(base: usize, name: String) -> Self {
         Driver {
             name,
-            inner: SpinLock::new(Inner { base })
+            mmio: SpinLock::new(MMIO { base }),
+            recv_buffer: SpinLock::new(RingBuffer::new(0)),
+            waiters: SpinLock::new(WaitQueue::new()),
         }
     }
 
     pub fn init(&self) {
-        let mut inner = self.inner.lock();
+        let mut mmio = self.mmio.lock();
 
         // Disable interrupts while configuring the UART.
-        inner.write_reg(regs::IER, 0x00);
+        mmio.write_reg(regs::IER, 0x00);
 
         // Enter baud latch mode to configure baud rate.
-        inner.write_reg(regs::LCR, regs::LCR_BAUD_LATCH);
+        mmio.write_reg(regs::LCR, regs::LCR_BAUD_LATCH);
 
         // Configure baud rate divisor for 38.4K (LSB then MSB).
-        inner.write_reg(0, 0x03);
-        inner.write_reg(1, 0x00);
-
+        mmio.write_reg(0, 0x03);
+        mmio.write_reg(1, 0x00);
         // Leave baud latch mode and configure: 8 bits, no parity.
-        inner.write_reg(regs::LCR, regs::LCR_EIGHT_BITS);
+        mmio.write_reg(regs::LCR, regs::LCR_EIGHT_BITS);
 
         // Reset and enable FIFOs.
-        inner.write_reg(regs::FCR, regs::FCR_FIFO_ENABLE | regs::FCR_FIFO_CLEAR);
+        mmio.write_reg(regs::FCR, regs::FCR_FIFO_ENABLE | regs::FCR_FIFO_CLEAR);
 
-        // Enable transmit and receive interrupts.
-        inner.write_reg(regs::IER, regs::IER_TX_ENABLE | regs::IER_RX_ENABLE);
+        // Enable receive interrupts.
+        mmio.write_reg(regs::IER, regs::IER_RX_ENABLE);
     }
 }
 
@@ -92,34 +97,85 @@ impl DriverOps for Driver {
         DeviceType::Char
     }
 
-    fn as_char_driver(self: Arc<Self>) -> Arc<dyn CharDriverOps> {
-        self
+    fn as_char_driver(self: Arc<Self>) -> Option<Arc<dyn CharDriverOps>> {
+        Some(self)
+    }
+
+    fn handle_interrupt(&self) {
+        let mut mmio = self.mmio.lock();
+        // Check if there is data to read.
+        if (mmio.read_reg(regs::LSR) & regs::LSR_RX_READY) != 0 {
+            let mut recv_buffer = self.recv_buffer.lock();
+            while mmio.read_reg(regs::LSR) & regs::LSR_RX_READY != 0 {
+                let c = mmio.read_reg(regs::RHR);
+                recv_buffer.push(c);
+            }
+            drop(recv_buffer);
+
+            self.waiters.lock().wake_all(
+                |waker| Event::Poll { event: FileEvent::ReadReady, waker }
+            );
+        }
     }
 }
 
 impl CharDriverOps for Driver {
-    fn putchar(&self, c: u8) {
-        let mut inner = self.inner.lock();
-        // Wait for UART to be ready to transmit.
-        while (inner.read_reg(regs::LSR) & regs::LSR_TX_IDLE) == 0 {}
-        
-        inner.write_reg(regs::THR, c);
+    fn write(&self, buf: &[u8]) -> SysResult<usize> {
+        let mut mmio = self.mmio.lock();
+        for &c in buf {
+            // Wait for UART to be ready to transmit.
+            while (mmio.read_reg(regs::LSR) & regs::LSR_TX_IDLE) == 0 {}
+            
+            mmio.write_reg(regs::THR, c);
+        }
+
+        Ok(buf.len())
     }
 
-    fn getchar(&self) -> Option<u8> {
-        let mut inner = self.inner.lock();
-        // Check if a character is available to read.
-        if (inner.read_reg(regs::LSR) & regs::LSR_RX_READY) == 0 {
-            return None;
+    fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
+        let mut idx = 0;
+
+        let mut recv_buffer = self.recv_buffer.lock();
+        for i in 0..buf.len() {
+            if let Some(c) = recv_buffer.pop() {
+                buf[i] = c;
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+        drop(recv_buffer);
+
+        let mut mmio = self.mmio.lock();
+        for i in idx..buf.len() {
+            if (mmio.read_reg(regs::LSR) & regs::LSR_RX_READY) == 0 {
+                break;
+            } else {
+                buf[i] = mmio.read_reg(regs::RHR);
+            }
         }
         
-        Some(inner.read_reg(regs::RHR))
+        Ok(idx)
     }
 
-    fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
-        // Err(Errno::ENOSYS)
+    fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
+        if event.contains(PollEventSet::POLLOUT) {
+            return Ok(Some(FileEvent::WriteReady));
+        }
+        
+        if event.contains(PollEventSet::POLLIN) {
+            if self.recv_buffer.lock().empty() {
+                self.waiters.lock().wait_current(waker);
+                return Ok(None);
+            } else {
+                return Ok(Some(FileEvent::ReadReady));
+            }
+        }
+        
         Ok(None)
     }
 
-    fn wait_event_cancel(&self) {}
+    fn wait_event_cancel(&self) {
+        self.waiters.lock().remove(current::task());
+    }
 }

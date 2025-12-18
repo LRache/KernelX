@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use alloc::string::String;
 use alloc::sync::Arc;
 
@@ -7,19 +9,25 @@ use crate::kernel::mm::AddrSpace;
 
 use super::DeviceType;
 
-pub trait DriverOps {
+pub trait DriverOps: Send + Sync {
     fn name(&self) -> &str;
 
     fn device_name(&self) -> String;
     fn device_type(&self) -> DeviceType;
 
-    fn as_block_driver(self: Arc<Self>) -> Arc<dyn BlockDriverOps> {
-        unreachable!()
+    fn as_block_driver(self: Arc<Self>) -> Option<Arc<dyn BlockDriverOps>> {
+        None
     }
 
-    fn as_char_driver(self: Arc<Self>) -> Arc<dyn CharDriverOps> {
-        unreachable!()
+    fn as_char_driver(self: Arc<Self>) -> Option<Arc<dyn CharDriverOps>> {
+        None
     }
+
+    fn as_rtc_driver(self: Arc<Self>) -> Option<Arc<dyn RTCDriverOps>> {
+        None
+    }
+
+    fn handle_interrupt(&self) {}
 }
 
 use downcast_rs::{impl_downcast, Downcast};
@@ -132,9 +140,9 @@ pub trait BlockDriverOps: DriverOps + Downcast {
 
 impl_downcast!(BlockDriverOps);
 
-pub trait CharDriverOps: DriverOps + Downcast{
-    fn putchar(&self, c: u8);
-    fn getchar(&self) -> Option<u8>;
+pub trait CharDriverOps: DriverOps + Downcast {
+    fn write(&self, buf: &[u8]) -> SysResult<usize>;
+    fn read(&self, buf: &mut [u8]) -> SysResult<usize>;
     fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>>;
     fn wait_event_cancel(&self);
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
@@ -147,3 +155,9 @@ impl_downcast!(CharDriverOps);
 pub trait PMUDriverOps : Sync + Send {
     fn shutdown(&self) -> !;
 }
+
+pub trait RTCDriverOps : DriverOps + Downcast + Send + Sync {
+    fn now(&self) -> SysResult<Duration>;
+}
+
+impl_downcast!(RTCDriverOps);

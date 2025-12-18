@@ -79,7 +79,7 @@ impl PrivateFileMapArea {
 
         addrspace.pagetable().write().mmap(self.ubase + area_offset, kpage, self.perm);
         self.frames[page_index] = FrameState::Allocated(Arc::new(SwappableNoFileFrame::allocated(uaddr, frame, addrspace)));
-
+        
         kpage
     }
 
@@ -94,7 +94,7 @@ impl PrivateFileMapArea {
             _ => panic!("Invalid type for copy-on-write"),
         };
 
-        addrspace.pagetable().write().mmap_replace_kaddr(self.ubase + area_offset, kpage);
+        addrspace.pagetable().write().mmap_replace(self.ubase + area_offset, kpage, self.perm);
         self.frames[page_index] = FrameState::Allocated(Arc::new(frame));
 
         kpage
@@ -113,7 +113,7 @@ impl PrivateFileMapArea {
 }
 
 impl Area for PrivateFileMapArea {
-    fn translate_read(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -136,7 +136,7 @@ impl Area for PrivateFileMapArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         debug_assert!(uaddr >= self.ubase);
 
         if !self.perm.contains(MapPerm::W) {
@@ -217,10 +217,6 @@ impl Area for PrivateFileMapArea {
     fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
         debug_assert!(uaddr >= self.ubase);
 
-        if !self.perm.contains(MapPerm::W) && access_type == MemAccessType::Write {
-            return false;
-        }
-        
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index < self.frames.len() {
             match &self.frames[page_index] {
@@ -232,10 +228,11 @@ impl Area for PrivateFileMapArea {
                     #[cfg(feature = "swap-memory")]
                     self.handle_memory_fault_on_swapped_allocated(&allocated, addrspace);
                     #[cfg(not(feature = "swap-memory"))]
-                    panic!("Memory fault on already allocated file page at address: {:#x}", uaddr);
+                    return false;
+                    // unreachable!("Memory fault on already allocated file page at address: {:#x}, access={:?}", uaddr, access_type);
                 }
                 FrameState::Cow(_) => {
-                    assert!(access_type == MemAccessType::Write, "Memory fault on CoW file page for read access at address: {:#x}", uaddr);
+                    debug_assert!(access_type == MemAccessType::Write, "Memory fault on CoW file page for read access at address: {:#x}", uaddr);
                     self.copy_on_write_page(page_index, addrspace);
                 }
             }

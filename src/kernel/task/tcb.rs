@@ -133,7 +133,7 @@ impl TCB {
     pub fn new_inittask(
         tid: i32, 
         parent: &Arc<PCB>,
-        file: File,
+        file: &Arc<File>,
         argv: &[&str],
         envp: &[&str],
     ) -> Arc<Self> {
@@ -159,15 +159,16 @@ impl TCB {
                     interpreter, 
                     FileFlags::dontcare(),
                     &Perm::new(PermFlags::X)
-                ).expect("Failed to open.");
-                return Self::new_inittask(tid, parent, interpreter_file, &new_argv, envp);
+                )
+                .expect("Failed to open.")
+                .downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)
+                .expect("Failed to open interpreter file as File");
+                return Self::new_inittask(tid, parent, &interpreter_file, &new_argv, envp);
             }
         }
-
-        let file = Arc::new(file);
         
         let mut addrspace = AddrSpace::new();
-        let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)
+        let (user_entry, dyn_info) = elf::loader::load_elf(file, &mut addrspace)
             .expect("Failed to load ELF for init task");
 
         let mut auxv = Auxv::new();
@@ -188,10 +189,15 @@ impl TCB {
 
         let mut fdtable = FDTable::new();
         // TODO: open devfs /dev/tty{n} as stdin, stdout, stderr
-        let stdout_dev = driver::get_char_driver("serial@10000000").unwrap();
-        let tty = Arc::new(CharFile::new(Arc::new(Tty::new(0, stdout_dev.clone()))));
+        // let stdout_dev = driver::get_char_driver("serial@10000000").unwrap();
+        // let tty = Arc::new(CharFile::new(Arc::new(Tty::new(0, stdout_dev.clone()))));
+        let stdio = vfs::open_file(
+            "/dev/serial@10000000", 
+            FileFlags::dontcare(), 
+            &Perm::new(PermFlags::R | PermFlags::W)
+        ).expect("Failed to open stdio.");
         for _ in 0..3 {
-            fdtable.push(tty.clone(), FDFlags::empty()).unwrap();
+            fdtable.push(stdio.clone(), FDFlags::empty()).unwrap();
         }
         fdtable.push(file.clone(), FDFlags::empty()).unwrap();
 
@@ -256,7 +262,7 @@ impl TCB {
 
     pub fn new_exec(
         &self,
-        file: File,
+        file: Arc<File>,
         argv: &[&str],
         envp: &[&str],
     ) -> Result<Arc<Self>, Errno> {
@@ -282,7 +288,7 @@ impl TCB {
                     interpreter, 
                     FileFlags::dontcare(),
                     &Perm::new(PermFlags::X)
-                )?;
+                )?.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
                 return self.new_exec(interpreter_file, &new_argv, envp);
             }
         }
@@ -466,7 +472,7 @@ impl Task for TCB {
     }
 
     fn block(&self, _reason: &str) -> bool {
-        debug_assert!(current::tid() == self.tid);
+        debug_assert!(current::tid() == self.tid, "current tid {} != self.tid {}", current::tid(), self.tid);
         
         let mut state = self.state.lock();
         match state.state {

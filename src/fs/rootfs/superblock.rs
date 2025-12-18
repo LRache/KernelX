@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::kernel::errno::Errno;
@@ -23,9 +22,9 @@ impl InodeOps for RootInode {
         0
     }
 
-    fn get_sno(&self) -> u32 {
-        0
-    }
+    // fn get_sno(&self) -> u32 {
+    //     0
+    // }
 
     fn type_name(&self) -> &'static str {
         "rootfs"
@@ -59,8 +58,8 @@ impl SuperBlockOps for RootFileSystemSuperBlock {
         0
     }
 
-    fn get_inode(&self, _ino: u32) -> Result<Box<dyn InodeOps>, Errno> {
-        Ok(Box::new(RootInode::new()))
+    fn get_inode(&self, _ino: u32) -> Result<Arc<dyn InodeOps>, Errno> {
+        Ok(Arc::new(RootInode::new()))
     }
 }
 

@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
 
@@ -61,16 +60,16 @@ impl SuperBlockOps for SuperBlock {
         0
     }
 
-    fn get_inode(&self, ino: u32) -> SysResult<Box<dyn InodeOps>> {
+    fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
         let meta = self.inner.lock().inode_map.get(&ino)
             .ok_or(Errno::ENOENT)?
             .clone();
-        Ok(Box::new(Inode::new(ino, self.sno, meta, self.inner.clone())))
+        Ok(Arc::new(Inode::new(ino, self.sno, meta, self.inner.clone())))
     }
 
-    fn create_temp(&self, mode: Mode) -> SysResult<Box<dyn InodeOps>> {
+    fn create_temp(&self, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         let mut inner = self.inner.lock();
         let ino = inner.alloc_inode_number();
-        Ok(Box::new(Inode::new(ino, self.sno, Arc::new(SpinLock::new(InodeMeta::new(mode))), self.inner.clone())))
+        Ok(Arc::new(Inode::new(ino, self.sno, Arc::new(SpinLock::new(InodeMeta::new(mode))), self.inner.clone())))
     }
 }

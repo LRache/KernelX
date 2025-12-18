@@ -24,7 +24,7 @@ impl Manager {
             // "main.c",
             // "-name",
             // "\"busybox_cmd.txt\""
-            "ash",
+            "sh",
             // "/runall.sh",
             // "lmbench_testcode.sh"
             // "cyclictest_testcode.sh"
@@ -37,18 +37,7 @@ impl Manager {
         debug_assert!(pcb.get_pid() == tid::TID_START, "Init process must have PID 1, got {}", pcb.get_pid());
         
         self.pcbs.lock().insert(tid::TID_START, pcb.clone());
-
-        // unsafe {
-        //     *self.initprocess.get() = MaybeUninit::new(pcb);
-        // }
     }
-
-    // fn get_initprocess(&self) -> &Arc<PCB> {
-    //     // unsafe {
-    //     //     (&*self.initprocess.get()).assume_init_ref()
-    //     // }
-    //     self.pcbs.lock().get(&0).expect("Init process not created yet")
-    // }
 
     fn with_initprocess<F, R>(&self, f: F) -> R
     where

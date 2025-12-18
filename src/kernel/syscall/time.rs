@@ -3,16 +3,12 @@ use crate::kernel::event::{timer, Event};
 use crate::kernel::errno::{SysResult, Errno};
 use crate::kernel::syscall::uptr::{UserPointer, UPtr};
 use crate::kernel::uapi::{Timespec, Timeval};
-use crate::arch;
+use crate::driver;
 
 pub fn gettimeofday(uptr_timeval: UPtr<Timeval>, _uptr_tz: usize) -> SysResult<usize> {
     uptr_timeval.should_not_null()?;
     
-    let us = arch::get_time_us();
-    let timeval = Timeval {
-        tv_sec:  us / 1000000,
-        tv_usec: us % 1000000,
-    };
+    let timeval = driver::chosen::kclock::now()?.into();
     
     uptr_timeval.write(timeval)?;
 
@@ -34,7 +30,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, _uptr_rem: usize) -> SysResult<usize>
     match event {
         Event::Timeout => Ok(0),
         Event::Signal => Err(Errno::EINTR),
-        _ => unreachable!(),
+        _ => unreachable!("event={:?}", event),
     }
 }
 
@@ -60,13 +56,29 @@ pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: UPtr<Timespec>,
 pub fn clock_gettime(_clockid: usize, uptr_timespec: UPtr<Timespec>) -> SysResult<usize> {
     uptr_timespec.should_not_null()?;
     
-    let us = arch::get_time_us();
-    let timespec = Timespec {
-        tv_sec:  us / 1000000,
-        tv_nsec: (us % 1000000) * 1000,
-    };
+    let timespec = driver::chosen::kclock::now()?.into();
     
     uptr_timespec.write(timespec)?;
 
+    Ok(0)
+}
+
+pub fn timer_create(_clockid: usize, _uptr_sev: usize, _uptr_timerid: UPtr<usize>) -> SysResult<usize> {
+    Ok(0)
+}
+
+pub fn timer_settime(_timerid: usize, _flags: usize, _uptr_new_value: UPtr<Timespec>, _uptr_old_value: UPtr<Timespec>) -> SysResult<usize> {
+    Ok(0)
+}
+
+pub fn timer_gettime(_timerid: usize, _uptr_value: UPtr<Timespec>) -> SysResult<usize> {
+    Ok(0)
+}
+
+pub fn timer_getoverrun(_timerid: usize) -> SysResult<usize> {
+    Ok(0)
+}
+
+pub fn timer_delete(_timerid: usize) -> SysResult<usize> {
     Ok(0)
 }

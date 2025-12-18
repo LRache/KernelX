@@ -4,7 +4,8 @@ use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, InodeOps};
-use crate::fs::file::{FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::klib::SpinLock;
 
 use super::PipeInner;
 
@@ -17,11 +18,11 @@ pub struct Pipe {
     inner: Arc<PipeInner>,
     meta: Option<Meta>,
     writable: bool,
-    _blocked: bool,
+    blocked: SpinLock<bool>,
 }
 
 impl Pipe {
-    pub fn new(inner: Arc<PipeInner>, writable: bool) -> Self {
+    pub fn new(inner: Arc<PipeInner>, writable: bool, blocked: bool) -> Self {
         if writable {
             inner.increment_writer_count();
         }
@@ -29,21 +30,21 @@ impl Pipe {
             inner,
             meta: None,
             writable,
-            _blocked: true,
+            blocked: SpinLock::new(blocked),
         }
     }
 
-    pub fn create(capacity: usize) -> (Self, Self) {
+    pub fn create(capacity: usize, blocked: bool) -> (Self, Self) {
         let inner = Arc::new(PipeInner::new(capacity));
-        let read_end = Pipe::new(inner.clone(), false);
-        let write_end = Pipe::new(inner, true);
+        let read_end = Pipe::new(inner.clone(), false, blocked);
+        let write_end = Pipe::new(inner, true, blocked);
         (read_end, write_end)
     }
 }
 
 impl FileOps for Pipe {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        self.inner.read(buf)
+        self.inner.read(buf, *self.blocked.lock())
     }
 
     fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
@@ -51,7 +52,7 @@ impl FileOps for Pipe {
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
-        self.inner.write(buf)
+        self.inner.write(buf, *self.blocked.lock())
     }
 
     fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
@@ -97,6 +98,10 @@ impl FileOps for Pipe {
 
     fn wait_event_cancel(&self, ) {
         self.inner.wait_event_cancel();
+    }
+
+    fn set_flags(&self, flags: FileFlags) {
+        *self.blocked.lock() = flags.blocked;
     }
 
     fn type_name(&self) -> &'static str {

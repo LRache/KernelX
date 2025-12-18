@@ -20,9 +20,9 @@ pub struct Dentry {
 }
 
 impl Dentry {
-    pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>) -> Self {
+    pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
         Self {
-            inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
+            inode_index: Index { sno: sno, ino: inode.get_ino() },
             name: name.into(),
             parent: SpinLock::new(Some(parent.clone())),
             children: SpinLock::new(BTreeMap::new()),
@@ -31,9 +31,9 @@ impl Dentry {
         }
     }
 
-    pub fn root(inode: &Arc<dyn InodeOps>) -> Self {
+    pub fn root(inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
         Self {
-            inode_index: Index { sno: inode.get_sno(), ino: inode.get_ino() },
+            inode_index: Index { sno, ino: inode.get_ino() },
             name: "/".into(),
             parent: SpinLock::new(None),
             children: SpinLock::new(BTreeMap::new()),
@@ -59,7 +59,7 @@ impl Dentry {
         match inode.upgrade() {
             None => {
                 drop(inode);
-                let inode =  vfs().load_inode(self.sno(), self.ino()).expect("Failed to load inode");
+                let inode = vfs().load_inode(self.sno(), self.ino()).expect("Failed to load inode");
                 *self.inode.lock() = Arc::downgrade(&inode);
                 inode
             }
@@ -83,7 +83,7 @@ impl Dentry {
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
 
-        let new_child = Arc::new(Self::new(name, self, &inode));
+        let new_child = Arc::new(Self::new(name, self, &inode, lookup_sno));
         children.insert(name.into(), Arc::downgrade(&new_child));
         
         Ok(new_child)
@@ -117,10 +117,10 @@ impl Dentry {
         }
     }
 
-    pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>) {
-        *self.mount_to.lock() =  Some(Arc::new(
+    pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>, mount_to_sno: u32) {
+        *self.mount_to.lock() = Some(Arc::new(
             Dentry { 
-                inode_index: Index { sno: mount_to.get_sno(), ino: mount_to.get_ino() },
+                inode_index: Index { sno: mount_to_sno, ino: mount_to.get_ino() },
                 name: self.name.clone(),
                 parent: SpinLock::new(self.parent.lock().clone()),
                 children: SpinLock::new(BTreeMap::new()),

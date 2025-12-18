@@ -17,6 +17,10 @@ impl DriverMatcher for Matcher {
             
             let driver = Driver::new(kbase, device.name().into());
             driver.init();
+
+            if let Some(irq) = device.interrupt_number() {
+                arch::enable_device_interrupt_irq(irq);
+            }
             
             Some(Arc::new(driver))
         } else {

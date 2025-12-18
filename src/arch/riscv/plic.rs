@@ -1,7 +1,6 @@
 use crate::kernel::mm::page;
 use crate::klib::{SpinLock, InitedCell};
-use crate::{arch, kinfo};
-
+use crate::arch;
 
 mod reg {
     pub const PRIORITY : usize = 0x0;
@@ -29,7 +28,6 @@ impl PLIC {
     }
 
     fn set_hart_threshold(&mut self, hart_id: usize, threshold: u32) {
-        kinfo!("Setting PLIC threshold for hart {} to {}", hart_id, threshold);
         let spriority = reg::SPRIORITY + hart_id * 0x2000;
         self.write(spriority, threshold);
     }

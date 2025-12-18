@@ -1,8 +1,10 @@
 mod superblock;
-mod root;
 mod null;
 mod zero;
+mod devnode;
 
-mod def;
+use null::NullInode;
+use zero::ZeroInode;
 
-pub use superblock::DevFileSystem;
+pub use superblock::FileSystem;
+pub use superblock::{init, add_device};

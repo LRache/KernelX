@@ -28,7 +28,6 @@ fn main() {
     println!("cargo:rerun-if-changed={}", symbols_src);
 
     // Linker script
-    // let linker = format!("scripts/linker/{}.ld", platform);
     let linker = format!("scripts/linker/{}{}.ld", arch, arch_bits);
     println!("cargo:rustc-link-arg=-T{}", linker);
     println!("cargo:rustc-link-arg=-Map=link.map");

@@ -1,46 +1,47 @@
 use alloc::sync::Arc;
 
 use crate::kernel::scheduler::task::Task;
-use crate::kernel::scheduler::current;
 use crate::kernel::task::TCB;
 use crate::arch;
 
-pub struct Processor<'a> {
-    idle_kernel_context: arch::KernelContext,
-    task: &'a Arc<dyn Task>,
+pub struct Processor {
     hart_id: usize,
+    task: *const Arc<dyn Task>,
+    idle_kernel_context: arch::KernelContext,
 }
 
-impl<'a> Processor<'a> {
-    pub fn new(task: &'a Arc<dyn Task>, hart_id: usize) -> Self {
+impl<'a> Processor {
+    pub fn new(hart_id: usize) -> Self {
         Self {
-            idle_kernel_context: arch::KernelContext::new_idle(),
-            task,
             hart_id,
+            task: 0 as *const Arc<dyn Task>,
+            idle_kernel_context: arch::KernelContext::new_idle(),
         }
-    }
-
-    pub fn task(&self) -> &Arc<dyn Task> {
-        &self.task
-    }
-
-    pub fn tcb(&self) -> &TCB {
-        self.task.tcb()
     }
 
     pub fn hart_id(&self) -> usize {
         self.hart_id
     }
 
+    pub fn has_task(&self) -> bool {
+        !self.task.is_null()
+    }
+    pub fn task(&self) -> &'a Arc<dyn Task> {
+        unsafe { &*self.task }
+    }
 
-    pub fn switch_to_task(&mut self){
-        current::set(self);
-        arch::kernel_switch(&mut self.idle_kernel_context, self.task.get_kcontext_ptr());
-        current::clear();
+    pub fn tcb(&self) -> &TCB {
+        self.task().tcb()
+    }
+
+    pub fn switch_to_task(&mut self, task: &'a Arc<dyn Task>) {
+        self.task = task;
+        arch::kernel_switch(&mut self.idle_kernel_context, task.get_kcontext_ptr());
+        self.task = 0 as *const Arc<dyn Task>;
     }
 
     pub fn schedule(&mut self) {
         arch::disable_interrupt();
-        arch::kernel_switch(self.task.get_kcontext_ptr(), &mut self.idle_kernel_context);
+        arch::kernel_switch(self.task().get_kcontext_ptr(), &mut self.idle_kernel_context);
     }
 }

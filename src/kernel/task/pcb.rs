@@ -15,6 +15,7 @@ use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, Signa
 use crate::fs::file::{File, FileFlags};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::fs::Dentry;
+use crate::kinfo;
 use crate::klib::SpinLock;
 
 use super::tcb::TCB;
@@ -25,6 +26,10 @@ struct Signal {
     actions: Mutex<SignalActionTable>,
     pending: Mutex<PendingSignalQueue>,
 }
+
+// struct Timer {
+//     timer_id: u64,
+// }
 
 enum State {
     Running,
@@ -48,6 +53,7 @@ pub struct PCB {
     children: Mutex<Vec<Arc<PCB>>>,
 
     pub itimer_ids: SpinLock<[Option<u64>; 3]>,
+    // pub timers: SpinLock<Vec<Timer>>,
 }
 
 impl PCB {
@@ -104,9 +110,12 @@ impl PCB {
             initpath, 
             FileFlags { readable: true, writable: false, blocked: true },
             &Perm::new(PermFlags::X)
-        ).expect("Failed to open init file");
+        ).expect("Failed to open init file")
+         .downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)
+         .expect("Failed to open init file as File");
+        kinfo!("Loaded {} as initfile", initpath);
 
-        let first_task = TCB::new_inittask(new_tid, &pcb, file, argv, envp);
+        let first_task = TCB::new_inittask(new_tid, &pcb, &file, argv, envp);
         pcb.tasks.lock().push(first_task.clone());
 
         scheduler::push_task(first_task);
@@ -185,7 +194,7 @@ impl PCB {
     pub fn exec(
         self: &Arc<Self>, 
         tcb: &TCB, 
-        file: File,
+        file: Arc<File>,
         exec_path: String, 
         argv: &[&str], 
         envp: &[&str]
@@ -217,7 +226,7 @@ impl PCB {
 
         *self.state.lock() = State::Exited(code);
 
-        if self.pid == 0 {
+        if self.pid == tid::TID_START {
             panic!("Init process exited with code {}, system will halt.", code);
         }
         

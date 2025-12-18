@@ -1,8 +1,9 @@
+use crate::{arch, kernel::mm::{MapPerm, page}};
+
 pub enum DeviceType {
     Block,
     Char,
-    Network,
-    Other,
+    Rtc,
 }
 
 #[derive(Debug)]
@@ -43,5 +44,11 @@ impl<'a> Device<'a> {
 
     pub fn interrupt_number(&self) -> Option<u32> {
         self.interrupt_number
+    }
+
+    pub fn alloc_mmio_pages(&self) -> usize {
+        let kbase = page::alloc_contiguous(arch::page_count(self.mmio_size()));
+        arch::map_kernel_addr(kbase, self.mmio_base(), self.mmio_size(), MapPerm::RW);
+        kbase
     }
 }

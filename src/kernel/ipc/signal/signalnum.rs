@@ -67,7 +67,10 @@ impl SignalNum {
     }
 
     pub fn to_mask(&self) -> usize {
-        1 << (self.0 - 1)
+        if self.0 == 0 {
+            return 0;
+        }
+        1usize << (self.0 - 1)
     }
     
     pub fn to_mask_set(&self) -> SignalSet {

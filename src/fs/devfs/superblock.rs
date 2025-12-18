@@ -1,47 +1,52 @@
-use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
+use crate::driver::{DeviceType, DriverOps};
+use crate::fs::devfs::devnode::CharDevInode;
+use crate::fs::{filesystem::FileSystemOps, memtreefs};
+use crate::klib::InitedCell;
 
-use crate::kernel::errno::SysResult;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
-use crate::fs::InodeOps;
-use crate::driver::BlockDriverOps;
+use super::{NullInode, ZeroInode};
 
-use super::{root, null, zero};
-use super::def::*;
-
-pub struct DevFileSystem;
-
-impl FileSystemOps for DevFileSystem {
-    fn create(&self, sno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
-        return Ok(DevSuperBlock::new(sno) as Arc<dyn SuperBlockOps>);
+struct DevfsInfo;
+impl memtreefs::StaticFsInfo for DevfsInfo {
+    fn type_name() -> &'static str {
+        "devfs"
     }
 }
 
-struct DevSuperBlock {
-    sno: u32,
-}
+static DEV_SUPERBLOCK: InitedCell<Arc<memtreefs::SuperBlock<DevfsInfo>>> = InitedCell::uninit();
 
-impl DevSuperBlock {
-    pub fn new(sno: u32) -> Arc<Self> {
-        Arc::new(DevSuperBlock { sno })
+pub struct FileSystem;
+
+impl FileSystemOps for FileSystem {
+    fn create(&self, _sno: u32, _driver: Option<Arc<dyn crate::driver::BlockDriverOps>>) -> crate::kernel::errno::SysResult<Arc<dyn crate::fs::filesystem::SuperBlockOps>> {
+        Ok(DEV_SUPERBLOCK.clone())
     }
 }
 
-impl SuperBlockOps for DevSuperBlock {
-    fn get_root_ino(&self) -> u32 {
-        ROOT_INO
-    }
-    
-    fn get_inode(&self, ino: u32) -> SysResult<Box<dyn InodeOps>> {
-        match ino {
-            ROOT_INO => Ok(Box::new(root::RootInode::new(self.sno))),
-            NULL_INO => Ok(Box::new(null::NullInode::new(self.sno))),
-            ZERO_INO => Ok(Box::new(zero::ZeroInode::new(self.sno))),
-            _ => unreachable!("DevFS only has 3 inodes"),
+pub fn init() {
+    let sno = 1;
+    let superblock = memtreefs::SuperBlock::new(sno);
+    let root = superblock.root_inode();
+    root.add_child("null".into(), Arc::new(NullInode::new(superblock.alloc_inode_number()))).unwrap();
+    root.add_child("zero".into(), Arc::new(ZeroInode::new(superblock.alloc_inode_number()))).unwrap();
+
+    DEV_SUPERBLOCK.init(Arc::new(superblock));
+}
+
+pub fn add_device(name: String, driver: Arc<dyn DriverOps>) {
+    let root = DEV_SUPERBLOCK.root_inode();
+    match driver.device_type() {
+        DeviceType::Char => {
+            let ino = DEV_SUPERBLOCK.alloc_inode_number();
+            let cdev_inode = CharDevInode::new(ino, driver.as_char_driver().unwrap());
+            root.add_child(name, Arc::new(cdev_inode)).unwrap();
         }
-    }
-
-    fn unmount(&self) -> SysResult<()> {
-        Ok(())
+        DeviceType::Block => {
+            let ino = DEV_SUPERBLOCK.alloc_inode_number();
+            let bdev_inode = super::devnode::BlockDevInode::new(ino, driver.as_block_driver().unwrap());
+            root.add_child(name, Arc::new(bdev_inode)).unwrap();
+        }
+        _ => {}
     }
 }

@@ -22,27 +22,15 @@ impl CharFile {
 
 impl FileOps for CharFile {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        let mut count = 0;
-        for byte in buf.iter_mut() {
-            if let Some(c) = self.driver.getchar() {
-                *byte = c;
-                count += 1;
-            } else {
-                break;
-            }
-        }
-        Ok(count)
+        self.driver.read(buf)
     }
 
     fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
         Err(Errno::EPIPE)
     }
 
-    fn write(&self, buf: &[u8]) -> crate::kernel::errno::SysResult<usize> {
-        for &c in buf {
-            self.driver.putchar(c);
-        }
-        Ok(buf.len())
+    fn write(&self, buf: &[u8]) -> SysResult<usize> {
+        self.driver.write(buf)
     }
 
     fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {

@@ -182,12 +182,9 @@ impl Manager {
     /// ```
     #[allow(dead_code)]
     pub fn map_area_fixed(&mut self, uaddr: usize, area: Box<dyn Area>, pagetable: &RwLock<PageTable>) {
-        assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
+        debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
         
         let new_area_end = uaddr + area.size();
-        
-        // Find all areas that overlap with the new area's range
-        // let mut overlapping_areas = Vec::new();
 
         for overlapping_base in self.find_overlapped_areas(uaddr, new_area_end) {
             let mut middle = self.areas.remove(&overlapping_base).unwrap();
@@ -295,67 +292,6 @@ impl Manager {
         Ok(())
     }
 
-    /// Split an area and set permissions for the specified range
-    // fn split_and_set_perm(&mut self, area_base: usize, range_start: usize, range_end: usize, perm: MapPerm, pagetable: &RwLock<PageTable>) -> Result<(), Errno> {
-    //     // Remove the original area from the map
-    //     let mut original_area = self.areas.remove(&area_base)
-    //         .ok_or(Errno::EFAULT)?;
-
-    //     let area_end = area_base + original_area.size();
-
-    //     // Special case: if the range covers the entire area, just change permissions
-    //     if range_start == area_base && range_end == area_end {
-    //         ktrace!("Range covers entire area, just changing permissions");
-    //         original_area.set_perm(perm, pagetable);
-    //         self.areas.insert(area_base, original_area);
-    //         return Ok(());
-    //     }
-
-    //     // Case 1: Range starts at area beginning but doesn't cover the whole area
-    //     if range_start == area_base && range_end < area_end {
-    //         ktrace!("Range starts at area beginning, splitting at end");
-    //         let right_area = original_area.split(range_end);
-    //         // original_area now covers [area_base, range_end)
-    //         original_area.set_perm(perm, pagetable);
-    //         self.areas.insert(area_base, original_area);
-    //         self.areas.insert(range_end, right_area);
-    //         return Ok(());
-    //     }
-
-    //     // Case 2: Range ends at area end but doesn't start at area beginning  
-    //     if range_start > area_base && range_end == area_end {
-    //         ktrace!("Range ends at area end, splitting at start");
-    //         let mut right_area = original_area.split(range_start);
-    //         // original_area now covers [area_base, range_start)
-    //         // right_area covers [range_start, area_end)
-    //         right_area.set_perm(perm, pagetable);
-    //         self.areas.insert(area_base, original_area);
-    //         self.areas.insert(range_start, right_area);
-    //         return Ok(());
-    //     }
-
-    //     // Case 3: Range is in the middle of the area - need two splits
-    //     if range_start > area_base && range_end < area_end {
-    //         ktrace!("Range is in middle, need two splits");
-    //         // First split at range_end to get the right part
-    //         let right_area = original_area.split(range_end);
-    //         // Now original_area covers [area_base, range_end)
-            
-    //         // Second split at range_start to get the middle part  
-    //         let mut middle_area = original_area.split(range_start);
-    //         // Now original_area covers [area_base, range_start)
-    //         // middle_area covers [range_start, range_end)
-            
-    //         middle_area.set_perm(perm, pagetable);
-    //         self.areas.insert(area_base, original_area);           // left part
-    //         self.areas.insert(range_start, middle_area);           // middle part (new perms)
-    //         self.areas.insert(range_end, right_area);             // right part
-    //         return Ok(());
-    //     }
-
-    //     unreachable!();
-    // }
-
     pub fn create_user_stack(&mut self, argv: &[&str], envp: &[&str], auxv: &Auxv, addrspace: &AddrSpace) -> Result<usize, Errno> {
         assert!(self.userstack_ubase == 0, "User stack already created");
         
@@ -370,7 +306,7 @@ impl Manager {
         Ok(top)
     }
 
-    pub fn translate_read(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    pub fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
             area.translate_read(uaddr, addrspace)
         } else {
@@ -378,7 +314,7 @@ impl Manager {
         }
     }
 
-    pub fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    pub fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
             area.translate_write(uaddr, addrspace)
         } else {
@@ -391,8 +327,12 @@ impl Manager {
             if !access_type.match_perm(area.perm()) {
                 return false;
             }
-            // kinfo!("Trying to fix memory fault at address {:#x} with access type {:?}", uaddr, access_type);
-            area.try_to_fix_memory_fault(uaddr, access_type, addrspace)
+            if !area.try_to_fix_memory_fault(uaddr, access_type, addrspace) {
+                crate::kinfo!("Area at {:#x} failed to fix memory fault at {:#x} for access type {:?}", area.ubase(), uaddr, access_type);
+                false
+            } else {
+                true
+            }
         } else {
             false
         }
@@ -452,11 +392,12 @@ impl Manager {
             print!("Mapped areas:\n");
             for (index, (&base_addr, area)) in self.areas.iter().enumerate() {
                 let end_addr = base_addr + area.size();
-                print!("  {}. {} [{:#x}, {:#x}) - {} bytes\n", 
+                print!("  {}. {} [{:#x}, {:#x}) {:?} - {}  bytes\n", 
                        index + 1,
                        area.type_name(),
                        base_addr, 
                        end_addr,
+                       area.perm(),
                        area.size());
             }
         }

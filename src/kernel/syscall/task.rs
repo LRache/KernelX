@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use crate::fs::file::{FileFlags, FileOps};
+use crate::fs::file::{File, FileFlags, FileOps};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
@@ -123,9 +123,9 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
 
         let path = uptr_path.read()?;
 
-        // crate::kinfo!("execve: {}", path);
-
-        let file = current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::new(PermFlags::X)))?;
+        let file = current::with_cwd(|cwd| 
+            vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::new(PermFlags::X))
+        )?.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
 
         let helper = |uarray: UArray<UString>| -> SysResult<Vec<String>> {
             if uarray.is_null() {
@@ -237,5 +237,20 @@ pub fn chdir(user_path: usize) -> SysResult<usize> {
     let path = copy_from_user::string(user_path)?;
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
     current::pcb().set_cwd(&dentry);
+    Ok(0)
+}
+
+pub fn fchdir(fd: usize) -> SysResult<usize> {
+    let file = current::fdtable().lock().get(fd)?;
+    let dentry = file.get_dentry().ok_or(Errno::ENOTDIR)?;
+    current::pcb().set_cwd(&dentry);
+    Ok(0)
+}
+
+pub fn setfsuid(_fsuid: usize) -> SyscallRet {
+    Ok(0)
+}
+
+pub fn setfsgid(_fsgid: usize) -> SyscallRet {
     Ok(0)
 }

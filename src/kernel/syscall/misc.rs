@@ -213,11 +213,34 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
             rusage.ru_stime = stime.into();
         }
     };
-
-    // crate::kinfo!("getrusage: who={:?}, rusage={:?}", who, rusage);
     
     uptr_rusage.write(rusage)?;
 
+    Ok(0)
+}
+
+#[repr(C)]
+#[derive(Default, Debug, Clone, Copy)]
+pub struct Sysinfo {
+    uptime: usize,
+    loads: [usize; 3],
+    totalram: usize,
+    freeram: usize,
+    sharedram: usize,
+    bufferram: usize,
+    totalswap: usize,
+    freeswap: usize,
+    procs: u16,
+    totalhigh: usize,
+    freehigh: usize,
+    mem_unit: u32,
+    _f: [u8; 20 - 2 * core::mem::size_of::<isize>() - core::mem::size_of::<i32>()],
+}
+impl UserStruct for Sysinfo {}
+
+pub fn sysinfo(uptr_sysinfo: UPtr<Sysinfo>) -> SyscallRet {
+    let mut sysinfo = Sysinfo::default();
+    sysinfo.uptime = arch::uptime().as_secs() as usize;
     Ok(0)
 }
 

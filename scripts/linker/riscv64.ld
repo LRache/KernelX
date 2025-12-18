@@ -54,7 +54,7 @@ SECTIONS {
     . = ALIGN(4K);
 
     __stack_start = .;
-    . = . + 16 * 0x1000;
+    . = . + 64 * 0x1000;
     __stack_end = .;
     __ktrap_temp_stack_start = .;
     . = . + 0x8000;

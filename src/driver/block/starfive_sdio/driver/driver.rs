@@ -89,8 +89,8 @@ impl DriverOps for Driver {
         self.name.clone()
     }
 
-    fn as_block_driver(self: Arc<Self>) -> Arc<dyn BlockDriverOps> {
-        self
+    fn as_block_driver(self: Arc<Self>) -> Option<Arc<dyn BlockDriverOps>> {
+        Some(self)
     }
 }
 

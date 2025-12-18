@@ -79,18 +79,26 @@ impl VirtualFileSystem {
     }
 
     pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
-        let index = inode::Index { sno, ino };
-        if let Some(inode) = self.cache.find(&index) {
-            Ok(inode)
-        } else {
-            let superblock_table = self.superblock_table.lock();
-            let superblock = superblock_table.get(sno).ok_or(Errno::ENOENT)?;
+        // let index = inode::Index { sno, ino };
+        // if let Some(inode) = self.cache.find(&index) {
+        //     Ok(inode)
+        // } else {
+        //     let superblock_table = self.superblock_table.lock();
+        //     let superblock = superblock_table.get(sno).ok_or(Errno::ENOENT)?;
 
-            let inode: Arc<dyn InodeOps> = Arc::from(superblock.get_inode(ino)?);
-            self.cache.insert(&index, inode.clone())?;
+        //     let inode: Arc<dyn InodeOps> = Arc::from(superblock.get_inode(ino)?);
+        //     self.cache.insert(&index, inode.clone())?;
             
-            Ok(inode)
-        }
+        //     Ok(inode)
+        // }
+
+        // let index = inode::Index { sno, ino };
+        let superblock_table = self.superblock_table.lock();
+        let superblock = superblock_table.get(sno).ok_or(Errno::ENOENT)?;
+
+        let inode = superblock.get_inode(ino)?;
+            
+        Ok(inode)
     }
 }
 

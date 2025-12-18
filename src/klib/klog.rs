@@ -8,7 +8,6 @@ pub const COLOR_RED: &str = "\x1b[31m";
 pub const COLOR_YELLOW: &str = "\x1b[33m";
 pub const COLOR_BLUE: &str = "\x1b[34m";
 pub const COLOR_GREEN: &str = "\x1b[32m";
-pub const COLOR_CYAN: &str = "\x1b[36m";
 pub const COLOR_BOLD: &str = "\x1b[1m";
 
 #[cfg(feature = "log-warn")]

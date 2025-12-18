@@ -6,7 +6,6 @@ use virtio_drivers::transport::mmio::MmioTransport;
 use crate::driver::BlockDriverOps;
 use crate::driver::{DeviceType, DriverOps};
 use crate::driver::virtio::VirtIOHal;
-use crate::kinfo;
 use crate::klib::SpinLock;
 
 const BLOCK_SIZE: usize = 512;
@@ -38,8 +37,8 @@ impl DriverOps for VirtIOBlockDriver {
         DeviceType::Block
     }
 
-    fn as_block_driver(self: Arc<Self>) -> Arc<dyn BlockDriverOps> {
-        self
+    fn as_block_driver(self: Arc<Self>) -> Option<Arc<dyn BlockDriverOps>> {
+        Some(self)
     }
 }
 

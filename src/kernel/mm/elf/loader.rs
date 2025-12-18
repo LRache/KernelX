@@ -5,8 +5,7 @@ use alloc::string::String;
 
 use crate::fs::file::{File, FileOps, FileFlags, SeekWhence};
 use crate::fs::{Perm, PermFlags, vfs};
-use crate::kernel::errno::Errno;
-// use crate::kernel::mm::elf::loaddyn::DynInfo;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{maparea, AddrSpace, MapPerm};
 use crate::kernel::config;
 use crate::{arch, ktrace};
@@ -184,10 +183,10 @@ pub fn load_program_from_file(
     Ok(())
 }
 
-fn load_interpreter(path: &str, addrspace: &AddrSpace) -> Result<(usize, usize), Errno> {
+fn load_interpreter(path: &str, addrspace: &AddrSpace) -> SysResult<(usize, usize)> {
     let file_flags = FileFlags::readonly();
     let file = vfs::open_file(path, file_flags, &Perm::new(PermFlags::X))?;
-    let file = Arc::new(file);
+    let file = file.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
     
     let ehdr = read_ehdr(&file)?;
     

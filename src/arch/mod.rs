@@ -31,6 +31,7 @@ macro_rules! arch_export {
     };
 }
 
+use core::time::Duration;
 use crate::kernel::mm::MapPerm;
 
 arch_export! {
@@ -62,6 +63,7 @@ arch_export! {
     map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
 
     get_time_us() -> u64;
+    uptime() -> Duration;
     set_next_time_event_us(internval: u64) -> ();
 
     scan_device() -> ();

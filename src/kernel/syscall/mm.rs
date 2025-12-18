@@ -7,7 +7,7 @@ use crate::kernel::mm::maparea::{Area, AnonymousArea, PrivateFileMapArea, Shared
 use crate::kernel::scheduler::*;
 use crate::kernel::errno::Errno;
 use crate::kernel::syscall::SyscallRet;
-use crate::arch;
+use crate::{arch, kinfo};
 use crate::ktrace;
 
 pub fn brk(brk: usize) -> SyscallRet {
@@ -129,11 +129,12 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
 }
 
 pub fn munmap(addr: usize, length: usize) -> SyscallRet {
-    if addr % arch::PGSIZE != 0 || length == 0 || length % arch::PGSIZE != 0 {
+    if addr % arch::PGSIZE != 0 || length == 0 {
+        kinfo!("munmap invalid addr/length: addr={:#x}, length={}", addr, length);
         return Err(Errno::EINVAL);
     }
 
-    let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
+    let page_count = arch::page_count(length);
 
     current::addrspace().with_map_manager_mut(|map_manager| {
         map_manager.unmap_area(addr, page_count, current::addrspace().pagetable())

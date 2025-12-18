@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use spin::Mutex;
 
 use crate::kernel::event::{Event, timer};
-use crate::kernel::ipc::{SignalActionTable, SignalSet};
+use crate::kernel::ipc::SignalActionTable;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::{PCB, TCB};
@@ -17,7 +17,7 @@ use crate::klib::SpinLock;
 
 use super::Tid;
 
-pub fn processor() -> &'static mut Processor<'static> {
+pub fn processor() -> &'static mut Processor {
     let p = arch::get_percpu_data() as *mut Processor;
     
     debug_assert!(!p.is_null());
@@ -25,21 +25,16 @@ pub fn processor() -> &'static mut Processor<'static> {
     unsafe { &mut *p }
 }
 
-pub fn set(p: *mut Processor) {
-    arch::set_percpu_data(p as usize);
+pub fn set(p: &Processor) {
+    arch::set_percpu_data(p as *const Processor as usize);
 }
 
-pub fn clear() {
-    arch::set_percpu_data(0);
-}
-
-pub fn is_clear() -> bool {
-    arch::get_percpu_data() == 0
+pub fn has_task() -> bool {
+    arch::get_percpu_data() != 0 && processor().has_task()
 }
 
 pub fn hart_id() -> usize {
-    let processor = processor();
-    processor.hart_id()
+    processor().hart_id()
 }
 
 pub fn task() -> &'static Arc<dyn Task> {
@@ -53,7 +48,7 @@ pub fn tcb() -> &'static TCB {
 }
 
 pub fn tid() -> Tid {
-    if is_clear() {
+    if !has_task() {
         -1
     } else {
         task().tid()
@@ -61,7 +56,7 @@ pub fn tid() -> Tid {
 }
 
 pub fn pid() -> Tid {
-    if is_clear() {
+    if !has_task() {
         -1
     } else {
         pcb().get_pid()
@@ -154,13 +149,13 @@ pub fn block(reason: &'static str) -> Event {
     task().take_wakeup_event().unwrap()
 }
 
-pub fn block_sigmask(reason: &'static str, mask: SignalSet) -> Event {
-    let old_mask = tcb().swap_signal_mask(mask);
-    task().block(reason);
-    schedule();
-    tcb().set_signal_mask(old_mask);
-    task().take_wakeup_event().unwrap()
-}
+// pub fn block_sigmask(reason: &'static str, mask: SignalSet) -> Event {
+//     let old_mask = tcb().swap_signal_mask(mask);
+//     task().block(reason);
+//     schedule();
+//     tcb().set_signal_mask(old_mask);
+//     task().take_wakeup_event().unwrap()
+// }
 
 pub fn block_uninterruptible(reason: &'static str) -> Event {
     task().block_uninterruptible(reason);

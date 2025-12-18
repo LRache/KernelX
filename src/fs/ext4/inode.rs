@@ -4,71 +4,35 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use lwext4_rust::{FileAttr, InodeType};
 
+use crate::driver;
 use crate::fs::FileType;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::uapi::FileStat;
+use crate::kernel::uapi::{FileStat, Uid};
 use crate::fs::inode::{InodeOps, Mode};
 use crate::fs::file::DirResult;
 use crate::klib::SpinLock;
 
-// use super::superblock_inner::{SuperBlockInner, SuperBlockInnerExt, map_error};
 use super::superblock::{SuperBlockInner, map_error_to_kernel};
 
 pub struct Ext4Inode {
     ino: u32,
-    sno: u32,
-    // meta: SpinLock<InodeRef<DummyHal>>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     dents_cache: SpinLock<Option<Vec<DirResult>>>,
 }
 
 impl Ext4Inode {
-    pub fn new(sno: u32, ino: u32, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
-        // let inode_ref = superblock.get_inode_ref(ino);
-        // Self {
-        //     ino,
-        //     sno,
-        //     meta: Mutex::new(inode_ref.inode),
-        //     superblock: superblock.clone(),
-        //     dents_cache: Mutex::new(None),
-        // }
+    pub fn new(ino: u32, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
         Self { 
             ino, 
-            sno, 
             superblock, 
             dents_cache: SpinLock::new(None)
         }
     }
-
-    // fn with_inode_ref<F, R>(&self, f: F) -> R
-    // where
-    //     F: FnOnce(&mut Ext4InodeRef) -> R,
-    // {
-    //     let mut meta = self.meta.lock();
-    //     let mut inode_ref = Ext4InodeRef {
-    //         inode: *meta,
-    //         inode_num: self.ino,
-    //     };
-    //     let r = f(&mut inode_ref);
-    //     *meta = inode_ref.inode;
-    //     r
-    // }
-
-    // fn get_inode_ref(&self, meta: &Meta) -> Ext4InodeRef {
-    //     Ext4InodeRef {
-    //         inode: *meta,
-    //         inode_num: self.ino,
-    //     }
-    // }
 }
 
 impl InodeOps for Ext4Inode {
     fn get_ino(&self) -> u32 {
         self.ino
-    }
-
-    fn get_sno(&self) -> u32 {
-        self.sno
     }
 
     fn type_name(&self) -> &'static str {
@@ -99,16 +63,19 @@ impl InodeOps for Ext4Inode {
             InodeType::Unknown
         };
 
-        superblock.create(self.ino, name, ty, mode.bits() as u32).map_err(map_error_to_kernel)?;
+        let now = driver::chosen::kclock::now()?;
+        let ino = superblock.create(self.ino, name, ty, mode.bits() as u32).map_err(map_error_to_kernel)?;
+        superblock.with_inode_ref(ino, |inode_ref| {
+            inode_ref.set_atime(&now);
+            inode_ref.set_mtime(&now);
+            inode_ref.set_ctime(&now);
+            Ok(())
+        }).map_err(map_error_to_kernel)?;
 
         Ok(())
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {
-        // unlink currently not migrated to `lwext4_rust` APIs.
-        // Return ENOSYS until a full migration of directory APIs is implemented.
-        // let _ = name;
-        // Err(Errno::ENOSYS)
         self.superblock.lock().unlink(self.ino, name).map_err(map_error_to_kernel)
     }
 
@@ -126,9 +93,6 @@ impl InodeOps for Ext4Inode {
         }
         let mut sb = self.superblock.lock();
         sb.write_at(self.ino, buf, offset as u64).map_err(map_error_to_kernel)
-        // kinfo!("Ext4Inode::writeat ino={} offset={} len={}", self.ino, offset, buf.len());
-        // self.superblock.get_inode_ref(self.ino);
-        // self.superblock.write_at(self.ino, offset, buf).map_err(map_error)
     }
 
     fn get_dent(&self, offset: usize) -> SysResult<Option<(DirResult, usize)>> {
@@ -151,12 +115,6 @@ impl InodeOps for Ext4Inode {
                 // len: entry.len()
             }
         });
-        
-        // if let Some(ref dent) = result {
-        //     if dent.ino == 0 {
-        //         return Ok(None);
-        //     }
-        // }
 
         if let Some(r) = &result {
             reader.step().map_err(map_error_to_kernel)?;
@@ -204,23 +162,6 @@ impl InodeOps for Ext4Inode {
 
     fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::default();
-        // let meta = self.meta.lock();
-
-        // kstat.st_ino = self.ino as u64;
-        // kstat.st_size = meta.size() as i64;
-        // kstat.st_nlink = meta.links_count() as u32;
-        // kstat.st_mode = meta.mode() as u32;
-        // // TODO: utime tests
-        // // kstat.st_atime_sec = meta.atime() as i64;
-        // kstat.st_atime_sec = 0;
-        // kstat.st_atime_nsec = 0;
-        // // kstat.st_mtime_sec = meta.mtime() as i64;
-        // kstat.st_mtime_sec = 0;
-        // kstat.st_mtime_nsec = 0;
-        // // kstat.st_ctime_sec = meta.ctime() as i64;
-        // kstat.st_ctime_sec = 0;
-        // kstat.st_ctime_nsec = 0;
-
         let mut superblock = self.superblock.lock();
 
         kstat.st_ino = self.ino as u64;
@@ -252,6 +193,16 @@ impl InodeOps for Ext4Inode {
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
         self.superblock.lock().set_len(self.ino, new_size).map_err(map_error_to_kernel)
+    }
+
+    fn owner(&self) -> SysResult<(Uid, Uid)> {
+        self.superblock.lock().with_inode_ref(self.ino, |inode_ref| {
+            Ok((inode_ref.uid() as Uid, inode_ref.gid() as Uid))
+        }).map_err(map_error_to_kernel)
+    }
+
+    fn support_random_access(&self) -> bool {
+        true
     }
 
     fn update_atime(&self, time: &Duration) -> SysResult<()> {

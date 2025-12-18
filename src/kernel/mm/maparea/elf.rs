@@ -97,7 +97,7 @@ impl ELFArea {
 }
 
 impl Area for ELFArea {
-    fn translate_read(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -122,7 +122,7 @@ impl Area for ELFArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;

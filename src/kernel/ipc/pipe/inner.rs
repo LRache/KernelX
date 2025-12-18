@@ -26,7 +26,7 @@ impl PipeInner {
         }
     }
 
-    pub fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
+    pub fn read(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize> {
         if buf.len() == 0 {
             return Ok(0);
         }
@@ -45,6 +45,10 @@ impl PipeInner {
                         return Ok(0); // No writers left, return 0 to indicate EOF
                     } else {
                         drop(fifo);
+                        if !blocked {
+                            return Ok(0);
+                        }
+                        // If buffer is empty, wait for data
                         self.read_waiter.lock().wait_current(Event::PipeReadReady);
                         current::schedule();
                     }
@@ -72,7 +76,7 @@ impl PipeInner {
         Ok(total_read)
     }
 
-    pub fn write(&self, buf: &[u8]) -> SysResult<usize> {
+    pub fn write(&self, buf: &[u8], blocked: bool) -> SysResult<usize> {
         let cap = self.capacity.lock();
 
         if buf.len() >= *cap {
@@ -95,6 +99,9 @@ impl PipeInner {
                 } else {
                     drop(cap);
                     drop(fifo);
+                    if !blocked {
+                        return Ok(0);
+                    }
                     // If buffer is full, wait for space
                     self.write_waiter.lock().wait_current(Event::PipeWriteReady);
                     current::schedule();

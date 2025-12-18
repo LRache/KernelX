@@ -185,11 +185,11 @@ impl Area for SharedFileMapArea {
         Box::new(new_area)
     }
 
-    fn translate_read(&mut self, uaddr: usize, _addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, _addrspace: &AddrSpace) -> Option<usize> {
         self.translate(uaddr)
     }
 
-    fn translate_write(&mut self, uaddr: usize, _addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_write(&mut self, uaddr: usize, _addrspace: &AddrSpace) -> Option<usize> {
         self.translate(uaddr)
     }
 

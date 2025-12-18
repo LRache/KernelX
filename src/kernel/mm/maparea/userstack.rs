@@ -244,7 +244,7 @@ impl UserStack {
 }
 
 impl Area for UserStack {
-    fn translate_read(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         let page_index = (config::USER_STACK_TOP - uaddr - 1) / arch::PGSIZE;
         if page_index < self.get_max_page_count() {            
             let page = match &self.frames[page_index] {
@@ -260,7 +260,7 @@ impl Area for UserStack {
         }
     }
 
-    fn translate_write(&mut self, vaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_write(&mut self, vaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         let page_index = (config::USER_STACK_TOP - vaddr - 1) / arch::PGSIZE;
         if page_index < self.get_max_page_count() {
             let page = match &self.frames[page_index] {

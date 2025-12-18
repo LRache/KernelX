@@ -60,16 +60,13 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
     driver::init();
     arch::init();
+    
+    fs::init();
     arch::scan_device();
-
+    
     #[cfg(feature = "swap-memory")]
     mm::swappable::init();
-
-    kinfo!("Welcome to KernelX!");
-
-    kinfo!("Frame space: {:#x} - {:#x}, total {:#x}", heap_start + config::KERNEL_HEAP_SIZE, memory_top, memory_top - (heap_start + config::KERNEL_HEAP_SIZE));
-
-    fs::init();
+    
     fs::mount_init_fs(
         BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT), 
         BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE)
@@ -79,6 +76,8 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
         BOOT_ARGS.get("init").unwrap_or(&config::DEFAULT_INITPATH),
         BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD)
     );
+
+    driver::chosen::init(&BOOT_ARGS);
     
     timer::init();
 
@@ -96,11 +95,12 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
 
 #[unsafe(no_mangle)]
 extern "C" fn kentry(hartid: usize) -> ! {
+    kinfo!("Hart {} booted.", hartid);
     arch::set_next_time_event_us(10000);
     arch::enable_timer_interrupt();
     arch::enable_device_interrupt();
     
-    scheduler::run_tasks(hartid as u8);
+    scheduler::run_tasks(hartid);
 }
 
 pub fn exit() -> ! {

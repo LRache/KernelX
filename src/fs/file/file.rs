@@ -29,26 +29,27 @@ impl FileFlags {
 pub struct File {
     inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
-    pos: Mutex<usize>, 
+    pos: Option<Mutex<usize>>,
     
     pub flags: FileFlags,
 }
 
 impl File {
     pub fn new(dentry: &Arc<Dentry>, flags: FileFlags) -> Self {
-        File {
-            inode: dentry.get_inode().clone(),
-            dentry: dentry.clone(),
-            pos: Mutex::new(0),
-            flags
-        }
+        let inode = dentry.get_inode().clone();
+        Self::new_inode(inode, dentry.clone(), flags)
     }
 
     pub fn new_inode(inode: Arc<dyn InodeOps>, dentry: Arc<Dentry>, flags: FileFlags) -> Self {
-        File {
+        let pos = if inode.support_random_access() {
+            Some(Mutex::new(0))
+        } else {
+            None
+        };
+        Self {
             inode,
             dentry,
-            pos: Mutex::new(0),
+            pos,
             flags
         }
     }
@@ -72,7 +73,10 @@ impl File {
 
     /// Return the dirent and the old file pos.
     pub fn get_dent(&self) -> SysResult<Option<(DirResult, usize)>> {
-        let mut pos = self.pos.lock();
+        let mut pos = match &self.pos {
+            Some(p) => p.lock(),
+            None => return Err(Errno::ESPIPE),
+        };
         let old_pos = *pos;
         let (dent, next_pos) = match self.inode.get_dent(*pos)? {
             Some(d) => d,
@@ -86,7 +90,10 @@ impl File {
 
 impl FileOps for File {
     fn read(&self, buf: &mut [u8]) -> Result<usize, Errno> {
-        let mut pos = self.pos.lock();
+        let mut pos = match &self.pos {
+            Some(p) => p.lock(),
+            None => return self.inode.readat(buf, 0),
+        };
         let len = self.inode.readat(buf, *pos)?;
         *pos += len;
         
@@ -99,7 +106,10 @@ impl FileOps for File {
     }
 
     fn write(&self, buf: &[u8]) -> Result<usize, Errno> {
-        let mut pos = self.pos.lock();
+        let mut pos = match &self.pos {
+            Some(p) => p.lock(),
+            None => return self.inode.writeat(buf, 0),
+        };
         let len = self.inode.writeat(buf, *pos)?;
         *pos += len;
         
@@ -120,7 +130,10 @@ impl FileOps for File {
     }
 
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
-        let mut pos = self.pos.lock();
+        let mut pos = match self.pos {
+            Some(ref p) => p.lock(),
+            None => return Err(Errno::ESPIPE),
+        };
         let new_pos;
         match whence {
             SeekWhence::BEG => {

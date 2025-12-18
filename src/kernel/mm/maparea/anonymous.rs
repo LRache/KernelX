@@ -35,7 +35,7 @@ impl AnonymousArea {
         }
     }
 
-    fn allocate_page(&mut self, page_index: usize, addrspace: &Arc<AddrSpace>) -> usize {
+    fn allocate_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
         debug_assert!(page_index < self.frames.len());
         debug_assert!(self.frames[page_index].is_unallocated());
 
@@ -63,6 +63,8 @@ impl AnonymousArea {
     #[cfg(feature = "swap-memory")]
     fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         let page = frame.get_page_swap_in();
+        // FIXME: if the page is swapped out again before we mmap, 
+        // there could be issues
         addrspace.pagetable().write().mmap(frame.uaddr(), page, self.perm);
     }
 
@@ -79,7 +81,7 @@ impl AnonymousArea {
 }
 
 impl Area for AnonymousArea {
-    fn translate_read(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -101,7 +103,7 @@ impl Area for AnonymousArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &Arc<AddrSpace>) -> Option<usize> {
+    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         if !self.perm.contains(MapPerm::W) {

@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use alloc::sync::Arc;
 
 use crate::arch::riscv::fdt::core_count;
@@ -133,6 +135,10 @@ impl ArchTrait for Arch {
 
     unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
         unsafe { kernelpagetable::unmap_kernel_addr(kstart, size) };
+    }
+
+    fn uptime() -> Duration {
+        Duration::from_micros(Self::get_time_us())
     }
 
     fn get_time_us() -> u64 {

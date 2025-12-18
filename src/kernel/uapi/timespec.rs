@@ -41,6 +41,15 @@ impl Into<Duration> for Timeval {
     }
 }
 
+impl From<Duration> for Timeval {
+    fn from(dur: Duration) -> Self {
+        Timeval {
+            tv_sec: dur.as_secs() as u64,
+            tv_usec: (dur.subsec_nanos() / 1000) as u64,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Timespec32 {

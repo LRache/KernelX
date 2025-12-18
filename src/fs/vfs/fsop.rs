@@ -28,13 +28,13 @@ impl VirtualFileSystem {
 
         let (sno, root_ino) = {
             let mut superblock_table = self.superblock_table.lock();
-            let sno = superblock_table.alloc(*fstype, device)?;
+            let sno = superblock_table.mount(*fstype, device)?;
             (sno, superblock_table.get(sno).unwrap().get_root_ino())
         };
 
         let root_inode = self.load_inode(sno, root_ino)?;
 
-        dentry.mount(&root_inode);
+        dentry.mount(&root_inode, sno);
         
         self.mountpoint.lock().push(dentry);
         

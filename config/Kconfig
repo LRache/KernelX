@@ -200,4 +200,10 @@ config ROOT_DEVICE
 	help
 	  Device path for the root filesystem.
 
+config BOOTARGS
+	string "Additional boot arguments"
+	default ""
+	help
+	  Additional kernel boot arguments.
+
 endmenu

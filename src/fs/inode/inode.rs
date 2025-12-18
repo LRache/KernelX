@@ -4,17 +4,15 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
+use crate::driver::DriverOps;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::fs::perm::Perm;
 use crate::fs::file::DirResult;
 
 use super::{Mode, FileType};
 
 pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
-
-    fn get_sno(&self) -> u32;
 
     fn type_name(&self) -> &'static str;
 
@@ -26,16 +24,16 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
         unimplemented!()
     }
     
-    fn writeat(&self, _buf: &[u8], _offset: usize) -> Result<usize, Errno> {
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
         unimplemented!()
     }
 
     fn get_dent(&self, _index: usize) -> SysResult<Option<(DirResult, usize)>> {
-        Err(Errno::ENOSYS)
+        Err(Errno::ENOTDIR)
     }
 
     fn lookup(&self, _name: &str) -> SysResult<u32> {
@@ -62,14 +60,14 @@ pub trait InodeOps: DowncastSync {
         Ok((0, 0))
     }
 
-    fn check_perm(&self, _perm: &Perm) -> SysResult<()> {
-        let (uid, gid) = self.owner()?;
-        let mode = self.mode()?;
-        if mode.check_perm(_perm, uid, gid) {
-            Ok(())
-        } else {
-            Err(Errno::EACCES)
-        }
+    fn chown(&self, uid: Option<Uid>, gid: Option<Uid>) -> SysResult<()> {
+        let _ = uid;
+        let _ = gid;
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn get_driver(&self) -> Option<Arc<dyn DriverOps>> {
+        None
     }
 
     fn inode_type(&self) -> SysResult<FileType> {
@@ -97,6 +95,10 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
+    fn support_random_access(&self) -> bool {
+        false
+    }
+
     fn update_atime(&self, time: &Duration) -> SysResult<()> {
         let _ = time;
         Ok(())
@@ -114,3 +116,5 @@ pub trait InodeOps: DowncastSync {
 }
 
 impl_downcast!(sync InodeOps);
+
+pub type Inode = Arc<dyn InodeOps>;

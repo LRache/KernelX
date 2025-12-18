@@ -9,6 +9,7 @@ use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet};
 use crate::kernel::ipc::shm::{IpcGetFlag, IPC_RMID, IPC_SET, IPC_STAT};
 use crate::kernel::ipc::shm;
 use crate::kernel::scheduler::{current, Tid};
+use crate::kernel::syscall::UserStruct;
 use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::errno::Errno;
@@ -20,6 +21,7 @@ use super::SyscallRet;
 
 bitflags! {
     struct PipeFlags: usize {
+        const O_NONBLOCK = 0x4000;
         const O_CLOEXEC = 0x80000;
     }
 }
@@ -30,7 +32,8 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
         cloexec: flags.contains(PipeFlags::O_CLOEXEC),
     };
     
-    let (read_end, write_end) = Pipe::create(config::PIPE_CAPACITY);
+    let blocked = !flags.contains(PipeFlags::O_NONBLOCK);
+    let (read_end, write_end) = Pipe::create(config::PIPE_CAPACITY, blocked);
     let read_end = Arc::new(read_end);
     let write_end = Arc::new(write_end);
 
@@ -139,6 +142,60 @@ pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact:
         let new_action = new_action.try_into()?;
         
         signal_actions.set(signum, &new_action)?;
+    }
+
+    Ok(0)
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct USignalStack {
+    ss_sp: usize,
+    ss_flags: usize,
+    ss_size: usize,
+}
+impl UserStruct for USignalStack {}
+
+bitflags! {
+    struct SignalStackFlags: usize {
+        const SS_ONSTACK = 1 << 0;
+        const SS_DISABLE = 1 << 1;
+    }
+}
+
+pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) -> SyscallRet {
+    uptr_ss.should_not_null()?;
+    
+    let mut signal_actions = current::signal_actions().lock();
+    if !uptr_oss.is_null() {
+        let stack = if let Some((sp, size)) = signal_actions.get_stack() {
+            USignalStack {
+                ss_sp: sp,
+                ss_flags: SignalStackFlags::SS_ONSTACK.bits(),
+                ss_size: size,
+            }
+        } else {
+            USignalStack {
+                ss_sp: 0,
+                ss_flags: SignalStackFlags::SS_DISABLE.bits(),
+                ss_size: 0,
+            }
+        };
+        uptr_oss.write(stack)?;
+    }
+
+    if let Some(stack) = uptr_ss.read_optional()? {
+        let flags = SignalStackFlags::from_bits(stack.ss_flags).ok_or(Errno::EINVAL)?;
+        if flags.contains(SignalStackFlags::SS_ONSTACK) {
+            return Err(Errno::EINVAL);
+        }
+        
+        let s = if flags.contains(SignalStackFlags::SS_DISABLE) {
+            None
+        } else {
+            Some((stack.ss_sp, stack.ss_size))
+        };
+        signal_actions.set_stack(s);
     }
 
     Ok(0)

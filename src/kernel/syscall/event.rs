@@ -14,7 +14,7 @@ use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
 use crate::kernel::task::PCB;
 use crate::kernel::uapi;
-use crate::klib::utils::{cancel_defer, defer};
+use crate::klib::defer;
 
 const FD_SET_SIZE: usize = 1024;
 
@@ -125,7 +125,7 @@ fn select(
 
     let tcb = current::tcb();
     tcb.block("select");
-    let defer = defer(|| { tcb.unblock(); });
+    let defer = defer::defer(|| { tcb.unblock(); });
     
     let mut ready_count = 0;
     let mut waiting_files = Vec::new();
@@ -179,7 +179,7 @@ fn select(
 
     let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
 
-    cancel_defer(defer);
+    defer::cancel(defer);
     current::schedule();
 
     old_signal_mask.map(|mask| {
@@ -260,7 +260,7 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
 
     let tcb = current::tcb();
     tcb.block("poll");
-    let defer = defer(|| { tcb.unblock(); });
+    let defer = defer::defer(|| { tcb.unblock(); });
 
     let mut poll_files: Vec<(Arc<dyn FileOps>, &mut Pollfd)> = pollfds.iter_mut()
         .filter_map(|pfd| {
@@ -303,15 +303,28 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
         timer::add_timer(current::task().clone(), timeout);
     }
 
-    cancel_defer(defer);
+    defer::cancel(defer);
     current::schedule();
     
     // start polling
     let event = current::task().take_wakeup_event().unwrap();
+    
+    let mut cancel_all = || {
+        poll_files.iter_mut().for_each(|(file, _)| {
+            file.wait_event_cancel();
+        });
+    };
+    
     let (poll_event, waker) = match event {
         Event::Poll{ event, waker} => (event, waker),
-        Event::Timeout => return Ok(0), // Timeout occurred
-        Event::Signal => return Err(Errno::EINTR),  // Interrupted by other events
+        Event::Timeout => {
+            cancel_all();
+            return Ok(0);
+        }, 
+        Event::Signal => { 
+            cancel_all();
+            return Err(Errno::EINTR) 
+        },
         _ => unreachable!("Invalid event type in poll: {:?}", event),
     };
 

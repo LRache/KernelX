@@ -23,18 +23,21 @@ impl DriverOps for SBIConsoleDriver {
         DeviceType::Char
     }
 
-    fn as_char_driver(self: Arc<Self>) -> alloc::sync::Arc<dyn CharDriverOps> {
-        self
+    fn as_char_driver(self: Arc<Self>) -> Option<alloc::sync::Arc<dyn CharDriverOps>> {
+        Some(self)
     }
 }
 
 impl CharDriverOps for SBIConsoleDriver {
-    fn putchar(&self, c: u8) {
-        sbi::putchar(c);
+    fn write(&self, buf: &[u8]) -> SysResult<usize> {
+        for &c in buf {
+            sbi::putchar(c);
+        }
+        Ok(buf.len())
     }
-    
-    fn getchar(&self) -> Option<u8> {
-        None
+
+    fn read(&self, _: &mut [u8]) -> SysResult<usize> {
+        Ok(0)
     }
 
     fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {

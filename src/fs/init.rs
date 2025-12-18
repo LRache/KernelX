@@ -1,4 +1,4 @@
-use crate::fs::vfs;
+use crate::fs::{vfs, devfs};
 use crate::driver;
 use crate::fs::Mode;
 use crate::kinfo;
@@ -8,6 +8,7 @@ pub fn init() {
     kinfo!("Initializing file system...");
 
     vfs::init();
+    devfs::init();
 
     kinfo!("File system initialized successfully.");
 }
@@ -20,6 +21,10 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
     // Mount devfs at /dev
     let _ = vfs::load_dentry("/").unwrap().create("dev", Mode::S_IFDIR);
     vfs::mount("/dev", "devfs", None).unwrap();
+
+    // Try to access /dev/null and /dev/zero to ensure they are working
+    vfs::load_dentry("/dev/null").unwrap();
+    // vfs::load_dentry("/dev/zero").unwrap();
     
     // Mount tmpfs at /tmp
     let _ = vfs::load_dentry("/").unwrap().create("tmp", Mode::S_IFDIR);
@@ -28,10 +33,6 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
     let _ = vfs::load_dentry("/").unwrap().create("var", Mode::S_IFDIR);
     let _ = vfs::load_dentry("/var").unwrap().create("tmp", Mode::S_IFDIR);
     vfs::mount("/var/tmp", "tmpfs", None).unwrap();
-
-    // Try to access /dev/null and /dev/zero to ensure they are working
-    vfs::load_dentry("/dev/null").unwrap();
-    vfs::load_dentry("/dev/zero").unwrap();
 
     kinfo!("Init filesystem mounted successfully!");
 }

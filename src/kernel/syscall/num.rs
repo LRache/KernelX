@@ -178,12 +178,16 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         24  => fs::dup2(2),
         25  => fs::fcntl64(3),
         29  => fs::ioctl(3),
+        32  => fs::flock(2),
         34  => fs::mkdirat(3),
         35  => fs::unlinkat(3),
         43  => fs::statfs64(2),
         46  => fs::ftruncate64(2),
         48  => fs::faccessat(3),
+        52  => fs::fchmod(2),
         53  => fs::fchmodat(3),
+        54  => fs::fchownat(5),
+        55  => fs::fchown(3),
         56  => fs::openat(4),
         57  => fs::close(1),
         61  => fs::getdents64(3),
@@ -202,14 +206,18 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         88  => fs::utimensat(4),
         166 => fs::umask(1),
         276 => fs::renameat2(5),
+        439 => fs::faccessat2(4),
         
         // Task
         17  => task::getcwd(2),
         49  => task::chdir(1),
+        50  => task::fchdir(1),
         93  => task::exit(1),
         94  => task::exit_group(1),
         96  => task::set_tid_address(1),
         124 => task::sched_yield(0),
+        151 => task::setfsuid(1),
+        152 => task::setfsgid(1),
         157 => task::setsid(0),
         172 => task::getpid(0),
         173 => task::getppid(0),
@@ -226,16 +234,17 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         227 => mm::msync(3),
         233 => mm::madvise(0),
         
-        // futex
+        // Futex
         98  => futex::futex(6),
         99  => futex::set_robust_list(1),
         100 => futex::get_robust_list(0),
 
-        // misc
+        // Misc
         81  => misc::sync(0),
         123 => misc::sched_getaffinity(3),
         160 => misc::newuname(1),
         165 => misc::getrusage(2),
+        179 => misc::sysinfo(1),
         236 => misc::get_mempolicy(0),
         261 => misc::prlimit64(4),
         278 => misc::getrandom(3),
@@ -252,6 +261,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         129 => ipc::kill(2),
         130 => ipc::tkill(2),
         131 => ipc::tgkill(3),
+        132 => ipc::sigaltstack(2),
         133 => ipc::rt_sigsuspend(1),
         134 => ipc::rt_sigaction(4),
         135 => ipc::rt_sigprocmask(3),
@@ -264,6 +274,11 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         // Time
         101 => time::nanosleep(2),
+        107 => time::timer_create(3),
+        108 => time::timer_gettime(2),
+        109 => time::timer_getoverrun(1),
+        110 => time::timer_settime(4),
+        111 => time::timer_delete(1),
         113 => time::clock_gettime(2),
         115 => time::clock_nanosleep(4),
         169 => time::gettimeofday(2),

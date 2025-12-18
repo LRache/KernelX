@@ -1,18 +1,17 @@
 use core::usize;
 use core::time::Duration;
-
 use alloc::sync::Arc;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
-use crate::arch::get_time_us;
+use crate::driver;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UserPointer, UArray, UBuffer, UString, UPtr};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::fdtable::FDFlags;
-use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec};
+use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec, Uid};
 use crate::fs::{Dentry, Mode, Perm, PermFlags};
 use crate::fs::vfs;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
@@ -81,9 +80,14 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 
         FcntlCmd::F_SETFL => {
             let file = current::fdtable().lock().get(fd)?;
-            let flags = FDArgs::from_bits(arg).ok_or(Errno::EINVAL)?;
+            let flags = OpenFlags::from_bits(arg).ok_or(Errno::EINVAL)?;
+            file.set_flags(FileFlags {
+                readable: file.readable(),
+                writable: file.writable(),
+                blocked: !flags.contains(OpenFlags::O_NONBLOCK),
+            });
             current::fdtable().lock().set(fd, file, FDFlags {
-                cloexec: flags.contains(FDArgs::FD_CLOEXEC),
+                cloexec: flags.contains(OpenFlags::O_CLOEXEC),
             })?;
             
             Ok(0)
@@ -162,7 +166,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         helper(vfs::get_root_dentry())?
     };
 
-    let fd = current::fdtable().lock().push(Arc::new(file), fd_flags)?;
+    let fd = current::fdtable().lock().push(file, fd_flags)?;
 
     Ok(fd)
 }
@@ -216,7 +220,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UString, bufsize: usiz
         return ubuf.write(&exe_path, bufsize)
     }
 
-    crate::kinfo!("readlinkat: dirfd={}, path=\"{}\"", dirfd as isize, path);
+    // crate::kinfo!("readlinkat: dirfd={}, path=\"{}\"", dirfd as isize, path);
     
     let path = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
@@ -505,13 +509,26 @@ pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, _flags: usize) -> SyscallRet {
+pub fn faccessat2(dirfd: usize, uptr_path: UString, _mode: usize, _flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
-    // uptr_stat.should_not_null()?;
-    
+
     let path = uptr_path.read()?;
 
-    // crate::kinfo!("fstatat: dirfd={}, path=\"{}\"", dirfd, path);
+    if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?;
+    } else {
+        let file = current::fdtable().lock().get(dirfd)?;
+        vfs::load_dentry_at(file.get_dentry().ok_or(Errno::ENOTDIR)?, &path)?;
+    }
+
+    Ok(0)
+}
+
+pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, _flags: usize) -> SyscallRet {
+    uptr_path.should_not_null()?;
+    uptr_stat.should_not_null()?;
+    
+    let path = uptr_path.read()?;
 
     let fstat = if path.is_empty() {
         current::fdtable().lock().get(dirfd)?.fstat()?
@@ -576,12 +593,11 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
     };
     let inode = dentry.get_inode();
     
-    let now = get_time_us();
+    let now = driver::chosen::kclock::now()?;
     
     if uptr_times.is_null() {
-        let duration = Duration::new((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u32);
-        inode.update_atime(&duration)?;
-        inode.update_mtime(&duration)?;
+        inode.update_atime(&now)?;
+        inode.update_mtime(&now)?;
         return Ok(0);
     }
     
@@ -589,8 +605,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
     let mtime = uptr_times.index(1).read()?;
     if atime.tv_nsec != UTIME_OMIT {
         if atime.tv_nsec == UTIME_NOW {
-            let duration = Duration::new((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u32);
-            inode.update_atime(&duration)?;
+            inode.update_atime(&now)?;
         } else {
             let duration = Duration::new(atime.tv_sec, atime.tv_nsec as u32);
             inode.update_atime(&duration)?;
@@ -599,8 +614,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
 
     if mtime.tv_nsec != UTIME_OMIT {
         if mtime.tv_nsec == UTIME_NOW {
-            let duration = Duration::new((now / 1_000_000) as u64, (now % 1_000_000 * 1000) as u32);
-            inode.update_mtime(&duration)?;
+            inode.update_mtime(&now)?;
         } else {
             let duration = Duration::new(mtime.tv_sec, mtime.tv_nsec as u32);
             inode.update_mtime(&duration)?;
@@ -618,8 +632,6 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
     
     let path = uptr_path.read()?;
-
-    // crate::kinfo!("mkdirat: dirfd={}, path=\"{}\", mode=0o{:o}", dirfd as isize, path, mode.bits() & 0o7777);
 
     let (parent, name) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?.ok_or(Errno::EEXIST)?
@@ -669,7 +681,6 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
         let reclen_aligned = (reclen + 7) & !7; // Align to 8 bytes
 
         if total_copied + reclen_aligned > count {
-            // crate::kinfo!("getdents64: reached count limit total_copied={} reclen_aligned={} count={}", total_copied, reclen_aligned, count);
             file.seek(old_pos as isize, SeekWhence::BEG)?; // Rewind one entry
             break; 
         }
@@ -781,6 +792,58 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     Ok(0)
 }
 
+pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
+    if mode > 0o777 {
+        return Err(Errno::EINVAL);
+    }
+    let mode = Mode::from_bits(mode as u32).ok_or(Errno::EINVAL)?;
+
+    let file = current::fdtable().lock().get(fd)?;
+
+    if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
+        inode.chmod(mode)?;
+    } else {
+        return Err(Errno::EINVAL);
+    }
+
+    Ok(0)
+}
+
+pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, _flags: usize) -> SyscallRet {
+    uptr_path.should_not_null()?;
+    
+    let path = uptr_path.read()?;
+
+    let dentry = if dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
+    } else {
+        vfs::load_dentry_at(
+            current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
+            &path
+        )?
+    };
+
+    let uid = if uid == usize::MAX { None } else { Some(uid as Uid) };
+    let gid = if gid == usize::MAX { None } else { Some(gid as Uid) };
+    dentry.get_inode().chown(uid, gid)?;
+
+    Ok(0)
+}
+
+pub fn fchown(fd: usize, uid: usize, gid: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
+        let uid = if uid == usize::MAX { None } else { Some(uid as Uid) };
+        let gid = if gid == usize::MAX { None } else { Some(gid as Uid) };
+        inode.chown(uid, gid)?;
+    } else {
+        return Err(Errno::EINVAL);
+    }
+
+    Ok(0)
+}
+
 pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
@@ -812,5 +875,10 @@ pub fn fsync(fd: usize) -> SyscallRet {
 
     file.fsync()?;
 
+    Ok(0)
+}
+
+pub fn flock(fd: usize, _operation: usize) -> SyscallRet {
+    let _file = current::fdtable().lock().get(fd)?;
     Ok(0)
 }

@@ -15,6 +15,8 @@ QEMU_FLAGS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 QEMU_FLAGS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
 QEMU_FLAGS += -smp $(CONFIG_QEMU_CPUS)
 
+BOOTARGS += $(CONFIG_BOOTARGS)
+
 # Set bootargs
 ifneq ($(CONFIG_INITPATH),)
 BOOTARGS += init=$(CONFIG_INITPATH)

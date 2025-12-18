@@ -238,9 +238,6 @@ impl PhysPageFrame {
 
     #[cfg(feature = "swap-memory")]
     pub fn alloc_with_shrink_zeroed() -> Self {
-        use crate::kinfo;
-
-        // kinfo!("Allocating physical page frame with shrink");
         Self::new(alloc_with_shrink_zero())
     }
 

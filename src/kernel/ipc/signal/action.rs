@@ -48,13 +48,15 @@ impl SignalAction {
 }
 
 pub struct SignalActionTable {
-    pub actions: [SignalAction; 63],
+    actions: [SignalAction; 63],
+    stack: Option<(usize, usize)> // (ss_sp, ss_size)
 }
 
 impl SignalActionTable {
     pub fn new() -> Self {
         SignalActionTable {
             actions: [SignalAction::empty(); 63],
+            stack: None,
         }
     }
 
@@ -63,9 +65,21 @@ impl SignalActionTable {
         self.actions[index - 1]
     }
 
+    pub fn get_stack_top(&self) -> Option<usize> {
+        self.stack.map(|(sp, size)| (sp + size) & !0xf)
+    }
+
+    pub fn get_stack(&self) -> Option<(usize, usize)> {
+        self.stack
+    }
+
     pub fn set(&mut self, signum: SignalNum, action: &SignalAction) -> SysResult<()> {
         let index: usize = signum.into();
         self.actions[index - 1] = *action;
         Ok(())
+    }
+
+    pub fn set_stack(&mut self, stack: Option<(usize, usize)>) {
+        self.stack = stack;
     }
 }

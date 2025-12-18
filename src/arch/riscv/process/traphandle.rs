@@ -1,5 +1,3 @@
-use crate::arch::riscv::fdt::svadu_enable;
-use crate::arch::riscv::plic;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -7,6 +5,8 @@ use crate::kernel::syscall;
 use crate::arch::riscv::csr::*;
 use crate::arch::riscv::UserContext;
 use crate::arch::riscv::TRAMPOLINE_BASE;
+use crate::arch::riscv::fdt::svadu_enable;
+use crate::arch::riscv::plic;
 use crate::arch::UserContextTrait;
 use crate::kinfo;
 
@@ -160,18 +160,21 @@ pub fn return_to_user() -> ! {
 pub fn kerneltrap_handler() {
     let sepc = sepc::read();
 
-    match scause::cause() {
+    let cause = scause::cause();
+    // kinfo!("Kernel trap handler invoked, caused by: {:?}", cause);
+    match cause {
         scause::Cause::Trap(trap) => {
             match trap {
                 scause::Trap::StorePageFault => {
                     let stval = stval::read();
-                    let task = current::task();
-                    let kstack = task.kstack();
-                    if kstack.check_stack_overflow(stval) {
-                        panic!("Kernel stack overflow detected at address: {:#x}, tid={}", stval, current::tid());
-                    } else {
-                        panic!("Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}, kstack_top={:#x}", stval, sepc, trap, kstack.get_top());
+                    if current::has_task() {
+                        let task = current::task();
+                        let kstack = task.kstack();
+                        if kstack.check_stack_overflow(stval) {
+                            panic!("Kernel stack overflow detected at address: {:#x}, tid={}", stval, current::tid());
+                        }
                     }
+                    panic!("Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}", stval, sepc, trap);
                 }
                 _ => {
                     panic!("Unhandled kernel trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}", trap, sepc, stval::read(), scause::cause());
@@ -189,7 +192,7 @@ pub fn kerneltrap_handler() {
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
-                    kinfo!("Kernel external interrupt occurred");
+                    handle_external_interrupt();
                 },
                 scause::Interrupt::Counter => {
                     kinfo!("Kernel counter interrupt occurred");

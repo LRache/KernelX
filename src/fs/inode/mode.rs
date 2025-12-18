@@ -44,7 +44,6 @@ impl Mode {
         };
 
         // (a & b) | ~a = ~a | b
-
         (!perm.flags.contains(PermFlags::R) || self.contains(read_bit)) &&
         (!perm.flags.contains(PermFlags::W) || self.contains(write_bit)) &&
         (!perm.flags.contains(PermFlags::X) || self.contains(exec_bit))

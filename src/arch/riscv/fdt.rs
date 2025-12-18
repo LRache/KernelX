@@ -103,6 +103,7 @@ fn load_soc_node(child: &FdtNode) -> Option<()> {
 fn load_cpu_node(child: &FdtNode) {
     let isa_support = child.property("riscv,isa").and_then(|p| p.as_str()).unwrap_or("");
     let extensions: Vec<&str> = isa_support.split('_').collect();
+    kinfo!("CPU ISA extensions: {:?}", extensions);
     if extensions.iter().find(|&&ext| ext == "svadu").is_some() {
         SVADU_EXTENSION_ENABLED.init(true);
         kinfo!("SVADU extension is enabled");

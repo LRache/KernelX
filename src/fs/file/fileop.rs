@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
+use crate::fs::file::FileFlags;
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::AddrSpace;
@@ -37,6 +38,10 @@ pub trait FileOps: DowncastSync {
         Ok(None)
     }
     fn wait_event_cancel(&self) {}
+
+    fn set_flags(&self, flags: FileFlags) {
+        let _ = flags;
+    }
 
     fn type_name(&self) -> &'static str {
         "unknown"

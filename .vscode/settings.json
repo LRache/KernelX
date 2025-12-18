@@ -17,5 +17,6 @@
         "ARCH_BITS": "64"
     },
     "rust-analyzer.trace.server": "verbose",
-    "cmake.ignoreCMakeListsMissing": true
+    "cmake.ignoreCMakeListsMissing": true,
+    "editor.rulers": [80]
 }
