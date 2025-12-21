@@ -15,7 +15,7 @@ impl memtreefs::StaticFsInfo for TmpfsInfo {
 pub struct FileSystem;
 
 impl FileSystemOps for FileSystem {
-    fn create(&self, sno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
-        Ok(Arc::new(memtreefs::SuperBlock::<TmpfsInfo>::new(sno)))
+    fn create(&self, _sno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
+        Ok(Arc::new(memtreefs::SuperBlock::<TmpfsInfo>::new()))
     }
 }

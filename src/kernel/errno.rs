@@ -25,6 +25,7 @@ pub enum Errno {
     EFBIG   = 27,  // File too large
     ENOSPC  = 28,  // No space left on device
     ESPIPE  = 29,  // Illegal seek
+    EROFS   = 30,  // Read-only file system
     EPIPE   = 32,  // Broken pipe
     ENOTEMPTY = 39,  // Directory not empty
     ENOSYS  = 38,  // Function not implemented

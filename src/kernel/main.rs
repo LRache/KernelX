@@ -74,7 +74,8 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
 
     task::create_initprocess(
         BOOT_ARGS.get("init").unwrap_or(&config::DEFAULT_INITPATH),
-        BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD)
+        BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD),
+        BOOT_ARGS.get("initargs").unwrap_or(&"")
     );
 
     driver::chosen::init(&BOOT_ARGS);

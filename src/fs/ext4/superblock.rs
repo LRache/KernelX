@@ -18,10 +18,6 @@ pub(super) fn map_error_to_ext4(e: Errno, context: &'static str) -> Ext4Error {
 }
 
 pub(super) fn map_error_to_kernel(e: Ext4Error) -> Errno {
-    // if e.context.is_some() {
-    //     kwarn!("{:?}", e);
-    // }
-
     Errno::try_from(e.code).expect("unexpected code")
 }
 
@@ -80,7 +76,6 @@ impl SuperBlockOps for Ext4SuperBlock {
     }
 
     fn unmount(&self) -> SysResult<()> {
-        // destroy_filesystem(self.fs_handler)
         Ok(())
     }
 

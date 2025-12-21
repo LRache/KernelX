@@ -182,6 +182,12 @@ config INITPATH
 	help
 	  Path to the init process executable.
 
+config INITARGS
+	string "Init process arguments"
+	default ""
+	help
+	  Additional arguments to pass to the init process.
+
 config INITCWD
 	string "Init process working directory"
 	default "/"

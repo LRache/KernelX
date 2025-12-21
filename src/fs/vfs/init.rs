@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::fs::devfs;
+use crate::fs::{devfs, procfs};
 use crate::fs::ext4::Ext4FileSystem;
 use crate::fs::tmpfs;
 use crate::fs::rootfs::RootFileSystem;
@@ -14,6 +14,7 @@ pub fn init() {
     vfs.register_filesystem("devfs", &devfs::FileSystem);
     vfs.register_filesystem("ext4", &Ext4FileSystem);
     vfs.register_filesystem("tmpfs", &tmpfs::FileSystem);
+    vfs.register_filesystem("procfs", &procfs::FileSystem);
 
     vfs.superblock_table.lock().mount(&RootFileSystem, None).unwrap();
     vfs.root.init(Arc::new(Dentry::root(&vfs.load_inode(0, 0).unwrap(), 0)));

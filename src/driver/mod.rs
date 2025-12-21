@@ -16,7 +16,7 @@ pub use device::{Device, DeviceType};
 pub use driver::*;
 
 pub use manager::{
-    get_block_driver, get_char_driver, 
+    get_block_driver,
     register_matched_driver, found_device, 
     handle_interrupt
 };

@@ -1,13 +1,11 @@
 use core::time::Duration;
-
-use alloc::string::String;
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::driver::DriverOps;
+use crate::fs::Dentry;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::fs::file::DirResult;
+use crate::fs::file::{DirResult, FileFlags, FileOps};
 
 use super::{Mode, FileType};
 
@@ -16,7 +14,7 @@ pub trait InodeOps: DowncastSync {
 
     fn type_name(&self) -> &'static str;
 
-    fn create(&self, _name: &str, _mode: Mode) -> SysResult<()> {
+    fn create(&self, _name: &str, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         Err(Errno::EOPNOTSUPP)
     }
 
@@ -44,9 +42,12 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
-    fn size(&self) -> SysResult<u64> {
-        unimplemented!("{}", self.type_name())
+    fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        let _ = buf;
+        Ok(None)
     }
+
+    fn size(&self) -> SysResult<u64>;
     
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::empty())
@@ -66,16 +67,8 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
-    fn get_driver(&self) -> Option<Arc<dyn DriverOps>> {
-        None
-    }
-
     fn inode_type(&self) -> SysResult<FileType> {
         self.mode().map(|inode| inode.into())
-    }
-
-    fn readlink(&self) -> SysResult<String> {
-        Err(Errno::EINVAL)
     }
 
     fn sync(&self) -> SysResult<()> {
@@ -95,10 +88,6 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
-    fn support_random_access(&self) -> bool {
-        false
-    }
-
     fn update_atime(&self, time: &Duration) -> SysResult<()> {
         let _ = time;
         Ok(())
@@ -113,6 +102,8 @@ pub trait InodeOps: DowncastSync {
         let _ = time;
         Ok(())
     }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps>;
 }
 
 impl_downcast!(sync InodeOps);

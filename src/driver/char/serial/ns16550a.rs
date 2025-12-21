@@ -67,23 +67,6 @@ impl Serial {
 }
 
 impl SerialOps for Serial {
-    // fn handle_interrupt(&self) {
-    //     let mut mmio = self.mmio.lock();
-    //     // Check if there is data to read.
-    //     if (mmio.read_reg(regs::LSR) & regs::LSR_RX_READY) != 0 {
-    //         let mut recv_buffer = self.recv_buffer.lock();
-    //         while mmio.read_reg(regs::LSR) & regs::LSR_RX_READY != 0 {
-    //             let c = mmio.read_reg(regs::RHR);
-    //             recv_buffer.push(c);
-    //         }
-    //         drop(recv_buffer);
-
-    //         self.waiters.lock().wake_all(
-    //             |waker| Event::Poll { event: FileEvent::ReadReady, waker }
-    //         );
-    //     }
-    // }
-
     fn getchar(&mut self) -> Option<u8> {
         if (self.read_reg(regs::LSR) & regs::LSR_RX_READY) == 0 {
             None
@@ -92,9 +75,12 @@ impl SerialOps for Serial {
         }
     }
 
-    fn putchar(&mut self, c: u8) {
-        while (self.read_reg(regs::LSR) & regs::LSR_TX_IDLE) == 0 {}
+    fn putchar(&mut self, c: u8) -> bool {
+        if (self.read_reg(regs::LSR) & regs::LSR_TX_IDLE) == 0 {
+            return false;
+        }
         self.write_reg(regs::THR, c);
+        true
     }
 }
 

@@ -15,6 +15,14 @@ use super::area::Area;
 use super::userstack::{UserStack, Auxv};
 use super::userbrk::UserBrk;
 
+#[derive(Clone, Copy, Debug)]
+pub struct MapAreaInfo {
+    pub start: usize,
+    pub end: usize,
+    pub perm: MapPerm,
+    pub name: &'static str,
+}
+
 pub struct Manager {
     areas: BTreeMap<usize, Box<dyn Area>>,
     userstack_ubase: usize,
@@ -105,35 +113,41 @@ impl Manager {
         }
     }
 
-    pub fn is_map_range_overlapped(&self, uaddr: usize, page_count: usize) -> bool {
-        if page_count == 0 {
-            return false;
-        }
+    pub fn is_map_range_overlapped(&self, start: usize, page_count: usize) -> bool {
+        let iter_start = self.areas.range(..=start).next().map(|(k, _)| *k).unwrap_or(0);
+        let end = start + page_count * arch::PGSIZE;
 
-        let end_addr = uaddr.saturating_add(page_count * arch::PGSIZE);
-
-        // Previous area (if any) might extend into the new range.
-        if let Some((area_base, area)) = self.areas.range(..=uaddr).next_back() {
-            let area_end = area_base.saturating_add(area.size());
-            if uaddr < area_end {
-                return true;
+        for (&area_base, area) in self.areas.range(iter_start..) {
+            if end <= area_base {
+                break;
             }
-        }
 
-        // Next area is the only other candidate because areas are non-overlapping and ordered.
-        if let Some((area_base, _)) = self.areas.range(uaddr..).next() {
-            if *area_base < end_addr {
-                return true;
+            if area_base + area.size() <= start {
+                continue;
             }
+            
+            return true;
         }
 
-        false
+        return false;
     }
 
     pub fn map_area(&mut self, uaddr: usize, area: Box<dyn Area>) {
         debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
         debug_assert!(!self.is_map_range_overlapped(uaddr, area.page_count()), "Address range is not free");
         self.areas.insert(uaddr, area);
+    }
+
+    pub fn snapshot(&self) -> Vec<MapAreaInfo> {
+        self.areas
+            .iter()
+            .map(|(&start, area)| MapAreaInfo {
+                start,
+                end: start + area.size(),
+                perm: area.perm(),
+                name: area.type_name(),
+            })
+            .collect()
     }
 
     fn find_overlapped_areas(&self, start: usize, end: usize) -> Vec<usize> {
@@ -180,7 +194,6 @@ impl Manager {
     /// let new_area = Box::new(AnonymousArea::new(addr, perm, page_count));
     /// manager.map_area_fixed(addr, new_area)?;
     /// ```
-    #[allow(dead_code)]
     pub fn map_area_fixed(&mut self, uaddr: usize, area: Box<dyn Area>, pagetable: &RwLock<PageTable>) {
         debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
         

@@ -18,13 +18,11 @@ use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::errno::Errno;
 use crate::kernel::scheduler::{TaskState, Tid, KernelStack};
-use crate::fs::file::{File, FileFlags, CharFile};
+use crate::fs::file::{File, FileFlags};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::arch;
-use crate::driver;
-use crate::driver::char::Tty;
 use crate::ktrace;
 
 #[derive(Debug, Clone, Copy)]
@@ -64,8 +62,8 @@ impl TimeCounter {
 }
 
 pub struct TCB {
-    pub tid: Tid,
-    pub parent: Arc<PCB>,
+    tid: Tid,
+    parent: Arc<PCB>,
     tid_address: Mutex<Option<usize>>,
     pub robust_list: SpinLock<Option<usize>>,
     
@@ -188,12 +186,13 @@ impl TCB {
         let userstack_top = addrspace.create_user_stack(argv, envp, &auxv).expect("Failed to push args and envp to userstack");
 
         let mut fdtable = FDTable::new();
-        // TODO: open devfs /dev/tty{n} as stdin, stdout, stderr
-        // let stdout_dev = driver::get_char_driver("serial@10000000").unwrap();
-        // let tty = Arc::new(CharFile::new(Arc::new(Tty::new(0, stdout_dev.clone()))));
         let stdio = vfs::open_file(
             "/dev/serial@10000000", 
-            FileFlags::dontcare(), 
+            FileFlags {
+                readable: true,
+                writable: true,
+                blocked: true,
+            },
             &Perm::new(PermFlags::R | PermFlags::W)
         ).expect("Failed to open stdio.");
         for _ in 0..3 {
@@ -329,7 +328,7 @@ impl TCB {
         Ok(new_tcb)
     }
 
-    pub fn get_tid(&self) -> i32 {
+    pub fn tid(&self) -> i32 {
         self.tid
     }
 
@@ -341,7 +340,7 @@ impl TCB {
         self.user_context_ptr
     }
 
-    pub fn get_parent(&self) -> &Arc<PCB> {
+    pub fn parent(&self) -> &Arc<PCB> {
         &self.parent
     }
 

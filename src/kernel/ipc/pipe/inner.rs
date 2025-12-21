@@ -49,7 +49,7 @@ impl PipeInner {
                             return Ok(0);
                         }
                         // If buffer is empty, wait for data
-                        self.read_waiter.lock().wait_current(Event::PipeReadReady);
+                        self.read_waiter.lock().wait_current(Event::ReadReady);
                         current::schedule();
                     }
                 }
@@ -103,11 +103,11 @@ impl PipeInner {
                         return Ok(0);
                     }
                     // If buffer is full, wait for space
-                    self.write_waiter.lock().wait_current(Event::PipeWriteReady);
+                    self.write_waiter.lock().wait_current(Event::WriteReady);
                     current::schedule();
 
                     match current::task().take_wakeup_event().unwrap() {
-                        Event::PipeWriteReady => {},
+                        Event::WriteReady => {},
                         Event::Signal => return Err(Errno::EINTR),
                         _ => unreachable!()
                     }

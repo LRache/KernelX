@@ -239,8 +239,10 @@ pub struct Sysinfo {
 impl UserStruct for Sysinfo {}
 
 pub fn sysinfo(uptr_sysinfo: UPtr<Sysinfo>) -> SyscallRet {
+    uptr_sysinfo.should_not_null()?;
     let mut sysinfo = Sysinfo::default();
     sysinfo.uptime = arch::uptime().as_secs() as usize;
+    uptr_sysinfo.write(sysinfo)?;
     Ok(0)
 }
 

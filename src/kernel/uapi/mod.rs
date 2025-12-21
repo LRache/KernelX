@@ -6,6 +6,7 @@ mod filestat;
 mod timespec;
 mod sigaction;
 mod statfs;
+pub mod termios;
 
 pub use openflags::*;
 pub use dirent::*;

@@ -406,6 +406,6 @@ impl Area for UserStack {
     }
 
     fn type_name(&self) -> &'static str {
-        "UserStack"
+        "stack"
     }
 }

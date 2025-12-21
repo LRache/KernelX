@@ -1,8 +1,9 @@
 use alloc::sync::Arc;
 
-use crate::kernel::errno::Errno;
+use crate::fs::file::{FileFlags, FileOps};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
-use crate::fs::InodeOps;
+use crate::fs::{Dentry, InodeOps};
 use crate::driver::BlockDriverOps;
 
 #[derive(Debug, Clone)]
@@ -22,10 +23,6 @@ impl InodeOps for RootInode {
         0
     }
 
-    // fn get_sno(&self) -> u32 {
-    //     0
-    // }
-
     fn type_name(&self) -> &'static str {
         "rootfs"
     }
@@ -40,6 +37,14 @@ impl InodeOps for RootInode {
 
     fn lookup(&self, _name: &str) -> Result<u32, Errno> {
         Err(Errno::ENOENT)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, _: Option<Arc<Dentry>>, _: FileFlags) -> Arc<dyn FileOps> {
+        unreachable!()
     }
 }
 

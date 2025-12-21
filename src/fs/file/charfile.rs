@@ -5,24 +5,36 @@ use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::driver::CharDriverOps;
-use crate::fs::file::FileOps;
-use crate::fs::{InodeOps, Mode};
+use crate::fs::file::{FileFlags, FileOps};
+use crate::fs::{Dentry, InodeOps};
 
 use super::SeekWhence;
 
 pub struct CharFile {
     driver: Arc<dyn CharDriverOps>,
+    inode: Arc<dyn InodeOps>,
+    dentry: Option<Arc<Dentry>>,
+    readable: bool,
+    writable: bool,
+    blocked: bool,
 }
 
 impl CharFile {
-    pub fn new(driver: Arc<dyn CharDriverOps>) -> Self {
-        CharFile { driver }
+    pub fn new(driver: Arc<dyn CharDriverOps>, inode: Arc<dyn InodeOps>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Self {
+        CharFile { 
+            driver, 
+            inode, 
+            dentry,
+            readable: flags.readable,
+            writable: flags.writable,
+            blocked: flags.blocked
+        }
     }
 }
 
 impl FileOps for CharFile {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        self.driver.read(buf)
+        self.driver.read(buf, self.blocked)
     }
 
     fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
@@ -38,11 +50,11 @@ impl FileOps for CharFile {
     }
 
     fn readable(&self) -> bool {
-        true
+        self.readable
     }
 
     fn writable(&self) -> bool {
-        true
+        self.writable
     }
 
     fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {
@@ -50,23 +62,19 @@ impl FileOps for CharFile {
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
-        let mut kstat = FileStat::default();
-
-        kstat.st_mode = Mode::S_IFCHR.bits() as u32;
-
-        Ok(kstat)
+        self.inode.fstat()
     }
 
     fn fsync(&self) -> SysResult<()> {
         Ok(())
     }
 
-    fn get_dentry(&self) -> Option<&Arc<crate::fs::Dentry>> {
-        None
+    fn get_dentry(&self) -> Option<&Arc<Dentry>> {
+        self.dentry.as_ref()
     }
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
-        None
+        Some(&self.inode)
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {

@@ -36,7 +36,7 @@ impl CharDriverOps for SBIConsoleDriver {
         Ok(buf.len())
     }
 
-    fn read(&self, _: &mut [u8]) -> SysResult<usize> {
+    fn read(&self, _: &mut [u8], _: bool) -> SysResult<usize> {
         Ok(0)
     }
 

@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
-use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
 use crate::fs::file::DirResult;
 use crate::fs::InodeOps;
 use crate::fs::vfs::Dentry;
+use crate::klib::SpinLock;
 
 use super::{FileOps, SeekWhence};
 
@@ -29,27 +29,17 @@ impl FileFlags {
 pub struct File {
     inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
-    pos: Option<Mutex<usize>>,
+    pos: SpinLock<usize>,
     
     pub flags: FileFlags,
 }
 
 impl File {
-    pub fn new(dentry: &Arc<Dentry>, flags: FileFlags) -> Self {
-        let inode = dentry.get_inode().clone();
-        Self::new_inode(inode, dentry.clone(), flags)
-    }
-
-    pub fn new_inode(inode: Arc<dyn InodeOps>, dentry: Arc<Dentry>, flags: FileFlags) -> Self {
-        let pos = if inode.support_random_access() {
-            Some(Mutex::new(0))
-        } else {
-            None
-        };
+    pub fn new(inode: Arc<dyn InodeOps>, dentry: Arc<Dentry>, flags: FileFlags) -> Self {
         Self {
             inode,
             dentry,
-            pos,
+            pos: SpinLock::new(0),
             flags
         }
     }
@@ -59,30 +49,25 @@ impl File {
         Ok(len)
     }
 
-    pub fn write_at(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
-        if !self.flags.writable {
-            return Err(Errno::EPERM);
-        }
-        let len = self.inode.writeat(buf, offset)?;
-        Ok(len)
-    }
-
     pub fn ftruncate(&self, new_size: u64) -> SysResult<()> {
         self.inode.truncate(new_size)
     }
 
     /// Return the dirent and the old file pos.
     pub fn get_dent(&self) -> SysResult<Option<(DirResult, usize)>> {
-        let mut pos = match &self.pos {
-            Some(p) => p.lock(),
-            None => return Err(Errno::ESPIPE),
-        };
+        let mut pos = self.pos.lock();
         let old_pos = *pos;
-        let (dent, next_pos) = match self.inode.get_dent(*pos)? {
+        let (mut dent, next_pos) = match self.inode.get_dent(*pos)? {
             Some(d) => d,
             None => return Ok(None),
         };
         *pos = next_pos;
+
+        if dent.name == ".." {
+            if let Some(parent) = self.dentry.get_parent() {
+                dent.ino = parent.get_inode().get_ino();
+            }
+        }
         
         Ok(Some((dent, old_pos)))
     }
@@ -90,10 +75,7 @@ impl File {
 
 impl FileOps for File {
     fn read(&self, buf: &mut [u8]) -> Result<usize, Errno> {
-        let mut pos = match &self.pos {
-            Some(p) => p.lock(),
-            None => return self.inode.readat(buf, 0),
-        };
+        let mut pos = self.pos.lock();
         let len = self.inode.readat(buf, *pos)?;
         *pos += len;
         
@@ -106,10 +88,7 @@ impl FileOps for File {
     }
 
     fn write(&self, buf: &[u8]) -> Result<usize, Errno> {
-        let mut pos = match &self.pos {
-            Some(p) => p.lock(),
-            None => return self.inode.writeat(buf, 0),
-        };
+        let mut pos = self.pos.lock();
         let len = self.inode.writeat(buf, *pos)?;
         *pos += len;
         
@@ -130,10 +109,7 @@ impl FileOps for File {
     }
 
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
-        let mut pos = match self.pos {
-            Some(ref p) => p.lock(),
-            None => return Err(Errno::ESPIPE),
-        };
+        let mut pos = self.pos.lock();
         let new_pos;
         match whence {
             SeekWhence::BEG => {

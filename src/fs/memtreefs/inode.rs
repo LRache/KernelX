@@ -4,11 +4,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use crate::fs::file::DirResult;
+use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 use crate::kernel::errno::{SysResult, Errno};
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::fs::{FileType, InodeOps};
+use crate::fs::{Dentry, FileType, InodeOps};
 use crate::fs::inode::Mode;
 use crate::arch;
 use crate::klib::SpinLock;
@@ -52,6 +52,7 @@ pub struct InodeMeta {
     mtime: Timespec,
     atime: Timespec,
     ctime: Timespec,
+    links: u32,
 }
 
 impl InodeMeta {
@@ -71,23 +72,22 @@ impl InodeMeta {
             mtime: Timespec::default(),
             atime: Timespec::default(),
             ctime: Timespec::default(),
+            links: 0,
         }
     }
 }
 
 pub struct Inode<T: StaticFsInfo> {
     ino: u32,
-    sno: u32,
     meta: SpinLock<InodeMeta>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
 }
 
 impl<T: StaticFsInfo> Inode<T> {
-    pub fn new(ino: u32, sno: u32, meta: InodeMeta, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
+    pub fn new(ino: u32, meta: InodeMeta, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
         Self {
             ino,
-            sno,
             meta: SpinLock::new(meta),
             superblock,
             _marker: core::marker::PhantomData,
@@ -112,8 +112,9 @@ impl<T: StaticFsInfo> Inode<T> {
 }
 
 impl<T: StaticFsInfo> InodeOps for Inode<T> {
-    fn create(&self, name: &str, mode: Mode) -> SysResult<()> {
-        if let Meta::Directory(ref mut children) = self.meta.lock().meta {
+    fn create(&self, name: &str, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+        let mut meta = self.meta.lock();
+        if let Meta::Directory(ref mut children) = meta.meta {
             if children.contains_key(name) {
                 return Err(Errno::EEXIST);
             }
@@ -121,16 +122,20 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             let mut sb = self.superblock.lock();
             let ino = sb.alloc_inode_number();
 
+            let mut child_meta = InodeMeta::new(mode, ino, self.ino);
+            child_meta.links += 1;
+
             let inode = Arc::new(Self::new(
-                ino, self.sno, 
-                InodeMeta::new(mode, ino, self.ino),
+                ino, child_meta,
                 self.superblock.clone()
             ));
-            sb.insert_inode(ino, inode);
-
             children.insert(name.into(), ino);
+            
+            meta.links += 1;
 
-            Ok(())
+            sb.insert_inode(ino, inode.clone());
+
+            Ok(inode)
         } else {
             Err(Errno::ENOTDIR)
         }
@@ -139,10 +144,6 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn get_ino(&self) -> u32 {
         self.ino
     }
-
-    // fn get_sno(&self) -> u32 {
-    //     self.sno
-    // }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
         if let Meta::Directory(ref children) = self.meta.lock().meta {
@@ -338,8 +339,8 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
     }
 
-    fn support_random_access(&self) -> bool {
-        true
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {

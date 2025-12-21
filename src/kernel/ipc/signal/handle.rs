@@ -27,21 +27,21 @@ impl TCB {
         }
         
         if signum.is_kill() {
-            self.parent.exit(128 + signum.num() as u8);
+            self.parent().exit(128 + signum.num() as u8);
             current::schedule();
 
             unreachable!();
         }
         
         let (action, stack) = {
-            let signal_actions = self.parent.signal_actions().lock();
+            let signal_actions = self.parent().signal_actions().lock();
             (signal_actions.get(signal.signum), signal_actions.get_stack_top())
         };
         
         if action.is_default() {
             match signum.default_action() {
                 SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
-                    self.parent.exit(128 + signum.num() as u8);
+                    self.parent().exit(128 + signum.num() as u8);
                     current::schedule();
 
                     unreachable!();
@@ -155,7 +155,7 @@ impl TCB {
             return;
         }
 
-        if let Some(signal) = self.parent.pending_signals().lock().pop_pending(*self.signal_mask.lock(), self.tid) {
+        if let Some(signal) = self.parent().pending_signals().lock().pop_pending(*self.signal_mask.lock(), self.tid()) {
             state.pending_signal = Some(signal);
         }
     }
@@ -172,7 +172,7 @@ impl PCB {
 
         if let Some(dest) = dest {
             let tasks = self.tasks.lock();
-            if let Some(task) = tasks.iter().find(|t| t.tid == dest).cloned() {
+            if let Some(task) = tasks.iter().find(|t| t.tid() == dest).cloned() {
                 if !task.try_recive_pending_signal(pending) {
                     self.pending_signals().lock().add_pending(pending)?;
                 }

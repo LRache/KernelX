@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
 
-use crate::driver::{BlockDriverOps, CharDriverOps, DriverOps};
-use crate::fs::{InodeOps, Mode};
+use crate::driver::{BlockDriverOps, CharDriverOps};
+use crate::fs::file::{CharFile, File, FileFlags, FileOps};
+use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
 
@@ -21,8 +22,9 @@ impl InodeOps for CharDevInode {
         self.ino
     }
 
-    fn readat(&self,buf: &mut [u8], _offset: usize) -> SysResult<usize> {
-        self.driver.read(buf)
+    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+        // self.driver.read(buf)
+        unreachable!()
     }
 
     fn writeat(&self, buf: &[u8], _offset: usize) -> SysResult<usize> {
@@ -32,10 +34,11 @@ impl InodeOps for CharDevInode {
     fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::default();
         kstat.st_ino = self.ino as u64;
-        kstat.st_mode = Mode::S_IFCHR.bits() | 0o666;
+        kstat.st_mode = self.mode()?.bits();
         kstat.st_nlink = 1;
         kstat.st_uid = 0;
         kstat.st_gid = 0;
+        kstat.st_size = 0;
         Ok(kstat)
     }
 
@@ -43,12 +46,16 @@ impl InodeOps for CharDevInode {
         Ok(Mode::from_bits(Mode::S_IFCHR.bits() | 0o666).unwrap())
     }
 
-    fn get_driver(&self) -> Option<Arc<dyn DriverOps>> {
-        Some(self.driver.clone())
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
     }
 
     fn type_name(&self) -> &'static str {
         "devfs"
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(CharFile::new(self.driver.clone(), self, dentry, flags))
     }
 }
 
@@ -87,19 +94,23 @@ impl InodeOps for BlockDevInode {
         kstat.st_nlink = 1;
         kstat.st_uid = 0;
         kstat.st_gid = 0;
-        kstat.st_size = self.driver.get_block_size() as i64 * self.driver.get_block_count() as i64;
+        kstat.st_size = self.size()? as i64;
         Ok(kstat)
     }
 
     fn mode(&self) -> SysResult<Mode> {
-        Ok(Mode::from_bits(Mode::S_IFBLK.bits() | 0o660).unwrap())
+        Ok(Mode::from_bits(Mode::S_IFBLK.bits() | 0o666).unwrap())
     }
 
-    fn support_random_access(&self) -> bool {
-        true
+    fn size(&self) -> SysResult<u64> {
+        Ok(self.driver.get_block_size() as u64 * self.driver.get_block_count() as u64)
     }
 
     fn type_name(&self) -> &'static str {
         "devfs"
+    }
+    
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
     }
 }

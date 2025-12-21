@@ -20,11 +20,13 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
 
     // Mount devfs at /dev
     let _ = vfs::load_dentry("/").unwrap().create("dev", Mode::S_IFDIR);
+    let _ = vfs::load_dentry("/").unwrap().create("proc", Mode::S_IFDIR);
     vfs::mount("/dev", "devfs", None).unwrap();
+    vfs::mount("/proc", "procfs", None).unwrap();
 
     // Try to access /dev/null and /dev/zero to ensure they are working
     vfs::load_dentry("/dev/null").unwrap();
-    // vfs::load_dentry("/dev/zero").unwrap();
+    vfs::load_dentry("/dev/zero").unwrap();
     
     // Mount tmpfs at /tmp
     let _ = vfs::load_dentry("/").unwrap().create("tmp", Mode::S_IFDIR);

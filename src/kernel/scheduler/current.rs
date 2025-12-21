@@ -68,7 +68,7 @@ pub fn uid() -> Uid {
 }
 
 pub fn pcb() -> &'static Arc<PCB> {
-    tcb().get_parent()
+    tcb().parent()
 }
 
 pub fn signal_actions() -> &'static Mutex<SignalActionTable> {

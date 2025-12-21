@@ -22,6 +22,10 @@ ifneq ($(CONFIG_INITPATH),)
 BOOTARGS += init=$(CONFIG_INITPATH)
 endif
 
+ifneq ($(CONFIG_INITARGS),)
+BOOTARGS += initargs=$(CONFIG_INITARGS)
+endif
+
 ifneq ($(CONFIG_INITCWD),)
 BOOTARGS += initcwd=$(CONFIG_INITCWD)
 endif

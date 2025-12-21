@@ -6,6 +6,7 @@ use alloc::collections::BTreeMap;
 
 use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::inode::{Index, InodeOps, Mode};
+use crate::kinfo;
 use crate::klib::SpinLock;
 
 use super::vfs;
@@ -84,7 +85,18 @@ impl Dentry {
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
 
         let new_child = Arc::new(Self::new(name, self, &inode, lookup_sno));
+        // let new_child = self.lookup_nocached(name)?;
         children.insert(name.into(), Arc::downgrade(&new_child));
+        
+        Ok(new_child)
+    }
+
+    pub fn lookup_nocached(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
+        let lookup_ino = self.get_inode().lookup(name)?;
+        let lookup_sno = self.sno();
+        let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
+
+        let new_child = Arc::new(Self::new(name, self, &inode, lookup_sno));
         
         Ok(new_child)
     }
@@ -101,20 +113,15 @@ impl Dentry {
         let parent = self.parent.lock();
         if let Some(p) = &*parent {
             let inode = self.get_inode();
-            if inode.mode()?.contains(Mode::S_IFLNK) {
-                let mut buffer = [0u8; 255];
-                let count = inode.readat(&mut buffer, 0)?;
-                let link_path = core::str::from_utf8(&buffer[..count]).map_err(|_| Errno::EINVAL)?;
-                let r = vfs().lookup_dentry(&p, &link_path)?;
-                Ok(r)
-            } else {
-                drop(parent);
-                Ok(self)
+            let mut buffer = [0u8; 255];
+            if let Some(length) = inode.readlink(&mut buffer)? {
+                let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
+                let link_dentry = vfs().lookup_dentry(p, link_name)?;
+                return Ok(link_dentry);
             }
-        } else {
-            drop(parent);
-            Ok(self)
         }
+        drop(parent);
+        Ok(self)
     }
 
     pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>, mount_to_sno: u32) {
@@ -146,7 +153,7 @@ impl Dentry {
         }
     }
 
-    pub fn create(self: &Arc<Self>, name: &str, mode: Mode) -> SysResult<()> {
+    pub fn create(self: &Arc<Self>, name: &str, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         if let Ok(_) = self.lookup(name) {
             return Err(Errno::EEXIST);
         }
@@ -165,9 +172,9 @@ impl Dentry {
     }
 
     pub fn rename(self: &Arc<Self>, old_name: &str, new_parent: &Arc<Dentry>, new_name: &str) -> SysResult<()> {
-        assert!(self.sno() == new_parent.sno());
-        assert!(old_name != "." && old_name != "..");
-        assert!(new_name != "." && new_name != "..");
+        debug_assert!(self.sno() == new_parent.sno());
+        debug_assert!(old_name != "." && old_name != "..");
+        debug_assert!(new_name != "." && new_name != "..");
 
         let old_parent_inode = self.get_inode();
         let new_parent_inode = new_parent.get_inode();
@@ -178,17 +185,11 @@ impl Dentry {
         Ok(())
     }
 
-    pub fn readlink(&self) -> SysResult<String> {
-        // let mut inner = self.inner.lock();
-        
-        // if let Some(mount_to) = &inner.mount_to {
-        //     return mount_to.readlink();
-        // }
-
-        // let inode = self.get_inode_inner(&mut inner)?;
-
-        // inode.readlink()
-        Ok("".into()) // TODO
+    pub fn readlink(&self, child: &str, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        let lookup_ino = self.get_inode().lookup(child)?;
+        let lookup_sno = self.sno();
+        let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
+        inode.readlink(buf)
     }
 }
 

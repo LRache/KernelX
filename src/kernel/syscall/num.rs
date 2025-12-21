@@ -81,6 +81,7 @@ macro_rules! syscall_table {
             use crate::println;
             match $result {
                 Ok(value) => println!("[SYSCALL] {} ({}): args=[] -> Ok({:#x}), tid={}", $num, $name, value, $crate::kernel::scheduler::current::tid()),
+                // Ok(_) => {},
                 Err(errno) => println!("[SYSCALL] {} ({}): args=[] -> Err({:?}), tid={}", $num, $name, errno, $crate::kernel::scheduler::current::tid()),
             }
         }
@@ -91,6 +92,7 @@ macro_rules! syscall_table {
             use crate::println;
             match $result {
                 Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], value, $crate::kernel::scheduler::current::tid()),
+                // Ok(_) => {},
                 Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], errno, $crate::kernel::scheduler::current::tid()),
             }
         }
@@ -101,6 +103,7 @@ macro_rules! syscall_table {
             use crate::println;
             match $result {
                 Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], value, $crate::kernel::scheduler::current::tid()),
+                // Ok(_) => {},
                 Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], errno, $crate::kernel::scheduler::current::tid()),
             }
         }
@@ -111,6 +114,7 @@ macro_rules! syscall_table {
             use crate::println;
             match $result {
                 Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], $args[2], value, $crate::kernel::scheduler::current::tid()),
+                // Ok(_) => {},
                 Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], $args[2], errno, $crate::kernel::scheduler::current::tid()),
             }
         }
@@ -121,6 +125,7 @@ macro_rules! syscall_table {
             use crate::println;
             match $result {
                 Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], value, $crate::kernel::scheduler::current::tid()),
+                // Ok(_) => {},
                 Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], errno, $crate::kernel::scheduler::current::tid()),
             }
         }
@@ -131,6 +136,7 @@ macro_rules! syscall_table {
             use crate::println;
             match $result {
                 Ok(value) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}] -> Ok({:#x}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], value, $crate::kernel::scheduler::current::tid()),
+                // Ok(value) => {},
                 Err(errno) => println!("[SYSCALL] {} ({}): args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}] -> Err({:?}), tid={}", $num, $name, $args[0], $args[1], $args[2], $args[3], $args[4], errno, $crate::kernel::scheduler::current::tid()),
             }
         }

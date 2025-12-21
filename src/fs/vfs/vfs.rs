@@ -7,6 +7,8 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::InodeOps;
 use crate::fs::inode;
 use crate::fs::filesystem::FileSystemOps;
+use crate::kernel::scheduler::current;
+use crate::kinfo;
 use crate::klib::InitedCell;
 
 use super::dentry::Dentry;
@@ -43,7 +45,6 @@ impl VirtualFileSystem {
             _ => dir.clone()
         };
 
-        // TODO: Link to
         current = current.get_mount_to();
         current = current.walk_link()?;
 
@@ -55,6 +56,19 @@ impl VirtualFileSystem {
         })?;
 
         Ok(current)
+    }
+
+    pub fn lookup_dentry_nofollow(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
+        let current = match path.chars().next() {
+            Some('/') => self.get_root().clone(),
+            _ => dir.clone()
+        };
+        
+        if let Some((parent, name)) = self.lookup_parent_dentry(dir, path)? {
+            Ok(parent.lookup_nocached(name)?)
+        } else {
+            Ok(current)
+        }
     }
 
     pub fn lookup_parent_dentry<'a>(&self, dir: &Arc<Dentry>, path: &'a str) -> SysResult<Option<(Arc<Dentry>, &'a str)>> {

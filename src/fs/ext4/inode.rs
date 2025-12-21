@@ -4,12 +4,12 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use lwext4_rust::{FileAttr, InodeType};
 
-use crate::driver;
-use crate::fs::FileType;
+use crate::{driver, kinfo};
+use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::fs::inode::{InodeOps, Mode};
-use crate::fs::file::DirResult;
+use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 use crate::klib::SpinLock;
 
 use super::superblock::{SuperBlockInner, map_error_to_kernel};
@@ -39,7 +39,7 @@ impl InodeOps for Ext4Inode {
         "ext4"
     }
 
-    fn create(&self, name: &str, mode: Mode) -> SysResult<()> {
+    fn create(&self, name: &str, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         if !self.mode()?.contains(Mode::S_IFDIR) {
             return Err(Errno::ENOTDIR);
         }
@@ -72,7 +72,7 @@ impl InodeOps for Ext4Inode {
             Ok(())
         }).map_err(map_error_to_kernel)?;
 
-        Ok(())
+        Ok(Arc::new(Self::new(ino, self.superblock.clone())))
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {
@@ -142,10 +142,18 @@ impl InodeOps for Ext4Inode {
         }).map_err(map_error_to_kernel)
     }
 
-    fn mode(&self) -> SysResult<Mode> {
-        // Mode::from_bits_truncate(self.meta.lock().mode())
+    fn mode(&self) -> SysResult<Mode> {  
         self.superblock.lock().with_inode_ref(self.ino, |inode_ref| {
             Ok(Mode::from_bits_truncate(inode_ref.mode()))
+        }).map_err(map_error_to_kernel)
+    }
+
+    fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        self.superblock.lock().with_inode_ref(self.ino, |inode_ref| {
+            if inode_ref.inode_type() != InodeType::Symlink {
+                return Ok(None);
+            }
+            Ok(Some(inode_ref.read_at(buf, 0)?))
         }).map_err(map_error_to_kernel)
     }
 
@@ -200,11 +208,7 @@ impl InodeOps for Ext4Inode {
             Ok((inode_ref.uid() as Uid, inode_ref.gid() as Uid))
         }).map_err(map_error_to_kernel)
     }
-
-    fn support_random_access(&self) -> bool {
-        true
-    }
-
+    
     fn update_atime(&self, time: &Duration) -> SysResult<()> {
         self.superblock.lock().with_inode_ref(self.ino, |inode_ref| {
             inode_ref.set_atime(time);
@@ -229,6 +233,10 @@ impl InodeOps for Ext4Inode {
     fn sync(&self) -> SysResult<()> {
         // sync not implemented in new API yet
         self.superblock.lock().flush().map_err(map_error_to_kernel)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
     }
 }
 

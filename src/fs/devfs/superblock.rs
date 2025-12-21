@@ -25,8 +25,7 @@ impl FileSystemOps for FileSystem {
 }
 
 pub fn init() {
-    let sno = 1;
-    let superblock = memtreefs::SuperBlock::new(sno);
+    let superblock = memtreefs::SuperBlock::new();
     let root = superblock.root_inode();
     root.add_child("null".into(), Arc::new(NullInode::new(superblock.alloc_inode_number()))).unwrap();
     root.add_child("zero".into(), Arc::new(ZeroInode::new(superblock.alloc_inode_number()))).unwrap();

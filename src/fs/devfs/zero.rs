@@ -1,7 +1,10 @@
+use alloc::sync::Arc;
+
+use crate::fs::Dentry;
 use crate::kernel::uapi::FileStat;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::{Mode, InodeOps};
-use crate::fs::file::DirResult;
+use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 
 pub struct ZeroInode {
     ino: u32,
@@ -54,7 +57,7 @@ impl InodeOps for ZeroInode {
         Ok(0)
     }
 
-    fn support_random_access(&self) -> bool {
-        true
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
     }
 }

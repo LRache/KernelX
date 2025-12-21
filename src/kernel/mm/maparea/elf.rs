@@ -35,8 +35,8 @@ impl ELFArea {
     ) -> Self {
         // We only handle cases where file_offset and ubase are page-aligned.
         // The alignment should be guaranteed by the caller.
-        assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
-        assert!(file_offset % arch::PGSIZE == 0, "file_offset should be page-aligned");
+        debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
+        debug_assert!(file_offset % arch::PGSIZE == 0, "file_offset should be page-aligned");
 
         let page_count = (memory_size + arch::PGSIZE - 1) / arch::PGSIZE;
         let frames = Vec::from_iter((0..page_count).map(|_| Frame::Unallocated));
@@ -286,10 +286,6 @@ impl Area for ELFArea {
         let cow_perm = perm - MapPerm::W;
         let mut pagetable = pagetable.write();
         self.frames.iter().enumerate().for_each(|(page_index, frame)| {
-            // if let Frame::Allocated(_) = !frame.is_unallocated() {
-            //     let uaddr = self.ubase + page_index * arch::PGSIZE;
-            //     pagetable.write().mmap_replace_perm(uaddr, perm);
-            // }
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match frame {
                 Frame::Allocated(_) => pagetable.mmap_replace_perm(uaddr, perm),
@@ -300,6 +296,6 @@ impl Area for ELFArea {
     }
 
     fn type_name(&self) -> &'static str {
-        "ELFArea"
+        "elf"
     }
 }

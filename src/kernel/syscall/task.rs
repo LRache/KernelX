@@ -25,7 +25,7 @@ pub fn getpid() -> SyscallRet {
 
 pub fn gettid() -> SyscallRet {
     let tcb = current::tcb();
-    Ok(tcb.get_tid() as usize)
+    Ok(tcb.tid() as usize)
 }
 
 pub fn getppid() -> SyscallRet {
@@ -92,7 +92,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
         child.set_tid_address(uptr_child_tid);
     }
 
-    let child_tid = child.get_tid();
+    let child_tid = child.tid();
 
     if flags.contains(CloneFlags::PARENT_SETTID) {
         uptr_parent_tid.write(child_tid)?;

@@ -1,7 +1,9 @@
+use alloc::sync::Arc;
+
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
-use crate::fs::{InodeOps, Mode};
-use crate::fs::file::DirResult;
+use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 
 pub struct NullInode {
     ino: u32
@@ -41,10 +43,6 @@ impl InodeOps for NullInode {
         Ok(0)
     }
 
-    fn support_random_access(&self) -> bool {
-        true
-    }
-
     fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::default();
         kstat.st_ino = self.ino as u64;
@@ -58,5 +56,9 @@ impl InodeOps for NullInode {
 
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() as u32 | 0o666))
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
     }
 }

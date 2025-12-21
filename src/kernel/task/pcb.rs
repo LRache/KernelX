@@ -7,7 +7,7 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::tid::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::{with_initprocess, manager};
+use crate::kernel::task::{with_initpcb, manager};
 use crate::kernel::scheduler::{Task, TaskState, current, tid};
 use crate::kernel::scheduler;
 use crate::kernel::event::Event;
@@ -31,6 +31,7 @@ struct Signal {
 //     timer_id: u64,
 // }
 
+#[derive(Debug)]
 enum State {
     Running,
     Exited(u8),
@@ -80,7 +81,7 @@ impl PCB {
         })
     }
 
-    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str]) -> Result<Arc<Self>, Errno> {
+    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str]) -> SysResult<Arc<TCB>> {
         let new_tid = tid::alloc();
 
         let cwd = vfs::load_dentry(cwd)?;
@@ -118,9 +119,7 @@ impl PCB {
         let first_task = TCB::new_inittask(new_tid, &pcb, &file, argv, envp);
         pcb.tasks.lock().push(first_task.clone());
 
-        scheduler::push_task(first_task);
-
-        Ok(pcb)
+        Ok(first_task)
     }
 
     pub fn get_pid(&self) -> Tid {
@@ -143,10 +142,6 @@ impl PCB {
         };
         *state = State::Dead;
         code
-    }
-
-    pub fn has_child(&self, tid: Tid) -> bool {
-        self.tasks.lock().iter().any(|tcb| tcb.get_tid() == tid)
     }
 
     pub fn with_cwd<F, R>(&self, f: F) -> R 
@@ -185,7 +180,7 @@ impl PCB {
             new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags, tls);
             new_parent.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_parent.clone());
-            manager::insert(new_parent);
+            manager::insert(new_tcb.clone());
         }
 
         Ok(new_tcb)
@@ -216,13 +211,13 @@ impl PCB {
     }
 
     pub fn exit(self: &Arc<Self>, code: u8) {
-        let mut task = self.tasks.lock();
-        task.iter().for_each(|t| {
+        let mut tasks = self.tasks.lock();
+        tasks.iter().for_each(|t| {
             t.with_state_mut(|state| state.state = TaskState::Exited );
         });
-        task.clear();
+        tasks.clear();
 
-        drop(task);
+        drop(tasks);
 
         *self.state.lock() = State::Exited(code);
 
@@ -245,7 +240,7 @@ impl PCB {
             parent.send_signal(signum::SIGCHLD, SiCode::SI_KERNEL, fields, None).unwrap_or(());
         }
 
-        with_initprocess(|init_process| {
+        with_initpcb(|init_process| {
             let mut children = self.children.lock();
             children.iter_mut().for_each(|c| {
                 *c.parent.lock() = Some(init_process.clone());
@@ -329,32 +324,31 @@ impl PCB {
 
         self.waiting_task.lock().push(current::task().clone());
 
-        let event = current::block("wait_any_child");
+        loop {
+            let event = current::block("wait_any_child");
 
-        match event {
-            Event::Process { child } => {
-                let pid = child;
-                let mut children = self.children.lock();
+            match event {
+                Event::Process { child } => {
+                    let pid = child;
+                    let mut children = self.children.lock();
 
-                let exit_code = match children.iter().find(|c| c.get_pid() == child) {
-                    Some(child_pcb) => {
-                        if let Some(exit_code) = child_pcb.recycle() {
-                            exit_code
-                        } else {
-                            return Err(Errno::ECHILD);
-                        }
-                    },
-                    None => return Err(Errno::ECHILD), // The child process was recycled by other waiters
-                };
-
-                children.retain(|c| c.get_pid() != pid);
-
-                Ok(Some((pid, exit_code)))
+                    match children.iter().find(|c| c.get_pid() == child) {
+                        Some(child_pcb) => {
+                            if let Some(exit_code) = child_pcb.recycle() {
+                                children.retain(|c| c.get_pid() != pid);
+                                return Ok(Some((pid, exit_code)))
+                            } else {
+                                // The child process was recycled by other waiters
+                            }
+                        },
+                        None => {}, // The child process was recycled by other waiters
+                    };
+                }
+                Event::Signal => {
+                    return Err(Errno::EINTR)
+                }
+                _ => unreachable!(),
             }
-            Event::Signal => {
-                Err(Errno::EINTR)
-            }
-            _ => unreachable!(),
         }
     }
 

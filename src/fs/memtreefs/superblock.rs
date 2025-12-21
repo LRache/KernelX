@@ -9,7 +9,7 @@ use crate::klib::SpinLock;
 use super::inode::{InodeMeta, Inode as MemInode};
 
 pub trait StaticFsInfo: Send + Sync + 'static {
-    fn type_name() -> &'static str;
+    fn type_name() -> &'static str; 
 }
 
 pub struct SuperBlockInner {
@@ -59,18 +59,16 @@ pub struct SuperBlock<T: StaticFsInfo> {
 }
 
 impl<T: StaticFsInfo> SuperBlock<T> {
-    pub fn new(sno: u32) -> Self {
+    pub fn new() -> Self {
         let inner = Arc::new(SpinLock::new(SuperBlockInner::new()));
 
-        // TODO: root inode's parent ino
-        // create and register root inode (ino = 0)
         {
             inner.lock().alloc_inode(|ino| {
                 Arc::new(MemInode::<T>::new(
-                    ino, sno, 
+                    ino,
                     InodeMeta::new(
                         Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap(),
-                        ino, ino
+                        ino, 0
                     ),
                     inner.clone()
                 ))
@@ -108,17 +106,16 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
     }
 
     fn create_temp(&self, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
-        // let mut inner = self.inner.lock();
-        // let ino = inner.alloc_inode_number();
+        let mut inner = self.inner.lock();
+        let ino = inner.alloc_inode_number();
 
-        // let inode: Arc<dyn InodeOps> = Arc::new(MemInode::<T>::new(
-        //     ino, self.sno, 
-        //     InodeMeta::new(mode), self.inner.clone()
-        // ));
-        // inner.insert_inode(ino, inode.clone());
+        let inode: Arc<dyn InodeOps> = Arc::new(MemInode::<T>::new(
+            ino,
+            InodeMeta::new(mode, ino, self.get_root_ino()), self.inner.clone()
+        ));
+        inner.insert_inode(ino, inode.clone());
 
-        // Ok(inode)
-        unimplemented!()
+        Ok(inode)
     }
 }
 
