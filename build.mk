@@ -61,7 +61,9 @@ endif
 
 all: kernel
 
-kernel: $(RUST_KERNEL)
+-include $(RUST_DEPENDENCIES)
+
+kernel: clib vdso $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
 	@ cp $(RUST_KERNEL) $(KERNEL_VM)
 	@ $(CROSS_COMPILE)objcopy -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
@@ -74,19 +76,18 @@ $(KERNEL_IMAGE): $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
 	@ $(CROSS_COMPILE)objcopy -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
 
-clib: $(CLIB)
+$(CLIB): clib
 
-$(CLIB):
-	@ echo $(KERNELX_HOME)
+clib:
 	@ $(BUILD_ENV) make -C clib all
 
-vdso: $(VDSO)
+$(VDSO): vdso
 
-$(VDSO):
+vdso:
 	@ $(BUILD_ENV) make -C vdso all
 
 $(RUST_KERNEL): $(CLIB) $(VDSO)
-	$(BUILD_ENV) cargo build $(CARGO_FLAGS)
+	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
 
 check:
 	@ $(BUILD_ENV) cargo check $(CARGO_FLAGS)
@@ -99,4 +100,4 @@ clean:
 	@ $(BUILD_ENV) make -C clib clean 
 	@ $(BUILD_ENV) cargo clean
 
-.PHONY: all $(CLIB) $(VDSO) $(RUST_KERNEL)
+.PHONY: all clib vdso
