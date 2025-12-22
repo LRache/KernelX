@@ -135,8 +135,6 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
 
     let path = uptr_filename.read()?;
 
-    // crate::kinfo!("openat: dirfd={}, path=\"{}\", flags={:?}, mode={:o}", dirfd as isize, path, open_flags, mode);
-    
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
             if !open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR) {
@@ -224,16 +222,6 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
     ubuf.should_not_null()?;
 
     let path = uptr_path.read()?;
-    
-    // TODO: Implement /proc/self/exe properly
-    if path == "/proc/self/exe" {
-        let exe_path = current::pcb().exec_path();
-        let to_write = core::cmp::min(exe_path.len(), bufsize);
-        ubuf.write(0, &exe_path.as_bytes()[..to_write])?;
-        return Ok(to_write);
-    }
-
-    // crate::kinfo!("readlinkat: dirfd={}, path=\"{}\"", dirfd as isize, path);
     
     if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?

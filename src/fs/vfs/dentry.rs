@@ -6,7 +6,6 @@ use alloc::collections::BTreeMap;
 
 use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::inode::{Index, InodeOps, Mode};
-use crate::kinfo;
 use crate::klib::SpinLock;
 
 use super::vfs;

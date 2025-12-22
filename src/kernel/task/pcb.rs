@@ -27,10 +27,6 @@ struct Signal {
     pending: Mutex<PendingSignalQueue>,
 }
 
-// struct Timer {
-//     timer_id: u64,
-// }
-
 #[derive(Debug)]
 enum State {
     Running,
@@ -54,7 +50,6 @@ pub struct PCB {
     children: Mutex<Vec<Arc<PCB>>>,
 
     pub itimer_ids: SpinLock<[Option<u64>; 3]>,
-    // pub timers: SpinLock<Vec<Timer>>,
 }
 
 impl PCB {
@@ -81,7 +76,7 @@ impl PCB {
         })
     }
 
-    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str]) -> SysResult<Arc<TCB>> {
+    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str]) -> SysResult<Arc<PCB>> {
         let new_tid = tid::alloc();
 
         let cwd = vfs::load_dentry(cwd)?;
@@ -117,17 +112,22 @@ impl PCB {
         kinfo!("Loaded {} as initfile", initpath);
 
         let first_task = TCB::new_inittask(new_tid, &pcb, &file, argv, envp);
-        pcb.tasks.lock().push(first_task.clone());
+        pcb.tasks.lock().push(first_task);
 
-        Ok(first_task)
+        Ok(pcb)
     }
 
-    pub fn get_pid(&self) -> Tid {
+    pub fn pid(&self) -> Tid {
         self.pid
     }
 
     pub fn exec_path(&self) -> String {
         self.exec_path.lock().clone()
+    }
+
+    pub fn first_task(&self) -> Arc<TCB> {
+        let tasks = self.tasks.lock();
+        tasks[0].clone()
     }
 
     pub fn is_exited(&self) -> bool {
@@ -180,7 +180,7 @@ impl PCB {
             new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags, tls);
             new_parent.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_parent.clone());
-            manager::insert(new_tcb.clone());
+            manager::insert(new_parent);
         }
 
         Ok(new_tcb)
@@ -254,7 +254,7 @@ impl PCB {
     pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<u8>, Errno> {
         let child = {
             let children = self.children.lock();
-            children.iter().find(|c| c.get_pid() == pid).cloned()
+            children.iter().find(|c| c.pid() == pid).cloned()
         };
         
         if let Some(child) = child {
@@ -290,7 +290,7 @@ impl PCB {
                 };
                     
                 let mut children = self.children.lock();
-                children.retain(|c| c.get_pid() != pid);
+                children.retain(|c| c.pid() != pid);
                 
                 return Ok(Some(exit_code));
             } else {
@@ -309,9 +309,9 @@ impl PCB {
         let mut children = self.children.lock();
     
         if let Some(child) = children.iter().find(|c| c.is_exited()) {
-            let pid = child.get_pid();
+            let pid = child.pid();
             if let Some(exit_code) = child.recycle() {
-                children.retain(|c| c.get_pid() != pid);
+                children.retain(|c| c.pid() != pid);
                 return Ok(Some((pid, exit_code)));
             }
         }
@@ -332,10 +332,10 @@ impl PCB {
                     let pid = child;
                     let mut children = self.children.lock();
 
-                    match children.iter().find(|c| c.get_pid() == child) {
+                    match children.iter().find(|c| c.pid() == child) {
                         Some(child_pcb) => {
                             if let Some(exit_code) = child_pcb.recycle() {
-                                children.retain(|c| c.get_pid() != pid);
+                                children.retain(|c| c.pid() != pid);
                                 return Ok(Some((pid, exit_code)))
                             } else {
                                 // The child process was recycled by other waiters

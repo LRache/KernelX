@@ -59,7 +59,7 @@ pub fn pid() -> Tid {
     if !has_task() {
         -1
     } else {
-        pcb().get_pid()
+        pcb().pid()
     }
 }
 

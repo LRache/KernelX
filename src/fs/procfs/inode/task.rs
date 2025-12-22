@@ -4,12 +4,13 @@ use core::cmp::min;
 use core::fmt::Write;
 
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::procfs::inode::fill_kstat_common;
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::MapPerm;
 use crate::kernel::scheduler::Tid;
 use crate::kernel::task::manager;
-use crate::kernel::uapi::FileStat;
+use crate::kernel::uapi::{FileStat, Uid};
 
 use super::RootInode;
 
@@ -54,6 +55,7 @@ impl InodeOps for TaskDirInode {
             "." => Ok(Self::ino_from_tid(self.tid)),
             ".." => Ok(RootInode::INO),
             "maps" => Ok(TaskMapsInode::ino_from_tid(self.tid)),
+            "exe" => Ok(TaskExeInode::ino_from_tid(self.tid)),
             _ => Err(Errno::ENOENT)
         }
     }
@@ -63,6 +65,7 @@ impl InodeOps for TaskDirInode {
             0 => Some(DirResult { ino: Self::ino_from_tid(self.tid), name: ".".into(), file_type: FileType::Directory}),
             1 => Some(DirResult { ino: RootInode::INO, name: "..".into(), file_type: FileType::Directory}),
             2 => Some(DirResult { ino: TaskMapsInode::ino_from_tid(self.tid), name: "maps".into(), file_type: FileType::Regular}),
+            3 => Some(DirResult { ino: TaskExeInode::ino_from_tid(self.tid), name: "exe".into(), file_type: FileType::Symlink}),
             _ => None,
         };
 
@@ -74,9 +77,10 @@ impl InodeOps for TaskDirInode {
         kstat.st_ino = self.get_ino() as u64;
         kstat.st_mode = self.mode()?.bits();
         kstat.st_nlink = 1;
-        kstat.st_uid = 0;
-        kstat.st_gid = 0;
-        kstat.st_size = 0;
+
+        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &pcb.first_task());
+        
         Ok(kstat)
     }
 
@@ -138,8 +142,8 @@ impl InodeOps for TaskMapsInode {
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
-        let addrspace = tcb.get_addrspace().clone();
+        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let addrspace = pcb.first_task().get_addrspace().clone();
         let areas = addrspace.with_map_manager_mut(|manager| manager.snapshot());
 
         let mut pos = 0usize;
@@ -193,6 +197,18 @@ impl InodeOps for TaskMapsInode {
         Err(Errno::EROFS)
     }
 
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_mode = self.mode()?.bits();
+        kstat.st_nlink = 1;
+
+        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &pcb.first_task());
+        
+        Ok(kstat)
+    }
+
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
     }
@@ -204,5 +220,83 @@ impl InodeOps for TaskMapsInode {
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs maps requires associated dentry");
         Arc::new(File::new(self, dentry, flags))
+    }
+}
+
+pub struct TaskExeInode {
+    tid: Tid
+}
+
+impl TaskExeInode {
+    pub const INO_BASE: u32 = 0x300000;
+
+    pub fn from_ino(ino: u32) -> Option<Self> {
+        debug_assert!(ino >= Self::INO_BASE);
+        let tid = (ino - Self::INO_BASE) as Tid;
+        manager::get(tid)?;
+        Some(Self { tid })
+    }
+
+    fn ino_from_tid(tid: Tid) -> u32 {
+        Self::INO_BASE + tid as u32
+    }
+}
+
+impl InodeOps for TaskExeInode {
+    fn get_ino(&self) -> u32 {
+        Self::ino_from_tid(self.tid)
+    }
+
+    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+        unreachable!()
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        unreachable!()
+    }
+
+    fn create(&self, _name: &str, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+        Err(Errno::ENOTDIR)
+    }
+
+    fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let exe_path = pcb.exec_path();
+        let exe_path_bytes = exe_path.as_bytes();
+        let to_copy = min(buf.len(), exe_path_bytes.len());
+        buf[..to_copy].copy_from_slice(&exe_path_bytes[..to_copy]);
+        Ok(Some(to_copy))
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFLNK | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_mode = self.mode()?.bits();
+        kstat.st_nlink = 1;
+        
+        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &pcb.first_task());
+
+        Ok(kstat)
+    }
+
+    fn owner(&self) -> SysResult<(Uid, Uid)> {
+        Ok((0, 0))
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_task_exe"
     }
 }

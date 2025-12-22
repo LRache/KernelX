@@ -23,7 +23,7 @@ use crate::driver::get_block_driver;
 
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
-    let driver = get_block_driver("virtio_block0").expect("Swap driver not found");
+    let driver = get_block_driver("virtio_mmio@10002000").expect("Swap driver not found");
     nofile::init_swapper(driver);
     swapper::init_swapper();
 }

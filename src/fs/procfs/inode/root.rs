@@ -63,10 +63,10 @@ impl InodeOps for RootInode {
             1 => Some(DirResult { ino: Self::INO, name: "..".into(), file_type: FileType::Directory}),
             2 => Some(DirResult { ino: TaskDirSelfInode::INO, name: "self".into(), file_type: FileType::Symlink}),
             i => {
-                manager::tcbs().lock().iter().nth(i - SPECIAL_ENTRIES).map(|(&tid, _)| {
+                manager::pcbs().lock().iter().nth(i - SPECIAL_ENTRIES).map(|(&pid, _)| {
                     DirResult {
-                        ino: TaskDirInode::ino_from_tid(tid),
-                        name: tid.to_string(),
+                        ino: TaskDirInode::ino_from_tid(pid),
+                        name: pid.to_string(),
                         file_type: FileType::Directory,
                     }
                 })

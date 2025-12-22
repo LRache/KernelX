@@ -7,8 +7,6 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::InodeOps;
 use crate::fs::inode;
 use crate::fs::filesystem::FileSystemOps;
-use crate::kernel::scheduler::current;
-use crate::kinfo;
 use crate::klib::InitedCell;
 
 use super::dentry::Dentry;

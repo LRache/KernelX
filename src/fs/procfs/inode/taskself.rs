@@ -3,11 +3,11 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 
 use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::procfs::inode::fill_kstat_common;
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi::FileStat;
-use crate::kinfo;
 
 use super::RootInode;
 
@@ -46,14 +46,13 @@ impl InodeOps for TaskDirSelfInode {
         Ok(Some(len))
     }
 
-    fn fstat(&self) -> SysResult<FileStat> {
+    fn fstat(&self) -> SysResult<FileStat> {        
         let mut kstat = FileStat::default();
         kstat.st_ino = self.get_ino() as u64;
         kstat.st_mode = self.mode()?.bits();
-        kstat.st_nlink = 1;
-        kstat.st_uid = 0;
-        kstat.st_gid = 0;
-        kstat.st_size = 0;
+        
+        fill_kstat_common(&mut kstat, current::tcb());
+        
         Ok(kstat)
     }
 

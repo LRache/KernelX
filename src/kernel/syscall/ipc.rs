@@ -54,8 +54,8 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
     let signum = signum as u32;
     
     if pid > 0 {
-        let tcb = manager::get(pid).ok_or(Errno::ESRCH)?;
-        tcb.parent().send_signal(
+        let pcb = manager::get(pid).ok_or(Errno::ESRCH)?;
+        pcb.send_signal(
             signum.try_into()?, 
             SiCode::SI_USER,
             KSiFields::kill(current::pid(), current::uid()), 
@@ -69,8 +69,8 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
 pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
     let tid = tid as Tid;
     let signum = (signum as u32).try_into()?;
-    let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
-    tcb.parent().send_signal(
+    let pcb = manager::get(tid).ok_or(Errno::ESRCH)?;
+    pcb.send_signal(
         signum,
         SiCode::SI_TKILL,
         KSiFields::kill(current::pid(), current::uid()),
@@ -86,8 +86,8 @@ pub fn tgkill(tgid: usize, tid: usize, signum: usize) -> SyscallRet {
     let signum = signum as u32;
 
     if tgid >= 0 {
-        let tcb = manager::get(tgid).ok_or(Errno::ESRCH)?;
-        tcb.parent().send_signal(
+        let pcb = manager::get(tgid).ok_or(Errno::ESRCH)?;
+        pcb.send_signal(
             signum.try_into()?,
             SiCode::SI_TKILL,
             KSiFields::kill(current::pid(), current::uid()),

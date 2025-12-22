@@ -4,9 +4,8 @@ use alloc::vec::Vec;
 
 use crate::kernel::scheduler::{Tid, tid};
 use crate::kernel::scheduler;
-use crate::kernel::task::TCB;
-use crate::kinfo;
 use crate::klib::SpinLock;
+use crate::kinfo;
 
 use super::PCB;
 
@@ -48,7 +47,7 @@ fn split_with_quotes(input: &str) -> Vec<&str> {
         .collect()
 }
 
-static TCBS: SpinLock<BTreeMap<Tid, Arc<TCB>>> = SpinLock::new(BTreeMap::new());
+static PCBS: SpinLock<BTreeMap<Tid, Arc<PCB>>> = SpinLock::new(BTreeMap::new());
 
 pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str) {
     let initargv = split_with_quotes(initargs);
@@ -56,35 +55,35 @@ pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str) {
 
     kinfo!("Creating init process: \npath='{}', \ncwd='{}', \nargv={:?}, \nenvp={:?}", initpath, initcwd, initargv, initenvp);
         
-    let tcb = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp).expect("Failed to initialize init process from ELF");
+    let pcb = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp).expect("Failed to initialize init process from ELF");
 
-    debug_assert!(tcb.tid() == tid::TID_START, "Init process must have PID 1, got {}", tcb.tid());
+    debug_assert!(pcb.pid() == tid::TID_START, "Init process must have PID 1, got {}", pcb.pid());
         
-    TCBS.lock().insert(tid::TID_START, tcb.clone());
-    scheduler::push_task(tcb);
+    PCBS.lock().insert(tid::TID_START, pcb.clone());
+    scheduler::push_task(pcb.tasks.lock()[0].clone());
 }
 
 pub fn with_initpcb<F, R>(f: F) -> R
 where
     F: FnOnce(&Arc<PCB>) -> R,
 {
-    let tcbs = TCBS.lock();
-    let initprocess = tcbs.get(&tid::TID_START).expect("Init process not created yet");
-    f(initprocess.parent())
+    let pcbs = PCBS.lock();
+    let pcb = pcbs.get(&tid::TID_START).expect("Init process not created yet");
+    f(pcb)
 }
 
-pub fn insert(tcb: Arc<TCB>) {
-    TCBS.lock().insert(tcb.tid(), tcb);
+pub fn insert(pcb: Arc<PCB>) {
+    PCBS.lock().insert(pcb.pid(), pcb);
 }
 
-pub fn get(tid: Tid) -> Option<Arc<TCB>> {
-    TCBS.lock().get(&tid).cloned()
+pub fn get(tid: Tid) -> Option<Arc<PCB>> {
+    PCBS.lock().get(&tid).cloned()
 }
 
-pub fn remove(tid: Tid) -> Option<Arc<TCB>> {
-    TCBS.lock().remove(&tid)
+pub fn remove(tid: Tid) -> Option<Arc<PCB>> {
+    PCBS.lock().remove(&tid)
 }
 
-pub fn tcbs() -> &'static SpinLock<BTreeMap<Tid, Arc<TCB>>> {
-    &TCBS
+pub fn pcbs() -> &'static SpinLock<BTreeMap<Tid, Arc<PCB>>> {
+    &PCBS
 }

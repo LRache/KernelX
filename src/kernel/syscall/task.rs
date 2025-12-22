@@ -20,7 +20,7 @@ pub fn sched_yield() -> SyscallRet {
 
 pub fn getpid() -> SyscallRet {
     let pcb = current::pcb();
-    Ok(pcb.get_pid() as usize)
+    Ok(pcb.pid() as usize)
 }
 
 pub fn gettid() -> SyscallRet {
@@ -30,14 +30,14 @@ pub fn gettid() -> SyscallRet {
 
 pub fn getppid() -> SyscallRet {
     let pcb = current::pcb();
-    let ppid = pcb.parent.lock().as_ref().map_or(0, |p| p.get_pid());
+    let ppid = pcb.parent.lock().as_ref().map_or(0, |p| p.pid());
     Ok(ppid as usize)
 }
 
 pub fn setsid() -> SyscallRet {
     let pcb = current::pcb();
     // pcb.set_sid();
-    Ok(pcb.get_pid() as usize)
+    Ok(pcb.pid() as usize)
 }
 
 bitflags! {

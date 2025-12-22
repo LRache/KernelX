@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use spin::Mutex;
 
+use crate::driver::chosen::kclock;
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::current;
@@ -63,6 +64,7 @@ impl TimeCounter {
 
 pub struct TCB {
     tid: Tid,
+    create_time: Duration,
     parent: Arc<PCB>,
     tid_address: Mutex<Option<usize>>,
     pub robust_list: SpinLock<Option<usize>>,
@@ -105,6 +107,7 @@ impl TCB {
 
         let tcb = Arc::new(Self {
             tid,
+            create_time: kclock::now().unwrap_or(Duration::ZERO),
             parent: parent.clone(),
             tid_address: Mutex::new(None),
             robust_list: SpinLock::new(None),
@@ -395,6 +398,10 @@ impl TCB {
         &self.state
     }
 
+    pub fn create_time(&self) -> Duration {
+        self.create_time
+    }
+
     pub fn with_state_mut<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut TaskStateSet) -> R,
@@ -418,7 +425,7 @@ impl TCB {
 
         drop(state);
 
-        if self.parent.get_pid() == self.tid {
+        if self.parent.pid() == self.tid {
             self.parent.exit(code);
         }
     }
