@@ -4,7 +4,7 @@ use core::cmp::min;
 use core::fmt::Write;
 
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::fs::procfs::inode::fill_kstat_common;
+use crate::fs::procfs::inode::{fill_kstat_common, read_iter_text};
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::MapPerm;
@@ -146,12 +146,9 @@ impl InodeOps for TaskMapsInode {
         let addrspace = pcb.first_task().get_addrspace().clone();
         let areas = addrspace.with_map_manager_mut(|manager| manager.snapshot());
 
-        let mut pos = 0usize;
-        let mut copied = 0usize;
-
-        for area in areas {
-            let mut line = String::with_capacity(50);
+        read_iter_text(buf, offset, areas.iter(), |area| {
             let perms = Self::perm_string(area.perm);
+            let mut line = String::with_capacity(50);
             let _ = writeln!(
                 line,
                 "{:016x}-{:016x} {} {}",
@@ -160,37 +157,54 @@ impl InodeOps for TaskMapsInode {
                 perms,
                 area.name
             );
+            Ok(line)
+        })
 
-            let line_len = line.len();
-            if pos + line_len <= offset {
-                pos += line_len;
-                continue;
-            }
+        // let mut pos = 0usize;
+        // let mut copied = 0usize;
 
-            if copied >= buf.len() {
-                break;
-            }
+        // for area in areas {
+        //     let mut line = String::with_capacity(50);
+        //     let perms = Self::perm_string(area.perm);
+        //     let _ = writeln!(
+        //         line,
+        //         "{:016x}-{:016x} {} {}",
+        //         area.start,
+        //         area.end,
+        //         perms,
+        //         area.name
+        //     );
 
-            let line_bytes = line.as_bytes();
-            let start_in_line = offset.saturating_sub(pos);
-            let left_in_line = line_len.saturating_sub(start_in_line);
-            let to_copy = min(left_in_line, buf.len() - copied);
-            if to_copy == 0 {
-                pos += line_len;
-                continue;
-            }
+        //     let line_len = line.len();
+        //     if pos + line_len <= offset {
+        //         pos += line_len;
+        //         continue;
+        //     }
 
-            buf[copied..copied + to_copy]
-                .copy_from_slice(&line_bytes[start_in_line..start_in_line + to_copy]);
-            copied += to_copy;
-            pos += line_len;
+        //     if copied >= buf.len() {
+        //         break;
+        //     }
 
-            if copied == buf.len() {
-                break;
-            }
-        }
+        //     let line_bytes = line.as_bytes();
+        //     let start_in_line = offset.saturating_sub(pos);
+        //     let left_in_line = line_len.saturating_sub(start_in_line);
+        //     let to_copy = min(left_in_line, buf.len() - copied);
+        //     if to_copy == 0 {
+        //         pos += line_len;
+        //         continue;
+        //     }
 
-        Ok(copied)
+        //     buf[copied..copied + to_copy]
+        //         .copy_from_slice(&line_bytes[start_in_line..start_in_line + to_copy]);
+        //     copied += to_copy;
+        //     pos += line_len;
+
+        //     if copied == buf.len() {
+        //         break;
+        //     }
+        // }
+
+        // Ok(copied)
     }
 
     fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {

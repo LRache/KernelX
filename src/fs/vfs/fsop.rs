@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::fs::vfs::vfs::VirtualFileSystem;
 use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
@@ -45,6 +46,10 @@ impl VirtualFileSystem {
         self.cache.sync()?;
         self.superblock_table.lock().sync_all()?;
         Ok(())
+    }
+
+    pub fn mountpoint_list(&self) -> Vec<Arc<Dentry>> {
+        self.mountpoint.lock().clone()
     }
 }
 

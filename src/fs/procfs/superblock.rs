@@ -1,9 +1,11 @@
 use alloc::sync::Arc;
 
+use crate::arch;
 use crate::driver::BlockDriverOps;
 use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::{Mode, InodeOps};
 use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::kernel::uapi::Statfs;
 
 use super::inode;
 
@@ -26,6 +28,7 @@ impl SuperBlockOps for SuperBlock {
         match ino {
             inode::RootInode::INO => Ok(Arc::new(inode::RootInode)),
             inode::TaskDirSelfInode::INO => Ok(Arc::new(inode::TaskDirSelfInode)),
+            inode::MountsInode::INO => Ok(Arc::new(inode::MountsInode)),
             i if i >= inode::TaskDirInode::BASE_INO && i < inode::TaskMapsInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
@@ -41,6 +44,16 @@ impl SuperBlockOps for SuperBlock {
     
     fn create_temp(&self, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         Err(Errno::EROFS)
+    }
+
+    fn statfs(&self) -> SysResult<Statfs> {
+        let mut statfs = Statfs::default();
+        statfs.f_type = 0x9fa0; // PROCFS_MAGIC
+        statfs.f_bsize = arch::PGSIZE as u64;
+        statfs.f_blocks = 0;
+        statfs.f_bfree = 0;
+        statfs.f_bavail = 0;
+        Ok(statfs)
     }
 
     fn sync(&self) -> SysResult<()> {
