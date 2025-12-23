@@ -12,6 +12,10 @@ impl memtreefs::StaticFsInfo for DevfsInfo {
     fn type_name() -> &'static str {
         "devfs"
     }
+
+    fn statfs_magic() -> u64 {
+        0x9fa1
+    }
 }
 
 static DEV_SUPERBLOCK: InitedCell<Arc<memtreefs::SuperBlock<DevfsInfo>>> = InitedCell::uninit();

@@ -1,15 +1,18 @@
 use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
 
+use crate::arch;
 use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::filesystem::SuperBlockOps;
 use crate::fs::{InodeOps, Mode};
+use crate::kernel::uapi::Statfs;
 use crate::klib::SpinLock;
 
 use super::inode::{InodeMeta, Inode as MemInode};
 
 pub trait StaticFsInfo: Send + Sync + 'static {
-    fn type_name() -> &'static str; 
+    fn statfs_magic() -> u64;
+    fn type_name() -> &'static str;
 }
 
 pub struct SuperBlockInner {
@@ -116,6 +119,16 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
         inner.insert_inode(ino, inode.clone());
 
         Ok(inode)
+    }
+
+    fn statfs(&self) -> SysResult<Statfs> {
+        let mut statfs = Statfs::default();
+        statfs.f_type = T::statfs_magic();
+        statfs.f_bsize = arch::PGSIZE as u64;
+        statfs.f_blocks = 0;
+        statfs.f_bfree = 0;
+        statfs.f_bavail = 0;
+        Ok(statfs)
     }
 }
 

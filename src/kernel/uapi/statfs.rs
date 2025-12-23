@@ -1,7 +1,7 @@
 use crate::kernel::syscall::UserStruct;
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Statfs {
     pub f_type: u64,
     pub f_bsize: u64,

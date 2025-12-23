@@ -10,6 +10,10 @@ impl memtreefs::StaticFsInfo for TmpfsInfo {
     fn type_name() -> &'static str {
         "tmpfs"
     }
+
+    fn statfs_magic() -> u64 {
+        0x01021994
+    }
 }
 
 pub struct FileSystem;
