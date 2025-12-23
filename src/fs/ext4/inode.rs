@@ -131,9 +131,10 @@ impl InodeOps for Ext4Inode {
     }
 
     fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
-        // Rename not yet migrated to `lwext4_rust` directory APIs.
-        let _ = (old_name, new_parent, new_name);
-        Err(Errno::ENOSYS)
+        self.superblock.lock()
+            .rename(self.ino, old_name, new_parent.get_ino(), new_name)
+            .map_err(map_error_to_kernel)?;
+        Ok(())
     }
 
     fn size(&self) -> SysResult<u64> {
