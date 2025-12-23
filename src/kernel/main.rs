@@ -10,6 +10,7 @@ use crate::fs;
 use crate::driver;
 use crate::klib::{kalloc, InitedCell};
 use crate::kinfo;
+use crate::print;
 
 #[allow(dead_code)]
 fn free_init() {
@@ -50,6 +51,14 @@ pub fn parse_boot_args(bootargs: &'static str) {
     BOOT_ARGS.init(bootargs_map);
 }
 
+const LOGO: &str = r#"
+  _  __                               _  __  __
+ | |/ /   ___   _ __   _ __     ___  | | \ \/ /
+ | ' /   / _ \ | '__| | '_ \   / _ \ | |  \  / 
+ | . \  |  __/ | |    | | | | |  __/ | |  /  \ 
+ |_|\_\  \___| |_|    |_| |_|  \___| |_| /_/\_\
+"#;
+
 #[unsafe(no_mangle)]
 extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     kinfo!("Welcome to KernelX!");
@@ -88,6 +97,10 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     }
     
     kinfo!("KernelX initialized successfully!");
+
+    print!("{}{}{}\n", "\x1b[94m", LOGO, "\x1b[0m");
+
+    kinfo!("Welcome to use KernelX!");
 
     arch::setup_all_cores(hartid);
 
