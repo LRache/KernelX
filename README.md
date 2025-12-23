@@ -14,7 +14,7 @@ KernelX 是我们从0开始使用Rust编写的，用于学习的开源类Unix的
 
 你可以在 `qemu-system-riscv64` 上运行 KernelX，你需要准备一个ext4格式的镜像用于根文件系统。
 
-1. 确保你已经安装了 `qemu-system-riscv64`。
+1. 确保你已经安装了如下工具: `qemu-system-riscv64`、`cmake`、用于riscv64的C交叉编译器、安装了交叉编译到riscv64目标的rust编译环境、`gcc`、`make`等。
 
 2. 在根目录下运行
 
@@ -141,6 +141,8 @@ KernelX/
 - 参考了StarryX: https://gitlab.eduxiji.net/T202510336995486/oskernel2025-starryx
 
 - 参考了NoAxiom: https://github.com/NoAxiom/NoAxiom-OS
+
+- 参考了xv6-riscv: https://github.com/mit-pdos/xv6-riscv
 
 ## 贡献
 
