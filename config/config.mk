@@ -18,9 +18,6 @@ INITPATH ?= /init
 INITCWD ?= $(CONFIG_INITCWD)
 INITCWD ?= /
 
-PLATFORM ?= $(CONFIG_PLATFORM)
-PLATFORM ?= qemu-virt-riscv64
-
 CROSS_COMPILE ?= $(CONFIG_CROSS_COMPILE)
 CROSS_COMPILE ?= riscv64-unknown-elf-
 
@@ -32,7 +29,6 @@ BIOS_FIRMWARE ?= $(CONFIG_BIOS_FIRMWARE)
 BIOS_FIRMWARE ?= ./lib/opensbi/build/platform/generic/firmware/fw_jump.bin
 
 KERNEL_CONFIG = \
-	PLATFORM=$(PLATFORM) \
 	ARCH=$(ARCH) \
 	ARCH_BITS=$(ARCH_BITS) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \

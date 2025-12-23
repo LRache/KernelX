@@ -2,10 +2,6 @@ ifeq ($(KERNELX_HOME),)
 $(error KERNELX_HOME is not set)
 endif
 
-ifeq ($(ARCH),)
-$(error ARCH is not set)
-endif
-
 include $(KERNELX_HOME)/scripts/env/${ARCH}${ARCH_BITS}.env
 
 CC=clang
@@ -25,7 +21,7 @@ all: $(OBJ_TARGET)
 
 $(OBJ_TARGET): $(VDSOLIB_TARGET) $(SYM_TARGET)
 	@ mkdir -p $(BUILD_DIR)
-	@ $(CC) $(CFLAGS) $(ARCH_COMMON_FLAGS) -c vdso.S -o $@ -DVDSO=\"$(VDSO_TARGET)\"
+	@ $(CC) $(CFLAGS) $(ARCH_COMMON_FLAGS) -c vdso.S -o $@ -DVDSO=\"$(VDSOLIB_TARGET)\"
 
 $(VDSOLIB_TARGET):
 	@ mkdir -p $(VDSOLIB_BUILD_DIR)
@@ -34,5 +30,8 @@ $(VDSOLIB_TARGET):
 
 $(SYM_TARGET): $(VDSOLIB_TARGET)
 	@ python3 scripts/symbols.py --input $< --output $@
+
+clean:
+	@ rm -rf $(BUILD_DIR)
 
 .PHONY: all elf

@@ -10,7 +10,6 @@ CLIB = clib/build/$(ARCH)$(ARCH_BITS)/libkernelx_clib.a
 VDSO = vdso/build/$(ARCH)$(ARCH_BITS)/vdso.o
 
 BUILD_ENV = \
-	PLATFORM=$(PLATFORM) \
 	ARCH=$(ARCH) \
 	ARCH_BITS=$(ARCH_BITS) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
@@ -61,8 +60,6 @@ endif
 
 all: kernel
 
--include $(RUST_DEPENDENCIES)
-
 kernel: clib vdso $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
 	@ cp $(RUST_KERNEL) $(KERNEL_VM)
@@ -97,7 +94,8 @@ objcopy:
 	@ echo "Generated kernel.bin"
 
 clean:
-	@ $(BUILD_ENV) make -C clib clean 
+	@ $(BUILD_ENV) make -C clib clean
+	@ $(BUILD_ENV) make -C vdso clean
 	@ $(BUILD_ENV) cargo clean
 
-.PHONY: all clib vdso
+.PHONY: all clib vdso $(RUST_KERNEL)

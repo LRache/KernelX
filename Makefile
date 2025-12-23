@@ -26,7 +26,7 @@ run: kernel
 	@ make -f scripts/qemu.mk qemu-run $(QEMU_ARGS)
 
 clean:
-	@ make -f build.mk clean
+	@ make -f build.mk clean $(KERNEL_CONFIG)
 
 qemu-dts:
 	@ make -f scripts/qemu.mk qemu-dts $(QEMU_ARGS)

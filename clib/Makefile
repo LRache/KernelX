@@ -2,7 +2,7 @@ ARCH ?= riscv
 PLATFORM ?= qemu-virt-riscv64
 TARGET ?= riscv64-linux-gnu
 
-TOOLCHAINE_FILE = cmake/toolchain/$(PLATFORM).cmake
+TOOLCHAINE_FILE = cmake/toolchain/$(ARCH)$(ARCH_BITS).cmake
 
 CMAKE_DEFINITIONS += ARCH=$(ARCH)
 CMAKE_DEFINITIONS += ARCH_BITS=$(ARCH_BITS)
@@ -22,4 +22,4 @@ all:
 	@ cmake --build $(BUILD_DIR)
 
 clean:
-	@ cmake --build $(BUILD_DIR) --target clean
+	@ rm -rf $(BUILD_DIR)
