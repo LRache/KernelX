@@ -12,10 +12,9 @@ use crate::kernel::scheduler::{Task, TaskState, current, tid};
 use crate::kernel::scheduler;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum};
-use crate::fs::file::{File, FileFlags};
-use crate::fs::{Perm, PermFlags, vfs};
+use crate::fs::file::File;
+use crate::fs::vfs;
 use crate::fs::Dentry;
-use crate::kinfo;
 use crate::klib::SpinLock;
 
 use super::tcb::TCB;
@@ -102,16 +101,7 @@ impl PCB {
             itimer_ids: SpinLock::new([None; 3]),
         });
 
-        let file = vfs::open_file(
-            initpath, 
-            FileFlags { readable: true, writable: false, blocked: true },
-            &Perm::new(PermFlags::X)
-        ).expect("Failed to open init file")
-         .downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)
-         .expect("Failed to open init file as File");
-        kinfo!("Loaded {} as initfile", initpath);
-
-        let first_task = TCB::new_inittask(new_tid, &pcb, &file, argv, envp);
+        let first_task = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp);
         pcb.tasks.lock().push(first_task);
 
         Ok(pcb)

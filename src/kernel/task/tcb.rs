@@ -134,10 +134,19 @@ impl TCB {
     pub fn new_inittask(
         tid: i32, 
         parent: &Arc<PCB>,
-        file: &Arc<File>,
+        initpath: &str,
         argv: &[&str],
         envp: &[&str],
     ) -> Arc<Self> {
+        let file = vfs::open_file(
+            initpath, 
+            FileFlags::dontcare(),
+            &Perm::new(PermFlags::R | PermFlags::X)
+        )
+        .expect("Failed to open init file")
+        .downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)
+        .expect("Failed to open init file as File");
+        
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file.read_at(&mut first_line, 0).expect("Failed to read first line of init file");
@@ -155,21 +164,14 @@ impl TCB {
                 for arg in argv {
                     new_argv.push(arg);
                 }
+                new_argv.push(initpath);
 
-                let interpreter_file = vfs::open_file(
-                    interpreter, 
-                    FileFlags::dontcare(),
-                    &Perm::new(PermFlags::X)
-                )
-                .expect("Failed to open.")
-                .downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)
-                .expect("Failed to open interpreter file as File");
-                return Self::new_inittask(tid, parent, &interpreter_file, &new_argv, envp);
+                return Self::new_inittask(tid, parent, interpreter, &new_argv, envp);
             }
         }
         
         let mut addrspace = AddrSpace::new();
-        let (user_entry, dyn_info) = elf::loader::load_elf(file, &mut addrspace)
+        let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)
             .expect("Failed to load ELF for init task");
 
         let mut auxv = Auxv::new();
