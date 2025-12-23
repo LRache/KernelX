@@ -5,7 +5,7 @@ use crate::fs::devfs::devnode::CharDevInode;
 use crate::fs::{filesystem::FileSystemOps, memtreefs};
 use crate::klib::InitedCell;
 
-use super::{NullInode, ZeroInode};
+use super::{NullInode, ZeroInode,URandomInode};
 
 struct DevfsInfo;
 impl memtreefs::StaticFsInfo for DevfsInfo {
@@ -33,6 +33,7 @@ pub fn init() {
     let root = superblock.root_inode();
     root.add_child("null".into(), Arc::new(NullInode::new(superblock.alloc_inode_number()))).unwrap();
     root.add_child("zero".into(), Arc::new(ZeroInode::new(superblock.alloc_inode_number()))).unwrap();
+    root.add_child("urandom".into(), Arc::new(URandomInode::new(superblock.alloc_inode_number()))).unwrap();
 
     DEV_SUPERBLOCK.init(Arc::new(superblock));
 }

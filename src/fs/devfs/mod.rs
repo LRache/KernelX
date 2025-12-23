@@ -1,10 +1,8 @@
 mod superblock;
-mod null;
-mod zero;
+mod inode;
 mod devnode;
 
-use null::NullInode;
-use zero::ZeroInode;
+use inode::{NullInode, ZeroInode, URandomInode};
 
 pub use superblock::FileSystem;
 pub use superblock::{init, add_device};
