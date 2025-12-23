@@ -84,7 +84,6 @@ impl Dentry {
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
 
         let new_child = Arc::new(Self::new(name, self, &inode, lookup_sno));
-        // let new_child = self.lookup_nocached(name)?;
         children.insert(name.into(), Arc::downgrade(&new_child));
         
         Ok(new_child)
@@ -167,6 +166,18 @@ impl Dentry {
 
         self.children.lock().remove(name);
         
+        Ok(())
+    }
+
+    pub fn symlink(self: &Arc<Self>, target: &str) -> SysResult<()> {
+        let inode = self.get_inode();
+
+        inode.symlink(target)
+    }
+
+    pub fn link(self: &Arc<Self>, name: &str, target: &Arc<Dentry>) -> SysResult<()> {
+        self.get_inode().link(name, &target.get_inode())?;
+
         Ok(())
     }
 

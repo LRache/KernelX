@@ -771,6 +771,58 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
     Ok(0)
 }
 
+pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -> SyscallRet {
+    uptr_target.should_not_null()?;
+    uptr_newname.should_not_null()?;
+    
+    let target = uptr_target.read()?;
+    let new_name = uptr_newname.read()?;
+
+    let new_dentry = if newdirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &new_name))
+    } else {
+        vfs::load_dentry(&new_name)
+    }?;
+
+    new_dentry.symlink(&target)?;
+
+    Ok(0)
+}
+
+pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newpath: UString) -> SyscallRet {
+    uptr_oldpath.should_not_null()?;
+    uptr_newpath.should_not_null()?;
+    
+    let old_path = uptr_oldpath.read()?;
+    let new_path = uptr_newpath.read()?;
+
+    let old_dentry = if olddirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &old_path))
+    } else {
+        vfs::load_dentry_at(
+            current::fdtable().lock().get(olddirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
+            &old_path
+        )
+    }?;
+
+    let new_parent_dentry = if newdirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
+    } else {
+        vfs::load_parent_dentry(&new_path)?.ok_or(Errno::EOPNOTSUPP)
+    }?;
+    
+    let new_parent = new_parent_dentry.0;
+    let new_name = &new_parent_dentry.1;
+
+    if old_dentry.sno() != new_parent.sno() {
+        return Err(Errno::EXDEV); // Cross-device link
+    }
+
+    new_parent.link(new_name, &old_dentry)?;
+
+    Ok(0)
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct RenameFlags: usize {

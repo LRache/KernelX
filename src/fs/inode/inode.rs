@@ -18,7 +18,18 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
+    fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
+        let _ = name;
+        let _ = target;
+        Err(Errno::EOPNOTSUPP)
+    }
+
     fn unlink(&self, _name: &str) -> SysResult<()> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn symlink(&self, target: &str) -> SysResult<()> {
+        let _ = target;
         Err(Errno::EOPNOTSUPP)
     }
 

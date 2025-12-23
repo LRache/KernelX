@@ -187,6 +187,8 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         32  => fs::flock(2),
         34  => fs::mkdirat(3),
         35  => fs::unlinkat(3),
+        36  => fs::symlinkat(3),
+        37  => fs::linkat(4),
         43  => fs::statfs64(2),
         46  => fs::ftruncate64(2),
         48  => fs::faccessat(3),

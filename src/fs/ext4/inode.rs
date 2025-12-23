@@ -79,6 +79,14 @@ impl InodeOps for Ext4Inode {
         self.superblock.lock().unlink(self.ino, name).map_err(map_error_to_kernel)
     }
 
+    fn link(&self, name: &str,target: &Arc<dyn InodeOps>) -> SysResult<()> {
+        self.superblock.lock().link(self.ino, name, target.get_ino()).map_err(map_error_to_kernel)
+    }
+
+    fn symlink(&self, target: &str) -> SysResult<()> {
+        self.superblock.lock().set_symlink(self.ino, target.as_bytes()).map_err(map_error_to_kernel)
+    }
+
     fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
         if self.mode()?.contains(Mode::S_IFDIR) {
             return Err(Errno::EISDIR);
