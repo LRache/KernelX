@@ -7,3 +7,5 @@
 2. [启动流程](boot.md)
 
 3. [文件系统](filesystem.md)
+
+4. [设备驱动和驱动管理](driver.md)
