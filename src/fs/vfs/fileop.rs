@@ -24,7 +24,7 @@ fn new_file(dentry: Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Arc
     Ok(inode.wrap_file(Some(dentry), flags))
 }
 
-pub fn load_dentry(path: &str) -> Result<Arc<Dentry>, Errno> {
+pub fn load_dentry(path: &str) -> SysResult<Arc<Dentry>> {
     vfs().lookup_dentry(vfs().get_root(), path)
 }
 

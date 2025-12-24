@@ -228,24 +228,18 @@ impl TCB {
         flags: &TaskCloneFlags,
         tls: Option<usize>,
     ) -> Arc<Self> {
-        let mut new_user_context = UserContext::new();
-        self.with_user_context(|user_context  | {
-            new_user_context = user_context.new_clone();
+        let mut new_user_context = self.with_user_context(|user_context| {
+            user_context.new_clone()
         });
 
-        if flags.vm {
+        let new_addrspace = if flags.vm {
             new_user_context.set_user_stack_top(userstack);
-        }
-
-        let new_addrspace;
-
-        if flags.vm {
-            new_addrspace = self.addrspace.clone();
+            self.addrspace.clone()
         } else {
             let addrspace = self.addrspace.fork();
             new_user_context.set_addrspace(&addrspace);
-            new_addrspace = addrspace;
-        }
+            addrspace
+        };
 
         new_user_context.skip_syscall_instruction();
 
@@ -253,12 +247,18 @@ impl TCB {
             new_user_context.set_tls(tls);
         }
 
+        let new_fdtable = if flags.files {
+            self.fdtable.clone()
+        } else {
+            Arc::new(SpinLock::new(self.fdtable.lock().fork()))
+        };
+
         let new_tcb = Self::new(
             tid,
             parent,
             new_user_context,
             new_addrspace,
-            Arc::new(SpinLock::new(self.fdtable.lock().fork())),
+            new_fdtable,
         );
 
         new_tcb
