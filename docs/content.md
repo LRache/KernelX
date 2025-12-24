@@ -9,3 +9,9 @@
 3. [文件系统](filesystem.md)
 
 4. [设备驱动和驱动管理](driver.md)
+
+5. [任务管理与调度器](task.md)
+
+6. [用户任务管理](utask.md)
+
+7. [内存管理](memory.md)
