@@ -63,7 +63,8 @@ pub fn run_tasks(hartid: usize) -> ! {
             if !task.run_if_ready() {
                 continue;
             }
-
+            
+            // TODO: What if the task is exited here?
             processor.switch_to_task(&task);
 
             if task.state_running_to_ready() {

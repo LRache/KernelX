@@ -76,12 +76,13 @@ impl VirtualFileSystem {
         };
         current = current.get_mount_to().walk_link()?;
 
-        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let parts: Vec<&str> = path.split('/').filter(|s| !(s.is_empty() || *s == ".")).collect();
         
         if parts.is_empty() {
             return Ok(current.get_parent().map(|p| (p, "/")));
         }
-
+        
+        // TODO: What if the path ends with `..` ?
         for part in &parts[0..parts.len()-1] {
             let next = current.lookup(part)?;
             current = next.get_mount_to().walk_link()?;
