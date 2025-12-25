@@ -115,7 +115,6 @@ pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace) -> Result<(usize, Optio
     let phdr_addr = phdr_addr.unwrap_or(0);
 
     if let Some(interpreter_path) = &interpreter_path {
-        // crate::kinfo!("Interpreter path: {}", interpreter_path);
         let (interpreter_base, interpreter_entry) = load_interpreter(&interpreter_path, addrspace)?;
     
         let dyn_info = DynInfo {
@@ -128,7 +127,6 @@ pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace) -> Result<(usize, Optio
 
         Ok((interpreter_entry, Some(dyn_info)))
     } else {
-        // Ok((load_exec(&ehdr, file, addrspace)?, None))
         Ok((ehdr.e_entry as usize + addr_base, None))
     }
 }

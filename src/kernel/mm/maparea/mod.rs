@@ -8,7 +8,7 @@ mod userbrk;
 mod manager;
 pub mod shm;
 
-pub use manager::{Manager, MapAreaInfo};
+pub use manager::Manager;
 pub use area::Area;
 pub use elf::ELFArea;
 pub use anonymous::AnonymousArea;
