@@ -60,3 +60,33 @@ make run
 在 init 进程退出后，内核会自动触发 panic 并停止运行。
 
 我们推荐运行这个[2025年全国操作系统大赛内核实现赛道决赛的镜像](https://github.com/oscomp/testsuits-for-oskernel/releases/tag/on-site-final-2025-rv64-fs)，它包含了丰富的用户态程序，可以帮助你更好地体验 KernelX 的功能。你可以将 `/bin/busybox` 作为 init 程序，`sh` 作为初始参数来使用这个镜像。
+
+## 代码提示工具
+
+打开本项目后（几乎一定）你会发现你的 Rust 代码提示工具无法正常工作，你需要设置一些参数。
+
+对于 vscode
+
+```json
+// .vscode/settings.json
+{
+    "rust-analyzer.check.extraArgs": [
+        "--target",
+        "riscv64gc-unknown-none-elf",
+    ],
+    "rust-analyzer.cargo.features": [
+        "log-trace",
+        "swap-memory",
+    ],
+    "rust-analyzer.cargo.extraArgs": [
+        "--target",
+        "riscv64gc-unknown-none-elf",
+    ],
+    "rust-analyzer.server.extraEnv": {
+        "KERNELX_HOME": "${workspaceFolder}",
+        "ARCH": "riscv",
+        "ARCH_BITS": "64",
+        "CROSS_COMPILE": "/path/to/your/cross_compiler-"
+    }
+}
+```
