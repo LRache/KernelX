@@ -207,6 +207,7 @@ impl CharDriverOps for Stty {
             TCSETSW = 0x5403,
             TCSETSF = 0x5404,
             TIOCGWINSZ = 0x5413,
+            TCGETS2 = 0x802C542A,
         }
 
         let req = IOCTLReq::try_from(request).map_err(|_| Errno::EINVAL)?;
@@ -238,7 +239,7 @@ impl CharDriverOps for Stty {
                 termios.c_cc[VEOF] = 0x04; // Ctrl-D
                 addrspace.copy_to_user(arg, termios)?;
                 
-                Ok(0)
+                Ok(arg)
             }
             IOCTLReq::TCSETS => {
                 let termios = addrspace.copy_from_user::<Termios>(arg)?;
@@ -249,8 +250,13 @@ impl CharDriverOps for Stty {
                 attr.canonical = termios.c_lflag.contains(LocalFlags::ICANON);
                 Ok(0)
             }
-            _ => {
+            IOCTLReq::TCGETS2 => {
+                // TODO: implement TCGETS2
                 Ok(0)
+            }
+
+            _ => {
+                Err(Errno::EINVAL)
             }
         }
     }
