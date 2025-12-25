@@ -363,8 +363,9 @@ impl Area for UserStack {
                         let _ = frame;
                         panic!("Access type is not write for COW page at index {}, addr={:#x}, flags={:?}", page_index, addr, addrspace.pagetable().read().mapped_flag(addr));
                     }
+                } else {
+                    self.copy_on_write_page(page_index, addrspace);
                 }
-                self.copy_on_write_page(page_index, addrspace);
             }
             FrameState::Unallocated => {
                 let mut pagetable = addrspace.pagetable().write();
