@@ -33,7 +33,13 @@ fn main() {
             .expect("failed to execute process: gcc -print-sysroot");
 
         let sysroot = core::str::from_utf8(&output.stdout).unwrap().trim();
-        let sysroot_inc = &format!("-I{sysroot}/usr/include/");
+        let sysroot_inc = if cc.contains("musl") { 
+            &format!("-I{sysroot}/include/")
+        } else {
+            &format!("-I{sysroot}/usr/include/")
+        };
+
+        println!("sysroot: {}", sysroot);
 
         generates_bindings_to_rust(sysroot_inc);
     }
@@ -59,9 +65,7 @@ fn generates_bindings_to_rust(mpath: &str) {
         .wrap_unsafe_ops(true)
         // The input header we would like to generate bindings for.
         .header("c/wrapper.h")
-        //.clang_arg("--sysroot=/path/to/sysroot")
         .clang_arg(mpath)
-        //.clang_arg("-I../../ulib/axlibc/include")
         .clang_arg("-I./c/lwext4/include")
         .clang_arg("-I./c/lwext4/build_musl-generic/include/")
         .layout_tests(false)
