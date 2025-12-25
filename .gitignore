@@ -62,6 +62,8 @@ kernel.asm
 
 /sdcard-*
 /alpine-*
+*.img
+*.log
 
 # Kconfig generated files
 .config*
@@ -70,3 +72,4 @@ kernel.asm
 
 /target
 /build
+Cargo.lock
