@@ -171,7 +171,7 @@ pub fn kerneltrap_handler() {
                         let task = current::task();
                         let kstack = task.kstack();
                         if kstack.check_stack_overflow(stval) {
-                            panic!("Kernel stack overflow detected at address: {:#x}, tid={}", stval, current::tid());
+                            panic!("Kernel stack overflow detected at address: {:#x}, pc={:#x}, tid={}", stval, sepc, current::tid());
                         }
                     }
                     panic!("Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}", stval, sepc, trap);
