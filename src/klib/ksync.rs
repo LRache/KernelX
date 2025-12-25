@@ -142,6 +142,7 @@ impl<T> SpinLock<T> {
         }
     }
 
+    #[cfg(not(feature = "no-smp"))]
     pub fn is_locked(&self) -> bool {
         self.lock.is_locked()
     }
