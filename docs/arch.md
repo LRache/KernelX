@@ -1,0 +1,78 @@
+# 体系结构层
+
+体系结构层主要提供了与硬件架构相关的抽象和接口，涵盖了以下几个方面。
+
+```rust
+pub trait ArchTrait {
+    /// 初始化体系结构相关的功能
+    fn init();
+    /// 内核基本数据结构初始化完成后，启动所有核心
+    fn setup_all_cores(current_core: usize);
+    
+    /* ----- Per-CPU Data ----- */
+    fn set_percpu_data(data: usize);
+    fn get_percpu_data() -> usize;
+
+    /* ----- Context Switching ----- */
+    /// 切换内核态上下文
+    fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext);
+    /// 获取用户态程序 pc
+    fn get_user_pc() -> usize;
+    /// 强行返回用户态
+    fn return_to_user() -> !;
+    
+    /* ----- Interrupt ------ */
+    /// 等待中断，用于调度器空闲时调用
+    fn wait_for_interrupt();
+    /// 启用/禁用中断
+    fn enable_interrupt();
+    fn disable_interrupt();
+    fn enable_timer_interrupt();
+    fn enable_device_interrupt();
+    fn enable_device_interrupt_irq(irq: u32);
+
+    /// 获取内核栈顶地址，用于监视内核资源使用
+    fn get_kernel_stack_top() -> usize;
+
+    /// 进行地址转换
+    fn kaddr_to_paddr(kaddr: usize) -> usize;
+    fn paddr_to_kaddr(paddr: usize) -> usize;
+    /// 扫描设备
+    fn scan_device();
+    /// 内核地址映射与取消映射
+    fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm);
+    unsafe fn unmap_kernel_addr(kstart: usize, size: usize);
+
+    /// 获取系统运行时间
+    fn uptime() -> Duration;
+    fn get_time_us() -> u64;
+
+    /// 设置下一个定时事件，用于定时器中断
+    fn set_next_time_event_us(interval: u64);
+}
+```
+
+这些函数都可以通过`arch::function_name`的方式调用，例如`arch::init()`。`PageTable` 相关的接口已经在内存管理章节中介绍。
+
+内核提供了处理相应 `trap` 的接口，在发生了 trap 的时候，体系结构层应该调用这些接口来处理相应的事件:
+
+```rust
+// src/kernel/trap.rs
+/// 在进入 Trap 处理前部调用
+pub fn trap_enter();
+/// 在返回用户态之前调用
+pub fn trap_return();
+/// 处理定时器中断
+pub fn timer_interrupt();
+/// 处理系统调用，返回值是系统调用的返回值
+pub fn syscall(num: usize, args: &syscall::Args) -> usize;
+/// 处理内存访问错误
+pub fn memory_fault(addr: usize, access_type: MemAccessType);
+/// 处理非法指令异常
+pub fn illegal_inst();
+/// 处理对齐错误异常
+pub fn memory_misaligned();
+/// 处理外部中断，`irq` 是设备的中断号
+pub fn external_interrupt(irq: u32);
+```
+
