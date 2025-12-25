@@ -174,32 +174,29 @@ impl SwappableNoFileFrameInner {
 }
 
 impl SwappableFrame for SwappableNoFileFrameInner {
+    // FIXME: The dirty bit should be token when unmapping pages
     fn swap_out(&self, dirty: bool) -> bool {
         let mut state = self.state.lock();
         
-        let disk_slot = state.disk_slot;
+        let self_slot = state.disk_slot;
 
         let allocated = match &mut state.state {
             State::Allocated(allocated) => { allocated },
             State::SwappedOut => { return false; }
         };
-        
-        let slot = if disk_slot != NO_DISK_BLOCK {
-            disk_slot
-        } else if let Some(slot) = SWAPPER.alloc_slot() {
-            slot
-        } else {
-            return false;
-        };
 
         let kpage = allocated.frame.get_page();
-        // let need_write = dirty || !SWAPPER.is_cached(pos, kpage);
 
-        // set cached here
-        // SWAPPER.use_slot(pos, kpage);
-
-        if dirty {
-            SWAPPER.write_page(slot, &allocated.frame);
+        if dirty || self_slot == NO_DISK_BLOCK {
+            if dirty {
+                debug_assert!(self_slot == NO_DISK_BLOCK);
+            }
+            if let Some(slot) = SWAPPER.alloc_slot() {
+                SWAPPER.write_page(slot, &allocated.frame);
+                state.disk_slot = slot;
+            } else {
+                return false;
+            }
         }
 
         self.family_chain.lock().retain(|member| {
@@ -212,7 +209,6 @@ impl SwappableFrame for SwappableNoFileFrameInner {
         });
 
         state.state = State::SwappedOut;
-        state.disk_slot = slot;
 
         true
     }
@@ -241,6 +237,7 @@ impl SwappableFrame for SwappableNoFileFrameInner {
             // Clear cache in the disk
             if state.disk_slot != NO_DISK_BLOCK {
                 SWAPPER.free_slot(state.disk_slot);
+                state.disk_slot = NO_DISK_BLOCK;
             }
         }
 
