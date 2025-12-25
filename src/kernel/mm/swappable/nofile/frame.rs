@@ -20,7 +20,7 @@ pub(super) const NO_DISK_BLOCK: usize = usize::MAX;
 
 pub(super) struct FrameState {
     pub(super) state: State,
-    pub(super) disk_block: usize,
+    pub(super) disk_slot: usize,
 }
 
 pub struct SwappableNoFileFrameInner {
@@ -35,7 +35,7 @@ impl SwappableNoFileFrameInner {
             state: SpinLock::new(
                 FrameState { 
                     state: State::Allocated(AllocatedFrame { frame, dirty: false }), 
-                    disk_block: NO_DISK_BLOCK 
+                    disk_slot: NO_DISK_BLOCK 
                 }
             ),
             family_chain,       

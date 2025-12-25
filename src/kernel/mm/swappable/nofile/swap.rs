@@ -11,82 +11,95 @@ use crate::klib::{InitedCell, SpinLock};
 
 use super::frame::{SwappableNoFileFrameInner, State, AllocatedFrame, NO_DISK_BLOCK};
 
-struct BitMap {
-    allocated: BitVec,
-    cached: BitVec, // `1` means this block has a cached page in memory `0` means this block only has a swapped out page on disk
-}
-
 struct SwapperDisk {
-    bitmap: SpinLock<BitMap>,
+    bitvec: SpinLock<BitVec>,
     driver: Arc<dyn BlockDriverOps>,
-    block_per_page: usize,
+    block_per_slot: usize,
 }
 
 impl SwapperDisk {
     fn new(driver: Arc<dyn BlockDriverOps>) -> Self {
         let block_size = driver.get_block_size() as usize;
         let len = block_size * driver.get_block_count() as usize / arch::PGSIZE;
-        let bitmap = SpinLock::new(BitMap { allocated: BitVec::repeat(false, len), cached: BitVec::repeat(false, len) });
-        let block_per_page = arch::PGSIZE / block_size;
+        let bitvec = SpinLock::new(BitVec::repeat(false, len));
+        let block_per_slot = arch::PGSIZE / block_size;
         
-        debug_assert!(block_per_page * block_size == arch::PGSIZE);
+        debug_assert!(block_per_slot * block_size == arch::PGSIZE);
         crate::kinfo!("Anonymous swapper: {} pages ({} KB) available.", len, len * arch::PGSIZE / 1024);
         
         Self {
-            bitmap, 
+            bitvec,
             driver, 
-            block_per_page,
+            block_per_slot,
         }
     }
 
-    pub fn block_per_page(&self) -> usize {
-        self.block_per_page
-    }
-
-    pub fn read_page(&self, block_start: usize, frame: &PhysPageFrame) {
+    pub fn read_page(&self, slot: usize, frame: &PhysPageFrame) {
         let start = crate::kernel::event::timer::now();
         self.driver.read_blocks(
-            block_start, 
+            slot * self.block_per_slot,
             frame.slice()
         ).expect("Failed to read swapped out page from block device");
         let end = crate::kernel::event::timer::now();
         counter_swap_in(end - start);
     }
 
-    pub fn write_page(&self, block_start: usize, frame: &PhysPageFrame) {
-        self.driver.write_blocks(block_start, frame.slice()).expect("Failed to write back");
+    pub fn write_page(&self, pos: usize, frame: &PhysPageFrame) {
+        self.driver.write_blocks(pos * self.block_per_slot, frame.slice()).expect("Failed to write back");
     }
 
     pub fn alloc_slot(&self) -> Option<usize> {
-        let bitmap = self.bitmap.lock();
-        if let Some(pos) = bitmap.allocated.first_zero() {
-            Some(pos)
-        } else if let Some(pos) = bitmap.cached.first_one() {
-            Some(pos)
-        } else {
-            None
-        }
+        // let array = self.array.lock();
+        // let mut first_zero = None;
+        // let mut last_cached = None;
+        // for (index, &value) in array.iter().enumerate() {
+        //     if value == 0 {
+        //         first_zero = Some(index);
+        //         break;
+        //     } else if value & 1 == 1 && last_cached.is_none() {
+        //         last_cached = Some(index);
+        //     }
+        // }
+        // if let Some(pos) = first_zero {
+        //     Some(pos)
+        // } else {
+        //     last_cached
+        // }
+        let mut bitvec = self.bitvec.lock();
+        bitvec.first_zero().map(|pos| {
+            bitvec.set(pos, true);
+            pos
+        })
     }
 
-    pub fn use_slot(&self, pos: usize) {
-        let mut bitmap = self.bitmap.lock();
-        bitmap.allocated.set(pos, true);
-        bitmap.cached.set(pos, false);
+    // pub fn use_slot(&self, pos: usize, kpage: usize) {
+    //     let mut array = self.array.lock();
+    //     // array.set(pos, kpage);
+    //     array[pos] = kpage;
+    // }
+
+    pub fn free_slot(&self,slot: usize) {
+        // let mut array = self.array.lock();
+        // array[pos] = 0;
+        let mut bitvec = self.bitvec.lock();
+        bitvec.set(slot, false);
     }
 
-    pub fn free_slot(&self, pos: usize) {
-        let mut bitmap = self.bitmap.lock();
-        bitmap.allocated.set(pos, false);
-        bitmap.cached.set(pos, false);
-    }
+    // pub fn set_cached(&self, pos: usize, cached: bool) {
+    //     let mut array = self.array.lock();
+    //     let value = array[pos];
+    //     if cached {
+    //         array[pos] = value | 1;
+    //     } else {
+    //         array[pos] = value & !1;
+    //     }
+    // }
 
-    pub fn set_cached(&self, pos: usize, cached: bool) {
-        self.bitmap.lock().cached.set(pos, cached);
-    }
-
-    pub fn is_cached(&self, pos: usize) -> bool {
-        self.bitmap.lock().cached.get(pos).map(|b| *b).unwrap_or(false)
-    }
+    // pub fn is_cached(&self, pos: usize, kpage: usize) -> bool {
+    //     let array = self.array.lock();
+    //     let value = array[pos];
+    //     value == kpage && (value & 1) == 1
+    // }
 }
 
 static SWAPPER: InitedCell<SwapperDisk> = InitedCell::uninit();
@@ -104,16 +117,14 @@ impl SwappableNoFileFrameInner {
             },
             State::SwappedOut => {
                 let start = crate::kernel::event::timer::now();
-                
-                let disk_block = state.disk_block;
+
+                let slot = state.disk_slot;
 
                 let frame = PhysPageFrame::alloc_with_shrink_zeroed();
-                SWAPPER.read_page(disk_block, &frame);
+                SWAPPER.read_page(slot, &frame);
 
-                // Cached the swap page in disk
-                let pos = disk_block / SWAPPER.block_per_page();
-                SWAPPER.set_cached(pos, true);
-                
+                // Don't free the slot here
+
                 let kpage = frame.get_page();
                 state.state = State::Allocated(AllocatedFrame{
                     frame,
@@ -137,8 +148,8 @@ impl SwappableNoFileFrameInner {
             }
             State::SwappedOut => {
                 let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
-                debug_assert!(state.disk_block != NO_DISK_BLOCK);
-                SWAPPER.read_page(state.disk_block, &new_frame);
+                debug_assert!(state.disk_slot != NO_DISK_BLOCK);
+                SWAPPER.read_page(state.disk_slot, &new_frame);
                 new_frame
             }
         };
@@ -156,8 +167,7 @@ impl SwappableNoFileFrameInner {
                 swapper::remove_lru(key);
             }
             State::SwappedOut => {
-                let pos = state.disk_block / SWAPPER.block_per_page();
-                SWAPPER.free_slot(pos);
+                SWAPPER.free_slot(state.disk_slot);
             }
         }
     }
@@ -167,31 +177,31 @@ impl SwappableFrame for SwappableNoFileFrameInner {
     fn swap_out(&self, dirty: bool) -> bool {
         let mut state = self.state.lock();
         
-        let disk_block = state.disk_block;
+        let disk_slot = state.disk_slot;
 
         let allocated = match &mut state.state {
             State::Allocated(allocated) => { allocated },
             State::SwappedOut => { return false; }
         };
         
-        let pos = if disk_block != NO_DISK_BLOCK {
-            disk_block / SWAPPER.block_per_page()
-        } else if let Some(pos) = SWAPPER.alloc_slot() {
-            pos
+        let slot = if disk_slot != NO_DISK_BLOCK {
+            disk_slot
+        } else if let Some(slot) = SWAPPER.alloc_slot() {
+            slot
         } else {
             return false;
         };
 
-        let block_start = pos * SWAPPER.block_per_page();
-        let need_write = dirty || !SWAPPER.is_cached(pos);
+        let kpage = allocated.frame.get_page();
+        // let need_write = dirty || !SWAPPER.is_cached(pos, kpage);
 
-        SWAPPER.use_slot(pos);
+        // set cached here
+        // SWAPPER.use_slot(pos, kpage);
 
-        if need_write {
-            SWAPPER.write_page(block_start, &allocated.frame);
+        if dirty {
+            SWAPPER.write_page(slot, &allocated.frame);
         }
 
-        let kpage = allocated.frame.get_page();
         self.family_chain.lock().retain(|member| {
             if let Some(addrspace) = member.upgrade() {
                 addrspace.unmap_swap_page(self.uaddr, kpage);
@@ -202,7 +212,7 @@ impl SwappableFrame for SwappableNoFileFrameInner {
         });
 
         state.state = State::SwappedOut;
-        state.disk_block = block_start;
+        state.disk_slot = slot;
 
         true
     }
@@ -228,6 +238,10 @@ impl SwappableFrame for SwappableNoFileFrameInner {
 
         if dirty {
             allocated.dirty = true;
+            // Clear cache in the disk
+            if state.disk_slot != NO_DISK_BLOCK {
+                SWAPPER.free_slot(state.disk_slot);
+            }
         }
 
         Some((accessed, dirty))
