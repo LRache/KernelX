@@ -42,8 +42,7 @@ impl Utsname {
         };
         let sysname = b"KernelX";
         ustname.sysname[..sysname.len()].copy_from_slice(sysname);
-
-        // let release = option_env!("KERNELX_RELEASE").unwrap_or("0.1.0");
+        
         let release = "5.0.0" ;
         ustname.release[..release.len()].copy_from_slice(release.as_bytes());
 
@@ -77,8 +76,6 @@ enum RLimitResource {
 }
 
 pub fn prlimit64(_pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, uptr_old_limit: UPtr<RLimit>) -> SyscallRet {
-    // crate::kinfo!("prlimit64: pid={}, resource={}, uptr_new={}, uptr_old={}", _pid, resource, uptr_new_limit.uaddr(), uptr_old_limit.uaddr());
-    
     let resource = RLimitResource::try_from(resource).map_err(|_| Errno::EINVAL)?;
 
     match resource {
@@ -252,7 +249,6 @@ pub fn sync() -> SyscallRet {
 
 // TODO: implement sched_getaffinity syscall
 pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UPtr<u8>) -> SyscallRet {
-    // kinfo!("sched_getaffinity: pid={}, cpusetsize={}, mask={:?}", _pid, _cpusetsize, _mask);
     if cpusetsize == 0 {
         return Err(Errno::EINVAL);
     }

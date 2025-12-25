@@ -3,7 +3,6 @@ mod device;
 mod driver;
 mod matcher;
 mod manager;
-// mod fdt;
 
 pub mod block;
 pub mod char;

@@ -522,8 +522,6 @@ pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
 
     let path = uptr_path.read()?;
 
-    // crate::kinfo!("faccessat: dirfd={}, path=\"{}\"", dirfd, path);
-
     if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?;
     } else {

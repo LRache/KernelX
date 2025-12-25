@@ -81,41 +81,6 @@ pub struct Elf64Phdr {
     pub p_align : Elf64Xword, // Segment alignment
 }
 
-// // 段头类型 (sh_type)
-// pub const SHT_NULL: u32 = 0;
-// pub const SHT_PROGBITS: u32 = 1;
-// pub const SHT_SYMTAB: u32 = 2;
-// pub const SHT_STRTAB: u32 = 3;
-// pub const SHT_RELA: u32 = 4;
-// pub const SHT_HASH: u32 = 5;
-// pub const SHT_DYNAMIC: u32 = 6;
-// pub const SHT_NOTE: u32 = 7;
-// pub const SHT_NOBITS: u32 = 8;
-// pub const SHT_REL: u32 = 9;
-// pub const SHT_SHLIB: u32 = 10;
-// pub const SHT_DYNSYM: u32 = 11;
-
-// // 段头标志 (sh_flags)
-// pub const SHF_WRITE: u64 = 1 << 0;      // 可写
-// pub const SHF_ALLOC: u64 = 1 << 1;      // 占用内存
-// pub const SHF_EXECINSTR: u64 = 1 << 2;  // 可执行
-
-// ELF64段头
-// #[repr(C)]
-// #[derive(Debug, Clone, Copy)]
-// pub struct Elf64Shdr {
-//     pub sh_name: Elf64Word,       // Section name (string tbl index)
-//     pub sh_type: Elf64Word,       // Section type
-//     pub sh_flags: Elf64Xword,     // Section flags
-//     pub sh_addr: Elf64Addr,       // Section virtual addr at execution
-//     pub sh_offset: Elf64Off,      // Section file offset
-//     pub sh_size: Elf64Xword,      // Section size in bytes
-//     pub sh_link: Elf64Word,       // Link to another section
-//     pub sh_info: Elf64Word,       // Additional section information
-//     pub sh_addralign: Elf64Xword, // Section alignment
-//     pub sh_entsize: Elf64Xword,   // Entry size if section holds table
-// }
-
 impl Elf64Ehdr {
     pub fn is_valid_elf(&self) -> bool {
         self.e_ident[EI_MAG0] == ELFMAG0 &&

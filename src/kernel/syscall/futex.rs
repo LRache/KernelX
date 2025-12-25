@@ -48,8 +48,6 @@ pub fn futex(
     }
 
     let op = FutexOp::try_from(futex_op & FUTEX_OP_MASK).map_err(|_| Errno::EINVAL)?;
-    // kinfo!("futex: uaddr={:#x}, futex_op={:?}, val={}, timeout={:?}", uaddr.uaddr(), op, val, timeout);
-
     match op {
         FutexOp::Wait | FutexOp::WaitBitset => {
             let kaddr = uaddr.kaddr()?;
