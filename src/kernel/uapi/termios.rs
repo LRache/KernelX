@@ -1,8 +1,12 @@
 use bitflags::bitflags;
 
+type tc_flag_t = u32;
+type cc_t = u8;
+type speed_t = u32;
+
 bitflags! {
     #[derive(Clone, Copy, Debug, Default)]
-    pub struct InputFlags: u32 {
+    pub struct InputFlags: tc_flag_t {
         const IGNBRK = 0o000001;
         const BRKINT = 0o000002;
         const IGNPAR = 0o000004;
@@ -18,7 +22,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Default)]
-    pub struct LocalFlags: u32 {
+    pub struct LocalFlags: tc_flag_t {
         const ISIG    = 0o0000001;
         const ICANON  = 0o0000002;
         const ECHO    = 0o0000010;
@@ -31,13 +35,13 @@ bitflags! {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Termios {
     pub c_iflag: InputFlags,
-    pub c_oflag: u32,
-    pub c_cflag: u32,
+    pub c_oflag: tc_flag_t,
+    pub c_cflag: tc_flag_t,
     pub c_lflag: LocalFlags,
-    pub c_line: u8,
-    pub c_cc: [u8; 32],
-    pub c_ispeed: u32,
-    pub c_ospeed: u32,
+    pub c_line: cc_t,
+    pub c_cc: [cc_t; 19],
+    pub c_ispeed: speed_t,
+    pub c_ospeed: speed_t,
 }
 
 pub mod cc {
