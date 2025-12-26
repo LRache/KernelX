@@ -239,7 +239,7 @@ impl CharDriverOps for Stty {
                 termios.c_cc[VEOF] = 0x04; // Ctrl-D
                 addrspace.copy_to_user(arg, termios)?;
                 
-                Ok(arg)
+                Ok(0)
             }
             IOCTLReq::TCSETS => {
                 let termios = addrspace.copy_from_user::<Termios>(arg)?;
