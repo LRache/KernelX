@@ -31,9 +31,7 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     timebase_freq_prop.as_usize().map(|freq| {
         TIME_FREQ.init(freq as u32);
     });
-
-    // let cpu_node = fdt.find_node("/cpus").unwrap();
-    // let core_count = cpu_node.children().count();
+    
     let core_count = 1;
     CORE_COUNT.init(core_count);
     kinfo!("Detected {} CPU cores", core_count);
@@ -41,20 +39,7 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     kinfo!("Init timebase frequency = {}Hz", *TIME_FREQ);
     
     let soc_node = fdt.find_node("/soc").unwrap();
-    if soc_node.children().find_map(|child| {
-        if child.compatible()?.all().into_iter().find(|compatible| *compatible == "riscv,plic0").is_some() {
-            let mut reg_prop = child.reg()?;
-            let reg = reg_prop.next()?;
-            let addr = reg.starting_address as usize;
-            let size = reg.size? as usize;
-            plic::init(addr, size);
-            Some(())
-        } else {
-            None
-        }
-    }).is_none() {
-        plic::not_found();
-    }
+    load_plic_node(&fdt, &soc_node);
     
     for child in soc_node.children() {
         load_soc_node(&child);
@@ -76,28 +61,20 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     Ok(())
 }
 
-fn load_soc_node(child: &FdtNode) -> Option<()> {
-    let reg_prop = child.reg();
-    if let Some(mut reg) = reg_prop {
-        let reg = reg.next()?;
-        let addr = reg.starting_address as usize;
-        let size = reg.size? as usize;
+fn load_soc_node(child: &FdtNode) {
+    found_device(&Device::new(child));
+}
 
-        let compatible = child.compatible()?.first();
-        
-        let interrupts = child.property("interrupts").and_then(|p| p.as_usize()).map(|v| v as u32);
-
-        let device = Device::new(
-            addr, 
-            size, 
-            child.name, 
-            compatible,
-            interrupts
-        );
-        
-        found_device(&device);
+fn load_plic_node(fdt: &Fdt, soc_node: &FdtNode) {
+    if let Some(child) = soc_node.children().find(|child| {
+        child.compatible().map_or(false, |compatibles| {
+            compatibles.all().into_iter().any(|c| c == "riscv,plic0")
+        })
+    }) {
+        plic::from_fdt(&fdt, &child);
+    } else {
+        plic::not_found();
     }
-    Some(())
 }
 
 fn load_cpu_node(child: &FdtNode) {
