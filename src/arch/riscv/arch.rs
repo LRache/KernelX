@@ -44,8 +44,6 @@ impl ArchTrait for Arch {
         }
 
         kinfo!("Starting other harts...");
-        
-        plic::enable_interrupt_for_all_harts();
 
         for hartid in 0..core_count() {
             if hartid != current_core {
@@ -101,8 +99,9 @@ impl ArchTrait for Arch {
         SIE::read().set_stie(true).write();
     }
 
-    fn enable_device_interrupt() {
+    fn enable_device_interrupt(hartid: usize) {
         SIE::read().set_seie(true).write();
+        plic::enable_interrupt_for_hart(hartid);
     }
 
     fn enable_device_interrupt_irq(irq: u32) {

@@ -43,7 +43,7 @@ pub trait ArchTrait {
     fn enable_interrupt();
     fn disable_interrupt();
     fn enable_timer_interrupt();
-    fn enable_device_interrupt();
+    fn enable_device_interrupt(hartid: usize);
     fn enable_device_interrupt_irq(irq: u32);
 
     fn get_kernel_stack_top() -> usize;
