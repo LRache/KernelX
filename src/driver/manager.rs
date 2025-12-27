@@ -15,11 +15,11 @@ static DRIVERS: RwLock<BTreeMap<String, Arc<dyn DriverOps>>> = RwLock::new(BTree
 fn try_match(device: &Device) -> Option<Arc<dyn DriverOps>> {
     for matcher in MATCHERS.read().iter() {
         if let Some(driver) = matcher.try_match(device) {
-            kinfo!("Matched driver: {} for device: {:?}", driver.name(), device);
+            kinfo!("Matched driver: {} for device: {:02x?}", driver.name(), device);
             return Some(driver);
         }
     }
-    kwarn!("No driver found for device: {:?}", device);
+    kwarn!("No driver found for device: {:02x?}", device);
     None
 }
 

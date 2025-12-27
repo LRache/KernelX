@@ -12,17 +12,17 @@ pub struct Matcher;
 
 impl DriverMatcher for Matcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
-        if device.compatible() != "virtio,mmio" {
-            return None;
-        }
+        device.match_compatible(&["virtio,mmio"])?;
 
-        let mmio_base = page::alloc_contiguous(arch::page_count(device.mmio_size()));
-        map_kernel_addr(mmio_base, device.mmio_base(), device.mmio_size(), MapPerm::R | MapPerm::W);
+        let (mmio_base, mmio_size) = device.mmio()?;
+
+        let kbase = page::alloc_contiguous(arch::page_count(mmio_size));
+        map_kernel_addr(kbase, mmio_base, mmio_size, MapPerm::R | MapPerm::W);
         
         let transport = unsafe {
-            MmioTransport::new(NonNull::new(mmio_base as *mut VirtIOHeader).unwrap()).ok()
+            MmioTransport::new(NonNull::new(kbase as *mut VirtIOHeader).unwrap()).ok()
         }?;
-
+        
         match transport.device_type() {
             DeviceType::Block => {
                 Some(Arc::new(VirtIOBlockDriver::new(
