@@ -1,7 +1,10 @@
+use core::time::Duration;
+
 use alloc::sync::Arc;
-use lwext4_rust::{BlockDevice, DummyHal, Ext4Error, Ext4Filesystem, Ext4Result, FsConfig};
+use lwext4_rust::{BlockDevice, Ext4Error, Ext4Filesystem, Ext4Result, FsConfig, SystemHal};
 use lwext4_rust::EXT4_DEV_BSIZE;
 
+use crate::driver::chosen::kclock;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
 use crate::klib::SpinLock;
@@ -47,7 +50,15 @@ impl BlockDevice for BlockDeviceImpls {
     }
 }
 
-pub(super) type SuperBlockInner = Ext4Filesystem<DummyHal, BlockDeviceImpls>;
+pub(super) struct SystemHalImpls;
+
+impl SystemHal for SystemHalImpls {
+    fn now() -> Option<Duration> {
+        kclock::now().ok()
+    }
+}
+
+pub(super) type SuperBlockInner = Ext4Filesystem<SystemHalImpls, BlockDeviceImpls>;
 
 pub struct Ext4SuperBlock {
     superblock: Arc<SpinLock<SuperBlockInner>>

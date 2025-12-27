@@ -125,19 +125,41 @@ impl<Hal: SystemHal, Dev: BlockDevice> Ext4Filesystem<Hal, Dev> {
     }
 
     pub fn read_at(&mut self, ino: u32, buf: &mut [u8], offset: u64) -> Ext4Result<usize> {
-        self.inode_ref(ino)?.read_at(buf, offset)
+        let mut inode_ref = self.inode_ref(ino)?;
+        let r = inode_ref.read_at(buf, offset)?;
+        inode_ref.set_atime(&Hal::now().unwrap_or(Duration::ZERO));
+        Ok(r)
     }
     pub fn write_at(&mut self, ino: u32, buf: &[u8], offset: u64) -> Ext4Result<usize> {
-        self.inode_ref(ino)?.write_at(buf, offset)
+        let mut inode_ref = self.inode_ref(ino)?;
+        let r = inode_ref.write_at(buf, offset)?;
+        let now = Hal::now().unwrap_or(Duration::ZERO);
+        inode_ref.set_mtime(&now);
+        inode_ref.set_ctime(&now);
+        Ok(r)
     }
     pub fn set_len(&mut self, ino: u32, len: u64) -> Ext4Result<()> {
-        self.inode_ref(ino)?.set_len(len)
+        let mut inode_ref = self.inode_ref(ino)?;
+        inode_ref.set_len(len)?;
+        let now = Hal::now().unwrap_or(Duration::ZERO);
+        inode_ref.set_mtime(&now);
+        inode_ref.set_ctime(&now);
+        Ok(())
     }
     pub fn set_symlink(&mut self, ino: u32, buf: &[u8]) -> Ext4Result<()> {
-        self.inode_ref(ino)?.set_symlink(buf)
+        // self.inode_ref(ino)?.set_symlink(buf)
+        let mut inode_ref = self.inode_ref(ino)?;
+        inode_ref.set_symlink(buf)?;
+        let now = Hal::now().unwrap_or(Duration::ZERO);
+        inode_ref.set_mtime(&now);
+        inode_ref.set_ctime(&now);
+        Ok(())
     }
     pub fn lookup(&mut self, parent: u32, name: &str) -> Ext4Result<DirLookupResult<Hal>> {
-        self.inode_ref(parent)?.lookup(name)
+        // self.inode_ref(parent)?.lookup(name)
+        let mut parent_ref = self.inode_ref(parent)?;
+        parent_ref.set_atime(&Hal::now().unwrap_or(Duration::ZERO));
+        parent_ref.lookup(name)
     }
     pub fn read_dir(&mut self, parent: u32, offset: u64) -> Ext4Result<DirReader<Hal>> {
         self.inode_ref(parent)?.read_dir(offset)
@@ -153,6 +175,13 @@ impl<Hal: SystemHal, Dev: BlockDevice> Ext4Filesystem<Hal, Dev> {
             assert_eq!(child.nlink(), 2);
         }
         child.set_mode((child.mode() & !0o777) | (mode & 0o777));
+
+        let now = Hal::now().unwrap_or(Duration::ZERO);
+        parent.set_mtime(&now);
+        parent.set_ctime(&now);
+        child.set_atime(&now);
+        child.set_mtime(&now);
+        child.set_ctime(&now);
 
         Ok(child.ino())
     }
@@ -185,6 +214,13 @@ impl<Hal: SystemHal, Dev: BlockDevice> Ext4Filesystem<Hal, Dev> {
         }
         src_dir_ref.remove_entry(src_name, &mut src_ref)?;
         dst_dir_ref.add_entry(dst_name, &mut src_ref)?;
+
+        let now = Hal::now().unwrap_or(Duration::ZERO);
+        src_dir_ref.set_mtime(&now);
+        src_dir_ref.set_ctime(&now);
+        dst_dir_ref.set_mtime(&now);
+        dst_dir_ref.set_ctime(&now);
+        src_ref.set_ctime(&now);
 
         Ok(())
     }

@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use lwext4_rust::{FileAttr, InodeType};
 
-use crate::driver;
+use crate::driver::chosen::kclock;
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
@@ -63,15 +63,16 @@ impl InodeOps for Ext4Inode {
             InodeType::Unknown
         };
 
-        let now = driver::chosen::kclock::now()?;
         let ino = superblock.create(self.ino, name, ty, mode.bits() as u32).map_err(map_error_to_kernel)?;
-        superblock.with_inode_ref(ino, |inode_ref| {
-            inode_ref.set_atime(&now);
-            inode_ref.set_mtime(&now);
-            inode_ref.set_ctime(&now);
-            Ok(())
-        }).map_err(map_error_to_kernel)?;
-
+        if let Ok(now) = kclock::now() {
+            superblock.with_inode_ref(ino, |inode_ref| {
+                inode_ref.set_atime(&now);
+                inode_ref.set_mtime(&now);
+                inode_ref.set_ctime(&now);
+                Ok(())
+            }).map_err(map_error_to_kernel)?;
+        }   
+        
         Ok(Arc::new(Self::new(ino, self.superblock.clone())))
     }
 
@@ -107,7 +108,6 @@ impl InodeOps for Ext4Inode {
         // Directory enumeration not yet migrated to `lwext4_rust`.
         let mut reader = self.superblock.lock().read_dir(self.ino, offset as u64).map_err(map_error_to_kernel)?;
         let result = reader.current().map(|entry| {
-            // kinfo!("Ext4Inode::get_dent ino={} offset={} entry_ino={} name={}", self.ino, offset, entry.ino(), String::from_utf8_lossy(entry.name()));
             DirResult {
                 ino: entry.ino(),
                 name: String::from_utf8_lossy(entry.name()).into_owned(),
@@ -120,7 +120,6 @@ impl InodeOps for Ext4Inode {
                     InodeType::Fifo            => FileType::FIFO,
                     _                          => FileType::Unknown,
                 },
-                // len: entry.len()
             }
         });
 
@@ -172,6 +171,7 @@ impl InodeOps for Ext4Inode {
             let current_mode = inode_ref.mode();
             let new_mode = (current_mode & !0o777) | (mode.bits() as u32 & 0o777);
             inode_ref.set_mode(new_mode);
+            inode_ref.set_ctime(&kclock::now().unwrap_or(Duration::ZERO));
             Ok(())
         }).map_err(map_error_to_kernel)?;
         Ok(())
