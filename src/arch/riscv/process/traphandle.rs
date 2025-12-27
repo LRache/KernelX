@@ -48,9 +48,9 @@ fn svadu_mark_page_accessed(uaddr: usize) -> bool {
     pagetable.mark_page_accessed(uaddr)
 }
 
-fn svadu_mark_page_dirty(uaddr: usize) -> bool {
+fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
     let mut pagetable = current::addrspace().pagetable().write();
-    pagetable.mark_page_dirty(uaddr)
+    pagetable.mark_page_accessed_and_dirty(uaddr)
 }
 
 unsafe extern "C" {
@@ -81,7 +81,7 @@ pub fn usertrap_handler() -> ! {
                 },
                 scause::Trap::StorePageFault => {
                     let addr = stval::read();
-                    if svadu_enable() || !svadu_mark_page_dirty(addr) || !svadu_mark_page_dirty(addr) {
+                    if svadu_enable() || !svadu_mark_page_accessed_and_dirty(addr) {
                         trap::memory_fault(addr, MemAccessType::Write);
                     }
                 },
@@ -104,7 +104,6 @@ pub fn usertrap_handler() -> ! {
                     kinfo!("Software interrupt occurred");
                 },
                 scause::Interrupt::Timer => {
-                    // kinfo!("Timer interrupt occurred");
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
@@ -192,6 +191,7 @@ pub fn kerneltrap_handler() {
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
+                    // kinfo!("Kernel external interrupt occurred");
                     handle_external_interrupt();
                 },
                 scause::Interrupt::Counter => {

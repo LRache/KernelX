@@ -110,7 +110,6 @@ impl<T: PageAllocator> PageTableImpls<T> {
         if level != LEAF_LEVEL {
             for i in 0..512 {
                 let pte = ptetable.get(i);
-                // debug_assert!(pte.ppn().value() << PGBITS <= 0x88000000, "PPN out of range: 0x{:x}, level={}, i={}", pte.ppn().value() << PGBITS, level, i);
                 if pte.is_valid() {
                     self.free_pagetable(&pte.next_level(), level + 1);
                 }
@@ -166,11 +165,11 @@ impl<T: PageAllocator> PageTableImpls<T> {
         false
     }
 
-    pub fn mark_page_dirty(&mut self, uaddr: usize) -> bool {
+    pub fn mark_page_accessed_and_dirty(&mut self, uaddr: usize) -> bool {
         if let Some(mut pte) = self.find_pte(uaddr) {
             let flags = pte.flags();
-            if !flags.contains(PTEFlags::D) {
-                pte.set_flags(flags | PTEFlags::D);
+            if !flags.contains(PTEFlags::D) || !flags.contains(PTEFlags::A) {
+                pte.set_flags(flags | PTEFlags::D | PTEFlags::A);
                 pte.write_back().expect("Failed to write back PTE when marking page dirty");
                 return true;
             }
@@ -195,7 +194,9 @@ unsafe impl<T: PageAllocator> Sync for PageTableImpls<T> {}
 
 impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
-        let flags = perm.into();
+        let mut flags = perm.into();
+
+        flags |= PTEFlags::A | PTEFlags::D;
 
         let mut pte = self.find_pte_or_create(uaddr);
         debug_assert!(!pte.is_valid(), "PTE should NOT be valid before mmap, uaddr= {:#x}, kaddr = {:#x}", uaddr, kaddr);
