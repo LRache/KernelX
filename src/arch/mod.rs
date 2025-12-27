@@ -69,6 +69,14 @@ arch_export! {
     scan_device() -> ();
 }
 
+pub unsafe fn read_volatile<T>(src: *const T) -> T {
+    Arch::read_volatile(src)
+}
+
+pub unsafe fn write_volatile<T>(dst: *mut T, val: T) {
+    Arch::write_volatile(dst, val)
+}
+
 pub fn page_count(size: usize) -> usize {
     (size + PGSIZE - 1) / PGSIZE
 }

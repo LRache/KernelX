@@ -3,6 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use visionfive2_sd::{Vf2SdDriver, SDIo, SleepOps};
 
+use crate::arch;
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
 use crate::kernel::event::timer;
 use crate::klib::SpinLock;
@@ -20,7 +21,7 @@ impl SDIo for SDIOImpls {
     fn write_reg_at(&mut self, offset: usize, val: u32) {
         let addr = (self.base + offset) as *mut u32;
         unsafe {
-            addr.write_volatile(val);
+            arch::write_volatile(addr, val);
         }
     }
 
@@ -50,7 +51,6 @@ impl SleepOps for SleepOpsImpls {
 }
 
 pub struct Driver {
-    base: usize,
     name: String,
     inner: SpinLock<Vf2SdDriver<SDIOImpls, SleepOpsImpls>>
 }
@@ -60,16 +60,11 @@ impl Driver {
         let inner = Vf2SdDriver::new(SDIOImpls { base });
         Driver { 
             name, 
-            base, 
             inner: SpinLock::new(inner) 
         }
     }
 
     pub fn init(&self) -> Result<(), ()> {
-        if self.base != 0x16020000 {
-            return Err(());
-        }
-
         self.inner.lock().init();
 
         Ok(())
@@ -112,6 +107,7 @@ impl BlockDriverOps for Driver {
     }
 
     fn get_block_count(&self) -> u64 {
-        0
+        // 4 GB
+        8388608
     }
 }

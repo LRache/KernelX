@@ -20,11 +20,11 @@ impl PLIC {
     }
 
     fn read(&self, offset: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((self.base + offset) as *const u32) }
+        unsafe { arch::read_volatile((self.base + offset) as *const u32) }
     }
 
     fn write(&mut self, offset: usize, value: u32) {
-        unsafe { core::ptr::write_volatile((self.base + offset) as *mut u32, value) }
+        unsafe { arch::write_volatile((self.base + offset) as *mut u32, value) }
     }
 
     fn set_hart_threshold(&mut self, hart_id: usize, threshold: u32) {
@@ -33,10 +33,10 @@ impl PLIC {
     }
 
     fn enable_irq_for_hart(&mut self, hart_id: usize, irq: u32) {
-        let senable = reg::SENABLE + hart_id * 0x100;
-        let mut value = self.read(senable);
-        value |= 1 << irq;
-        self.write(senable, value);
+        let index = (irq / 32) as usize;
+        let bit = irq % 32;
+        let senable = reg::SENABLE + hart_id * 0x100 + index * 4;
+        self.write(senable, self.read(senable) | (1 << bit));
     }
 
     fn set_irq_priority(&mut self, irq: u32, priority: u32) {

@@ -57,6 +57,9 @@ pub trait ArchTrait {
     fn uptime() -> Duration;
     fn get_time_us() -> u64;
     fn set_next_time_event_us(interval: u64);
+
+    fn read_volatile<T>(src: *const T) -> T;
+    fn write_volatile<T>(dst: *mut T, val: T);
 }
 
 pub trait UserContextTrait: Clone {

@@ -148,4 +148,25 @@ impl ArchTrait for Arch {
     fn set_next_time_event_us(interval: u64) {
         sbi_driver::set_timer(csr::time::read() + interval);
     }
+
+    fn read_volatile<T>(src: *const T) -> T {
+        unsafe { 
+            let v = core::ptr::read_volatile(src);
+            core::arch::asm!(
+                "fence i, r", 
+                options(nostack, preserves_flags)
+            );
+            v
+        }
+    }
+
+    fn write_volatile<T>(dst: *mut T, val: T) {
+        unsafe {
+            core::arch::asm!(
+                "fence w, i", 
+                options(nostack, preserves_flags)
+            );
+            core::ptr::write_volatile(dst, val);
+        }
+    }
 }

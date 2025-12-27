@@ -2,9 +2,11 @@ use core::time::Duration;
 use alloc::string::String;
 use alloc::sync::Arc;
 
+use crate::arch;
 use crate::kernel::errno::SysResult;
 use crate::driver::{Device, DeviceType, DriverOps, RTCDriverOps};
 use crate::driver::matcher::DriverMatcher;
+use crate::kernel::mm::{MapPerm, page};
 
 pub struct Driver {
     base: usize,
@@ -17,7 +19,7 @@ impl Driver {
     }
 
     fn read(&self, offset: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((self.base + offset) as *mut u32) }
+        unsafe { arch::read_volatile((self.base + offset) as *mut u32) }
     }
 }
 
@@ -51,11 +53,11 @@ pub struct Matcher;
 
 impl DriverMatcher for Matcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
-        if device.compatible() == "google,goldfish-rtc" {
-            let kbase = device.alloc_mmio_pages();
-            Some(Arc::new(Driver::new(kbase, device.name().into())))
-        } else {
-            None
-        }
+        device.match_compatible(&["google,goldfish-rtc"])?;
+
+        let (mmio_base, mmio_size) = device.mmio()?;
+        let kbase = page::alloc_contiguous(arch::page_count(mmio_size));
+        arch::map_kernel_addr(kbase, mmio_base, mmio_size, MapPerm::RW);
+        Some(Arc::new(Driver::new(kbase, device.name().into())))
     }
 }
