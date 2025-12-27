@@ -22,6 +22,15 @@ bitflags! {
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Default)]
+    pub struct OutputFlags: tc_flag_t {
+        const OPOST  = 0o000001;
+        const ONLCR  = 0o000004;
+        const OCRNL  = 0o000010;
+    }
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, Default)]
     pub struct LocalFlags: tc_flag_t {
         const ISIG    = 0o0000001;
         const ICANON  = 0o0000002;
@@ -35,7 +44,7 @@ bitflags! {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Termios {
     pub c_iflag: InputFlags,
-    pub c_oflag: tc_flag_t,
+    pub c_oflag: OutputFlags,
     pub c_cflag: tc_flag_t,
     pub c_lflag: LocalFlags,
     pub c_line: cc_t,
