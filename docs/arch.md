@@ -52,9 +52,11 @@ pub trait ArchTrait {
 }
 ```
 
-这些函数都可以通过`arch::function_name`的方式调用，例如`arch::init()`。`PageTable` 相关的接口已经在内存管理章节中介绍。
+这些函数都可以通过 `arch::function_name` 的方式调用，例如 `arch::init()`。`PageTable` 相关的接口已经在内存管理章节中介绍。
 
-内核提供了处理相应 `trap` 的接口，在发生了 trap 的时候，体系结构层应该调用这些接口来处理相应的事件:
+内核态的上下文切换是以函数形式调用的，所以 `KernelContext` 并不需要保存所有寄存器，只需要保存调用约定中需要保存的寄存器即可。`Arch::kernel_switch` 函数会保存当前内核态上下文到 `from` 指针指向的结构中，然后加载 `to` 指针指向的结构中的上下文，最后返回到新的内核态上下文继续执行。
+
+内核提供了处理相应 trap 的接口，在发生了 trap 的时候，体系结构层应该调用这些接口来处理相应的事件：
 
 ```rust
 // src/kernel/trap.rs
@@ -76,3 +78,4 @@ pub fn memory_misaligned();
 pub fn external_interrupt(irq: u32);
 ```
 
+在 `trap_enter` 和 `trap_return` 中，内核会记录时间点，用于统计任务的用户态和内核态时间。`trap_return` 会在返回用户态之前，检查当前线程是否有待处理的信号，如果有则进行信号处理。`timer_interrupt` 会设置一个新的时间中断，同时检查计时器中是否有需要唤醒的任务。`syscall` 会根据系统调用号调用相应的系统调用处理函数。`memory_fault` 会处理缺页异常和访问权限异常。`external_interrupt` 会根据中断号调用相应的设备中断处理函数。

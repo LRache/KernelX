@@ -44,10 +44,10 @@ KernelX 为每一个任务都分配了一个内核栈和一个内核上下文，
 
 一个任务有以下几种状态：
 
-- 就绪（Ready）：任务可以被调度执行。
-- 运行（Running）：任务正在执行。
-- 阻塞（Blocked）：任务因为等待某个事件而无法执行。
-- 不可打断的阻塞（Uninterruptible Blocked）：任务因为等待某个关键事件而无法被信号等机制打断。
+- 就绪（`Ready`）：任务可以被调度执行。
+- 运行（`Running`）：任务正在执行。
+- 阻塞（`Blocked`）：任务因为等待某个事件而无法执行。
+- 不可打断的阻塞（`Uninterruptible Blocked`）：任务因为等待某个关键事件而无法被信号等机制打断。
 
 内核调度器通过调用这些函数来管理任务的状态转换和调度：
 
@@ -95,7 +95,7 @@ pub fn block_uninterruptible(reason: &'static str) -> Event;
 pub fn sleep(durations: Duration) -> Event;
 ```
 
-记录的位置是体系结构相关的，例如，在 RISC-V 上，记录在 `tp` 寄存器中，示例代码：
+记录的位置是体系结构相关的，例如，在 RISC-V 上，记录在 tp 寄存器中，示例代码：
 
 ```rust
 // src/arch/riscv/arch.rs
@@ -192,6 +192,8 @@ impl<T: Copy> WaitQueue<T> {
 ### 计时器事件
 
 KernelX 提供了计时器机制，允许任务在等待超时时间到达时被唤醒，事件为 `Event::Timeout`。
+
+计时器的内部维护了一个最小堆，用于高效地管理多个计时器事件，在有时钟事件到达的时候，内核会检查堆顶的计时器事件，如果到达时间，则将对应的任务唤醒。
 
 ```rust
 // src/kernel/event/timer.rs

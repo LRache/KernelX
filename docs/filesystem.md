@@ -129,11 +129,11 @@ pub trait SuperBlockOps: Send + Sync {
     fn sync(&self) -> SysResult<()>;
 }
 
-`SuperBlockOps` 定义了超级块的操作接口，包含获取根节点、通过 inode 号获取 inode 对象、创建临时文件节点、卸载文件系统、获取文件系统信息和同步更改等方法。每个具体的文件系统实现都需要提供这些方法的具体实现。
+`SuperBlockOps` 定义了超级块的操作接口，包含获取根节点、通过 Inode 号获取 Inode 对象、创建临时文件节点、卸载文件系统、获取文件系统信息和同步更改等方法。每个具体的文件系统实现都需要提供这些方法的具体实现。
 
-`SuperBlockOps` 返回的 `Arc<dyn InodeOps>` 可以自己持有一份所有权来做缓存，`vfs`层面的 `inode` 缓存将不依赖于 `Arc` 的引用计数。
+`SuperBlockOps` 返回的 `Arc<dyn InodeOps>` 可以自己持有一份所有权来做缓存，`vfs` 层面的 Inode 缓存将不依赖于 `Arc` 的引用计数。
 
-`get_root_ino` 方法用于获取文件系统的根节点的 inode 号，用于对整个文件系统的树形访问。
+`get_root_ino` 方法用于获取文件系统的根节点的 Inode 号，用于对整个文件系统的树形访问。
 
 4. `FileSystemOps`
 
@@ -185,7 +185,7 @@ pub struct Dentry {
 }
 ```
 
-`Dentry` 代表文件系统中的目录项，用于内核的路径解析和目录结构管理。其中的 `children` 字段缓存了子文件，用于加速文件查找。同时，`Dentry` 还持有一个弱引用的 `InodeOps` 对象，用于获取文件的元信息。在 `inode` 缓存失效时，`Dentry` 会通过 `vfs` 层重新加载对应的 `InodeOps` 对象，这样可以防止系统中存在大量未使用的 `InodeOps` 对象占用内存。
+`Dentry` 代表文件系统中的目录项，用于内核的路径解析和目录结构管理。其中的 `children` 字段缓存了子文件，用于加速文件查找。同时，`Dentry` 还持有一个弱引用的 `InodeOps` 对象，用于获取文件的元信息。在 `inode` 缓存失效时，`Dentry` 会通过 VFS 层重新加载对应的 `InodeOps` 对象，这样可以防止系统中存在大量未使用的 `InodeOps` 对象占用内存。
 
 `Dentry` 将 `lookup`、`create`、`link`、`unlink` 等方法封装在自身内部，方便上层调用，并将请求转发到底层的 `InodeOps` 对象，同时更新自身的 `children` 缓存。
 

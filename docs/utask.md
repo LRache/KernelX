@@ -331,6 +331,6 @@ impl FDTable {
     pub fn cloexec(&mut self);
     /// 设置和获取文件描述符表的最大文件描述符数，用于限制进程可打开的文件数
     pub fn set_max_fd(&mut self, max_fd: usize);
-    pub fn get_max_fd(&self) -> usize；
+    pub fn get_max_fd(&self) -> usize;
 }
 ```
