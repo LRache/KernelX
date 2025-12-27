@@ -49,13 +49,13 @@ fn split_with_quotes(input: &str) -> Vec<&str> {
 
 static PCBS: SpinLock<BTreeMap<Tid, Arc<PCB>>> = SpinLock::new(BTreeMap::new());
 
-pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str) {
+pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &str) {
     let initargv = split_with_quotes(initargs);
     let initenvp: &[&str] = &[];
 
     kinfo!("Creating init process: \npath='{}', \ncwd='{}', \nargv={:?}, \nenvp={:?}", initpath, initcwd, initargv, initenvp);
         
-    let pcb = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp).expect("Failed to initialize init process from ELF");
+    let pcb = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp, tty).expect("Failed to initialize init process from ELF");
 
     debug_assert!(pcb.pid() == tid::TID_START, "Init process must have PID 1, got {}", pcb.pid());
         

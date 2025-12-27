@@ -84,7 +84,8 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     task::create_initprocess(
         BOOT_ARGS.get("init").unwrap_or(&config::DEFAULT_INITPATH),
         BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD),
-        BOOT_ARGS.get("initargs").unwrap_or(&"")
+        BOOT_ARGS.get("initargs").unwrap_or(&""),
+        BOOT_ARGS.get("tty").unwrap_or(&config::DEFAULT_INITTTY),
     );
 
     driver::chosen::init(&BOOT_ARGS);
@@ -112,7 +113,7 @@ extern "C" fn kentry(hartid: usize) -> ! {
     kinfo!("Hart {} booted.", hartid);
     arch::set_next_time_event_us(10000);
     arch::enable_timer_interrupt();
-    arch::enable_device_interrupt();
+    arch::enable_device_interrupt(hartid);
     
     scheduler::run_tasks(hartid);
 }

@@ -75,7 +75,7 @@ impl PCB {
         })
     }
 
-    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str]) -> SysResult<Arc<PCB>> {
+    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str], tty: &str) -> SysResult<Arc<PCB>> {
         let new_tid = tid::alloc();
 
         let cwd = vfs::load_dentry(cwd)?;
@@ -101,7 +101,7 @@ impl PCB {
             itimer_ids: SpinLock::new([None; 3]),
         });
 
-        let first_task = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp);
+        let first_task = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
         pcb.tasks.lock().push(first_task);
 
         Ok(pcb)

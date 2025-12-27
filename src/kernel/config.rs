@@ -29,4 +29,5 @@ pub const DEFAULT_BOOT_ROOT_FSTYPE: &str = "ext4";
 pub const DEFAULT_BOOT_ROOT: &str = "virtio_block0";
 pub const DEFAULT_INITPATH: &str = "/init";
 pub const DEFAULT_INITCWD: &str = "/";
+pub const DEFAULT_INITTTY: &str = "/dev/serial@10000000";
 /* ------ BOOT ARGS ------- */

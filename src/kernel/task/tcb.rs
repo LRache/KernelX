@@ -137,6 +137,7 @@ impl TCB {
         initpath: &str,
         argv: &[&str],
         envp: &[&str],
+        tty: &str
     ) -> Arc<Self> {
         let file = vfs::open_file(
             initpath, 
@@ -166,7 +167,7 @@ impl TCB {
                 }
                 new_argv.push(initpath);
 
-                return Self::new_inittask(tid, parent, interpreter, &new_argv, envp);
+                return Self::new_inittask(tid, parent, interpreter, &new_argv, envp, tty);
             }
         }
         
@@ -190,18 +191,15 @@ impl TCB {
 
         let userstack_top = addrspace.create_user_stack(argv, envp, &auxv).expect("Failed to push args and envp to userstack");
 
-        let mut fdtable = FDTable::new();
-        let stdio = vfs::open_file(
-            "/dev/serial@10000000", 
-            FileFlags {
-                readable: true,
-                writable: true,
-                blocked: true,
-            },
+        let tty = vfs::open_file(
+            tty, 
+            FileFlags { readable: true, writable: true, blocked: true },
             &Perm::new(PermFlags::R | PermFlags::W)
-        ).expect("Failed to open stdio.");
+        ).expect("Failed to open tty for init task");
+
+        let mut fdtable = FDTable::new();
         for _ in 0..3 {
-            fdtable.push(stdio.clone(), FDFlags::empty()).unwrap();
+            fdtable.push(tty.clone(), FDFlags::empty()).unwrap();
         }
         fdtable.push(file.clone(), FDFlags::empty()).unwrap();
 
