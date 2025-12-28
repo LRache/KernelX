@@ -7,7 +7,7 @@ use crate::kernel::config;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MemAccessType, AddrSpace};
 use crate::kernel::mm::MapPerm;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::SysResult;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
 
@@ -129,7 +129,7 @@ impl UserStack {
         );
     }
 
-    fn push_buffer(&mut self, top: &mut usize, buffer: &[u8], pagetable: &mut PageTable, addrspace: &AddrSpace) -> Result<(), Errno> {
+    fn push_buffer(&mut self, top: &mut usize, buffer: &[u8], pagetable: &mut PageTable, addrspace: &AddrSpace) -> SysResult<()> {
         let total_len = buffer.len();
         let new_top = *top - total_len;
         let mut uaddr = new_top;
@@ -164,17 +164,17 @@ impl UserStack {
         Ok(())
     }
 
-    fn push_c_str(&mut self, top: &mut usize, s: &str, pagetable: &mut PageTable, addrspace: &AddrSpace) -> Result<(), Errno> {
+    fn push_c_str(&mut self, top: &mut usize, s: &str, pagetable: &mut PageTable, addrspace: &AddrSpace) -> SysResult<()> {
         self.push_usize(top, 0, pagetable, addrspace)?;
         self.push_buffer(top, s.as_bytes(), pagetable, addrspace)
     }
 
-    fn push_usize(&mut self, top: &mut usize, value: usize, pagetable: &mut PageTable, addrspace: &AddrSpace) -> Result<(), Errno> {
+    fn push_usize(&mut self, top: &mut usize, value: usize, pagetable: &mut PageTable, addrspace: &AddrSpace) -> SysResult<()> {
         // *top &= !(core::mem::size_of::<usize>() - 1);
         self.push_buffer(top, &value.to_le_bytes(), pagetable, addrspace)
     }
 
-    fn push_auxv(&mut self, top: &mut usize, auxv: &Auxv, pagetable: &mut PageTable, addrspace: &AddrSpace) -> Result<(), Errno> {
+    fn push_auxv(&mut self, top: &mut usize, auxv: &Auxv, pagetable: &mut PageTable, addrspace: &AddrSpace) -> SysResult<()> {
         self.push_usize(top, 0, pagetable, addrspace)?;
 
         if auxv.length == 0 {
@@ -209,7 +209,7 @@ impl UserStack {
       LOW
     */
     /// Push arguments and environment variables onto the user stack.
-    pub fn push_argv_envp_auxv(&mut self, argv: &[&str], envp: &[&str], auxv: &Auxv, addrspace: &AddrSpace) -> Result<usize, Errno> {
+    pub fn push_argv_envp_auxv(&mut self, argv: &[&str], envp: &[&str], auxv: &Auxv, addrspace: &AddrSpace) -> SysResult<usize> {
         let mut pagetable = addrspace.pagetable().write();
         let mut top = config::USER_STACK_TOP;
         
@@ -225,19 +225,37 @@ impl UserStack {
             argv_ptrs.push(top);
         }
 
+        // Padding for alignment
+        let mut count_to_push = 0;
+        count_to_push += 1; // auxv NULL
+        count_to_push += auxv.length * 2; // auxv entries
+        count_to_push += 1; // envp NULL
+        count_to_push += envp.len(); // envp pointers
+        count_to_push += 1; // argv NULL
+        count_to_push += argv.len(); // argv pointers
+        count_to_push += 1; // argc
+        top &= !(16 - 1);
+        top -= (16 - (count_to_push * core::mem::size_of::<usize>()) % 16) % 16;
+
+        // Push auxiliary vector
         self.push_auxv(&mut top, auxv, &mut pagetable, addrspace)?;
 
+        // Push envp pointers
         self.push_usize(&mut top, 0, &mut pagetable, addrspace)?;
         for &addr in envp_ptrs.iter().rev() {
             self.push_usize(&mut top, addr, &mut pagetable, addrspace)?;
         }
 
+        // Push argv pointers
         self.push_usize(&mut top, 0, &mut pagetable, addrspace)?;
         for &addr in argv_ptrs.iter().rev() {
             self.push_usize(&mut top, addr, &mut pagetable, addrspace)?;
         }
 
+        // Push argc
         self.push_usize(&mut top, argv.len(), &mut pagetable, addrspace)?;
+
+        debug_assert!(top % 16 == 0, "User stack top is not aligned to 16 bytes: {:#x}", top);
 
         Ok(top)
     }
