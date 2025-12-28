@@ -16,7 +16,7 @@ mod regs {
     pub const THR: usize = 0; // transmit holding register (for output bytes)
     pub const IER: usize = 1; // interrupt enable register
     pub const LSB: usize = 0; // baud rate divisor LSB (when LCR_BAUD_LATCH is set)
-    pub const MSB: usize = 1; // baud rate divisor MSB (when
+    pub const MSB: usize = 1; // baud rate divisor MSB (when LCR_BAUD_LATCH is set)
     pub const IER_RX_ENABLE: u32 = 1 << 0;
     pub const IER_TX_ENABLE: u32 = 1 << 1;
     pub const FCR: usize = 2; // FIFO control register
