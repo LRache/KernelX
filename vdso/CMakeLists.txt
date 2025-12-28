@@ -10,11 +10,9 @@ endif()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-set(CMAKE_ASM_COMPILER clang)
-set(CMAKE_C_COMPILER clang)
+set(CMAKE_ASM_COMPILER ${CROSS_COMPILE}gcc)
+set(CMAKE_C_COMPILER ${CROSS_COMPILE}gcc)
 
-# Use clang as linker to handle RISC-V targets properly
-set(CMAKE_LINKER clang)
 
 # Fix for CMAKE_ASM_CREATE_SHARED_LIBRARY not being set
 if(NOT CMAKE_ASM_CREATE_SHARED_LIBRARY)

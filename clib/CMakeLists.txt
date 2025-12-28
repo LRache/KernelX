@@ -2,10 +2,6 @@ cmake_minimum_required(VERSION 3.16)
 
 include(${CMAKE_SOURCE_DIR}/cmake/filelist.cmake)
 
-set(CMAKE_ASM_COMPILER clang)
-set(CMAKE_C_COMPILER clang)
-set(CMAKE_CXX_COMPILER clang++)
-
 project(kernelx_clib C CXX ASM)
 
 set(CMAKE_C_STANDARD 11)
