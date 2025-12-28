@@ -5,6 +5,7 @@ type cc_t = u8;
 type speed_t = u32;
 
 bitflags! {
+    #[repr(C)]
     #[derive(Clone, Copy, Debug, Default)]
     pub struct InputFlags: tc_flag_t {
         const IGNBRK = 0o000001;
@@ -21,6 +22,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[repr(C)]
     #[derive(Clone, Copy, Debug, Default)]
     pub struct OutputFlags: tc_flag_t {
         const OPOST  = 0o000001;
@@ -30,6 +32,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[repr(C)]
     #[derive(Clone, Copy, Debug, Default)]
     pub struct LocalFlags: tc_flag_t {
         const ISIG    = 0o0000001;
@@ -40,6 +43,8 @@ bitflags! {
     }
 }
 
+const NCCS: usize = 32;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Termios {
@@ -48,7 +53,20 @@ pub struct Termios {
     pub c_cflag: tc_flag_t,
     pub c_lflag: LocalFlags,
     pub c_line: cc_t,
-    pub c_cc: [cc_t; 19],
+    pub c_cc: [cc_t; NCCS],
+}
+
+const TERMIOS2_NCCS: usize = 19;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Termios2 {
+    pub c_iflag: InputFlags,
+    pub c_oflag: OutputFlags,
+    pub c_cflag: tc_flag_t,
+    pub c_lflag: LocalFlags,
+    pub c_line: cc_t,
+    pub c_cc: [cc_t; TERMIOS2_NCCS],
     pub c_ispeed: speed_t,
     pub c_ospeed: speed_t,
 }
