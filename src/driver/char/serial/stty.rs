@@ -12,7 +12,6 @@ use crate::kernel::mm::AddrSpace;
 use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi::termios::{InputFlags, LocalFlags, OutputFlags, Termios};
-use crate::kinfo;
 use crate::klib::SpinLock;
 use crate::klib::ring::RingBuffer;
 
@@ -198,8 +197,6 @@ impl CharDriverOps for Stty {
                     break;
                 }
             }
-
-            kinfo!("stty: read {} bytes: {:x?}\n", read, &buf[..read]);
 
             read
         };
