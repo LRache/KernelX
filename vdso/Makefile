@@ -2,8 +2,6 @@ ifeq ($(KERNELX_HOME),)
 $(error KERNELX_HOME is not set)
 endif
 
-include $(KERNELX_HOME)/scripts/env/${ARCH}${ARCH_BITS}.env
-
 CC = $(CROSS_COMPILE)gcc
 
 BUILD_DIR = build/$(ARCH)${ARCH_BITS}

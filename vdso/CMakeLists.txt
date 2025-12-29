@@ -13,7 +13,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_ASM_COMPILER ${CROSS_COMPILE}gcc)
 set(CMAKE_C_COMPILER ${CROSS_COMPILE}gcc)
 
-
 # Fix for CMAKE_ASM_CREATE_SHARED_LIBRARY not being set
 if(NOT CMAKE_ASM_CREATE_SHARED_LIBRARY)
     set(CMAKE_ASM_CREATE_SHARED_LIBRARY
@@ -21,11 +20,7 @@ if(NOT CMAKE_ASM_CREATE_SHARED_LIBRARY)
     )
 endif()
 
-include(${KERNELX_HOME}/scripts/cmake/env.cmake)
-
-set(COMMON_FLAGS -Wall -Wextra -fno-common -fno-builtin -nostdlib -ffreestanding -fPIC)
-list(APPEND COMMON_FLAGS -g -ggdb -Og)
-list(APPEND COMMON_FLAGS ${ARCH_COMMON_FLAGS_LIST})
+include(${KERNELX_HOME}/scripts/cmake/common.cmake)
 
 file(
     GLOB_RECURSE SRCS
