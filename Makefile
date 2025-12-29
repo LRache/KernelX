@@ -1,5 +1,5 @@
-KERNEL = build/$(PLATFORM)/vmkernelx
-KERNEL_IMAGE = build/$(PLATFORM)/Image
+KERNEL = build/$(ARCH)$(ARCH_BITS)/vmkernelx
+KERNEL_IMAGE = build/$(ARCH)$(ARCH_BITS)/Image
 
 all: kernel
 

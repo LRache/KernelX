@@ -3,8 +3,8 @@
 #include "arch/riscv/entry.h"
 
 extern char __kernel_end[];
-extern char __bss_start[];
-extern char __bss_end  [];
+extern char __bss_start;
+extern char __bss_end  ;
 
 __init_data
 uintptr_t __riscv_kernel_end;
@@ -15,13 +15,20 @@ __init_text
 void __riscv_init(uintptr_t hartid, const void *fdt, uintptr_t kaddr_offset)  {
     // Clear BSS
     // Assume BSS in aligned to 4K
-    uintptr_t bss_start = (uintptr_t)__bss_start - kaddr_offset;
-    uintptr_t bss_end   = (uintptr_t)__bss_end   - kaddr_offset;
-    for (uintptr_t p = bss_start; p < bss_end; p++) {
-        *((char *)p) = 0;
+    // uintptr_t bss_start = (uintptr_t)__bss_start - kaddr_offset;
+    // uintptr_t bss_end   = (uintptr_t)__bss_end   - kaddr_offset;
+    // uintptr_t* bss_start = (uintptr_t *)*__riscv_init_load_bss_start();
+    // uintptr_t* bss_end   = (uintptr_t *)*__riscv_init_load_bss_end();
+    // for (uintptr_t p = bss_start; p < bss_end; p++) {
+    //     *((char *)p) = 0;
+    // }
+    uintptr_t* bss_start = (uintptr_t *)&__bss_start;
+    uintptr_t* bss_end   = (uintptr_t *)&__bss_end;
+    for (uintptr_t* p = bss_start; p < bss_end; p++) {
+        *p = 0;
     }
     
-    *__riscv_init_load_kernel_end() = (uintptr_t)__kernel_end - kaddr_offset;
+    *__riscv_init_load_kernel_end() = (uintptr_t)__kernel_end;
     *__riscv_init_load_kaddr_offset() = kaddr_offset;
 
     uintptr_t memory_top = __riscv_load_fdt(fdt);
@@ -33,7 +40,8 @@ void __riscv_init(uintptr_t hartid, const void *fdt, uintptr_t kaddr_offset)  {
         Return:
         a0: hartid
         a1: heap_start
-        a2: satp
+        a2: memory_top
+        a3: satp
     */
     asm volatile (
         "mv a0, %0\n"

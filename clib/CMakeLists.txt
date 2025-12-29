@@ -4,6 +4,10 @@ include(${CMAKE_SOURCE_DIR}/cmake/filelist.cmake)
 
 project(kernelx_clib C CXX ASM)
 
+set(CMAKE_ASM_COMPILER ${CROSS_COMPILE}gcc)
+set(CMAKE_C_COMPILER ${CROSS_COMPILE}gcc)
+set(CMAKE_CXX_COMPILER ${CROSS_COMPILE}g++)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 

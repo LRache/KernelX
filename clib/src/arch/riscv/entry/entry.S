@@ -8,8 +8,10 @@ _entry:
     ld      t1, %pcrel_lo(1b)(t1)
     sub t1, t1, t0 // t1 = KADDR_OFFSET
     mv tp, t1
-    
-    la sp, __stack_end
+
+    // la __stack_end
+1:  auipc   sp, %got_pcrel_hi(__stack_end)
+    ld      sp, %pcrel_lo(1b)(sp)
     andi sp, sp, -16
     sub sp, sp, t1
     
@@ -18,8 +20,14 @@ _entry:
     
     li tp, 0
 
-    la sp, __stack_end
-    la t0, main
+    # la sp, __stack_end
+1:  auipc   sp, %got_pcrel_hi(__stack_end)
+    ld      sp, %pcrel_lo(1b)(sp)
+    andi sp, sp, -16
+
+    # la t0, main
+1:  auipc   t0, %got_pcrel_hi(main)
+    ld      t0, %pcrel_lo(1b)(t0)
     
     sfence.vma
     csrw satp, a3

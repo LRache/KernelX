@@ -79,19 +79,19 @@ uintptr_t __riscv_map_kaddr(uintptr_t kaddr_offset, uintptr_t memory_top) {
 
     uint8_t flags;
     flags = PTE_V | PTE_R | PTE_W | PTE_X | PTE_G | PTE_A | PTE_D;
-    for (uintptr_t kaddr = (uintptr_t)__init_start; kaddr < (uintptr_t)__init_end; kaddr += PGSIZE) {
-        map(root, kaddr - kaddr_offset, kaddr - kaddr_offset, flags);
-        map(root, kaddr, kaddr - kaddr_offset, flags);
+    for (uintptr_t paddr = (uintptr_t)__init_start; paddr < (uintptr_t)__init_end; paddr += PGSIZE) {
+        map(root, paddr, paddr, flags);
+        map(root, paddr + kaddr_offset, paddr, flags);
     }
 
     flags = PTE_V | PTE_R | PTE_X | PTE_G | PTE_A | PTE_D;
-    for (uintptr_t kaddr = (uintptr_t)__text_start; kaddr < (uintptr_t)__text_end; kaddr += PGSIZE) {
-        map(root, kaddr, kaddr - kaddr_offset, flags);
+    for (uintptr_t paddr = (uintptr_t)__text_start; paddr < (uintptr_t)__text_end; paddr += PGSIZE) {
+        map(root, paddr + kaddr_offset, paddr, flags);
     }
 
     flags = PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D;
     memory_top = (memory_top + PGSIZE - 1) & ~(PGSIZE - 1);
-    for (uintptr_t paddr = (uintptr_t)__text_end - kaddr_offset; paddr < memory_top; paddr += PGSIZE) {
+    for (uintptr_t paddr = (uintptr_t)__text_end; paddr < memory_top; paddr += PGSIZE) {
         map(root, paddr + kaddr_offset, paddr, flags);
     }
 
