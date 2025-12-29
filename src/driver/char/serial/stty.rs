@@ -48,7 +48,7 @@ impl Stty {
                 icrnl: true,
                 inlcr: false,
                 ocrnl: false,
-                onlcr: true,
+                onlcr: false,
                 opost: true,
                 echo: true,
                 echoe: true,
@@ -60,13 +60,10 @@ impl Stty {
 }
 
 #[inline(always)]
-fn putchar_helper(serial: &mut Box<dyn SerialOps>, c: u8, onlcr: bool) {
-    if c == b'\n' && onlcr {
-        while !serial.putchar(b'\r') {}
-    }
+fn putchar_helper(serial: &mut Box<dyn SerialOps>, c: u8, onlcr: bool, ocrnl: bool) {
     match c {
         b'\r' => {
-            if onlcr {
+            if ocrnl {
                 while !serial.putchar(b'\n') {}
             } else {
                 while !serial.putchar(b'\r') {}
@@ -107,6 +104,7 @@ impl DriverOps for Stty {
         let attr = self.attr.lock();
 
         let onlcr = attr.onlcr & attr.opost;
+        let ocrnl = attr.ocrnl & attr.opost;
 
         while let Some(c) = serial.getchar() {
             let mut push_to_buffer = true;
@@ -114,7 +112,9 @@ impl DriverOps for Stty {
             match c {
                 b'\r' => {
                     if attr.echo {
-                        putchar_helper(&mut *serial, b'\r', onlcr);
+                        // putchar_helper(&mut *serial, b'\r', onlcr, ocrnl);
+                        serial.putchar(b'\r');
+                        serial.putchar(b'\n');
                     }
                     self.recieved_line.store(true, Ordering::SeqCst); 
                 },
@@ -122,13 +122,13 @@ impl DriverOps for Stty {
                     if attr.echoe {
                         push_to_buffer = false;
 
-                        putchar_helper(&mut *serial, 0x08, onlcr); // Backspace
+                        putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
                         if recv_buffer.pop().is_some() && attr.canonical {
-                            putchar_helper(&mut *serial, b' ', onlcr);
-                            putchar_helper(&mut *serial, 0x08, onlcr);
+                            putchar_helper(&mut *serial, b' ', onlcr, ocrnl);
+                            putchar_helper(&mut *serial, 0x08, onlcr, ocrnl);
                         }
                     } else {
-                        putchar_helper(&mut *serial, 0x08, onlcr); // Backspace
+                        putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
                     }
                 }
                 0x3 => { // Ctrl-C
@@ -139,9 +139,9 @@ impl DriverOps for Stty {
                         push_to_buffer = false;
                     }
                     if attr.echo {
-                        putchar_helper(&mut *serial, b'^', onlcr);
-                        putchar_helper(&mut *serial, b'C', onlcr);
-                        putchar_helper(&mut *serial, b'\n', onlcr);
+                        putchar_helper(&mut *serial, b'^', onlcr, ocrnl);
+                        putchar_helper(&mut *serial, b'C', onlcr, ocrnl);
+                        putchar_helper(&mut *serial, b'\n', onlcr, ocrnl);
                     }
                 }
                 _ => {
@@ -166,8 +166,9 @@ impl CharDriverOps for Stty {
         let mut serial = self.serial.lock();
         let attr = self.attr.lock();
         let onlcr = attr.onlcr & attr.opost;
+        let ocrnl = attr.ocrnl & attr.opost;
         for &c in buf {
-            putchar_helper(&mut *serial, c, onlcr);
+            putchar_helper(&mut *serial, c, onlcr, ocrnl);
         }
         Ok(buf.len())
     }
