@@ -1,6 +1,6 @@
 ARCH ?= riscv
 TARGET ?= riscv64-linux-gnu
-TOOLCHAIN_FILE = $(KERNELX_HOME)/scripts/cmake/toolchain/$(ARCH)$(ARCH_BITS).cmake
+TOOLCHAIN_FILE = cmake/toolchain/$(ARCH)$(ARCH_BITS).cmake
 
 CMAKE_DEFINITIONS += ARCH=$(ARCH)
 CMAKE_DEFINITIONS += ARCH_BITS=$(ARCH_BITS)

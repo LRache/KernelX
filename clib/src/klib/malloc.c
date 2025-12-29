@@ -13,7 +13,7 @@ void *malloc(size_t size) {
 }
 
 void *malloc_aligned(size_t align, size_t size) {
-    if (align <= 8) [[clang::likely]] {
+    if (__builtin_expect(align <= sizeof(void*), 1)) {
         return tlsf_malloc(tlsf, size);
     } else {
         return tlsf_memalign(tlsf, align, size);
