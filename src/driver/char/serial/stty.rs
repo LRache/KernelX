@@ -1,4 +1,3 @@
-use core::sync::atomic::{AtomicBool, Ordering};
 use core::usize;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -15,14 +14,48 @@ use crate::kernel::uapi::termios::{InputFlags, LocalFlags, OutputFlags, Termios}
 use crate::klib::SpinLock;
 use crate::klib::ring::RingBuffer;
 
+struct LineBuffer<const N: usize> {
+    buffer: [u8; N],
+    length: usize,
+}
+
+impl<const N: usize> LineBuffer<N> {
+    pub fn new() -> Self {
+        LineBuffer {
+            buffer: [0; N],
+            length: 0,
+        }
+    }
+
+    pub fn input_char(&mut self, c: u8) -> &mut Self {
+        self.buffer[self.length] = c;
+        self.length += 1;
+        self
+    }
+
+    pub fn delete_char(&mut self) {
+        if self.length > 0 {
+            self.length -= 1;
+        }
+    }
+
+    pub fn move_to_ring_buffer<const M: usize>(&mut self, ring: &mut RingBuffer<u8, M>) {
+        for i in 0..self.length {
+            ring.push(self.buffer[i]);
+        }
+        self.length = 0;
+    }
+}
+
 struct Attr {
     icrnl: bool, // Map '\r' to '\n'
     inlcr: bool, // Map '\n' to '\r'
+    igncr: bool, // Ignore '\r'
     ocrnl: bool, // Map '\r' to '\n' when outputting
     onlcr: bool, // Map '\n' to '\r\n' when outputting
     opost: bool,
-    echo: bool,
-    echoe: bool,
+    echo: bool,  // output input characters
+    echoe: bool, // erase character echo back as BS SP BS
     canonical: bool,
 }
 
@@ -30,10 +63,10 @@ pub struct Stty {
     name: String,
     serial: SpinLock<Box<dyn SerialOps>>,
     recv_buffer: SpinLock<RingBuffer<u8, 1024>>,
+    line: SpinLock<LineBuffer<1024>>,
     waiters: SpinLock<WaitQueue<Event>>,
 
     attr: SpinLock<Attr>,
-    recieved_line: AtomicBool,
 }
 
 impl Stty {
@@ -42,19 +75,20 @@ impl Stty {
             name,
             serial: SpinLock::new(serial),
             recv_buffer: SpinLock::new(RingBuffer::new(0)),
+            line: SpinLock::new(LineBuffer::new()),
             waiters: SpinLock::new(WaitQueue::new()),
 
             attr: SpinLock::new(Attr { 
                 icrnl: true,
                 inlcr: false,
+                igncr: false,
                 ocrnl: false,
                 onlcr: false,
                 opost: true,
                 echo: true,
                 echoe: true,
                 canonical: true,
-            }),
-            recieved_line: AtomicBool::new(false),
+            })
         }
     }
 }
@@ -107,21 +141,31 @@ impl DriverOps for Stty {
         let ocrnl = attr.ocrnl & attr.opost;
 
         while let Some(c) = serial.getchar() {
-            let mut push_to_buffer = true;
-            
-            match c {
+            let c = match c {
                 b'\r' => {
-                    if attr.echo {
-                        // putchar_helper(&mut *serial, b'\r', onlcr, ocrnl);
-                        serial.putchar(b'\r');
-                        serial.putchar(b'\n');
+                    if attr.igncr {
+                        continue;
                     }
-                    self.recieved_line.store(true, Ordering::SeqCst); 
+                    if attr.icrnl {
+                        b'\n'
+                    } else {
+                        b'\r'
+                    }
                 },
-                0x7f => if attr.echo {
-                    if attr.echoe {
-                        push_to_buffer = false;
+                b'\n' => {
+                    if attr.inlcr {
+                        b'\r'
+                    } else {
+                        b'\n'
+                    }
+                },
+                _ => c,
+            };
 
+            let mut push_to_buffer = true;
+            match c {
+                0x7f => { // DEL
+                    if attr.echoe {
                         putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
                         if recv_buffer.pop().is_some() && attr.canonical {
                             putchar_helper(&mut *serial, b' ', onlcr, ocrnl);
@@ -129,6 +173,10 @@ impl DriverOps for Stty {
                         }
                     } else {
                         putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
+                    }
+
+                    if attr.canonical {
+                        self.line.lock().delete_char();
                     }
                 }
                 0x3 => { // Ctrl-C
@@ -139,19 +187,40 @@ impl DriverOps for Stty {
                         push_to_buffer = false;
                     }
                     if attr.echo {
-                        putchar_helper(&mut *serial, b'^', onlcr, ocrnl);
-                        putchar_helper(&mut *serial, b'C', onlcr, ocrnl);
-                        putchar_helper(&mut *serial, b'\n', onlcr, ocrnl);
+                        serial.putchar(b'^');
+                        serial.putchar(b'C');
+                    }
+                }
+                0x4 => { // Ctrl-D
+                    if attr.echo {
+                        serial.putchar(b'^');
+                        serial.putchar(b'D');
+                    }
+                    if attr.canonical {
+                        self.line.lock().move_to_ring_buffer(&mut *recv_buffer);
+                        recv_buffer.push(0x4); // EOF
+                    }
+                }
+                b'\n' => {
+                    if attr.echo {
+                        serial.putchar(b'\n');
+                    }
+                    if attr.canonical {
+                        self.line.lock().input_char(b'\n')
+                                        .move_to_ring_buffer(&mut *recv_buffer);
                     }
                 }
                 _ => {
                     if attr.echo {
                         serial.putchar(c);
                     }
+                    if attr.canonical {
+                        self.line.lock().input_char(c);
+                    }
                 },
             };
 
-            if push_to_buffer {
+            if !attr.canonical && push_to_buffer {
                 recv_buffer.push(c);
             }
         }
@@ -174,16 +243,46 @@ impl CharDriverOps for Stty {
     }
 
     fn read(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize> {
-        let mut helper = || {
+        if blocked {
+            loop {
+                {
+                    let mut read = 0;
+                    let mut recv_buffer = self.recv_buffer.lock();
+                    let attr = self.attr.lock();
+                    
+                    for i in 0..buf.len() {
+                        if let Some(mut c) = recv_buffer.pop() {
+                            if attr.icrnl && c == b'\r' {
+                                c = b'\n';
+                            } else if attr.inlcr && c == b'\n' {
+                                c = b'\r';
+                            } else if attr.canonical && c == 0x4 { // EOF
+                                return Ok(read);
+                            }
+                            buf[i] = c;
+                            read += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if read > 0 {
+                        return Ok(read);
+                    }
+                }
+                
+                self.waiters.lock().wait_current(Event::ReadReady);
+                match current::block("read_stty") {
+                    Event::ReadReady => {},
+                    Event::Signal => return Err(Errno::EINTR),
+                    _ => unreachable!(),
+                }
+            }
+        } else {
             let mut recv_buffer = self.recv_buffer.lock();
             let mut read = 0;
 
             let attr = self.attr.lock();
-            if attr.canonical {
-                if self.recieved_line.compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-                    return 0;
-                }
-            }
             
             for i in 0..buf.len() {
                 if let Some(mut c) = recv_buffer.pop() {
@@ -199,24 +298,6 @@ impl CharDriverOps for Stty {
                 }
             }
 
-            read
-        };
-
-        if blocked {
-            loop {
-                let read = helper();
-                if read > 0 {
-                    return Ok(read);
-                }
-                self.waiters.lock().wait_current(Event::ReadReady);
-                match current::block("read_stty") {
-                    Event::ReadReady => {},
-                    Event::Signal => return Err(Errno::EINTR),
-                    _ => unreachable!(),
-                }
-            }
-        } else {
-            let read = helper();
             return Ok(read);
         }
     }
