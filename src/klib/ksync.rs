@@ -46,7 +46,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
     pub fn deadlock_detect(&self) -> bool {
         if self.lock.is_locked() {
             let tid = current::tid();
-            if tid >= 0 && *self.holder() == tid {
+            if tid >= 0 && self.holder() == tid {
                 return true;
             }
         }
@@ -54,14 +54,14 @@ impl<T, R: LockerTrait> Mutex<T, R> {
     }
 
     pub fn lock(&self) -> LockGuard<'_, T, R> {
+        let tid = current::tid();
         #[cfg(feature = "deadlock-detect")]
         if self.deadlock_detect() {
-            let tid = current::tid();
             panic!("Deadlock detected in Mutex: current thread {} is trying to lock a mutex it already holds", tid);
         }
         
         self.lock.lock();
-        *self.holder() = current::tid();
+        self.set_holder(tid);
         
         LockGuard {
             data: unsafe { &mut *self.data.get() },
@@ -73,8 +73,14 @@ impl<T, R: LockerTrait> Mutex<T, R> {
         self.lock.unlock();
     }
 
-    fn holder(&self) -> &mut Tid {
-        unsafe { &mut *self.holder.get() }
+    fn holder(&self) -> Tid {
+        unsafe { *self.holder.get() }
+    }
+
+    fn set_holder(&self, tid: Tid) {
+        unsafe {
+            *self.holder.get() = tid;
+        }
     }
 }
 

@@ -78,7 +78,7 @@ pub unsafe fn write_volatile<T>(dst: *mut T, val: T) {
 }
 
 pub fn page_count(size: usize) -> usize {
-    (size + PGSIZE - 1) / PGSIZE
+    size.div_ceil(PGSIZE)
 }
 
 pub unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {

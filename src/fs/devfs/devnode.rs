@@ -103,7 +103,7 @@ impl InodeOps for BlockDevInode {
     }
 
     fn size(&self) -> SysResult<u64> {
-        Ok(self.driver.get_block_size() as u64 * self.driver.get_block_count() as u64)
+        Ok(self.driver.get_block_size() as u64 * self.driver.get_block_count())
     }
 
     fn type_name(&self) -> &'static str {

@@ -41,9 +41,9 @@ impl PLIC {
     }
 
     pub fn set_hart_threshold(&mut self, hart_id: usize, threshold: u32) {
-        self.get_context_id(hart_id).map(|context_id| {
+        if let Some(context_id) = self.get_context_id(hart_id) {
             self.set_context_threshold(context_id, threshold);
-        });
+        }
     }
 
     fn enable_irq_for_context(&self, context_id: usize, irq: u32) {
@@ -127,7 +127,7 @@ pub fn from_fdt(fdt: &Fdt, fdt_node: &FdtNode) {
                             return None;
                         }
 
-                        Some(cpu_node.property("reg")?.as_usize()?)
+                        cpu_node.property("reg")?.as_usize()
                     };
 
                     if let Some(hart_id) = get_hart_id() {
@@ -146,10 +146,10 @@ pub fn from_fdt(fdt: &Fdt, fdt_node: &FdtNode) {
             let kbase = page::alloc_contiguous(pages);
             arch::map_kernel_addr(kbase, base, size, arch::MapPerm::RW);
 
-            return Some(PLIC::new(kbase, smode_context))
+            Some(PLIC::new(kbase, smode_context))
         } else {
-            return None;
-        };
+            None
+        }
     };
     
     if let Some(plic) = helper() {

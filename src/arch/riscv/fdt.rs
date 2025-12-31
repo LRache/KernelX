@@ -59,11 +59,11 @@ fn load_soc_node(child: &FdtNode) {
 
 fn load_plic_node(fdt: &Fdt, soc_node: &FdtNode) {
     if let Some(child) = soc_node.children().find(|child| {
-        child.compatible().map_or(false, |compatibles| {
+        child.compatible().is_some_and(|compatibles| {
             compatibles.all().into_iter().any(|c| c == "riscv,plic0")
         })
     }) {
-        plic::from_fdt(&fdt, &child);
+        plic::from_fdt(fdt, &child);
     } else {
         plic::not_found();
     }

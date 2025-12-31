@@ -22,15 +22,13 @@ pub struct VirtualFileSystem {
 
 impl VirtualFileSystem {
     pub fn new() -> Self {
-        let vfs = VirtualFileSystem {
+        VirtualFileSystem {
             cache: inode::Cache::new(),
             mountpoint: Mutex::new(Vec::new()),
             superblock_table: Mutex::new(SuperBlockTable::new()),
             fstype_map: BTreeMap::new(),
             root: InitedCell::uninit(),
-        };
-
-        vfs
+        }
     }
 
     pub fn get_root(&self) -> &Arc<Dentry> {

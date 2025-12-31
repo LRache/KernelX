@@ -147,9 +147,6 @@ impl DriverOps for Stty {
         let mut recv_buffer = self.recv_buffer.lock();
         let attr = self.attr.lock();
 
-        let onlcr = attr.onlcr & attr.opost;
-        let ocrnl = attr.ocrnl & attr.opost;
-
         while let Some(c) = serial.getchar() {
             let c = match c {
                 b'\r' => {
@@ -179,16 +176,16 @@ impl DriverOps for Stty {
                     if attr.echoe {
                         if attr.canonical {
                             if !line.empty() {
-                                putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
-                                putchar_helper(&mut *serial, b' ', onlcr, ocrnl);
-                                putchar_helper(&mut *serial, 0x08, onlcr, ocrnl);
+                                serial.putchar(0x08); // Backspace
+                                serial.putchar(b' '); // Space
+                                serial.putchar(0x08); // Backspace
                             }
                             push_to_buffer = false;
                         } else {
-                            putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
+                            serial.putchar(0x08); // Backspace
                         }
                     } else {
-                        putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
+                        serial.putchar(0x08); // Backspace
                     }
 
                     if attr.canonical {
@@ -253,7 +250,7 @@ impl CharDriverOps for Stty {
         let onlcr = attr.onlcr & attr.opost;
         let ocrnl = attr.ocrnl & attr.opost;
         for &c in buf {
-            putchar_helper(&mut *serial, c, onlcr, ocrnl);
+            putchar_helper(&mut serial, c, onlcr, ocrnl);
         }
         Ok(buf.len())
     }
@@ -300,14 +297,14 @@ impl CharDriverOps for Stty {
 
             let attr = self.attr.lock();
             
-            for i in 0..buf.len() {
+            for i in buf.iter_mut() {
                 if let Some(mut c) = recv_buffer.pop() {
                     if attr.icrnl && c == b'\r' {
                         c = b'\n';
                     } else if attr.inlcr && c == b'\n' {
                         c = b'\r';
                     }
-                    buf[i] = c;
+                    *i = c;
                     read += 1;
                 } else {
                     break;

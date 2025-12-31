@@ -15,15 +15,10 @@ use crate::klib::SpinLock;
 
 use super::superblock::{SuperBlockInner, StaticFsInfo};
 
+#[derive(Default)]
 struct Timespec {
     tv_sec: u64,
     tv_nsec: u64,
-}
-
-impl Default for Timespec {
-    fn default() -> Self {
-        Timespec { tv_sec: 0, tv_nsec: 0 }
-    }
 }
 
 struct FileMeta {

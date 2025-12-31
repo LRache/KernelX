@@ -114,8 +114,8 @@ impl PipeInner {
                 }
             }
 
-            for i in 0..buf.len() {
-                fifo.push_back(buf[i]);
+            for c in buf {
+                fifo.push_back(*c);
             }
 
             self.read_waiter.lock().wake_all(|e| e); // Wake up readers waiting for data
@@ -158,7 +158,7 @@ impl PipeInner {
         
         let buffer = self.buffer.lock();
         if event.contains(PollEventSet::POLLIN) {
-            if buffer.len() > 0 && !writable {
+            if !buffer.is_empty() && !writable {
                 return Ok(Some(FileEvent::ReadReady));
             } else {
                 if *self.writer_count.lock() == 0 {

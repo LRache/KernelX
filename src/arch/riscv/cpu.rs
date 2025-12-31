@@ -29,9 +29,9 @@ static TIME_FREQ: InitedCell<u32> = InitedCell::uninit();
 
 pub fn load_cpu_node(cpus_node: &FdtNode) {
     let timebase_freq_prop = cpus_node.property("timebase-frequency").unwrap();
-    timebase_freq_prop.as_usize().map(|freq| {
+    if let Some(freq) = timebase_freq_prop.as_usize() {
         TIME_FREQ.init(freq as u32);
-    });
+    }
     kinfo!("Init timebase frequency = {}Hz", *TIME_FREQ);
     
     let mut cpus = Vec::new();

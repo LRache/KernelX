@@ -74,11 +74,10 @@ impl Dentry {
     pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
         let mut children = self.children.lock();
 
-        if let Some(child) = children.get(name) {
-            if let Some(child) = child.upgrade() {
-                return Ok(child);
-            }
+        if let Some(child) = children.get(name) && let Some(child) = child.upgrade() {
+            return Ok(child);
         }
+        
         let lookup_ino = self.get_inode().lookup(name)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
@@ -152,7 +151,7 @@ impl Dentry {
     }
 
     pub fn create(self: &Arc<Self>, name: &str, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
-        if let Ok(_) = self.lookup(name) {
+        if self.lookup(name).is_ok() {
             return Err(Errno::EEXIST);
         }
 

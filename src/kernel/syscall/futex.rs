@@ -80,15 +80,13 @@ pub fn futex(
         },
         FutexOp::Wake | FutexOp::WakeBitset => {
             let kaddr = uaddr.kaddr()?;
-            let woken = futex::wake(kaddr, val as usize, u32::MAX)?;
-            Ok(woken as usize)
+            futex::wake(kaddr, val, u32::MAX)
         },
 
         FutexOp::REQUEUE => {
             let kaddr = uaddr.kaddr()?;
             let kaddr2 = uaddr2.kaddr()?;
-            let n = futex::requeue(kaddr, kaddr2, val as usize, None)?;
-            Ok(n as usize)
+            futex::requeue(kaddr, kaddr2, val, None)
         },
     }
 }

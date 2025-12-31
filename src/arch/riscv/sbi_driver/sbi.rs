@@ -37,7 +37,7 @@ pub fn shutdown() -> ! {
     }
 }
 
-pub fn putchar(c: u8) -> () {
+pub fn putchar(c: u8) {
     sbi_call(0x0, 0x1, c as usize, 0, 0, 0, 0, 0);
 }
 

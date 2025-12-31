@@ -25,7 +25,7 @@ unsafe impl Hal for VirtIOHal {
     }
 
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
-        return arch::kaddr_to_paddr(buffer.as_ptr() as *mut u8 as usize);
+        arch::kaddr_to_paddr(buffer.as_ptr() as *mut u8 as usize)
     }
 
     unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {

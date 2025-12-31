@@ -150,16 +150,16 @@ impl SigContext {
     }
 }
 
-impl Into<SigContext> for UserContext {
-    fn into(self) -> SigContext {
+impl From<UserContext> for SigContext {
+    fn from(uc: UserContext) -> Self {
         let mut gregs: [usize; 31] = [0; 31];
-        gregs.copy_from_slice(&self.gpr[1..32]);
+        gregs.copy_from_slice(&uc.gpr[1..32]);
         
         let mut fpregs: [u64; 66] = [0; 66];
-        fpregs[..33].copy_from_slice(&self.fpregs);
+        fpregs[..33].copy_from_slice(&uc.fpregs);
         
         SigContext {
-            pc: self.user_entry,
+            pc: uc.user_entry,
             gregs,
             fpregs,
         }

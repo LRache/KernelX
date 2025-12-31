@@ -55,12 +55,12 @@ impl<T: PageAllocator> PageTableImpls<T> {
         self.find_pte_vpn(Addr::from_vaddr(vaddr).vpn())
     }
 
-    fn find_pte_vpn(&self, vpn: [usize; PAGE_TABLE_LEVELS]) -> Option<PTE> {
+    fn find_pte_vpn(&self, vpns: [usize; PAGE_TABLE_LEVELS]) -> Option<PTE> {
         debug_assert!(self.root != 0);
         let mut ptetable = PTETable::new(self.root as *mut usize);
         
-        for level in 0..PAGE_TABLE_LEVELS {
-            let pte = ptetable.get(vpn[level]);
+        for (level, vpn) in vpns.iter().enumerate() {
+            let pte = ptetable.get(*vpn);
             if !pte.is_valid() {
                 return None;
             }

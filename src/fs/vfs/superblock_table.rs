@@ -33,20 +33,16 @@ impl SuperBlockTable {
     }
 
     pub fn unmount_all(&self) -> SysResult<()> {
-        for fs in &self.table {
-            if let Some(sb) = fs {
-                sb.sync()?;
-                sb.unmount()?;
-            }
+        for sb in self.table.iter().flatten() {
+            sb.sync()?;
+            sb.unmount()?;
         }
         Ok(())
     }
 
     pub fn sync_all(&self) -> SysResult<()> {
-        for fs in &self.table {
-            if let Some(sb) = fs {
-                let _ = sb.sync();
-            }
+        for sb in self.table.iter().flatten() {
+            sb.sync()?;
         }
         Ok(())
     }

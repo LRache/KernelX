@@ -110,28 +110,28 @@ impl FileOps for File {
 
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
         let mut pos = self.pos.lock();
-        let new_pos;
-        match whence {
+        let new_pos = match whence {
             SeekWhence::BEG => {
                 if offset < 0 {
                     return Err(Errno::EINVAL);
                 }
-                new_pos = offset;
+                offset as isize
             }
             SeekWhence::CUR => {
                 if offset < 0 && (*pos as isize + offset) < 0 {
                     return Err(Errno::EINVAL);
                 }
-                new_pos = *pos as isize + offset;
+                *pos as isize + offset
             }
             SeekWhence::END => {
                 let size = self.inode.size()?;
                 if offset > 0 && (size as isize + offset) < 0 {
                     return Err(Errno::EINVAL);
                 }
-                new_pos = size as isize + offset;
+                size as isize + offset
             }
-        }
+        };
+        
         if new_pos < 0 {
             return Err(Errno::EINVAL);
         }
