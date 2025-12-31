@@ -85,6 +85,7 @@ pub struct Stty {
     recv_buffer: SpinLock<RingBuffer<u8, 1024>>,
     line: SpinLock<LineBuffer<1024>>,
     waiters: SpinLock<WaitQueue<Event>>,
+    winsize: SpinLock<(u16, u16)>, // (rows, cols)
 
     attr: SpinLock<Attr>,
 }
@@ -97,9 +98,21 @@ impl Stty {
             recv_buffer: SpinLock::new(RingBuffer::new(0)),
             line: SpinLock::new(LineBuffer::new()),
             waiters: SpinLock::new(WaitQueue::new()),
+            winsize: SpinLock::new((25, 80)),
 
             attr: SpinLock::new(Attr::default()),
         }
+    }
+
+    fn set_termios(&self, termios: &Termios) {
+        let mut attr = self.attr.lock();
+        attr.icrnl = termios.c_iflag.contains(InputFlags::ICRNL);
+        attr.inlcr = termios.c_iflag.contains(InputFlags::INLCR);
+        attr.ocrnl = termios.c_oflag.contains(OutputFlags::OCRNL);
+        attr.onlcr = termios.c_oflag.contains(OutputFlags::ONLCR);
+        attr.opost = termios.c_oflag.contains(OutputFlags::OPOST);
+        attr.echo = termios.c_lflag.contains(LocalFlags::ECHO);
+        attr.canonical = termios.c_lflag.contains(LocalFlags::ICANON);
     }
 }
 
@@ -354,21 +367,12 @@ impl CharDriverOps for Stty {
             TCSETSW = 0x5403,
             TCSETSF = 0x5404,
             TIOCGWINSZ = 0x5413,
+            TIOCSWINSZ = 0x5414,
             TCGETS2 = 0x802C542A,
         }
 
         let req = IOCTLReq::try_from(request).map_err(|_| Errno::EINVAL)?;
         match req {
-            IOCTLReq::TIOCGWINSZ => {
-                let winsize = WinSize {
-                    ws_row: 25,
-                    ws_col: 80,
-                    ws_xpixel: 0,
-                    ws_ypixel: 0,
-                };
-                addrspace.copy_to_user(arg, winsize)?;
-                Ok(0)
-            }
             IOCTLReq::TCGETS => {
                 let attr = self.attr.lock();
                 let mut termios = Termios::default();
@@ -393,21 +397,37 @@ impl CharDriverOps for Stty {
             }
             IOCTLReq::TCSETS => {
                 let termios = addrspace.copy_from_user::<Termios>(arg)?;
-                let mut attr = self.attr.lock();
-                attr.icrnl = termios.c_iflag.contains(InputFlags::ICRNL);
-                attr.inlcr = termios.c_iflag.contains(InputFlags::INLCR);
-                attr.ocrnl = termios.c_oflag.contains(OutputFlags::OCRNL);
-                attr.onlcr = termios.c_oflag.contains(OutputFlags::ONLCR);
-                attr.opost = termios.c_oflag.contains(OutputFlags::OPOST);
-                attr.echo = termios.c_lflag.contains(LocalFlags::ECHO);
-                attr.canonical = termios.c_lflag.contains(LocalFlags::ICANON);
+                self.set_termios(&termios);
+
+                Ok(0)
+            }
+            IOCTLReq::TCSETSF => {
+                let termios = addrspace.copy_from_user::<Termios>(arg)?;
+                self.recv_buffer.lock().clear();
+                self.set_termios(&termios);
+                Ok(0)
+            }
+            IOCTLReq::TIOCGWINSZ => {
+                let (ws_row, ws_col) = *self.winsize.lock();
+                let winsize = WinSize {
+                    ws_row,
+                    ws_col,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                };
+                addrspace.copy_to_user(arg, winsize)?;
+                Ok(0)
+            }
+            IOCTLReq::TIOCSWINSZ => {
+                let winsize = addrspace.copy_from_user::<WinSize>(arg)?;
+                let mut ws = self.winsize.lock();
+                *ws = (winsize.ws_row, winsize.ws_col);
                 Ok(0)
             }
             IOCTLReq::TCGETS2 => {
                 // TODO: implement TCGETS2
                 Ok(0)
             }
-
             _ => {
                 Err(Errno::EINVAL)
             }

@@ -34,4 +34,9 @@ impl<T: Copy, const N: usize> RingBuffer<T, N> {
         self.tail = (self.tail + 1) % N;
         Some(item)
     }
+
+    pub fn clear(&mut self) {
+        self.head = 0;
+        self.tail = 0;
+    }
 }
