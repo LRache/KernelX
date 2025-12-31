@@ -5,12 +5,15 @@ mod fdt;
 mod plic;
 mod csr;
 mod arch;
+mod cpu;
 
 pub use context::{UserContext, KernelContext, SigContext};
 pub use switch::kernel_switch;
 pub use process::*;
 pub use pagetable::*;
-pub use fdt::{load_device_tree, time_frequency};
+pub use fdt::load_device_tree;
+
+use cpu::{time_frequency, core_count};
 
 pub const PGBITS: usize = 12; // 4KB page size
 pub const PGSIZE: usize = 1 << PGBITS; // 4096 bytes

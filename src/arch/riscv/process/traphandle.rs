@@ -1,3 +1,4 @@
+use crate::arch::riscv::cpu::get_cpu_info;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -5,7 +6,6 @@ use crate::kernel::syscall;
 use crate::arch::riscv::csr::*;
 use crate::arch::riscv::UserContext;
 use crate::arch::riscv::TRAMPOLINE_BASE;
-use crate::arch::riscv::fdt::svadu_enable;
 use crate::arch::riscv::plic;
 use crate::arch::UserContextTrait;
 use crate::kinfo;
@@ -54,12 +54,28 @@ fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
 }
 
 unsafe extern "C" {
+    fn asm_save_float(fregs: *mut u64);
+    fn asm_save_double(fregs: *mut u64);
+    fn asm_restore_float(fregs: *const u64);
+    fn asm_restore_double(fregs: *const u64);
     fn asm_kerneltrap_entry() -> !;
 }
 
 pub fn usertrap_handler() -> ! {
     stvec::write(asm_kerneltrap_entry as usize);
-    current::tcb().user_context().set_user_entry(sepc::read());
+    let user_context = current::tcb().user_context();
+    user_context.set_user_entry(sepc::read());
+
+    let cpu_info = get_cpu_info(current::hart_id());
+    let sstatus = Sstatus::read();
+
+    if sstatus.fs() == SstatusFs::Dirty {
+        if cpu_info.double_supported() {
+            unsafe { asm_save_double(user_context.fpregs.as_mut_ptr()); }
+        } else if cpu_info.float_supported() {
+            unsafe { asm_save_float(user_context.fpregs.as_mut_ptr()); }
+        }
+    }
 
     trap::trap_enter();
     
@@ -69,19 +85,19 @@ pub fn usertrap_handler() -> ! {
                 scause::Trap::EcallU => handle_syscall(),
                 scause::Trap::InstPageFault => {
                     let addr = stval::read();
-                    if svadu_enable() || !svadu_mark_page_accessed(addr) {
+                    if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
                         trap::memory_fault(addr, MemAccessType::Execute);
                     }
                 },
                 scause::Trap::LoadPageFault => {
                     let addr = stval::read();
-                    if svadu_enable() || !svadu_mark_page_accessed(addr) {
+                    if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
                         trap::memory_fault(addr, MemAccessType::Read);
                     }
                 },
                 scause::Trap::StorePageFault => {
                     let addr = stval::read();
-                    if svadu_enable() || !svadu_mark_page_accessed_and_dirty(addr) {
+                    if cpu_info.svadu_enabled() || !svadu_mark_page_accessed_and_dirty(addr) {
                         trap::memory_fault(addr, MemAccessType::Write);
                     }
                 },
@@ -143,9 +159,17 @@ pub fn return_to_user() -> ! {
     stvec::write(TRAMPOLINE_BASE);
     sscratch::write(tcb.get_user_context_uaddr());
 
+    let cpu_info = get_cpu_info(current::hart_id());
+    if cpu_info.double_supported() {
+        unsafe { asm_restore_double(tcb.user_context().fpregs.as_ptr()); }
+    } else if cpu_info.float_supported() {
+        unsafe { asm_restore_float(tcb.user_context().fpregs.as_ptr()); }
+    }
+
     Sstatus::read()
         .set_spie(true) // Enable interrupts in user mode
         .set_spp(true) // Set previous mode to user
+        .set_fs(SstatusFs::Clean)
         .write();
     
     let user_context_ptr = tcb.get_user_context_ptr();

@@ -3,7 +3,7 @@ pub mod scause;
 mod sstatus;
 mod sie;
 
-pub use sstatus::Sstatus;
+pub use sstatus::*;
 pub use sie::SIE;
 
 pub mod sepc {

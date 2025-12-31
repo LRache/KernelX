@@ -2,7 +2,6 @@ use core::time::Duration;
 
 use alloc::sync::Arc;
 
-use crate::arch::riscv::fdt::core_count;
 use crate::arch::riscv::{csr, load_device_tree, plic, process, sbi_driver};
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
 use crate::arch::{self, Arch, ArchTrait, UserContextTrait};
@@ -15,8 +14,7 @@ use crate::{driver, kinfo};
 use super::KernelContext;
 use super::pagetable::kernelpagetable;
 use super::csr::{Sstatus, SIE, stvec};
-use super::time_frequency;
-use super::kernel_switch;
+use super::{time_frequency, kernel_switch, core_count};
 use super::sbi_driver::SBIKConsole;
 
 unsafe extern "C" {

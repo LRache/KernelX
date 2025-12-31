@@ -1,6 +1,5 @@
 use fdt::node::FdtNode;
 use fdt::Fdt;
-use alloc::vec::Vec;
 
 use crate::arch::riscv::plic;
 use crate::kernel::parse_boot_args;
@@ -9,8 +8,8 @@ use crate::driver::found_device;
 use crate::klib::initcell::InitedCell;
 use crate::{kinfo, kwarn};
 
-static TIME_FREQ: InitedCell<u32> = InitedCell::uninit();
-static SVADU_EXTENSION_ENABLED: InitedCell<bool> = InitedCell::uninit();
+use super::cpu::load_cpu_node;
+
 static CORE_COUNT: InitedCell<usize> = InitedCell::uninit();
 
 pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
@@ -26,17 +25,12 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
 
     let fdt = Fdt::new(data).unwrap();
     
-    let cpu_node = fdt.find_node("/cpus").unwrap();
-    let timebase_freq_prop = cpu_node.property("timebase-frequency").ok_or(())?;
-    timebase_freq_prop.as_usize().map(|freq| {
-        TIME_FREQ.init(freq as u32);
-    });
+    let cpus_node = fdt.find_node("/cpus").unwrap();
+    load_cpu_node(&cpus_node);
     
     let core_count = 1;
     CORE_COUNT.init(core_count);
     kinfo!("Detected {} CPU cores", core_count);
-
-    kinfo!("Init timebase frequency = {}Hz", *TIME_FREQ);
     
     let soc_node = fdt.find_node("/soc").unwrap();
     load_plic_node(&fdt, &soc_node);
@@ -44,8 +38,6 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     for child in soc_node.children() {
         load_soc_node(&child);
     }
-
-    load_cpu_node(&cpu_node.children().next().unwrap());
 
     let chosen_node = fdt.find_node("/chosen").unwrap();
     if let Some(bootargs_prop) = chosen_node.property("bootargs") {
@@ -77,27 +69,15 @@ fn load_plic_node(fdt: &Fdt, soc_node: &FdtNode) {
     }
 }
 
-fn load_cpu_node(child: &FdtNode) {
-    let isa_support = child.property("riscv,isa").and_then(|p| p.as_str()).unwrap_or("");
-    let extensions: Vec<&str> = isa_support.split('_').collect();
-    kinfo!("CPU ISA extensions: {:?}", extensions);
-    if extensions.iter().find(|&&ext| ext == "svadu").is_some() {
-        SVADU_EXTENSION_ENABLED.init(true);
-        kinfo!("SVADU extension is enabled");
-    } else {
-        SVADU_EXTENSION_ENABLED.init(false);
-        kinfo!("SVADU extension is disabled");
-    };
-}
-
-pub fn time_frequency() -> u32 {
-    *TIME_FREQ
-}
-
-pub fn svadu_enable() -> bool {
-    *SVADU_EXTENSION_ENABLED
-}
-
-pub fn core_count() -> usize {
-    *CORE_COUNT
-}
+// fn load_cpu_node(child: &FdtNode) {
+//     let isa_support = child.property("riscv,isa").and_then(|p| p.as_str()).unwrap_or("");
+//     let extensions: Vec<&str> = isa_support.split('_').collect();
+//     kinfo!("CPU ISA extensions: {:?}", extensions);
+//     if extensions.iter().find(|&&ext| ext == "svadu").is_some() {
+//         SVADU_EXTENSION_ENABLED.init(true);
+//         kinfo!("SVADU extension is enabled");
+//     } else {
+//         SVADU_EXTENSION_ENABLED.init(false);
+//         kinfo!("SVADU extension is disabled");
+//     };
+// }
