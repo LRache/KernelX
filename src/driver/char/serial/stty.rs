@@ -20,30 +20,34 @@ struct LineBuffer<const N: usize> {
 }
 
 impl<const N: usize> LineBuffer<N> {
-    pub fn new() -> Self {
+    fn new() -> Self {
         LineBuffer {
             buffer: [0; N],
             length: 0,
         }
     }
 
-    pub fn input_char(&mut self, c: u8) -> &mut Self {
+    fn input_char(&mut self, c: u8) -> &mut Self {
         self.buffer[self.length] = c;
         self.length += 1;
         self
     }
 
-    pub fn delete_char(&mut self) {
+    fn delete_char(&mut self) {
         if self.length > 0 {
             self.length -= 1;
         }
     }
 
-    pub fn move_to_ring_buffer<const M: usize>(&mut self, ring: &mut RingBuffer<u8, M>) {
+    fn move_to_ring_buffer<const M: usize>(&mut self, ring: &mut RingBuffer<u8, M>) {
         for i in 0..self.length {
             ring.push(self.buffer[i]);
         }
         self.length = 0;
+    }
+
+    fn empty(&self) -> bool {
+        self.length == 0
     }
 }
 
@@ -57,6 +61,22 @@ struct Attr {
     echo: bool,  // output input characters
     echoe: bool, // erase character echo back as BS SP BS
     canonical: bool,
+}
+
+impl Default for Attr {
+    fn default() -> Self {
+        Attr {
+            icrnl: true,
+            inlcr: false,
+            igncr: false,
+            ocrnl: false,
+            onlcr: false,
+            opost: true,
+            echo: true,
+            echoe: true,
+            canonical: true,
+        }
+    }
 }
 
 pub struct Stty {
@@ -78,17 +98,7 @@ impl Stty {
             line: SpinLock::new(LineBuffer::new()),
             waiters: SpinLock::new(WaitQueue::new()),
 
-            attr: SpinLock::new(Attr { 
-                icrnl: true,
-                inlcr: false,
-                igncr: false,
-                ocrnl: false,
-                onlcr: false,
-                opost: true,
-                echo: true,
-                echoe: true,
-                canonical: true,
-            })
+            attr: SpinLock::new(Attr::default()),
         }
     }
 }
@@ -165,18 +175,24 @@ impl DriverOps for Stty {
             let mut push_to_buffer = true;
             match c {
                 0x7f => { // DEL
+                    let mut line = self.line.lock();
                     if attr.echoe {
-                        putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
-                        if recv_buffer.pop().is_some() && attr.canonical {
-                            putchar_helper(&mut *serial, b' ', onlcr, ocrnl);
-                            putchar_helper(&mut *serial, 0x08, onlcr, ocrnl);
+                        if attr.canonical {
+                            if !line.empty() {
+                                putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
+                                putchar_helper(&mut *serial, b' ', onlcr, ocrnl);
+                                putchar_helper(&mut *serial, 0x08, onlcr, ocrnl);
+                            }
+                            push_to_buffer = false;
+                        } else {
+                            putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
                         }
                     } else {
                         putchar_helper(&mut *serial, 0x08, onlcr, ocrnl); // Backspace
                     }
 
                     if attr.canonical {
-                        self.line.lock().delete_char();
+                        line.delete_char();
                     }
                 }
                 0x3 => { // Ctrl-C
