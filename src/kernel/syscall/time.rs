@@ -1,3 +1,8 @@
+use core::time::Duration;
+
+use bitflags::bitflags;
+
+use crate::driver::chosen::kclock;
 use crate::kernel::scheduler::current;
 use crate::kernel::event::{timer, Event};
 use crate::kernel::errno::{SysResult, Errno};
@@ -34,16 +39,33 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, _uptr_rem: usize) -> SysResult<usize>
     }
 }
 
-pub fn clock_nanosleep(_clockid: usize, _flags: usize, uptr_req: UPtr<Timespec>, _uptr_rem: usize) -> SysResult<usize> {
+bitflags! {
+    pub struct ClockNanosleepFlags: usize {
+        const TIMER_ABSTIME = 0x1;
+    }
+}
+
+pub fn clock_nanosleep(_clockid: usize, flags: usize, uptr_req: UPtr<Timespec>, _uptr_rem: usize) -> SysResult<usize> {
     uptr_req.should_not_null()?;
     
-    let req = uptr_req.read()?;
+    let flags = ClockNanosleepFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
-    if req.tv_sec == 0 && req.tv_nsec == 0 {
-        return Ok(0);
-    }
+    let req: Duration = uptr_req.read()?.into();
 
-    timer::add_timer(current::task().clone(), req.into());
+    let to_sleep = if flags.contains(ClockNanosleepFlags::TIMER_ABSTIME) {
+        let now = kclock::now()?;
+        if req <= now {
+            return Ok(0);
+        }
+        req - now
+    } else {
+        if req == Duration::ZERO {
+            return Ok(0);
+        }
+        req
+    };
+
+    timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
     
     match event {
