@@ -40,7 +40,7 @@ static inline uint64_t get_memory_top_from_fdt(const void *fdt) {
 
 __init_text
 uintptr_t __riscv_load_fdt(const void *fdt) {
-    uintptr_t *kernel_end = __riscv_init_load_kernel_end();
+    uintptr_t *ktop = __riscv_init_symbol_ktop();
     
     if (fdt_check_header(fdt) != 0) {
         __riscv_init_die("FDT header is invalid.\n");
@@ -50,13 +50,13 @@ uintptr_t __riscv_load_fdt(const void *fdt) {
     uint32_t fdt_size = fdt_totalsize(fdt);
     
     const char *src = (const char *)fdt;
-    char *dst = (char *)*kernel_end;
+    char *dst = (char *)*ktop;
     for (uint32_t i = 0; i < fdt_size; i++) {
         dst[i] = src[i];
     }
 
-    *__riscv_init_load_copied_fdt() = (void *)(dst + *__riscv_init_load_kaddr_offset());
-    *kernel_end += fdt_size;
+    *__riscv_init_symbol_copied_fdt() = (void *)(dst + *__riscv_init_symbol_kaddr_offset());
+    *ktop += fdt_size;
 
     return get_memory_top_from_fdt(fdt);
 }

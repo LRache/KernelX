@@ -1,5 +1,4 @@
     .global _entry
-    .global __riscv_others_entry
     .section .text.entry
 
 _entry:
@@ -43,6 +42,7 @@ _entry:
     wfi
     j .spin
 
+    .global __riscv_others_entry
 __riscv_others_entry:
     auipc t0, 0
     auipc   t1, %got_pcrel_hi(__riscv_others_entry)
@@ -54,7 +54,8 @@ __riscv_others_entry:
     mv sp, a1 // stack pointer
 
     // Set up the satp for this core
-    jal __riscv_init_load_kpgtable_root
+    jal __riscv_init_symbol_kpgtable_root
+    lw a0, 0(a0)
     li t0, (8 << 60) // SV39
     slli a0, a0, 12
     or a3, t0, a0
