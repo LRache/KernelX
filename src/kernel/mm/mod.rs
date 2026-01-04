@@ -4,7 +4,7 @@ pub mod elf;
 mod addrspace;
 pub mod vdso;
 pub mod maparea;
-// pub mod uptr;
+pub mod ubuf;
 
 pub use addrspace::*;
 pub use page::PhysPageFrame;

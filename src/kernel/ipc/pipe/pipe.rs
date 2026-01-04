@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, InodeOps};
 use crate::fs::file::{FileFlags, FileOps, SeekWhence};
@@ -51,12 +52,20 @@ impl FileOps for Pipe {
         Err(Errno::ESPIPE)
     }
 
+    fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        self.inner.read_to_user(ubuf, *self.blocked.lock())
+    }
+
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         self.inner.write(buf, *self.blocked.lock())
     }
 
     fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
         Err(Errno::EPIPE)
+    }
+
+    fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        self.inner.write_from_user(ubuf, *self.blocked.lock())
     }
 
     fn readable(&self) -> bool {

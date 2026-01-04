@@ -5,6 +5,7 @@ use crate::fs::file::FileFlags;
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::AddrSpace;
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
 use crate::fs::{Dentry, InodeOps};
 
@@ -19,38 +20,33 @@ pub trait FileOps: DowncastSync {
     fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize>;
     fn write(&self, buf: &[u8]) -> SysResult<usize>;
     fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize>;
-    // fn read_from_user(&self, ubuf: usize, length: usize, addrspace: &AddrSpace) -> SysResult<usize> {
-    //     let mut kbuf = [0u8; 1024];
-    //     let mut total_read = 0;
-    //     let mut remaining = length;
-    //     while remaining > 0 {
-    //         let to_read = core::cmp::min(remaining, kbuf.len());
-    //         addrspace.copy_from_user_buffer(ubuf + total_read, &mut kbuf[..to_read])?;
-    //         let n = self.read(&mut kbuf[..to_read])?;
-    //         if n == 0 {
-    //             break;
-    //         }
-    //         total_read += n;
-    //         remaining -= n;
-    //     }
-    //     Ok(total_read)
-    // }
-    // fn write_to_user(&self, ubuf: usize, length: usize, addrspace: &AddrSpace) -> SysResult<usize> {
-    //     let mut kbuf = [0u8; 1024];
-    //     let mut total_written = 0;
-    //     let mut remaining = length;
-    //     while remaining > 0 {
-    //         let to_write = core::cmp::min(remaining, kbuf.len());
-    //         addrspace.copy_from_user_buffer(ubuf + total_written, &mut kbuf[..to_write])?;
-    //         let n = self.write(&kbuf[..to_write])?;
-    //         if n == 0 {
-    //             break;
-    //         }
-    //         total_written += n;
-    //         remaining -= n;
-    //     }
-    //     Ok(total_written)
-    // }
+    
+    fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        let mut total_read = 0;
+        for kbuf in ubuf.iter() {
+            let kbuf = kbuf?;
+            let n = self.read(kbuf)?;
+            total_read += n;
+            if n < kbuf.len() {
+                return Ok(total_read);
+            }
+        }
+        Ok(total_read)
+    }
+    
+    fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        let mut total_written = 0;
+        for kbuf in ubuf.iter() {
+            let kbuf = kbuf?;
+            let n = self.write(kbuf)?;
+            total_written += n;
+            if n < kbuf.len() {
+                return Ok(total_written);
+            }
+        }
+
+        Ok(total_written)
+    }
 
     fn readable(&self) -> bool;
     fn writable(&self) -> bool;

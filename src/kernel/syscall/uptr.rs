@@ -2,6 +2,7 @@ use alloc::string::String;
 use core::fmt::Debug;
 use core::mem::size_of;
 
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::current;
 use crate::kernel::errno::{SysResult, Errno};
@@ -143,6 +144,12 @@ impl<T: UserStruct> UserPointer<T> for UArray<T> {
 impl_from_usize!(UArray<T>);
 
 pub type UBuffer = UArray<u8>;
+
+impl UBuffer {
+    pub fn to_uaddrspace_buffer(&self, length: usize) -> UAddrSpaceBuffer<'_> {
+        UAddrSpaceBuffer::new(self.uaddr, length, current::addrspace())
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]

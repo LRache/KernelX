@@ -192,27 +192,10 @@ pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
     }
 
     ubuf.should_not_null()?;
-        
-    let mut buffer = [0u8; BUFFER_SIZE];
-    let mut total_read = 0;
-    let mut left = count;
 
-    while left > 0 {
-        let to_read = core::cmp::min(left, BUFFER_SIZE);
-        let bytes_read = file.read(&mut buffer[..to_read])?;
-        if bytes_read == 0 {
-            break; // EOF
-        }
-        
-        ubuf.write(total_read, &buffer[..bytes_read])?;
+    let ubuf = ubuf.to_uaddrspace_buffer(count);
 
-        total_read += bytes_read;
-        left -= bytes_read;
-
-        if bytes_read < to_read {
-            break; // EOF
-        }
-    }
+    let total_read = file.read_to_user(&ubuf)?;
 
     Ok(total_read)
 }
@@ -246,7 +229,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
     }
 }
 
-pub fn write(fd: usize, ubuf: UBuffer, mut count: usize) -> SyscallRet {
+pub fn write(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
     if count == 0 {
         return Ok(0);
     }
@@ -258,18 +241,8 @@ pub fn write(fd: usize, ubuf: UBuffer, mut count: usize) -> SyscallRet {
         return Err(Errno::EBADF);
     }
 
-    let mut written = 0;
-
-    let mut buffer = [0u8; BUFFER_SIZE];
-    while count != 0 {
-        let to_write = core::cmp::min(count, BUFFER_SIZE);
-        ubuf.read(written, &mut buffer[..to_write])?;
-        
-        file.write(&buffer[..to_write])?;
-
-        count -= to_write;
-        written += to_write;
-    }
+    let ubuf = ubuf.to_uaddrspace_buffer(count);
+    let written = file.write_from_user(&ubuf)?;
     
     Ok(written)
 }
