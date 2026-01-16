@@ -186,23 +186,20 @@ impl DriverOps for Stty {
             match c {
                 0x7f => { // DEL
                     let mut line = self.line.lock();
-                    if attr.echoe {
-                        if attr.canonical {
+                    if attr.canonical {
+                        if attr.echoe {
                             if !line.empty() {
                                 serial.putchar(0x08); // Backspace
                                 serial.putchar(b' '); // Space
                                 serial.putchar(0x08); // Backspace
                             }
                             push_to_buffer = false;
-                        } else {
+                        } else {  
                             serial.putchar(0x08); // Backspace
                         }
-                    } else {
-                        serial.putchar(0x08); // Backspace
-                    }
-
-                    if attr.canonical {
                         line.delete_char();
+                    } else if attr.echo {
+                        serial.putchar(0x08); // Backspace
                     }
                 }
                 0x3 => { // Ctrl-C
