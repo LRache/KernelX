@@ -1,5 +1,6 @@
 ARCH ?= riscv64
 CROSS_COMPILE ?= riscv64-linux-gnu-
+CROSS_COMPILE ?= /opt/riscv64-linux-musl-cross/bin/riscv64-linux-musl-
 
 CC = $(CROSS_COMPILE)gcc
 

@@ -14,7 +14,8 @@
     "rust-analyzer.server.extraEnv": {
         "KERNELX_HOME": "${workspaceFolder}",
         "ARCH": "riscv",
-        "ARCH_BITS": "64"
+        "ARCH_BITS": "64",
+        "CROSS_COMPILE": "/opt/riscv64-linux-musl-cross/bin/riscv64-linux-musl-"
     },
     "rust-analyzer.trace.server": "verbose",
     "cmake.ignoreCMakeListsMissing": true,
