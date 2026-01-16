@@ -19,7 +19,14 @@ BUILD_ENV = \
 	KERNELX_HOME=$(KERNELX_HOME) \
 	COMPILE_MODE=$(COMPILE_MODE)
 
-RUST_TARGET = riscv64gc-unknown-none-elf
+ifeq ($(ARCH)$(ARCH_BITS), riscv64)
+	RUST_TARGET = riscv64gc-unknown-none-elf
+else ifeq ($(ARCH)$(ARCH_BITS), loongarch64)
+	RUST_TARGET = loongarch64-unknown-none
+else
+	$(error Unsupported ARCH and ARCH_BITS combination: $(ARCH)$(ARCH_BITS))
+endif
+
 RUST_TARGET_DIR ?= $(abspath target/$(RUST_TARGET)/$(COMPILE_MODE))
 RUST_KERNEL ?= $(RUST_TARGET_DIR)/kernelx
 RUST_DEPENDENCIES = $(RUST_TARGET_DIR)/kernelx.d
