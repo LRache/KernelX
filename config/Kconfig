@@ -21,11 +21,17 @@ config RISCV64
 	help
 	  Support for RISC-V 64-bit architecture.
 
+config LOONGARCH64
+	bool "LoongArch 64-bit"
+	help
+	  Support for LoongArch 64-bit architecture.
+
 endchoice
 
 config ARCH
 	string
 	default "riscv" if RISCV64
+	default "loongarch" if LOONGARCH64
 	help
 	  Target architecture for the kernel.
 	  Automatically selected based on the chosen platform.
@@ -33,6 +39,7 @@ config ARCH
 config ARCH_BITS
 	int
 	default 64 if RISCV64
+	default 64 if LOONGARCH64
 	help
 	  Architecture bit width (32 or 64).
 	  Automatically selected based on the chosen platform.
