@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+
 use crate::arch;
 use crate::kernel::errno::SysResult;
 use crate::kernel::mm::AddrSpace;
@@ -53,5 +55,14 @@ impl Iterator for Iter<'_> {
         self.offset += length;
 
         Some(Ok(unsafe { core::slice::from_raw_parts_mut(kaddr as *mut u8, length) }) )
+    }
+}
+
+impl Debug for UAddrSpaceBuffer<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UAddrSpaceBuffer")
+            .field("uaddr", &self.uaddr)
+            .field("length", &self.length)
+            .finish()
     }
 }

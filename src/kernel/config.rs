@@ -23,6 +23,7 @@ pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process
 
 pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer
+pub const PIPE_BUFFER_PAGES: usize = 16; // Number of pages allocated for pipe buffer
 
 /* ------ BOOT ARGS ------- */
 pub const DEFAULT_BOOT_ROOT_FSTYPE: &str = "ext4";
