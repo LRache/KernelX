@@ -30,10 +30,10 @@ impl FIFO {
     }
 
     fn len(&self) -> usize {
-        if self.head >= self.tail {
-            self.head - self.tail
+        if self.head <= self.tail {
+            self.tail - self.head
         } else {
-            PIPE_CAPACITY - (self.tail - self.head)
+            PIPE_CAPACITY - (self.head - self.tail)
         }
     }
 
