@@ -170,7 +170,7 @@ impl ArchTrait for Arch {
     #[inline(always)]
     fn get_frame_pointer() -> usize {
         let fp: usize;
-        unsafe { core::arch::asm!("mv {}, s0", out(reg) fp) };
+        unsafe { core::arch::asm!("mv {}, fp", out(reg) fp) };
         fp
     }
 
