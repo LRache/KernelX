@@ -14,8 +14,16 @@ pub unsafe fn print_backtrace() {
             break;
         }
 
+        if !arch::is_kernel_addr(fp as usize) {
+            break;
+        }
+
         let (ra, prev_fp_addr) = unsafe { arch::frame_info(fp as usize) };
         let prev_fp = prev_fp_addr as *const usize;
+
+        if !arch::is_kernel_addr(ra as usize) {
+            break;
+        }
 
         print!("[{:02}]{:#018x}: ", depth, ra);
         if let Some((name, off)) = crate::klib::symbol::lookup(ra) {
@@ -26,10 +34,6 @@ pub unsafe fn print_backtrace() {
         println!();
 
         if prev_fp <= fp {
-            break;
-        }
-
-        if !arch::is_kernel_addr(prev_fp as usize) {
             break;
         }
 
