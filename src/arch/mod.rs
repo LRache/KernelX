@@ -1,7 +1,10 @@
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "riscv64")] {
         mod riscv;
-        use riscv as arch_impl;
+        use riscv as arch_impl;  
+    } else if #[cfg(target_arch = "loongarch64")] {
+        mod loongarch;
+        use loongarch as arch_impl;
     } else {
         compile_error!("Unsupported architecture");
     }
@@ -13,7 +16,7 @@ pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
 // pub type MappedPage<'a> = arch_impl::MappedPage<'a>;
 
-pub const PGSIZE: usize = arch_impl::PGSIZE;
+pub const PGSIZE: usize = arch_impl::PGSIZE;  
 pub const PGMASK: usize = arch_impl::PGMASK;
 pub const TRAMPOLINE_BASE: usize = arch_impl::TRAMPOLINE_BASE;
 
@@ -67,6 +70,18 @@ arch_export! {
     set_next_time_event_us(internval: u64) -> ();
 
     scan_device() -> ();
+
+    is_kernel_addr(addr: usize) -> bool;
+}
+
+#[inline(always)]
+pub fn get_frame_pointer() -> usize {
+    Arch::get_frame_pointer()
+}
+
+#[inline(always)]
+pub unsafe fn frame_info(fp: usize) -> (usize, usize) {
+    unsafe { Arch::frame_info(fp) }
 }
 
 pub unsafe fn read_volatile<T>(src: *const T) -> T {

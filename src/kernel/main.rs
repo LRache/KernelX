@@ -118,6 +118,18 @@ extern "C" fn kentry(hartid: usize) -> ! {
     scheduler::run_tasks(hartid);
 }
 
+#[cfg(debug_assertions)]
+#[inline(never)]
+fn backtrace_inner() {
+    panic!("backtrace test");
+}
+
+#[cfg(debug_assertions)]
+#[inline(never)]
+fn test_backtrace() {
+    backtrace_inner();
+}
+
 pub fn exit() -> ! {
     fs::fini();
 

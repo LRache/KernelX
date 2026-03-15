@@ -60,6 +60,10 @@ pub trait ArchTrait {
 
     fn read_volatile<T>(src: *const T) -> T;
     fn write_volatile<T>(dst: *mut T, val: T);
+
+    fn get_frame_pointer() -> usize;
+    unsafe fn frame_info(fp: usize) -> (usize, usize);
+    fn is_kernel_addr(addr: usize) -> bool;
 }
 
 pub trait UserContextTrait: Clone {

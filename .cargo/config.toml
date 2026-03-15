@@ -3,5 +3,8 @@ KERNELX_HOME = { value = ".", relative = true }
 ARCH = { value = "riscv" }
 ARCH_BITS = { value = "64" }
 
-[build]
-target = "riscv64gc-unknown-none-elf"
+[target.riscv64gc-unknown-none-elf]
+rustflags = ["-C", "force-frame-pointers=yes"]
+
+# [build]
+# target = "riscv64gc-unknown-none-elf"

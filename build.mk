@@ -85,7 +85,13 @@ vdso:
 	@ $(BUILD_ENV) make -C vdso all
 
 $(RUST_KERNEL): $(CLIB) $(VDSO)
+	@ mkdir -p build/$(ARCH)$(ARCH_BITS)
+	@ test -f build/$(ARCH)$(ARCH_BITS)/symbols.bin || touch build/$(ARCH)$(ARCH_BITS)/symbols.bin
 	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
+ifeq ($(COMPILE_MODE),debug)
+	@ python3 scripts/gen_symbols.py $(RUST_KERNEL) build/$(ARCH)$(ARCH_BITS)/symbols.bin --cross-compile $(CROSS_COMPILE)
+	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
+endif
 
 check:
 	@ $(BUILD_ENV) cargo check $(CARGO_FLAGS)

@@ -7,15 +7,12 @@
         "log-trace",
         "swap-memory",
     ],
-    "rust-analyzer.cargo.extraArgs": [
-        "--target",
-        "riscv64gc-unknown-none-elf",
-    ],
     "rust-analyzer.server.extraEnv": {
         "KERNELX_HOME": "${workspaceFolder}",
         "ARCH": "riscv",
         "ARCH_BITS": "64"
     },
+    "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
     "rust-analyzer.trace.server": "verbose",
     "cmake.ignoreCMakeListsMissing": true,
     "editor.rulers": [80]

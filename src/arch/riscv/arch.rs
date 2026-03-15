@@ -160,10 +160,28 @@ impl ArchTrait for Arch {
     fn write_volatile<T>(dst: *mut T, val: T) {
         unsafe {
             core::arch::asm!(
-                "fence w, i", 
+                "fence w, i",
                 options(nostack, preserves_flags)
             );
             core::ptr::write_volatile(dst, val);
         }
+    }
+
+    #[inline(always)]
+    fn get_frame_pointer() -> usize {
+        let fp: usize;
+        unsafe { core::arch::asm!("mv {}, s0", out(reg) fp) };
+        fp
+    }
+
+    #[inline(always)]
+    unsafe fn frame_info(fp: usize) -> (usize, usize) {
+        let p = fp as *const usize;
+        unsafe { (*p.sub(1), *p.sub(2)) }
+    }
+
+    #[inline(always)]
+    fn is_kernel_addr(addr: usize) -> bool {
+        addr >> 63 != 0
     }
 }

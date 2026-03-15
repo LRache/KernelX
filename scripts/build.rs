@@ -2,6 +2,18 @@ fn main() {
     let platform = std::env::var("PLATFORM").unwrap_or_else(|_| "qemu-virt-riscv64".to_string());
     let arch = std::env::var("ARCH").unwrap();
     let arch_bits = std::env::var("ARCH_BITS").unwrap();
+
+    // Symbol table for stack backtrace (debug only)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let symbols_dir = format!("{}/build/{}{}", manifest_dir, arch, arch_bits);
+    let symbols_path = format!("{}/symbols.bin", symbols_dir);
+    // Create empty placeholder so include_bytes! doesn't fail on first build
+    if !std::path::Path::new(&symbols_path).exists() {
+        std::fs::create_dir_all(&symbols_dir).ok();
+        std::fs::write(&symbols_path, []).ok();
+    }
+    println!("cargo:rustc-env=KERNELX_SYMBOLS_PATH={}", symbols_path);
+    println!("cargo:rerun-if-changed={}", symbols_path);
     
     match platform.as_str() {
         "qemu-virt-riscv64" => {
