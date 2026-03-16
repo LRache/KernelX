@@ -136,6 +136,15 @@ config WARN_UNIMPLEMENTED_SYSCALL
 	help
 	  Enable warnings for unimplemented syscalls.
 
+config BACKTRACE
+	bool "Enable Stack Backtrace"
+	default y if COMPILE_MODE_DEBUG
+	default n if COMPILE_MODE_RELEASE
+	help
+	  Enable stack backtrace on kernel panic.
+	  Embeds a symbol table into the kernel image for function name resolution.
+	  Requires force-frame-pointers=yes (set automatically).
+
 endmenu
 
 menu "Experimental Features"

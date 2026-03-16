@@ -17,6 +17,7 @@ warn-unimplemented-syscall = []
 deadlock-detect = []
 no-smp = []
 swap-memory = []
+backtrace = []
 
 [profile.dev]
 panic = "abort"

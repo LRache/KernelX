@@ -25,6 +25,9 @@ check:
 run: kernel
 	@ make -f scripts/qemu.mk qemu-run $(QEMU_ARGS)
 
+run-bt: kernel
+	@ make -f scripts/qemu.mk qemu-run-bt $(QEMU_ARGS)
+
 clean:
 	@ make -f build.mk clean $(KERNEL_CONFIG)
 
@@ -45,4 +48,4 @@ package: kernel
 count:
 	@ find src clib/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" -o -name "*.S" | xargs wc -l
 
-.PHONY: all init run gdb clean count check menuconfig objdump kernel vdso clib
+.PHONY: all init run run-bt gdb clean count check menuconfig objdump kernel vdso clib

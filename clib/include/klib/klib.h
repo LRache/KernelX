@@ -9,6 +9,12 @@ extern "C" {
 
 void klib_init();
 
+/* Kernel panic — implemented in Rust (rust_kpanic), called from C */
+__attribute__((noreturn)) void kpanic(const char *file, int line, const char *msg);
+
+#define kassert(cond) \
+    do { if (!(cond)) kpanic(__FILE__, __LINE__, "assertion failed: " #cond); } while (0)
+
 #ifdef __cplusplus
 }
 #endif

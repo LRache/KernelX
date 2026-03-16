@@ -1,17 +1,15 @@
-/// 运行时符号查找（仅 Debug 模式）。
-///
 /// 二进制格式（由 scripts/gen_symbols.py 生成）：
 ///   [u32 LE: count]
 ///   [count * { u64 LE: addr, u32 LE: name_offset }]
 ///   [string pool: null-terminated UTF-8]
 ///
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "backtrace")]
 static SYMBOL_BYTES: &[u8] = include_bytes!(env!("KERNELX_SYMBOLS_PATH"));
 
 /// 查找 `pc` 所属的函数名及偏移量。
 /// 返回 `(function_name, pc - function_start)`。
-#[cfg(debug_assertions)]
+#[cfg(feature = "backtrace")]
 pub fn lookup(pc: usize) -> Option<(&'static str, usize)> {
     let data = SYMBOL_BYTES;
     if data.len() < 4 {
@@ -62,7 +60,7 @@ pub fn lookup(pc: usize) -> Option<(&'static str, usize)> {
     Some((name, pc - func_addr))
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(feature = "backtrace"))]
 #[inline(always)]
 pub fn lookup(_pc: usize) -> Option<(&'static str, usize)> {
     None

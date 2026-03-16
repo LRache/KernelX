@@ -17,7 +17,8 @@ BUILD_ENV = \
 	KERNELX_INITCWD=$(INITCWD) \
 	KERNELX_RELEASE=$(KERNELX_RELEASE) \
 	KERNELX_HOME=$(KERNELX_HOME) \
-	COMPILE_MODE=$(COMPILE_MODE)
+	COMPILE_MODE=$(COMPILE_MODE) \
+	RUSTFLAGS="$(RUSTFLAGS)"
 
 RUST_TARGET = riscv64gc-unknown-none-elf
 RUST_TARGET_DIR ?= $(abspath target/$(RUST_TARGET)/$(COMPILE_MODE))
@@ -52,6 +53,11 @@ RUST_FEATURES += warn-unimplemented-syscall
 endif
 
 RUST_FEATURES += no-smp
+
+ifeq ($(CONFIG_BACKTRACE),y)
+RUST_FEATURES += backtrace
+RUSTFLAGS += -C force-frame-pointers=yes
+endif
 
 CARGO_FLAGS += --target $(RUST_TARGET)
 CARGO_FLAGS += --features "$(RUST_FEATURES)"
@@ -88,7 +94,7 @@ $(RUST_KERNEL): $(CLIB) $(VDSO)
 	@ mkdir -p build/$(ARCH)$(ARCH_BITS)
 	@ test -f build/$(ARCH)$(ARCH_BITS)/symbols.bin || touch build/$(ARCH)$(ARCH_BITS)/symbols.bin
 	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
-ifeq ($(COMPILE_MODE),debug)
+ifeq ($(CONFIG_BACKTRACE),y)
 	@ python3 scripts/gen_symbols.py $(RUST_KERNEL) build/$(ARCH)$(ARCH_BITS)/symbols.bin --cross-compile $(CROSS_COMPILE)
 	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
 endif

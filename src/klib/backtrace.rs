@@ -1,12 +1,12 @@
-use crate::arch;
-use crate::{println, print};
-
-#[cfg(debug_assertions)]
+#[cfg(feature = "backtrace")]
 #[inline(never)]
-pub unsafe fn print_backtrace() {
+pub fn print_backtrace() {
+    use crate::arch;
+    use crate::{println, print};
+    
     let mut fp = crate::arch::get_frame_pointer() as *const usize;
 
-    crate::println!("\n--- Stack Backtrace (Debug) ---");
+    crate::println!("\n--- Stack Backtrace ---");
 
     let mut depth = 0usize;
     while !fp.is_null() && depth < 64 {
@@ -25,7 +25,7 @@ pub unsafe fn print_backtrace() {
             break;
         }
 
-        print!("[{:02}]{:#018x}: ", depth, ra);
+        print!("[{:02}] {:#018x}: ", depth, ra);
         if let Some((name, off)) = crate::klib::symbol::lookup(ra) {
             print!("{}+{:#x}", name, off);
         } else {
@@ -44,6 +44,6 @@ pub unsafe fn print_backtrace() {
     println!("--- End of Backtrace ---\n");
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(feature = "backtrace"))]
 #[inline(always)]
 pub fn print_backtrace() {}
