@@ -30,11 +30,6 @@ fn main() {
     println!("cargo:rustc-link-lib=static=kernelx_clib");
     println!("cargo:rerun-if-changed=clib/build/{}{}/libkernelx_clib.a", arch, arch_bits);
 
-    // Link vdso
-    let vdso_path = format!("vdso/build/{}{}/vdso.o", arch, arch_bits);
-    println!("cargo:rustc-link-arg={}", vdso_path);
-    println!("cargo:rerun-if-changed={}", vdso_path);
-
     // vDSO symbols
     let symbols_src = format!("vdso/build/{}{}/symbols.inc", arch, arch_bits);
     println!("cargo:rerun-if-changed={}", symbols_src);

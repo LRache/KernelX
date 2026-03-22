@@ -15,14 +15,11 @@ unsafe extern "C" {
 }
 
 mod addr {
-    // include!("/home/rache/code/KernelX/./vdso/build/riscv64/symbols.inc");
-    // include!(concat!(env!("OUT_DIR"), "/symbols.inc"));
     include!(concat!(env!("KERNELX_HOME"), "/vdso/build/", env!("ARCH"), env!("ARCH_BITS"), "/symbols.inc"));
 }
 
-fn vdso_start() -> usize {
-    core::ptr::addr_of!(__vdso_start) as usize
-}
+#[unsafe(link_section = ".data.init")]
+static VDSO_BYTES: &[u8] = include_bytes!(concat!(env!("KERNELX_HOME"), "/vdso/build/", env!("ARCH"), env!("ARCH_BITS"), "/lib/libvdso.so"));
 
 #[inline(always)]
 pub fn addr_of(symbol: &str) -> usize {
@@ -44,7 +41,7 @@ struct VDSOInfo {
 static VDSO: InitedCell<VDSOInfo> = InitedCell::uninit();
 
 fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
-    let ph_addr = vdso_start() + ehdr.e_phoff as usize;
+    let ph_addr = VDSO_BYTES.as_ptr() as usize + ehdr.e_phoff as usize;
     let mut loaded_programs = Vec::new();
     
     for i in 0..ehdr.e_phnum {
@@ -58,7 +55,8 @@ fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
         let mut copied = 0;
         let memsz = phdr.p_memsz as usize;
         let filesz = phdr.p_filesz as usize; 
-        let program_start = (vdso_start() + phdr.p_offset as usize) as *const u8;
+        // let program_start = (vdso_start() + phdr.p_offset as usize) as *const u8;
+        let program_start = (VDSO_BYTES.as_ptr() as usize + phdr.p_offset as usize) as *const u8;
 
         // Load unaligned
         let pageoff = phdr.p_vaddr as usize & arch::PGMASK;
@@ -111,7 +109,8 @@ fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
 
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
-    let ehdr = unsafe {(vdso_start() as *const Elf64Ehdr).as_ref().unwrap()};
+    // let ehdr = unsafe {(vdso_start() as *const Elf64Ehdr).as_ref().unwrap()};
+    let ehdr = unsafe { (VDSO_BYTES.as_ptr() as *const Elf64Ehdr).as_ref().unwrap() };
     
     if !ehdr.is_valid_elf() || !ehdr.is_64bit() || !ehdr.is_little_endian() || !ehdr.is_riscv() || !ehdr.is_dynamic() {
         panic!("Invalid VDSO ELF header: {:?}", ehdr);
