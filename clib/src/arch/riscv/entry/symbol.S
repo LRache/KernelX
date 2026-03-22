@@ -88,6 +88,28 @@ __riscv_init_symbol_text_end:
     sub a0, a0, tp
     ret
 
+    .global __riscv_init_symbol_rodata_start
+    .type __riscv_init_symbol_rodata_start, @function
+__riscv_init_symbol_rodata_start:
+    .option push
+    .option norelax
+1:  auipc   a0, %got_pcrel_hi(__rodata_start)
+    ld      a0, %pcrel_lo(1b)(a0)
+    .option pop
+    sub a0, a0, tp
+    ret
+
+    .global __riscv_init_symbol_rodata_end
+    .type __riscv_init_symbol_rodata_end, @function
+__riscv_init_symbol_rodata_end:
+    .option push
+    .option norelax
+1:  auipc   a0, %got_pcrel_hi(__rodata_end)
+    ld      a0, %pcrel_lo(1b)(a0)
+    .option pop
+    sub a0, a0, tp
+    ret
+
     .global __riscv_init_symbol_data_start
     .type __riscv_init_symbol_data_start, @function
 __riscv_init_symbol_data_start:

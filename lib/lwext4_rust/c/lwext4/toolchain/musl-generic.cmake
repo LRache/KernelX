@@ -10,14 +10,15 @@ set(CMAKE_SYSTEM_PROCESSOR ${ARCH})
 
 # Toolchain settings
 set(TOOLCHAIN_PREFIX ${ARCH}-linux-gnu)
+set(CROSS_COMPILE $ENV{CROSS_COMPILE})
 
-set(CMAKE_C_COMPILER    ${TOOLCHAIN_PREFIX}-gcc)
-set(CMAKE_CXX_COMPILER  ${TOOLCHAIN_PREFIX}-c++)
-set(AS                  ${TOOLCHAIN_PREFIX}-as)
-set(AR                  ${TOOLCHAIN_PREFIX}-ar)
-set(OBJCOPY             ${TOOLCHAIN_PREFIX}-objcopy)
-set(OBJDUMP             ${TOOLCHAIN_PREFIX}-objdump)
-set(SIZE                ${TOOLCHAIN_PREFIX}-size)
+set(CMAKE_C_COMPILER    ${CROSS_COMPILE}gcc)
+set(CMAKE_CXX_COMPILER  ${CROSS_COMPILE}c++)
+set(AS                  ${CROSS_COMPILE}as)
+set(AR                  ${CROSS_COMPILE}ar)
+set(OBJCOPY             ${CROSS_COMPILE}objcopy)
+set(OBJDUMP             ${CROSS_COMPILE}objdump)
+set(SIZE                ${CROSS_COMPILE}size)
 
 set(LD_FLAGS "-nolibc -nostdlib -static --gc-sections -nostartfiles")
 
@@ -35,8 +36,8 @@ elseif (ARCH STREQUAL "riscv64")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=rv64gc -mabi=lp64d -mcmodel=medany")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=rv64gc -mabi=lp64d -mcmodel=medany")
 elseif (ARCH STREQUAL "loongarch64")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msoft-float")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msoft-float")
+    # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msoft-float")
+    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msoft-float")
 endif()
 
 set(CMAKE_C_FLAGS "-fPIC -fno-builtin -ffreestanding -fno-omit-frame-pointer ${CMAKE_C_FLAGS}")

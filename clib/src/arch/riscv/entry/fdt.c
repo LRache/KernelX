@@ -40,7 +40,7 @@ static inline uint64_t get_memory_top_from_fdt(const void *fdt) {
 
 __init_text
 uintptr_t __riscv_load_fdt(const void *fdt) {
-    uintptr_t *ktop = __riscv_init_symbol_ktop();
+    uintptr_t *ktop = (uintptr_t *)__riscv_init_symbol_ktop();
     
     if (fdt_check_header(fdt) != 0) {
         __riscv_init_die("FDT header is invalid.\n");

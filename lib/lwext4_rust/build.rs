@@ -7,14 +7,21 @@ fn main() {
         .canonicalize()
         .expect("cannot canonicalize path");
 
-    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let arch = env::var("ARCH").unwrap();
+    let arch_bits = env::var("ARCH_BITS").unwrap();
+    let kernelx_home = env::var("KERNELX_HOME").unwrap();
+    let sysroot = env::var("SYSROOT").unwrap();
     let lwext4_lib = &format!("lwext4-{arch}");
     {
         let status = Command::new("make")
             .args([
-                "musl-generic",
+                "all",
                 "-C",
                 c_path.to_str().expect("invalid path of lwext4"),
+                &format!("KERNELX_HOME={kernelx_home}"),
+                &format!("ARCH={arch}"),
+                &format!("ARCH_BITS={arch_bits}"),
+                &format!("SYSROOT={sysroot}"),
             ])
             .arg(format!("ARCH={arch}"))
             .arg(format!(
@@ -26,22 +33,8 @@ fn main() {
         assert!(status.success());
     }
     {
-        let cc = &format!("{}gcc", std::env::var("CROSS_COMPILE").unwrap());
-        let output = Command::new(cc)
-            .args(["-print-sysroot"])
-            .output()
-            .expect("failed to execute process: gcc -print-sysroot");
-
-        let sysroot = core::str::from_utf8(&output.stdout).unwrap().trim();
-        let sysroot_inc = if cc.contains("musl") { 
-            &format!("-I{sysroot}/include/")
-        } else {
-            &format!("-I{sysroot}/usr/include/")
-        };
-
         println!("sysroot: {}", sysroot);
-
-        generates_bindings_to_rust(sysroot_inc);
+        generates_bindings_to_rust(&sysroot);
     }
 
     println!("cargo:rustc-link-lib=static={lwext4_lib}");
@@ -53,19 +46,21 @@ fn main() {
     println!("cargo:rerun-if-changed={}/src", c_path.to_str().unwrap());
 }
 
-fn generates_bindings_to_rust(mpath: &str) {
+fn generates_bindings_to_rust(sysroot: &str) {
     let target = env::var("TARGET").unwrap();
     if target.ends_with("-softfloat") {
         // Clang does not recognize the `-softfloat` suffix
         unsafe { env::set_var("TARGET", target.replace("-softfloat", "")) };
     }
 
+    println!("sysroot: {}", sysroot);
+
     let bindings = bindgen::Builder::default()
         .use_core()
         .wrap_unsafe_ops(true)
         // The input header we would like to generate bindings for.
         .header("c/wrapper.h")
-        .clang_arg(mpath)
+        .clang_arg(&format!("--sysroot={sysroot}"))
         .clang_arg("-I./c/lwext4/include")
         .clang_arg("-I./c/lwext4/build_musl-generic/include/")
         .layout_tests(false)

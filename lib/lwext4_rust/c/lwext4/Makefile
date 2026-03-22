@@ -24,6 +24,9 @@ COMMON_DEFINITIONS =                                      \
 	-DCMAKE_C_COMPILER_WORKS=1 \
 	-DCMAKE_INSTALL_PREFIX=./install \
 	-DLIB_ONLY=TRUE \
+	-DSYSROOT=$(SYSROOT) \
+
+TOOLCHAIN_FILE = $(KERNELX_HOME)/scripts/cmake/toolchain/$(ARCH)$(ARCH_BITS).cmake
 
 define generate_common
 	rm -R -f build_$(1)
@@ -31,7 +34,7 @@ define generate_common
 	cd build_$(1) && cmake -G"Unix Makefiles" -DCMAKE_VERBOSE_MAKEFILE=ON          \
 	$(COMMON_DEFINITIONS)                               \
 	$(2)                                                \
-	-DCMAKE_TOOLCHAIN_FILE=../toolchain/$(1).cmake ..
+	-DCMAKE_TOOLCHAIN_FILE=$(TOOLCHAIN_FILE) ..
 endef
 
 ARCH ?= x86_64
@@ -80,7 +83,9 @@ lib_only:
 	cd build_lib_only && cmake $(COMMON_DEFINITIONS) -DLIB_ONLY=TRUE ..
 
 all:
-	generic
+	$(call generate_common,$@)
+	cd build_$@ && make lwext4
+	cp build_$@/src/liblwext4.a ./liblwext4-$(ARCH).a
 
 clean:
 	rm -R -f build_*

@@ -43,6 +43,13 @@ config CROSS_COMPILE
 	help
 	  Prefix for cross-compilation tools (e.g., riscv64-unknown-elf-).
 
+config SYSROOT
+	string "Sysroot path"
+	default ""
+	help
+	  Path to the sysroot directory, passed to clang via --sysroot.
+	  Used for clib and other C code compilation.
+
 config RUST_TARGET
 	string
 	default "riscv64gc-unknown-none-elf"

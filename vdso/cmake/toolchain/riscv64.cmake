@@ -1,4 +1,4 @@
-set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR riscv64)
 
 set(CMAKE_C_COMPILER   "clang" CACHE STRING "C Compiler")
@@ -10,23 +10,11 @@ set(CMAKE_LINKER       "clang" CACHE STRING "Linker")
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 set(ARCH_COMMON_FLAGS
-    --target=riscv64-unknown-elf
+    --target=riscv64-linux-gnu
     -mcmodel=medany
     -march=rv64gc
     -mabi=lp64d
-    -fPIE
-    -gdwarf-4
-    -fno-limit-debug-info
 )
-
-if(SYSROOT)
-    set(CMAKE_SYSROOT ${SYSROOT})
-    list(APPEND ARCH_COMMON_FLAGS
-        --sysroot=${SYSROOT}
-        -isystem ${SYSROOT}/include
-        -isystem ${SYSROOT}/usr/include
-    )
-endif()
 
 set(ARCH_COMMON_FLAGS_LIST ${ARCH_COMMON_FLAGS} -nostdlib)
 string(REPLACE ";" " " ARCH_COMMON_FLAGS_STR "${ARCH_COMMON_FLAGS}")

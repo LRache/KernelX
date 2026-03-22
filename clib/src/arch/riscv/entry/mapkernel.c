@@ -32,7 +32,7 @@ static inline uintptr_t get_ppn(uintptr_t paddr) {
 __init_text
 static inline void map(uintptr_t root, uintptr_t kaddr, uint64_t paddr, uint8_t flags) {
     uintptr_t ppn = get_ppn(root);
-    for (int level = 0; level <= LEVEL; level++) {
+    for (unsigned int level = 0; level <= LEVEL; level++) {
         uint64_t vpn = (kaddr >> (12 + (LEVEL - level) * 9)) & 0x1ff;
         uintptr_t *pagetable = (uintptr_t *)(ppn << 12);
         uintptr_t *pte = &pagetable[vpn];
@@ -67,22 +67,36 @@ uintptr_t __riscv_map_kaddr(uintptr_t kaddr_offset, uintptr_t memory_top) {
     }
 
     uint8_t flags;
+    
+    uintptr_t init_start = (uintptr_t)__riscv_init_symbol_init_start();
+    uintptr_t init_end   = (uintptr_t)__riscv_init_symbol_init_end();
     flags = PTE_V | PTE_R | PTE_W | PTE_X | PTE_G | PTE_A | PTE_D;
-    for (uintptr_t paddr = (uintptr_t)__riscv_init_symbol_init_start(); paddr < (uintptr_t)__riscv_init_symbol_init_end(); paddr += PGSIZE) {
+    for (uintptr_t paddr = init_start; paddr < init_end; paddr += PGSIZE) {
         uintptr_t kaddr = paddr + kaddr_offset;
         map(root, paddr, paddr, flags);
         map(root, kaddr, paddr, flags);
     }
 
+    uintptr_t text_start = (uintptr_t)__riscv_init_symbol_text_start();
+    uintptr_t text_end   = (uintptr_t)__riscv_init_symbol_text_end();
     flags = PTE_V | PTE_R | PTE_X | PTE_G | PTE_A | PTE_D;
-    for (uintptr_t paddr = (uintptr_t)__riscv_init_symbol_text_start(); paddr < (uintptr_t)__riscv_init_symbol_text_end(); paddr += PGSIZE) {
+    for (uintptr_t paddr = text_start; paddr < text_end; paddr += PGSIZE) {
         uintptr_t kaddr = paddr + kaddr_offset;
         map(root, kaddr, paddr, flags);
     }
-
-    flags = PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D;
+    
+    uintptr_t rodata_start = (uintptr_t)__riscv_init_symbol_rodata_start();
+    uintptr_t rodata_end   = (uintptr_t)__riscv_init_symbol_rodata_end();
+    flags = PTE_V | PTE_R | PTE_G | PTE_A | PTE_D;
+    for (uintptr_t paddr = rodata_start; paddr < rodata_end; paddr += PGSIZE) {
+        uintptr_t kaddr = paddr + kaddr_offset;
+        map(root, kaddr, paddr, flags);
+    }
+    
+    uintptr_t data_start = (uintptr_t)__riscv_init_symbol_data_start();
     memory_top = (memory_top + PGSIZE - 1) & ~(PGSIZE - 1);
-    for (uintptr_t paddr = (uintptr_t)__riscv_init_symbol_text_end(); paddr < memory_top; paddr += PGSIZE) {
+    flags = PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D;
+    for (uintptr_t paddr = (uintptr_t)data_start; paddr < memory_top; paddr += PGSIZE) {
         uintptr_t kaddr = paddr + kaddr_offset;
         map(root, kaddr, paddr, flags);
     }

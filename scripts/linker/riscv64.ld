@@ -19,23 +19,23 @@ SECTIONS {
     .text : {
         __text_start = .;
         *(.text*)
-        __text_end = .;
         . = ALIGN(4K);
+        __text_end = .;
         __trampoline_start = .;
         KEEP(*(.trampoline.text))
+        . = ALIGN(4K);
         __trampoline_end = .;
     }
 
-    . = ALIGN(4K);
     .rodata : {
         __rodata_start = .;
         *(.got*)
         *(.rodata*)
         *(.srodata*)
+        . = ALIGN(4K);
         __rodata_end = .;
     }
-
-    . = ALIGN(4K);
+    
     .data : {
         __data_start = .;
         *(.data*)

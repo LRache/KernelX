@@ -14,9 +14,6 @@ set(ARCH_COMMON_FLAGS
     -mcmodel=medany
     -march=rv64gc
     -mabi=lp64d
-    -fPIE
-    -gdwarf-4
-    -fno-limit-debug-info
 )
 
 if(SYSROOT)

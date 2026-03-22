@@ -19,6 +19,8 @@ void *__riscv_init_symbol_init_start();
 void *__riscv_init_symbol_init_end();
 void *__riscv_init_symbol_text_start();
 void *__riscv_init_symbol_text_end();
+void *__riscv_init_symbol_rodata_start();
+void *__riscv_init_symbol_rodata_end();
 void *__riscv_init_symbol_data_start();
 void *__riscv_init_symbol_bss_start();
 void *__riscv_init_symbol_bss_end();
