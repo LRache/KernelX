@@ -9,7 +9,7 @@ use crate::kernel::config;
 use crate::kernel::scheduler::current;
 use crate::kernel::mm::{MapPerm, page};
 use crate::driver::chosen;
-use crate::{driver, kinfo};
+use crate::{driver, kinfo, kwarn};
 
 use super::KernelContext;
 use super::pagetable::kernelpagetable;
@@ -46,11 +46,15 @@ impl ArchTrait for Arch {
         for hartid in 0..core_count() {
             if hartid != current_core {
                 let stack = page::alloc_contiguous(config::SCHEDULER_KSTACK_PAGE_COUNT);
-                sbi_driver::hart_start(
+                if let Err(error) = sbi_driver::hart_start(
                     hartid, 
-                    unsafe { &__riscv_others_entry } as *const u8 as usize, 
+                    core::ptr::addr_of!(__riscv_others_entry) as usize,
                     stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE
-                );
+                ) {
+                    kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
+                } else {
+                    kinfo!("Hart {} started successfully", hartid);
+                }
             }
         }
     }

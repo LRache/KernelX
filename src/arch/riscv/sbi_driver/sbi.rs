@@ -1,7 +1,4 @@
-struct SBIRet {
-    _error: usize,
-    _value: usize,
-}
+type SBIRet = Result<usize, isize>;
 
 fn sbi_call(fid: usize, eid: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SBIRet {
     let mut error;
@@ -21,9 +18,10 @@ fn sbi_call(fid: usize, eid: usize, arg0: usize, arg1: usize, arg2: usize, arg3:
             options(nostack, preserves_flags)
         );
     }
-    SBIRet { 
-        _error: error,
-        _value: value,
+    if error == 0 {
+        Ok(value)
+    } else {
+        Err(error)
     }
 }
 
@@ -45,7 +43,6 @@ pub fn set_timer(time: u64) {
     sbi_call(0x0, 0x0, time as usize, (time >> 32) as usize, 0, 0, 0, 0);
 }
 
-pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> isize {
-    let ret = sbi_call(0x0, 0x2, hartid, start_addr, opaque, 0, 0, 0);
-    ret._error as isize
+pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> SBIRet {
+    sbi_call(0x0, 0x2, hartid, start_addr, opaque, 0, 0, 0)
 }

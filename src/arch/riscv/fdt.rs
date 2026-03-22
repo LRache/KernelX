@@ -5,12 +5,9 @@ use crate::arch::riscv::plic;
 use crate::kernel::parse_boot_args;
 use crate::driver::Device;
 use crate::driver::found_device;
-use crate::klib::initcell::InitedCell;
 use crate::{kinfo, kwarn};
 
 use super::cpu::load_cpu_node;
-
-static CORE_COUNT: InitedCell<usize> = InitedCell::uninit();
 
 pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     let data = unsafe { core::slice::from_raw_parts(fdt as *const u32, 2) };
@@ -27,10 +24,6 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     
     let cpus_node = fdt.find_node("/cpus").unwrap();
     load_cpu_node(&cpus_node);
-    
-    let core_count = 1;
-    CORE_COUNT.init(core_count);
-    kinfo!("Detected {} CPU cores", core_count);
     
     let soc_node = fdt.find_node("/soc").unwrap();
     load_plic_node(&fdt, &soc_node);
