@@ -43,7 +43,7 @@ bitflags! {
     }
 }
 
-const NCCS: usize = 32;
+const NCCS: usize = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
