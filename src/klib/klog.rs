@@ -143,8 +143,7 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
             COLOR_RESET
         );
     }
-
-    // SAFETY: panic 时已无法恢复，栈帧在 force-frame-pointers=yes 下合法
+    
     backtrace::print_backtrace();
 
     exit();

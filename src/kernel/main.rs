@@ -61,14 +61,13 @@ const LOGO: &str = r#"
 
 #[unsafe(no_mangle)]
 extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
-    kinfo!("Welcome to KernelX!");
-    
-    kinfo!("Initializing KernelX...");
-    
     kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
     mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
     driver::init();
     arch::init();
+
+    kinfo!("Welcome to KernelX!");
+    kinfo!("Initializing KernelX...");
     
     fs::init();
     arch::scan_device();
@@ -118,13 +117,13 @@ extern "C" fn kentry(hartid: usize) -> ! {
     scheduler::run_tasks(hartid);
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "backtrace")]
 #[inline(never)]
 fn backtrace_inner() {
     panic!("backtrace test");
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "backtrace")]
 #[inline(never)]
 fn test_backtrace() {
     backtrace_inner();
