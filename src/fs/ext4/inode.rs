@@ -10,21 +10,21 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::fs::inode::{InodeOps, Mode};
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::klib::SpinLock;
+use crate::klib::{SpinLock, SleepLock};
 
 use super::superblock::{SuperBlockInner, map_error_to_kernel};
 
 pub struct Ext4Inode {
     ino: u32,
-    superblock: Arc<SpinLock<SuperBlockInner>>,
+    superblock: Arc<SleepLock<SuperBlockInner>>,
     dents_cache: SpinLock<Option<Vec<DirResult>>>,
 }
 
 impl Ext4Inode {
-    pub fn new(ino: u32, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
-        Self { 
-            ino, 
-            superblock, 
+    pub fn new(ino: u32, superblock: Arc<SleepLock<SuperBlockInner>>) -> Self {
+        Self {
+            ino,
+            superblock,
             dents_cache: SpinLock::new(None)
         }
     }

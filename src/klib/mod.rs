@@ -10,4 +10,5 @@ pub mod defer;
 pub mod ring;
 
 pub use ksync::SpinLock;
+pub use ksync::SleepLock;
 pub use initcell::InitedCell;

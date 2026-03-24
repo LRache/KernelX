@@ -5,7 +5,7 @@ use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::event::Event;
 use crate::klib::SpinLock;
-use crate::arch;
+use crate::{arch, kinfo, kwarn};
 
 use super::processor::Processor;
 
@@ -43,9 +43,12 @@ pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
     SCHEDULER.fetch_next_task()
 }
 
-pub fn wakeup_task(task: Arc<dyn Task>, event: Event) {
+pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> bool {
     if task.wakeup(event) {
         push_task(task);
+        true
+    } else {
+        false
     }
 }
 

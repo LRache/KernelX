@@ -129,9 +129,7 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
             
-            scheduler::wakeup_task(self.clone(), Event::Signal);
-
-            return true;
+            return scheduler::wakeup_task(self.clone(), Event::Signal)
         }
 
         let mask = self.get_signal_mask();
@@ -139,11 +137,9 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
             
-            scheduler::wakeup_task(self.clone(), Event::Signal);
-            
-            return true;
+            scheduler::wakeup_task(self.clone(), Event::Signal)
         } else {
-            return false;
+            false
         }
     }
 

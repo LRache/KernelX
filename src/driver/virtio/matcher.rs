@@ -23,10 +23,14 @@ impl DriverMatcher for Matcher {
             MmioTransport::new(NonNull::new(kbase as *mut VirtIOHeader).unwrap()).ok()
         }?;
         
+        if let Some(irq) = device.interrupt_number() {
+            arch::enable_device_interrupt_irq(irq);
+        }
+
         match transport.device_type() {
             DeviceType::Block => {
                 Some(Arc::new(VirtIOBlockDriver::new(
-                    device.name().into(), 
+                    device.name().into(),
                     transport
                 )))
             }

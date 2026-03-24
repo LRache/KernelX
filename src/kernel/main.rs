@@ -133,11 +133,15 @@ fn test_backtrace() {
     backtrace_inner();
 }
 
-pub fn exit() -> ! {
+pub fn deinit() {
     fs::fini();
 
     #[cfg(feature = "swap-memory")]
     crate::kernel::mm::swappable::fini();
     
+    driver::chosen::kpmu::shutdown();
+}
+
+pub fn exit() -> ! {
     driver::chosen::kpmu::shutdown();
 }

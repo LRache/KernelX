@@ -4,6 +4,9 @@ use core::ops::{Deref, DerefMut};
 #[cfg(not(feature = "no-smp"))]
 use core::sync::atomic::AtomicBool;
 
+#[cfg(feature = "no-smp")]
+use core::sync::atomic::AtomicBool;
+
 use crate::kernel::scheduler::{current, Tid};
 
 pub trait LockerTrait {
@@ -151,6 +154,79 @@ impl<T> SpinLock<T> {
     #[cfg(not(feature = "no-smp"))]
     pub fn is_locked(&self) -> bool {
         self.lock.is_locked()
+    }
+}
+
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use crate::kernel::event::Event;
+use crate::kernel::scheduler::{self, Task};
+
+pub struct SleepLocker {
+    locked: AtomicBool,
+    waiters: SpinLock<VecDeque<Arc<dyn Task>>>,
+}
+
+impl SleepLocker {
+    pub const fn new() -> Self {
+        SleepLocker {
+            locked: AtomicBool::new(false),
+            waiters: SpinLock::new(VecDeque::new()),
+        }
+    }
+}
+
+impl LockerTrait for SleepLocker {
+    fn is_locked(&self) -> bool {
+        self.locked.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn lock(&self) {
+        use core::sync::atomic::Ordering;
+        loop {
+            if self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return;
+            }
+            let task = current::task().clone();
+            task.block("sleep_lock");
+            self.waiters.lock().push_back(task);
+            // Re-check after enqueue: if lock was released between CAS fail and enqueue,
+            // the unlocker may not have seen us. Try to acquire before sleeping.
+            if self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                // Got the lock — remove ourselves from waiters and wake up
+                let mut waiters = self.waiters.lock();
+                if let Some(pos) = waiters.iter().position(|t| Arc::ptr_eq(t, current::task())) {
+                    waiters.remove(pos);
+                }
+                // Unblock ourselves since we won't actually sleep
+                scheduler::wakeup_task(current::task().clone(), Event::ReadReady);
+                return;
+            }
+            current::schedule();
+        }
+    }
+
+    fn unlock(&self) {
+        self.locked.store(false, core::sync::atomic::Ordering::Release);
+        let mut waiters = self.waiters.lock();
+        if let Some(task) = waiters.pop_front() {
+            scheduler::wakeup_task(task, Event::ReadReady);
+        }
+    }
+}
+
+unsafe impl Send for SleepLocker {}
+unsafe impl Sync for SleepLocker {}
+
+pub type SleepLock<T> = Mutex<T, SleepLocker>;
+
+impl<T> SleepLock<T> {
+    pub const fn new(data: T) -> Self {
+        SleepLock {
+            data: UnsafeCell::new(data),
+            lock: SleepLocker::new(),
+            holder: UnsafeCell::new(-1),
+        }
     }
 }
 
