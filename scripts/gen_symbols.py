@@ -29,14 +29,20 @@ def run_nm(elf_path: str, cross_compile: str) -> list[tuple[int, str]]:
         if len(parts) < 3:
             continue
         addr_str, sym_type, name = parts
-        # T/t = text (function), keep both global and local
-        if sym_type not in ("T", "t"):
+        # T = global text (function), t = local text
+        # Only keep global symbols (T) to avoid compiler-generated local
+        # labels like .L0, .Lpcrel_hi* from polluting the symbol table.
+        if sym_type != "T":
+            continue
+        sym_name = name.strip()
+        # Also skip any remaining dot-local labels
+        if sym_name.startswith("."):
             continue
         try:
             addr = int(addr_str, 16)
         except ValueError:
             continue
-        symbols.append((addr, name.strip()))
+        symbols.append((addr, sym_name))
     # nm -n already sorts by address, but be safe
     symbols.sort(key=lambda x: x[0])
     return symbols
