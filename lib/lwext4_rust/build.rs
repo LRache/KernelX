@@ -15,7 +15,7 @@ fn main() {
     {
         let status = Command::new("make")
             .args([
-                "all",
+                "musl-generic",
                 "-C",
                 c_path.to_str().expect("invalid path of lwext4"),
                 &format!("KERNELX_HOME={kernelx_home}"),
@@ -61,6 +61,7 @@ fn generates_bindings_to_rust(sysroot: &str) {
         // The input header we would like to generate bindings for.
         .header("c/wrapper.h")
         .clang_arg(&format!("--sysroot={sysroot}"))
+        .clang_arg(&format!("-I{sysroot}/usr/include"))
         .clang_arg("-I./c/lwext4/include")
         .clang_arg("-I./c/lwext4/build_musl-generic/include/")
         .layout_tests(false)
