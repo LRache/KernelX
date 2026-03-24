@@ -18,7 +18,7 @@ import sys
 
 
 def run_nm(elf_path: str, cross_compile: str) -> list[tuple[int, str]]:
-    nm = cross_compile + "nm"
+    nm = "nm"
     result = subprocess.run(
         [nm, "--demangle", "-n", "--defined-only", elf_path],
         capture_output=True, text=True, check=True,
