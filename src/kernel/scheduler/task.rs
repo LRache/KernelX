@@ -66,4 +66,6 @@ pub trait Task: Send + Sync {
     fn take_wakeup_event(&self) -> Option<Event>;
     
     fn tcb(&self) -> &TCB;
+
+    fn set_exited(&self) {}
 }

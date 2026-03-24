@@ -4,7 +4,9 @@ use crate::kernel::event::timer;
 use crate::kernel::config;
 use crate::kernel::mm;
 use crate::kernel::scheduler;
+use crate::kernel::scheduler::Task;
 use crate::kernel::task;
+use crate::kernel::kthread;
 use crate::arch;
 use crate::fs;
 use crate::driver;
@@ -34,6 +36,34 @@ fn free_init() {
 }
 
 static BOOT_ARGS: InitedCell<BTreeMap<&'static str, &'static str>> = InitedCell::uninit();
+
+fn kinit() {
+    fs::mount_init_fs(
+        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT),
+        BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE),
+    );
+
+    driver::chosen::init(&BOOT_ARGS);
+
+    #[cfg(feature = "swap-memory")]
+    mm::swappable::init();
+
+    task::create_initprocess(
+        BOOT_ARGS.get("init").unwrap_or(&config::DEFAULT_INITPATH),
+        BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD),
+        BOOT_ARGS.get("initargs").unwrap_or(&""),
+        BOOT_ARGS.get("tty").unwrap_or(&config::DEFAULT_INITTTY),
+    );
+
+    kinfo!("KernelX initialized successfully!");
+
+    print!("{}{}{}\n", "\x1b[94m", LOGO, "\x1b[0m");
+
+    kinfo!("Welcome to use KernelX!");
+
+    #[cfg(feature = "swap-memory")]
+    crate::kernel::mm::swappable::spawn_kswapd();
+}
 
 #[unsafe(link_section = ".text.init")]
 pub fn parse_boot_args(bootargs: &'static str) {
@@ -71,36 +101,10 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     
     fs::init();
     arch::scan_device();
-    
-    #[cfg(feature = "swap-memory")]
-    mm::swappable::init();
-    
-    fs::mount_init_fs(
-        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT), 
-        BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE)
-    );
-
-    task::create_initprocess(
-        BOOT_ARGS.get("init").unwrap_or(&config::DEFAULT_INITPATH),
-        BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD),
-        BOOT_ARGS.get("initargs").unwrap_or(&""),
-        BOOT_ARGS.get("tty").unwrap_or(&config::DEFAULT_INITTTY),
-    );
-
-    driver::chosen::init(&BOOT_ARGS);
-    
     timer::init();
-
-    #[cfg(feature = "swap-memory")]
-    {
-        crate::kernel::mm::swappable::spawn_kswapd();
-    }
     
-    kinfo!("KernelX initialized successfully!");
-
-    print!("{}{}{}\n", "\x1b[94m", LOGO, "\x1b[0m");
-
-    kinfo!("Welcome to use KernelX!");
+    let inittask = kthread::spawn(kinit);
+    debug_assert!(inittask.tid() == 0);
 
     arch::setup_all_cores(hartid);
 

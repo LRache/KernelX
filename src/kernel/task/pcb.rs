@@ -7,7 +7,7 @@ use spin::Mutex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::tid::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::{with_initpcb, manager};
+use crate::kernel::task::{self, manager, with_initpcb};
 use crate::kernel::scheduler::{Task, TaskState, current, tid};
 use crate::kernel::scheduler;
 use crate::kernel::event::Event;
@@ -211,7 +211,7 @@ impl PCB {
 
         *self.state.lock() = State::Exited(code);
 
-        if self.pid == tid::TID_START {
+        if self.pid == task::INIT_UTASK_TID {
             panic!("Init process exited with code {}, system will halt.", code);
         }
         

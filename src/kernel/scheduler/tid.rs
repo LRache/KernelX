@@ -6,7 +6,7 @@ pub type Tid = i32;
 
 impl UserStruct for Tid {}
 
-pub const TID_START: Tid = 1;
+pub const TID_START: Tid = 0;
 
 static NEXT_TID: Mutex<Tid> = Mutex::new(TID_START);
 

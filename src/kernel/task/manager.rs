@@ -2,12 +2,14 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::kernel::scheduler::{Tid, tid};
+use crate::kernel::scheduler::Tid;
 use crate::kernel::scheduler;
 use crate::klib::SpinLock;
 use crate::kinfo;
 
 use super::PCB;
+
+pub const INIT_UTASK_TID: Tid = 1;
 
 fn split_with_quotes(input: &str) -> Vec<&str> {
     let mut result = Vec::new();
@@ -57,9 +59,9 @@ pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &s
         
     let pcb = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp, tty).expect("Failed to initialize init process from ELF");
 
-    debug_assert!(pcb.pid() == tid::TID_START, "Init process must have PID 1, got {}", pcb.pid());
+    debug_assert!(pcb.pid() == INIT_UTASK_TID, "Init process must have PID {}, got {}", INIT_UTASK_TID, pcb.pid());
         
-    PCBS.lock().insert(tid::TID_START, pcb.clone());
+    PCBS.lock().insert(pcb.pid(), pcb.clone());
     scheduler::push_task(pcb.tasks.lock()[0].clone());
 }
 
@@ -68,7 +70,7 @@ where
     F: FnOnce(&Arc<PCB>) -> R,
 {
     let pcbs = PCBS.lock();
-    let pcb = pcbs.get(&tid::TID_START).expect("Init process not created yet");
+    let pcb = pcbs.get(&INIT_UTASK_TID).expect("Init process not created yet");
     f(pcb)
 }
 
