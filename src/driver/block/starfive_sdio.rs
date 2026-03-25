@@ -4,9 +4,12 @@ use alloc::sync::Arc;
 use visionfive2_sd::{Vf2SdDriver, SDIo, SleepOps};
 
 use crate::arch;
-use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
+use crate::arch::map_kernel_addr;
+use crate::kernel::mm::{MapPerm, page};
+use crate::driver::{BlockDriverOps, Device, DeviceType, DriverOps, DriverMatcher};
 use crate::kernel::event::timer;
 use crate::klib::SpinLock;
+use crate::kwarn;
 
 struct SDIOImpls {
     pub base: usize
@@ -109,5 +112,31 @@ impl BlockDriverOps for Driver {
     fn get_block_count(&self) -> u64 {
         // 4 GB
         8388608
+    }
+}
+
+pub struct Matcher;
+
+impl DriverMatcher for Matcher {
+    fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
+        device.match_compatible(&["snps,dw-mshc"])?;
+        
+        let (mmio_base, mmio_size) = device.mmio()?;
+        if mmio_base != 0x16020000 {
+            return None;
+        }
+
+        let pages = arch::page_count(mmio_size);
+        let kpage = page::alloc_contiguous(pages);
+        map_kernel_addr(kpage, mmio_base, mmio_size, MapPerm::RW);
+        
+        let driver = Driver::new(device.name().into(), kpage);
+        let r = driver.init();
+        if let Err(e) = r {
+            kwarn!("Failed to init starfive_sdio driver: {:?}", e);
+            None
+        } else {
+            Some(Arc::new(driver))
+        }
     }
 }
