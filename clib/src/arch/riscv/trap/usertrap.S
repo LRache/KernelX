@@ -8,7 +8,9 @@
     
     .section .trampoline.text
     .global asm_usertrap_entry
+    .type   asm_usertrap_entry, @function
     .global asm_usertrap_return
+    .type   asm_usertrap_return, @function
 
 .align 3
 asm_usertrap_entry:
