@@ -76,7 +76,7 @@ impl PCB {
         })
     }
 
-    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str], tty: &str) -> SysResult<Arc<PCB>> {
+    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str], tty: &str) -> SysResult<(Arc<PCB>, Arc<TCB>)> {
         let new_tid = tid::alloc();
 
         let cwd = vfs::load_dentry(cwd)?;
@@ -103,9 +103,9 @@ impl PCB {
         });
 
         let first_task = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
-        pcb.tasks.lock().push(first_task);
+        pcb.tasks.lock().push(first_task.clone());
 
-        Ok(pcb)
+        Ok((pcb, first_task))
     }
 
     pub fn pid(&self) -> Tid {
@@ -202,20 +202,31 @@ impl PCB {
     }
 
     pub fn exit(self: &Arc<Self>, code: u8) {
-        let mut tasks = self.tasks.lock();
-        tasks.iter().for_each(|t| {
-            t.with_state_mut(|state| state.state = TaskState::Exited );
-        });
-        tasks.clear();
-
-        drop(tasks);
-
-        *self.state.lock() = State::Exited(code);
-
+        // If the init process exits, run deinit and halt the system.
+        // NOTE: `deinit()` may issue async I/O, so the task state MUST NOT
+        // be set to `Exited` before `deinit()` returns — once the task is
+        // marked exited it will never be rescheduled, causing it to block
+        // indefinitely and leaving the system hung instead of halting cleanly.
         if self.pid == task::INIT_UTASK_TID {
             deinit();
             panic!("Init process exited with code {}, system will halt.", code);
         }
+        
+        let tasks = self.tasks.lock();
+        tasks.iter().for_each(|t| {
+            t.with_state_mut(|state| state.state = TaskState::Exited );
+        });
+        
+        // NOTE: Dropping `tasks` here would release ownership of each TCB and
+        // trigger their destructors, which may perform async I/O. That is not
+        // permitted inside a scheduler context. Instead, we leave the TCBs alive
+        // and defer their cleanup to when this process is waited on (e.g. waitpid),
+        // at which point it is safe to reclaim the resources.
+        // tasks.clear();
+
+        drop(tasks);
+
+        *self.state.lock() = State::Exited(code);
         
         if let Some(parent) = self.parent.lock().as_ref() {
             parent.waiting_task.lock().drain(..).for_each(|t| {

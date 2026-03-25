@@ -138,8 +138,6 @@ pub fn deinit() {
 
     #[cfg(feature = "swap-memory")]
     crate::kernel::mm::swappable::fini();
-    
-    driver::chosen::kpmu::shutdown();
 }
 
 pub fn exit() -> ! {

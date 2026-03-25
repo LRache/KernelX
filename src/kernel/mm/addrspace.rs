@@ -283,6 +283,12 @@ impl AddrSpace {
         }
     }
 
+    pub fn cleanup(&self) {
+        // let pagetable = &mut self.pagetable.write();        
+        let mut map_manager = self.map_manager.lock();
+        map_manager.cleanup();
+    }
+
     #[cfg(feature = "swap-memory")]
     pub fn unmap_swap_page(&self, uaddr: usize, kaddr: usize) {
         self.pagetable.write().munmap_with_check(uaddr, kaddr);

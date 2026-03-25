@@ -432,4 +432,8 @@ impl Manager {
         
         false
     }
+
+    pub fn cleanup(&mut self) {
+        self.areas.clear();
+    }
 }

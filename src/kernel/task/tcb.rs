@@ -428,6 +428,11 @@ impl TCB {
         if self.parent.pid() == self.tid {
             self.parent.exit(code);
         }
+        
+        // cleanup addrspace before scheduler
+        if Arc::strong_count(&self.addrspace) == 1 {
+            self.addrspace.cleanup();
+        }
     }
 
     pub fn set_parent_waiting_vfork(&self, parent: Option<Arc<dyn Task>>) {

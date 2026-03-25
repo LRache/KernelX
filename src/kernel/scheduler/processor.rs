@@ -1,3 +1,4 @@
+use core::ptr::NonNull;
 use alloc::sync::Arc;
 
 use crate::kernel::scheduler::task::Task;
@@ -6,7 +7,7 @@ use crate::arch;
 
 pub struct Processor {
     hart_id: usize,
-    task: *const Arc<dyn Task>,
+    task: Option<NonNull<Arc<dyn Task>>>,
     idle_kernel_context: arch::KernelContext,
 }
 
@@ -14,7 +15,7 @@ impl<'a> Processor {
     pub fn new(hart_id: usize) -> Self {
         Self {
             hart_id,
-            task: 0 as *const Arc<dyn Task>,
+            task: None,
             idle_kernel_context: arch::KernelContext::new_idle(),
         }
     }
@@ -24,10 +25,16 @@ impl<'a> Processor {
     }
 
     pub fn has_task(&self) -> bool {
-        !self.task.is_null()
+        self.task.is_some()
     }
+    
     pub fn task(&self) -> &'a Arc<dyn Task> {
-        unsafe { &*self.task }
+        let p = if cfg!(debug_assertions) {
+            self.task.unwrap()
+        } else {
+            unsafe { self.task.unwrap_unchecked() }
+        };
+        unsafe { p.as_ref() }
     }
 
     pub fn tcb(&self) -> &TCB {
@@ -35,9 +42,9 @@ impl<'a> Processor {
     }
 
     pub fn switch_to_task(&mut self, task: &'a Arc<dyn Task>) {
-        self.task = task;
+        self.task = Some(NonNull::from(task));
         arch::kernel_switch(&mut self.idle_kernel_context, task.get_kcontext_ptr());
-        self.task = 0 as *const Arc<dyn Task>;
+        self.task = None;
     }
 
     pub fn schedule(&mut self) {

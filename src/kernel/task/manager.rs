@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::kernel::scheduler::Tid;
 use crate::kernel::scheduler;
+use crate::kernel::task::TCB;
 use crate::klib::SpinLock;
 use crate::kinfo;
 
@@ -51,18 +52,19 @@ fn split_with_quotes(input: &str) -> Vec<&str> {
 
 static PCBS: SpinLock<BTreeMap<Tid, Arc<PCB>>> = SpinLock::new(BTreeMap::new());
 
-pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &str) {
+pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &str) -> Arc<TCB>{
     let initargv = split_with_quotes(initargs);
     let initenvp: &[&str] = &[];
 
     kinfo!("Creating init process: \npath='{}', \ncwd='{}', \nargv={:?}, \nenvp={:?}", initpath, initcwd, initargv, initenvp);
         
-    let pcb = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp, tty).expect("Failed to initialize init process from ELF");
+    let (pcb, tcb) = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp, tty).expect("Failed to initialize init process from ELF");
 
     debug_assert!(pcb.pid() == INIT_UTASK_TID, "Init process must have PID {}, got {}", INIT_UTASK_TID, pcb.pid());
         
     PCBS.lock().insert(pcb.pid(), pcb.clone());
-    scheduler::push_task(pcb.tasks.lock()[0].clone());
+    scheduler::push_task(tcb.clone());
+    tcb
 }
 
 pub fn with_initpcb<F, R>(f: F) -> R
