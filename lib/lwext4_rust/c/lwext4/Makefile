@@ -25,6 +25,7 @@ COMMON_DEFINITIONS =                                      \
 	-DCMAKE_INSTALL_PREFIX=./install \
 	-DLIB_ONLY=TRUE \
 	-DSYSROOT=$(SYSROOT) \
+	-DKERNELX_HOME=$(KERNELX_HOME) \
 
 TOOLCHAIN_FILE = $(KERNELX_HOME)/scripts/cmake/toolchain/$(ARCH)$(ARCH_BITS).cmake
 
