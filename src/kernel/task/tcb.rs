@@ -1,10 +1,13 @@
 use core::time::Duration;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use spin::Mutex;
 
 use crate::driver::chosen::kclock;
+use crate::fs::file::FileOps;
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
+use crate::kernel::errno::SysResult;
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::Task;
@@ -138,7 +141,7 @@ impl TCB {
         argv: &[&str],
         envp: &[&str],
         tty: &str
-    ) -> Arc<Self> {
+    ) -> (Arc<Self>, String) {
         let file = vfs::open_file(
             initpath, 
             FileFlags::dontcare(),
@@ -170,6 +173,8 @@ impl TCB {
                 return Self::new_inittask(tid, parent, interpreter, &new_argv, envp, tty);
             }
         }
+
+        let exec_path = file.get_dentry().unwrap().get_path();
         
         let mut addrspace = AddrSpace::new();
         let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)
@@ -215,7 +220,7 @@ impl TCB {
             Arc::new(SpinLock::new(fdtable))
         );
         
-        tcb
+        (tcb, exec_path)
     }
 
     pub fn new_clone(
@@ -267,7 +272,7 @@ impl TCB {
         file: Arc<File>,
         argv: &[&str],
         envp: &[&str],
-    ) -> Result<Arc<Self>, Errno> {
+    ) -> SysResult<(Arc<Self>, String)> {
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file.read_at(&mut first_line, 0)?;
@@ -295,7 +300,8 @@ impl TCB {
             }
         }
 
-        let file = Arc::new(file);
+        // SAFETY: File MUTS HAVE dentry and path.
+        let exec_path = file.get_dentry().unwrap().get_path();
         
         let mut addrspace = AddrSpace::new();
         let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)?;
@@ -328,7 +334,7 @@ impl TCB {
             self.fdtable().clone(),
         );
 
-        Ok(new_tcb)
+        Ok((new_tcb, exec_path))
     }
 
     pub fn tid(&self) -> i32 {

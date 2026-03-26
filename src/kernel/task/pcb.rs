@@ -85,7 +85,7 @@ impl PCB {
             pid: new_tid,
             parent: SpinLock::new(None),
             state: SpinLock::new(State::Running),
-            exec_path: SpinLock::new(String::from(initpath)),
+            exec_path: SpinLock::new(String::new()),
             
             tasks: SpinLock::new(Vec::new()),
             cwd: SpinLock::new(cwd.clone()),
@@ -102,8 +102,9 @@ impl PCB {
             itimer_ids: SpinLock::new([None; 3]),
         });
 
-        let first_task = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
+        let (first_task, exec_path) = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
         pcb.tasks.lock().push(first_task.clone());
+        *pcb.exec_path.lock() = exec_path;
 
         Ok((pcb, first_task))
     }
@@ -181,17 +182,17 @@ impl PCB {
         self: &Arc<Self>, 
         tcb: &TCB, 
         file: Arc<File>,
-        exec_path: String, 
         argv: &[&str], 
         envp: &[&str]
-    ) -> Result<(), Errno> {        
-        let first_task = tcb.new_exec(file, argv, envp)?;
+    ) -> SysResult<()> {        
+        let (first_task, exec_path) = tcb.new_exec(file, argv, envp)?;
 
         let mut tasks = self.tasks.lock();
         tasks.iter_mut().for_each(|tcb| {
             tcb.with_state_mut(|state| state.state = TaskState::Exited );
         });
         tasks.clear();
+        
         tasks.push(first_task.clone());
 
         *self.exec_path.lock() = exec_path;

@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{File, FileFlags};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
@@ -150,9 +150,7 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
         let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
         let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
 
-        let exec_path = file.get_dentry().unwrap().get_path();
-
-        current::pcb().exec(current::tcb(), file, exec_path, &argv_ref, &envp_ref)?;
+        current::pcb().exec(current::tcb(), file, &argv_ref, &envp_ref)?;
         current::tcb().wake_parent_waiting_vfork();
     }    
 
