@@ -43,6 +43,10 @@ impl InodeOps for Ext4Inode {
         if !self.mode()?.contains(Mode::S_IFDIR) {
             return Err(Errno::ENOTDIR);
         }
+
+        if self.superblock.lock().lookup(self.ino, name).is_ok() {
+            return Err(Errno::EEXIST);
+        }
         
         *self.dents_cache.lock() = None; // Invalidate cache
         let mut superblock = self.superblock.lock();
@@ -64,14 +68,6 @@ impl InodeOps for Ext4Inode {
         };
 
         let ino = superblock.create(self.ino, name, ty, mode.bits() as u32).map_err(map_error_to_kernel)?;
-        if let Ok(now) = kclock::now() {
-            superblock.with_inode_ref(ino, |inode_ref| {
-                inode_ref.set_atime(&now);
-                inode_ref.set_mtime(&now);
-                inode_ref.set_ctime(&now);
-                Ok(())
-            }).map_err(map_error_to_kernel)?;
-        }   
         
         Ok(Arc::new(Self::new(ino, self.superblock.clone())))
     }
