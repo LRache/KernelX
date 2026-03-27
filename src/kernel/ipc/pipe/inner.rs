@@ -130,7 +130,7 @@ impl PipeInner {
         
         let mut total_read = 0;
 
-        {
+        while total_read == 0 {
             let mut fifo = self.fifo.lock();
             match fifo.pop_front() {
                 Some(byte) => {
