@@ -10,11 +10,6 @@ use crate::arch::riscv::plic;
 use crate::arch::UserContextTrait;
 use crate::kinfo;
 
-unsafe extern "C" {
-    fn asm_usertrap_entry (user_context: *mut   UserContext) -> !;
-    fn asm_usertrap_return(user_context: *const UserContext) -> !;
-}
-
 fn handle_syscall() {
     let tcb = current::tcb();
 
@@ -62,7 +57,7 @@ unsafe extern "C" {
 }
 
 pub fn usertrap_handler() -> ! {
-    stvec::write(asm_kerneltrap_entry as usize);
+    stvec::write(asm_kerneltrap_entry as *const () as usize);
     let user_context = current::tcb().user_context();
     user_context.set_user_entry(sepc::read());
 
@@ -135,9 +130,14 @@ pub fn usertrap_handler() -> ! {
     return_to_user();
 }
 
+unsafe extern "C" {
+    fn asm_usertrap_entry (user_context: *mut   UserContext) -> !;
+    fn asm_usertrap_return(user_context: *const UserContext) -> !;
+}
+
 fn usertrap_return(user_context: *const UserContext) -> ! {
     let trampoline_usertrap_return = 
-        (TRAMPOLINE_BASE + (asm_usertrap_return as usize - asm_usertrap_entry as usize)) 
+        (TRAMPOLINE_BASE + (asm_usertrap_return as *const () as usize - asm_usertrap_entry as *const () as usize)) 
         as usize;
     
     unsafe {
@@ -174,8 +174,6 @@ pub fn return_to_user() -> ! {
     
     let user_context_ptr = tcb.get_user_context_ptr();
 
-    // ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.user_context().get_user_entry(), user_context_ptr as usize);
-
     usertrap_return(user_context_ptr);
 }
 
@@ -211,11 +209,9 @@ pub fn kerneltrap_handler() {
                     kinfo!("Kernel software interrupt occurred");
                 },
                 scause::Interrupt::Timer => {
-                    // kinfo!("Kernel timer interrupt occurred");
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
-                    // kinfo!("Kernel external interrupt occurred");
                     handle_external_interrupt();
                 },
                 scause::Interrupt::Counter => {

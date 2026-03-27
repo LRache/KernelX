@@ -83,16 +83,15 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
     };
 
     let child = current::pcb().clone_task(current::tcb(), stack, &task_flags, tls)?;
+    let child_tid = child.tid();
 
     if flags.contains(CloneFlags::CHILD_SETTID) {
-        let _ = child.get_addrspace().copy_to_user(uptr_child_tid, 0 as Tid);
+        let _ = child.get_addrspace().copy_to_user(uptr_child_tid, child_tid);
     }
 
     if flags.contains(CloneFlags::CHILD_CLEARTID) {
         child.set_tid_address(uptr_child_tid);
     }
-
-    let child_tid = child.tid();
 
     if flags.contains(CloneFlags::PARENT_SETTID) {
         uptr_parent_tid.write(child_tid)?;
@@ -219,10 +218,10 @@ pub fn exit_group(code: usize) -> Result<usize, Errno> {
     unreachable!();
 }
 
-pub fn set_tid_address(tid_address: usize) -> Result<usize, Errno> {
+pub fn set_tid_address(tid_address: usize) -> SysResult<usize> {
     let tcb = current::tcb();
     tcb.set_tid_address(tid_address);
-    Ok(0)
+    Ok(tcb.tid() as usize)
 }
 
 pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {

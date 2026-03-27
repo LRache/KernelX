@@ -16,7 +16,6 @@ use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, Signa
 use crate::fs::file::File;
 use crate::fs::vfs;
 use crate::fs::Dentry;
-use crate::kinfo;
 use crate::klib::SpinLock;
 
 use super::tcb::TCB;

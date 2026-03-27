@@ -5,7 +5,7 @@ use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::event::Event;
 use crate::klib::SpinLock;
-use crate::{arch, kinfo};
+use crate::arch;
 
 use super::processor::Processor;
 
