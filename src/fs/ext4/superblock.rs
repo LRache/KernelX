@@ -87,7 +87,7 @@ impl SuperBlockOps for Ext4SuperBlock {
     }
 
     fn unmount(&self) -> SysResult<()> {
-        Ok(())
+        self.superblock.lock().flush().map_err(map_error_to_kernel)
     }
 
     fn statfs(&self) -> SysResult<Statfs> {
