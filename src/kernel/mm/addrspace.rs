@@ -2,13 +2,14 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::{Lazy, Mutex, RwLock};
+use spin::{Lazy, RwLock};
 
 use crate::safe_page_write;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{maparea, PhysPageFrame};
 use crate::kernel::mm::maparea::Auxv;
 use crate::kernel::config::USER_RANDOM_ADDR_BASE;
+use crate::klib::SpinLock;
 use crate::arch::{PageTable, PageTableTrait, UserContext, TRAMPOLINE_BASE};
 use crate::arch;
 
@@ -18,7 +19,6 @@ use super::vdso;
 cfg_if::cfg_if! {
     if #[cfg(feature="swap-memory")] {
         use alloc::collections::LinkedList;
-        use crate::klib::SpinLock;
     }
 }
 
@@ -53,9 +53,9 @@ fn create_pagetable() -> PageTable {
 use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
 
 pub struct AddrSpace {
-    map_manager: Mutex<maparea::Manager>,
+    map_manager: SpinLock<maparea::Manager>,
     pagetable: RwLock<PageTable>,
-    usercontext_frames: Mutex<Vec<PhysPageFrame>>,
+    usercontext_frames: SpinLock<Vec<PhysPageFrame>>,
 
     #[cfg(feature = "swap-memory")]
     family_chain: AddrSpaceFamilyChain,
@@ -64,9 +64,9 @@ pub struct AddrSpace {
 impl AddrSpace {
     pub fn new() -> Arc<Self> {        
         let addrspace = Arc::new(AddrSpace {
-            map_manager: Mutex::new(maparea::Manager::new()),
+            map_manager: SpinLock::new(maparea::Manager::new()),
             pagetable: RwLock::new(create_pagetable()),
-            usercontext_frames: Mutex::new(Vec::new()),
+            usercontext_frames: SpinLock::new(Vec::new()),
 
             #[cfg(feature = "swap-memory")]
             family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new())),
@@ -84,9 +84,9 @@ impl AddrSpace {
         let new_map_manager = self.map_manager.lock().fork(&self.pagetable, &new_pagetable);
 
         let addrspace = Arc::new(AddrSpace {
-            map_manager: Mutex::new(new_map_manager),
+            map_manager: SpinLock::new(new_map_manager),
             pagetable: new_pagetable,
-            usercontext_frames: Mutex::new(Vec::new()),
+            usercontext_frames: SpinLock::new(Vec::new()),
 
             #[cfg(feature = "swap-memory")]
             family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new())),
