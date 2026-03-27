@@ -7,7 +7,7 @@ use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
-use crate::kernel::scheduler::{current, Tid};
+use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::scheduler;
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr, UString};
@@ -166,7 +166,7 @@ bitflags! {
     }
 }
 
-pub fn wait4(pid: usize, uptr_status: usize, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
+pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
     let options = WaitOptions::from_bits(options).unwrap_or(WaitOptions::empty());
     let pid = pid as isize;  
@@ -190,9 +190,8 @@ pub fn wait4(pid: usize, uptr_status: usize, options: usize, _user_rusages: usiz
         }
     }
 
-    if uptr_status != 0 {
-        let status: u32 = (exit_code as u32 & 0xff) << 8; // WEXITSTATUS
-        copy_to_user::object(uptr_status, status)?;
+    if !status.is_null() {
+        status.write((exit_code as u32 & 0xff) << 8)?; // WEXITSTATUS
     }
 
     Ok(wait_pid as usize)
@@ -217,7 +216,7 @@ pub fn exit_group(code: usize) -> Result<usize, Errno> {
     
     current::schedule();
     
-    unreachable!()
+    unreachable!();
 }
 
 pub fn set_tid_address(tid_address: usize) -> Result<usize, Errno> {
