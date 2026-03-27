@@ -16,6 +16,7 @@ use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, Signa
 use crate::fs::file::File;
 use crate::fs::vfs;
 use crate::fs::Dentry;
+use crate::kinfo;
 use crate::klib::SpinLock;
 
 use super::tcb::TCB;
@@ -130,8 +131,9 @@ impl PCB {
         let mut state = self.state.lock();
         let code = match *state {
             State::Exited(code) => Some(code),
-            _ => None,
+            _ => return None,
         };
+        self.tasks.lock().clear(); // Drop all TCBs to release their resources
         *state = State::Dead;
         code
     }
@@ -215,7 +217,10 @@ impl PCB {
         
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|t| {
-            t.with_state_mut(|state| state.state = TaskState::Exited );
+            t.with_state_mut(|state| {
+                state.state = TaskState::Exited
+            } );
+            scheduler::remove_task(t.tid());
         });
         
         // NOTE: Dropping `tasks` here would release ownership of each TCB and
@@ -224,7 +229,6 @@ impl PCB {
         // and defer their cleanup to when this process is waited on (e.g. waitpid),
         // at which point it is safe to reclaim the resources.
         // tasks.clear();
-
         drop(tasks);
 
         *self.state.lock() = State::Exited(code);
@@ -345,7 +349,9 @@ impl PCB {
                                 // The child process was recycled by other waiters
                             }
                         },
-                        None => {}, // The child process was recycled by other waiters
+                        None => {
+                            // The child process was recycled by other waiters
+                        }, 
                     };
                 }
                 Event::Signal => {

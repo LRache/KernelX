@@ -528,14 +528,15 @@ impl Task for TCB {
         true
     }
 
-    fn wakeup_uninterruptible(&self, event: Event) {
+    fn wakeup_uninterruptible(&self, event: Event) -> bool {
         let mut state = self.state().lock();
         match state.state {
             TaskState::Blocked | TaskState::BlockedUninterruptible => {},
-            _ => return,
+            _ => return false,
         }
         state.state = TaskState::Ready;
         *self.wakeup_event.lock() = Some(event);
+        true
     }
 
     fn take_wakeup_event(&self) -> Option<Event> {

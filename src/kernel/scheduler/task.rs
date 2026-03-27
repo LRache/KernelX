@@ -62,7 +62,7 @@ pub trait Task: Send + Sync {
     fn unblock(&self);
 
     fn wakeup(&self, event: Event) -> bool;
-    fn wakeup_uninterruptible(&self, event: Event);
+    fn wakeup_uninterruptible(&self, event: Event) -> bool;
     fn take_wakeup_event(&self) -> Option<Event>;
     
     fn tcb(&self) -> &TCB;

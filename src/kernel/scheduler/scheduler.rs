@@ -1,11 +1,11 @@
 use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
 
-use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::event::Event;
 use crate::klib::SpinLock;
-use crate::{arch, kinfo, kwarn};
+use crate::{arch, kinfo};
 
 use super::processor::Processor;
 
@@ -53,8 +53,19 @@ pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> bool {
 }
 
 pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) {
-    task.wakeup_uninterruptible(event);
-    push_task(task);
+    if task.wakeup_uninterruptible(event) {
+        push_task(task);
+    }
+}
+
+pub fn remove_task(tid: Tid) -> bool {
+    let mut ready_queue = SCHEDULER.ready_queue.lock();
+    if let Some(pos) = ready_queue.iter().position(|t| t.tid() == tid) {
+        ready_queue.remove(pos);
+        true
+    } else {
+        false
+    }
 }
 
 pub fn run_tasks(hartid: usize) -> ! {
@@ -72,6 +83,9 @@ pub fn run_tasks(hartid: usize) -> ! {
 
             if task.state_running_to_ready() {
                 push_task(task);
+            } else {
+                // `Arc<dyn Task>` SHOULD NOT be dropped here.
+                // debug_assert!(Arc::strong_count(&task) != 1)
             }
         } else {
             arch::enable_interrupt();
