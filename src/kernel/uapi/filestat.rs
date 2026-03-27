@@ -1,7 +1,7 @@
 use crate::kernel::syscall::UserStruct;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct FileStat {
     pub st_dev: u64,
     pub st_ino: u64,
