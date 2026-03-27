@@ -13,7 +13,7 @@ use super::vfs;
 pub struct Dentry {
     inode_index: Index,
     name: String,
-    parent: SpinLock<Option<Arc<Dentry>>>,
+    parent: Option<Arc<Dentry>>,
     children: SpinLock<BTreeMap<String, Weak<Dentry>>>,
     inode: SpinLock<Weak<dyn InodeOps>>,
     mount_to: SpinLock<Option<Arc<Dentry>>>,
@@ -24,7 +24,7 @@ impl Dentry {
         Self {
             inode_index: Index { sno: sno, ino: inode.get_ino() },
             name: name.into(),
-            parent: SpinLock::new(Some(parent.clone())),
+            parent: Some(parent.clone()),
             children: SpinLock::new(BTreeMap::new()),
             inode: SpinLock::new(Arc::downgrade(inode)),
             mount_to: SpinLock::new(None),
@@ -35,7 +35,7 @@ impl Dentry {
         Self {
             inode_index: Index { sno, ino: inode.get_ino() },
             name: "/".into(),
-            parent: SpinLock::new(None),
+            parent: None,
             children: SpinLock::new(BTreeMap::new()),
             inode: SpinLock::new(Arc::downgrade(inode)),
             mount_to: SpinLock::new(None),
@@ -68,7 +68,7 @@ impl Dentry {
     }
 
     pub fn get_parent(&self) -> Option<Arc<Dentry>> {
-        (*self.parent.lock()).clone()
+        self.parent.clone()
     }
 
     pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
@@ -107,8 +107,7 @@ impl Dentry {
     }
 
     pub fn walk_link(self: Arc<Self>) -> SysResult<Arc<Dentry>> {
-        let parent = self.parent.lock();
-        if let Some(p) = &*parent {
+        if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
             let mut buffer = [0u8; 255];
             if let Some(length) = inode.readlink(&mut buffer)? {
@@ -117,7 +116,6 @@ impl Dentry {
                 return Ok(link_dentry);
             }
         }
-        drop(parent);
         Ok(self)
     }
 
@@ -126,7 +124,7 @@ impl Dentry {
             Dentry { 
                 inode_index: Index { sno: mount_to_sno, ino: mount_to.get_ino() },
                 name: self.name.clone(),
-                parent: SpinLock::new(self.parent.lock().clone()),
+                parent: self.parent.clone(),
                 children: SpinLock::new(BTreeMap::new()),
                 inode: SpinLock::new(Arc::downgrade(mount_to)),
                 mount_to: SpinLock::new(None),
@@ -135,8 +133,7 @@ impl Dentry {
     }
 
     pub fn get_path(&self) -> String {
-        let parent = self.parent.lock();
-        if let Some(parent) = &*parent {
+        if let Some(parent) = self.parent.as_ref() {
             let mut path = parent.get_path();
             if !path.ends_with('/') {
                 path.push('/');
