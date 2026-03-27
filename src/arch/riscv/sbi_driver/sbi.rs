@@ -26,7 +26,7 @@ fn sbi_call(fid: usize, eid: usize, arg0: usize, arg1: usize, arg2: usize, arg3:
 }
 
 pub fn shutdown() -> ! {
-    sbi_call(0x0, 0x8, 0, 0, 0, 0, 0, 0);
+    let _ = sbi_call(0x0, 0x8, 0, 0, 0, 0, 0, 0);
     
     loop {
         unsafe {
@@ -36,11 +36,11 @@ pub fn shutdown() -> ! {
 }
 
 pub fn putchar(c: u8) {
-    sbi_call(0x0, 0x1, c as usize, 0, 0, 0, 0, 0);
+    let _ = sbi_call(0x0, 0x1, c as usize, 0, 0, 0, 0, 0);
 }
 
 pub fn set_timer(time: u64) {
-    sbi_call(0x0, 0x0, time as usize, (time >> 32) as usize, 0, 0, 0, 0);
+    let _ = sbi_call(0x0, 0x0, time as usize, (time >> 32) as usize, 0, 0, 0, 0);
 }
 
 pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> SBIRet {
