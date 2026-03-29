@@ -2,14 +2,14 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::{Lazy, RwLock};
+use spin::Lazy;
 
 use crate::safe_page_write;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{maparea, PhysPageFrame};
 use crate::kernel::mm::maparea::Auxv;
 use crate::kernel::config::USER_RANDOM_ADDR_BASE;
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 use crate::arch::{PageTable, PageTableTrait, UserContext, TRAMPOLINE_BASE};
 use crate::arch;
 
@@ -53,8 +53,8 @@ fn create_pagetable() -> PageTable {
 use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
 
 pub struct AddrSpace {
-    map_manager: SpinLock<maparea::Manager>,
-    pagetable: RwLock<PageTable>,
+    map_manager: SleepLock<maparea::Manager>,
+    pagetable: SpinLock<PageTable>,
     usercontext_frames: SpinLock<Vec<PhysPageFrame>>,
 
     #[cfg(feature = "swap-memory")]
@@ -64,12 +64,12 @@ pub struct AddrSpace {
 impl AddrSpace {
     pub fn new() -> Arc<Self> {        
         let addrspace = Arc::new(AddrSpace {
-            map_manager: SpinLock::new(maparea::Manager::new()),
-            pagetable: RwLock::new(create_pagetable()),
-            usercontext_frames: SpinLock::new(Vec::new()),
+            map_manager: SleepLock::new(maparea::Manager::new(), "AddrSpace::map_manager"),
+            pagetable: SpinLock::new(create_pagetable(), "AddrSpace::pagetable"),
+            usercontext_frames: SpinLock::new(Vec::new(), "AddrSpace::usercontext_frames"),
 
             #[cfg(feature = "swap-memory")]
-            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new())),
+            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new(), "AddrSpace::family_chain")),
         });
 
         #[cfg(feature = "swap-memory")]
@@ -77,19 +77,19 @@ impl AddrSpace {
 
         addrspace
     }
-    
+
     pub fn fork(self: &Arc<Self>) -> Arc<AddrSpace> {
-        let new_pagetable = RwLock::new(create_pagetable());
+        let new_pagetable = SpinLock::new(create_pagetable(), "AddrSpace::fork.new_pagetable");
 
         let new_map_manager = self.map_manager.lock().fork(&self.pagetable, &new_pagetable);
 
         let addrspace = Arc::new(AddrSpace {
-            map_manager: SpinLock::new(new_map_manager),
+            map_manager: SleepLock::new(new_map_manager, "AddrSpace::map_manager"),
             pagetable: new_pagetable,
-            usercontext_frames: SpinLock::new(Vec::new()),
+            usercontext_frames: SpinLock::new(Vec::new(), "AddrSpace::usercontext_frames"),
 
             #[cfg(feature = "swap-memory")]
-            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new())),
+            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new(), "AddrSpace::family_chain")),
         });
 
         #[cfg(feature = "swap-memory")]
@@ -116,7 +116,8 @@ impl AddrSpace {
         let user_context_ptr = kaddr as *mut UserContext;
 
         // Map the user context page in the pagetable
-        self.pagetable.write().mmap(uaddr, kaddr, MapPerm::R | MapPerm::W);
+        // self.pagetable.write().mmap(uaddr, kaddr, MapPerm::R | MapPerm::W);
+        self.pagetable.lock().mmap(uaddr, kaddr, MapPerm::R | MapPerm::W);
 
         frames.push(frame);
 
@@ -258,10 +259,11 @@ impl AddrSpace {
     where
         F: FnOnce(&PageTable) -> R,
     {
-        f(&self.pagetable.read())
+        // f(&self.pagetable.read())
+        f(&self.pagetable.lock())
     }
 
-    pub fn pagetable(&self) -> &RwLock<PageTable> {
+    pub fn pagetable(&self) -> &SpinLock<PageTable> {
         &self.pagetable
     }
 
@@ -303,7 +305,7 @@ impl AddrSpace {
 impl Drop for AddrSpace {
     fn drop(&mut self) {
         let frames = self.usercontext_frames.lock();
-        let mut pagetable = self.pagetable.write();
+        let mut pagetable = self.pagetable.lock();
         for i in 0..frames.len() {
             let uaddr = TRAMPOLINE_BASE - (i + 1) * arch::PGSIZE;
             pagetable.munmap(uaddr);

@@ -5,7 +5,7 @@ use crate::kernel::uapi::FileStat;
 use crate::fs::file::DirResult;
 use crate::fs::InodeOps;
 use crate::fs::vfs::Dentry;
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 
 use super::{FileOps, SeekWhence};
 
@@ -29,7 +29,7 @@ impl FileFlags {
 pub struct File {
     inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
-    pos: SpinLock<usize>,
+    pos: SleepLock<usize>,
     
     pub flags: FileFlags,
 }
@@ -39,7 +39,7 @@ impl File {
         Self {
             inode,
             dentry,
-            pos: SpinLock::new(0),
+            pos: SleepLock::new(0, "File::pos"),
             flags
         }
     }

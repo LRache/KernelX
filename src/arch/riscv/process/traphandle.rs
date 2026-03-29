@@ -39,12 +39,12 @@ fn handle_external_interrupt() {
 
 
 fn svadu_mark_page_accessed(uaddr: usize) -> bool {
-    let mut pagetable = current::addrspace().pagetable().write();
+    let mut pagetable = current::addrspace().pagetable().lock();
     pagetable.mark_page_accessed(uaddr)
 }
 
 fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
-    let mut pagetable = current::addrspace().pagetable().write();
+    let mut pagetable = current::addrspace().pagetable().lock();
     pagetable.mark_page_accessed_and_dirty(uaddr)
 }
 
@@ -73,7 +73,7 @@ pub fn usertrap_handler() -> ! {
     }
 
     trap::trap_enter();
-    
+
     match scause::cause() {
         scause::Cause::Trap(trap) => {
             match trap {
@@ -126,7 +126,12 @@ pub fn usertrap_handler() -> ! {
             }
         },
     }
-    
+
+    if current::tcb().is_exited() {
+        current::schedule();
+        unreachable!();
+    }
+
     return_to_user();
 }
 
@@ -167,6 +172,7 @@ pub fn return_to_user() -> ! {
     }
 
     Sstatus::read()
+        .set_sie(false)
         .set_spie(true) // Enable interrupts in user mode
         .set_spp(true) // Set previous mode to user
         .set_fs(SstatusFs::Clean)

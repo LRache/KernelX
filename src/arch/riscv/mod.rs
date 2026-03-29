@@ -3,7 +3,7 @@ mod sbi_driver;
 mod process;
 mod fdt;
 mod plic;
-mod csr;
+pub mod csr;
 mod arch;
 mod cpu;
 

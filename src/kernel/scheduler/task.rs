@@ -8,10 +8,19 @@ use super::Tid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
+    /// The task is currently running on a CPU.
     Running,
+    
+    /// The task is ready to run and can be scheduled on a CPU.
     Ready,
+    
+    /// The task is blocked, waiting for an event.
     Blocked,
+    
+    /// The task is blocked and cannot be interrupted until the event it is waiting for occurs.
     BlockedUninterruptible,
+    
+    /// The task has exited. This state MUST BE set by the task itself.
     Exited,
 }
 
@@ -51,9 +60,9 @@ unsafe impl Sync for KernelStack {}
 
 pub trait Task: Send + Sync {
     fn tid(&self) -> Tid;
-    fn get_kcontext_ptr(&self) -> *mut arch::KernelContext;
+    fn kcontext(&self) -> &mut arch::KernelContext;
     fn kstack(&self) -> &KernelStack;
-    
+
     fn run_if_ready(&self) -> bool;
     fn state_running_to_ready(&self) -> bool;
 
@@ -64,8 +73,11 @@ pub trait Task: Send + Sync {
     fn wakeup(&self, event: Event) -> bool;
     fn wakeup_uninterruptible(&self, event: Event) -> bool;
     fn take_wakeup_event(&self) -> Option<Event>;
-    
+
     fn tcb(&self) -> &TCB;
 
     fn set_exited(&self) {}
+
+    #[cfg(feature = "deadlock-detect")]
+    fn lockstate(&self) -> &crate::klib::ksync::LockState;
 }

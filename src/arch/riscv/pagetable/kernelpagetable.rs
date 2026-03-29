@@ -27,7 +27,7 @@ pub fn init() {
     );
 
     KERNEL_SATP.init(pagetable.get_satp());
-    KERNEL_PAGETABLE.init(SpinLock::new(pagetable));
+    KERNEL_PAGETABLE.init(SpinLock::new(pagetable, "KERNEL_PAGETABLE"));
 }
 
 pub fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) {

@@ -14,7 +14,7 @@ impl ShmFrames {
             frames.push(PhysPageFrame::alloc());
         }
         ShmFrames {
-            frames: SpinLock::new(frames)
+            frames: SpinLock::new(frames, "ShmFrames::frames")
         }
     }
 

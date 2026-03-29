@@ -101,10 +101,10 @@ impl UserContextTrait for UserContext {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct KernelContext {
-    pub ra: usize,
-    pub sp: usize,
-    pub s : [usize; 12],
-    pub a0: usize,
+    ra: usize,
+    sp: usize,
+    s : [usize; 12],
+    a0: usize,
 }
  
 impl KernelContext {
@@ -126,8 +126,18 @@ impl KernelContext {
         }
     }
 
-    pub fn set_entry(&mut self, entry: usize) {
+    pub fn set_entry(&mut self, entry: usize) -> &mut Self {
         self.ra = entry;
+        self
+    }
+
+    pub fn set_arg0(&mut self, arg: usize) -> &mut Self {
+        self.a0 = arg;
+        self
+    }
+
+    pub fn frame_pointer(&self) -> usize {
+        self.s[0] // s0/fp
     }
 }
 

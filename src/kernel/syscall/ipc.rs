@@ -54,11 +54,11 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
     let signum = signum as u32;
     
     if pid > 0 {
-        let pcb = manager::get(pid).ok_or(Errno::ESRCH)?;
-        pcb.send_signal(
-            signum.try_into()?, 
+        let tcb = manager::get(pid).ok_or(Errno::ESRCH)?;
+        tcb.parent().send_signal(
+            signum.try_into()?,
             SiCode::SI_USER,
-            KSiFields::kill(current::pid(), current::uid()), 
+            KSiFields::kill(current::pid(), current::uid()),
             None
         )?;
     }
@@ -69,8 +69,8 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
 pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
     let tid = tid as Tid;
     let signum = (signum as u32).try_into()?;
-    let pcb = manager::get(tid).ok_or(Errno::ESRCH)?;
-    pcb.send_signal(
+    let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
+    tcb.parent().send_signal(
         signum,
         SiCode::SI_TKILL,
         KSiFields::kill(current::pid(), current::uid()),
@@ -86,8 +86,8 @@ pub fn tgkill(tgid: usize, tid: usize, signum: usize) -> SyscallRet {
     let signum = signum as u32;
 
     if tgid >= 0 {
-        let pcb = manager::get(tgid).ok_or(Errno::ESRCH)?;
-        pcb.send_signal(
+        let tcb = manager::get(tgid).ok_or(Errno::ESRCH)?;
+        tcb.parent().send_signal(
             signum.try_into()?,
             SiCode::SI_TKILL,
             KSiFields::kill(current::pid(), current::uid()),
@@ -108,19 +108,43 @@ enum SigProcmaskHow {
 
 pub fn rt_sigprocmask(how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<SignalSet>) -> SyscallRet {
     let how = SigProcmaskHow::try_from(how).map_err(|_| Errno::EINVAL)?;
+
+    let new_set = if uptr_set.is_null() {
+        None
+    } else {
+        Some(uptr_set.read()?)
+    };
     
-    let mut signal_mask = current::tcb().signal_mask.lock();
+    // let mut signal_mask = current::tcb().signal_mask.lock();
+    // if !uptr_oldset.is_null() {
+    //     uptr_oldset.write(*signal_mask)?;
+    // }
+
+
+    // if let Some(new_set) = new_set {
+    //     *signal_mask = match how {
+    //         SigProcmaskHow::Block => *signal_mask | new_set,
+    //         SigProcmaskHow::Unblock => *signal_mask & !new_set,
+    //         SigProcmaskHow::Setmask => new_set,
+    //     };
+    // }
+
+    let old_set = {
+        let mut signal_mask = current::tcb().signal_mask.lock();
+        let old_set = *signal_mask;
+        if let Some(new_set) = new_set {
+            *signal_mask = match how {
+                SigProcmaskHow::Block => *signal_mask | new_set,
+                SigProcmaskHow::Unblock => *signal_mask & !new_set,
+                SigProcmaskHow::Setmask => new_set,
+            };
+        }
+        old_set
+        // release lock before writing to user memory
+    };
+
     if !uptr_oldset.is_null() {
-        uptr_oldset.write(*signal_mask)?;
-    }
-    
-    if !uptr_set.is_null() {
-        let set = uptr_set.read()?;
-        *signal_mask = match how {
-            SigProcmaskHow::Block => *signal_mask | set,
-            SigProcmaskHow::Unblock => *signal_mask & !set,
-            SigProcmaskHow::Setmask => set,
-        };
+        uptr_oldset.write(old_set)?;
     }
     
     Ok(0)

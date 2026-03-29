@@ -8,7 +8,7 @@ use num_enum::TryFromPrimitive;
 use crate::fs::file::FileOps;
 use crate::kernel::event::{Event, FileEvent, PollEventSet, timer};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet, SignalNum, signum};
-use crate::kernel::scheduler::{Task, TaskState, current};
+use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
@@ -185,7 +185,7 @@ fn select(
     old_signal_mask.map(|mask| {
         tcb.set_signal_mask(mask);
     });
-    tcb.state().lock().state = TaskState::Running;
+    // tcb.state().lock().state = TaskState::Running;
 
     let event = tcb.take_wakeup_event().unwrap();
 

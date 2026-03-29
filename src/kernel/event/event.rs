@@ -15,4 +15,5 @@ pub enum Event {
     Signal,
     VFork,
     IOComplete,
+    SleepLock,
 }

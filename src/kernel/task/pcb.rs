@@ -2,36 +2,35 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::sync::Arc;
 use core::time::Duration;
-use spin::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::main::deinit;
 use crate::kernel::scheduler::tid::Tid;
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{self, manager, with_initpcb};
-use crate::kernel::scheduler::{Task, TaskState, current, tid};
+use crate::kernel::scheduler::{Task, current, tid};
 use crate::kernel::scheduler;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum};
 use crate::fs::file::File;
 use crate::fs::vfs;
 use crate::fs::Dentry;
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 
 use super::tcb::TCB;
 
 pub type Pid = Tid;
 
 struct Signal {
-    actions: Mutex<SignalActionTable>,
-    pending: Mutex<PendingSignalQueue>,
+    actions: SpinLock<SignalActionTable>,
+    pending: SpinLock<PendingSignalQueue>,
 }
 
 #[derive(Debug)]
 enum State {
     Running,
     Exited(u8),
-    Dead,
+    Recycled
 }
 
 pub struct PCB {
@@ -40,14 +39,14 @@ pub struct PCB {
     state: SpinLock<State>,
     exec_path: SpinLock<String>,
     
-    pub tasks: SpinLock<Vec<Arc<TCB>>>,
+    pub tasks: SleepLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
     waiting_task: SpinLock<Vec<Arc<dyn Task>>>,
 
     signal: Signal,
 
-    children: Mutex<Vec<Arc<PCB>>>,
+    children: SleepLock<Vec<Arc<PCB>>>,
 
     pub itimer_ids: SpinLock<[Option<u64>; 3]>,
 }
@@ -56,23 +55,23 @@ impl PCB {
     pub fn new(pid: i32, parent: &Arc<PCB>) -> Arc<Self> {
         Arc::new(Self {
             pid,
-            parent: SpinLock::new(Some(parent.clone())),
-            state: SpinLock::new(State::Running),
-            exec_path: SpinLock::new(parent.exec_path.lock().clone()),
-            
-            tasks: SpinLock::new(Vec::new()),
-            cwd: SpinLock::new(parent.cwd.lock().clone()),
-            umask: SpinLock::new(*parent.umask.lock()),
-            waiting_task: SpinLock::new(Vec::new()),
+            parent: SpinLock::new(Some(parent.clone()), "PCB::parent"),
+            state: SpinLock::new(State::Running, "PCB::state"),
+            exec_path: SpinLock::new(parent.exec_path.lock().clone(), "PCB::exec_path"),
+
+            tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
+            cwd: SpinLock::new(parent.cwd.lock().clone(), "PCB::cwd"),
+            umask: SpinLock::new(*parent.umask.lock(), "PCB::umask"),
+            waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
 
             signal: Signal {
-                actions: Mutex::new(SignalActionTable::new()),
-                pending: Mutex::new(PendingSignalQueue::new()),
+                actions: SpinLock::new(SignalActionTable::new(), "PCB::signal.actions"),
+                pending: SpinLock::new(PendingSignalQueue::new(), "PCB::signal.pending"),
             },
 
-            children: Mutex::new(Vec::new()),
+            children: SleepLock::new(Vec::new(), "PCB::children"),
 
-            itimer_ids: SpinLock::new([None; 3]),
+            itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
         })
     }
 
@@ -83,23 +82,23 @@ impl PCB {
 
         let pcb = Arc::new(Self {
             pid: new_tid,
-            parent: SpinLock::new(None),
-            state: SpinLock::new(State::Running),
-            exec_path: SpinLock::new(String::new()),
-            
-            tasks: SpinLock::new(Vec::new()),
-            cwd: SpinLock::new(cwd.clone()),
-            umask: SpinLock::new(0o022),
-            waiting_task: SpinLock::new(Vec::new()),
+            parent: SpinLock::new(None, "PCB::parent"),
+            state: SpinLock::new(State::Running, "PCB::state"),
+            exec_path: SpinLock::new(String::new(), "PCB::exec_path"),
+
+            tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
+            cwd: SpinLock::new(cwd.clone(), "PCB::cwd"),
+            umask: SpinLock::new(0o022, "PCB::umask"),
+            waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
 
             signal: Signal {
-                actions: Mutex::new(SignalActionTable::new()),
-                pending: Mutex::new(PendingSignalQueue::new()),
+                actions: SpinLock::new(SignalActionTable::new(), "PCB::signal.actions"),
+                pending: SpinLock::new(PendingSignalQueue::new(), "PCB::signal.pending"),
             },
 
-            children: Mutex::new(Vec::new()),
+            children: SleepLock::new(Vec::new(), "static::initpcb::children"),
 
-            itimer_ids: SpinLock::new([None; 3]),
+            itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
         });
 
         let (first_task, exec_path) = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
@@ -117,11 +116,6 @@ impl PCB {
         self.exec_path.lock().clone()
     }
 
-    pub fn first_task(&self) -> Arc<TCB> {
-        let tasks = self.tasks.lock();
-        tasks[0].clone()
-    }
-
     pub fn is_exited(&self) -> bool {
          matches!(*self.state.lock(), State::Exited(_))
     }
@@ -132,15 +126,20 @@ impl PCB {
             State::Exited(code) => Some(code),
             _ => return None,
         };
-        self.tasks.lock().clear(); // Drop all TCBs to release their resources
-        *state = State::Dead;
+        *state = State::Recycled;
+        drop(state);
+        let mut tasks = self.tasks.lock();
+        tasks.iter().for_each(|tcb| {
+            while !tcb.is_exited() {
+                current::schedule();
+            }
+        });
+        tasks.clear(); // Drop all TCBs to release their resources
         code
     }
 
-    pub fn with_cwd<F, R>(&self, f: F) -> R 
-    where F: FnOnce(&Arc<Dentry>) -> R {
-        let cwd = self.cwd.lock();
-        f(&cwd)
+    pub fn cwd(&self) -> Arc<Dentry> {
+        self.cwd.lock().clone()
     }
 
     pub fn set_cwd(&self, dentry: &Arc<Dentry>) {
@@ -173,8 +172,9 @@ impl PCB {
             new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags, tls);
             new_parent.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_parent.clone());
-            manager::insert(new_parent);
         }
+
+        manager::insert(new_tcb.clone());
 
         Ok(new_tcb)
     }
@@ -188,17 +188,19 @@ impl PCB {
     ) -> SysResult<()> {        
         let (first_task, exec_path) = tcb.new_exec(file, argv, envp)?;
 
-        let mut tasks = self.tasks.lock();
-        tasks.iter_mut().for_each(|tcb| {
-            tcb.with_state_mut(|state| state.state = TaskState::Exited );
-        });
-        tasks.clear();
-        
-        tasks.push(first_task.clone());
+        {
+            let mut tasks = self.tasks.lock();
+            tasks.drain(..).for_each(|tcb| {
+                tcb.set_dead();
+                manager::remove(tcb.tid());
+            });
+            tasks.push(first_task.clone());
+        }
 
         *self.exec_path.lock() = exec_path;
 
-        scheduler::push_task(first_task);
+        scheduler::push_task(first_task.clone());
+        manager::insert(first_task);
 
         Ok(())
     }
@@ -215,11 +217,8 @@ impl PCB {
         }
         
         let tasks = self.tasks.lock();
-        tasks.iter().for_each(|t| {
-            t.with_state_mut(|state| {
-                state.state = TaskState::Exited
-            } );
-            scheduler::remove_task(t.tid());
+        tasks.iter().for_each(|tcb| {
+            tcb.set_dead();
         });
         
         // NOTE: Dropping `tasks` here would release ownership of each TCB and
@@ -227,7 +226,6 @@ impl PCB {
         // permitted inside a scheduler context. Instead, we leave the TCBs alive
         // and defer their cleanup to when this process is waited on (e.g. waitpid),
         // at which point it is safe to reclaim the resources.
-        // tasks.clear();
         drop(tasks);
 
         *self.state.lock() = State::Exited(code);
@@ -274,18 +272,15 @@ impl PCB {
                     self.waiting_task.lock().push(current::task().clone());
                     
                     let event = current::block("wait_child");
-
                     match event {
                         Event::Process { child } => {
                             if child == pid {
                                 break;
                             }
                         }
-
                         Event::Signal => {
                             return Err(Errno::EINTR);
                         }
-
                         _ => unreachable!("Unexpected event in wait_child: {:?}", event),
                     }
                 }
@@ -337,21 +332,20 @@ impl PCB {
             match event {
                 Event::Process { child } => {
                     let pid = child;
-                    let mut children = self.children.lock();
+                    let child = {
+                        let mut children = self.children.lock();
 
-                    match children.iter().find(|c| c.pid() == child) {
-                        Some(child_pcb) => {
-                            if let Some(exit_code) = child_pcb.recycle() {
-                                children.retain(|c| c.pid() != pid);
-                                return Ok(Some((pid, exit_code)))
-                            } else {
-                                // The child process was recycled by other waiters
-                            }
-                        },
-                        None => {
-                            // The child process was recycled by other waiters
-                        }, 
+                        if let Some(pos) = children.iter().position(|c| c.pid() == pid) {
+                            children.swap_remove(pos)
+                        } else {
+                            continue; // The child process was recycled by other waiters
+                        }
                     };
+                    if let Some(exit_code) = child.recycle() {
+                        return Ok(Some((pid, exit_code)));
+                    } else {
+                        continue; // The child process was recycled by other waiters
+                    }
                 }
                 Event::Signal => {
                     return Err(Errno::EINTR)
@@ -361,11 +355,11 @@ impl PCB {
         }
     }
 
-    pub fn signal_actions(&self) -> &Mutex<SignalActionTable> {
+    pub fn signal_actions(&self) -> &SpinLock<SignalActionTable> {
         &self.signal.actions
     }
 
-    pub fn pending_signals(&self) -> &Mutex<PendingSignalQueue> {
+    pub fn pending_signals(&self) -> &SpinLock<PendingSignalQueue> {
         &self.signal.pending
     }
 

@@ -197,7 +197,7 @@ impl ShmManager {
     }
 }
 
-static SHM_MANAGER: SpinLock<ShmManager> = SpinLock::new(ShmManager::new());
+static SHM_MANAGER: SpinLock<ShmManager> = SpinLock::new(ShmManager::new(), "static::SHM_MANAGER");
 
 pub fn get_or_create_shm(key: usize, size: usize, flags: IpcGetFlag) -> SysResult<usize> {
     SHM_MANAGER.lock().get_or_create(key, size, flags)

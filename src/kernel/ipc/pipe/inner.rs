@@ -5,7 +5,7 @@ use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
 use crate::kernel::mm::page;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 
 const PIPE_CAPACITY: usize = arch::PGSIZE * config::PIPE_BUFFER_PAGES;
 
@@ -105,7 +105,7 @@ impl FIFO {
 unsafe impl Send for FIFO {}
 
 pub struct PipeInner {
-    fifo: SpinLock<FIFO>,
+    fifo: SleepLock<FIFO>,
     read_waiter: SpinLock<WaitQueue<Event>>,
     write_waiter: SpinLock<WaitQueue<Event>>,
     capacity: SpinLock<usize>,
@@ -115,11 +115,11 @@ pub struct PipeInner {
 impl PipeInner {
     pub fn new(capacity: usize) -> Self {
         Self {
-            fifo: SpinLock::new(FIFO::new()),
-            read_waiter: SpinLock::new(WaitQueue::new()),
-            write_waiter: SpinLock::new(WaitQueue::new()),
-            capacity: SpinLock::new(capacity),
-            writer_count: SpinLock::new(0),
+            fifo: SleepLock::new(FIFO::new(), "PipeInner::fifo"),
+            read_waiter: SpinLock::new(WaitQueue::new(), "PipeInner::read_waiter"),
+            write_waiter: SpinLock::new(WaitQueue::new(), "PipeInner::write_waiter"),
+            capacity: SpinLock::new(capacity, "PipeInner::capacity"),
+            writer_count: SpinLock::new(0, "PipeInner::writer_count"),
         }
     }
 
@@ -258,6 +258,7 @@ impl PipeInner {
         let cap = self.capacity.lock();
 
         if ubuf.length() >= *cap {
+            drop(cap);
             let n = self.fifo.lock().push_back_ubuf(ubuf)?;
             self.read_waiter.lock().wake_all(|e| e); // Wake up readers waiting
             Ok(n)

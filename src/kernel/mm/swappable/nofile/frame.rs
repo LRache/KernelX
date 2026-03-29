@@ -33,10 +33,11 @@ impl SwappableNoFileFrameInner {
     pub fn allocated(uaddr: usize, frame: PhysPageFrame, family_chain: AddrSpaceFamilyChain) -> Self {
         Self {
             state: SpinLock::new(
-                FrameState { 
-                    state: State::Allocated(AllocatedFrame { frame, dirty: false }), 
-                    disk_slot: NO_DISK_BLOCK 
-                }
+                FrameState {
+                    state: State::Allocated(AllocatedFrame { frame, dirty: false }),
+                    disk_slot: NO_DISK_BLOCK
+                },
+                "SwappableNoFileFrameInner::state"
             ),
             family_chain,       
             uaddr,

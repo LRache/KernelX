@@ -63,7 +63,7 @@ impl Driver {
         let inner = Vf2SdDriver::new(SDIOImpls { base });
         Driver { 
             name, 
-            inner: SpinLock::new(inner) 
+            inner: SpinLock::new(inner, "Driver::inner")
         }
     }
 

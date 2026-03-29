@@ -50,19 +50,19 @@ fn split_with_quotes(input: &str) -> Vec<&str> {
         .collect()
 }
 
-static PCBS: SpinLock<BTreeMap<Tid, Arc<PCB>>> = SpinLock::new(BTreeMap::new());
+static TCBS: SpinLock<BTreeMap<Tid, Arc<TCB>>> = SpinLock::new(BTreeMap::new(), "static::TCBS");
 
 pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &str) -> Arc<TCB>{
     let initargv = split_with_quotes(initargs);
     let initenvp: &[&str] = &[];
 
     kinfo!("Creating init process: \npath='{}', \ncwd='{}', \nargv={:?}, \nenvp={:?}", initpath, initcwd, initargv, initenvp);
-        
+
     let (pcb, tcb) = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp, tty).expect("Failed to initialize init process from ELF");
 
     debug_assert!(pcb.pid() == INIT_UTASK_TID, "Init process must have PID {}, got {}", INIT_UTASK_TID, pcb.pid());
-        
-    PCBS.lock().insert(pcb.pid(), pcb.clone());
+
+    TCBS.lock().insert(tcb.tid(), tcb.clone());
     scheduler::push_task(tcb.clone());
     tcb
 }
@@ -71,23 +71,23 @@ pub fn with_initpcb<F, R>(f: F) -> R
 where
     F: FnOnce(&Arc<PCB>) -> R,
 {
-    let pcbs = PCBS.lock();
-    let pcb = pcbs.get(&INIT_UTASK_TID).expect("Init process not created yet");
-    f(pcb)
+    let tcbs = TCBS.lock();
+    let tcb = tcbs.get(&INIT_UTASK_TID).expect("Init process not created yet");
+    f(tcb.parent())
 }
 
-pub fn insert(pcb: Arc<PCB>) {
-    PCBS.lock().insert(pcb.pid(), pcb);
+pub fn insert(tcb: Arc<TCB>) {
+    TCBS.lock().insert(tcb.tid(), tcb);
 }
 
-pub fn get(tid: Tid) -> Option<Arc<PCB>> {
-    PCBS.lock().get(&tid).cloned()
+pub fn get(tid: Tid) -> Option<Arc<TCB>> {
+    TCBS.lock().get(&tid).cloned()
 }
 
-pub fn remove(tid: Tid) -> Option<Arc<PCB>> {
-    PCBS.lock().remove(&tid)
+pub fn remove(tid: Tid) -> Option<Arc<TCB>> {
+    TCBS.lock().remove(&tid)
 }
 
-pub fn pcbs() -> &'static SpinLock<BTreeMap<Tid, Arc<PCB>>> {
-    &PCBS
+pub fn tcbs() -> &'static SpinLock<BTreeMap<Tid, Arc<TCB>>> {
+    &TCBS
 }

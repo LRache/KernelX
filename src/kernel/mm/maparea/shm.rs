@@ -1,10 +1,10 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use spin::RwLock;
 
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
-use crate::arch::{self, PageTable, PageTableTrait};
 use crate::kernel::ipc::shm::ShmFrames;
+use crate::klib::SpinLock;
+use crate::arch::{self, PageTable, PageTableTrait};
 
 use super::Area;
 
@@ -55,7 +55,7 @@ impl Area for ShmArea {
         self.frames.frames.lock().len()
     }
 
-    fn fork(&mut self, _self_pagetable: &RwLock<PageTable>, _fork_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, _fork_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
         Box::new(ShmArea {
             ubase: self.ubase,
             frames: self.frames.clone(),
@@ -78,12 +78,12 @@ impl Area for ShmArea {
         }
 
         let frame = &frames[page_index];
-        addrspace.pagetable().write().mmap(uaddr & !arch::PGMASK, frame.get_page(), self.perm);
+        addrspace.pagetable().lock().mmap(uaddr & !arch::PGMASK, frame.get_page(), self.perm);
         true
     }
     
-    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
-        let mut pt = pagetable.write();
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        let mut pt = pagetable.lock();
         let frames = self.frames.frames.lock();
         for i in 0..frames.len() {
             pt.munmap(self.ubase + i * arch::PGSIZE);

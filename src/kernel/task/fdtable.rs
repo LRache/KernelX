@@ -88,13 +88,13 @@ impl FDTable {
         }
     }
 
-    pub fn close(&mut self, fd: usize) -> SysResult<()> {
+    pub fn take(&mut self, fd: usize) -> SysResult<Arc<dyn FileOps>> {
         if fd < self.table.len() {
             if self.table[fd].is_none() {
                 return Err(Errno::EBADF);
             }
-            self.table[fd] = None;
-            Ok(())
+            let file = self.table[fd].take().unwrap().file;
+            Ok(file)
         } else {
             Err(Errno::EBADF)
         }

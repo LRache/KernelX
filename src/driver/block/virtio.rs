@@ -25,15 +25,33 @@ impl VirtIOBlockDriver {
         blk.enable_interrupts();
         Self {
             device_name,
-            driver: SpinLock::new(blk),
-            inflight: SpinLock::new(BTreeMap::new()),
+            driver: SpinLock::new(blk, "VirtIOBlockDriver::driver"),
+            inflight: SpinLock::new(BTreeMap::new(), "VirtIOBlockDriver::inflight"),
         }
     }
 
     fn wait_for_token(&self, token: u16) {
         let task = current::task().clone();
         task.block_uninterruptible("virtio_blk_io");
-        self.inflight.lock().insert(token, task);
+
+        // Disable interrupts to make the following two steps atomic:
+        //   1. Register ourselves in inflight so the interrupt handler can find us.
+        //   2. Check whether the I/O already completed before we registered.
+        //
+        // Without this, the interrupt can fire between steps 1 and 2 (or before
+        // step 1), see an empty inflight map, and skip the wakeup — leaving the
+        // task blocked forever (lost-wakeup race).
+        self.inflight.lock().insert(token, task.clone());
+
+        // If the interrupt fired before we inserted (inflight was empty at that
+        // point), the completion token is still sitting in the used ring.
+        // Detect this and self-wake so schedule() returns promptly.
+        if self.driver.lock().peek_used() == Some(token) {
+            if let Some(t) = self.inflight.lock().remove(&token) {
+                scheduler::wakeup_task_uninterruptible(t, Event::IOComplete);
+            }
+        }
+
         current::schedule();
     }
 

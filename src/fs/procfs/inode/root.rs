@@ -68,7 +68,7 @@ impl InodeOps for RootInode {
             2 => Some(DirResult { ino: TaskDirSelfInode::INO, name: "self".into(), file_type: FileType::Symlink}),
             3 => Some(DirResult { ino: MountsInode::INO, name: "mounts".into(), file_type: FileType::Regular}),
             i => {
-                manager::pcbs().lock().iter().nth(i - SPECIAL_ENTRIES).map(|(&pid, _)| {
+                manager::tcbs().lock().iter().nth(i - SPECIAL_ENTRIES).map(|(&pid, _)| {
                     DirResult {
                         ino: TaskDirInode::ino_from_tid(pid),
                         name: pid.to_string(),

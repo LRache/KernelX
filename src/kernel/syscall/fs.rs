@@ -170,7 +170,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     };
 
     let file = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| helper(cwd))?
+        current::with_cwd(|cwd| helper(&cwd))?
     } else {
         helper(vfs::get_root_dentry())?
     };
@@ -207,7 +207,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
     let path = uptr_path.read()?;
     
     if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?
     } else {
         vfs::load_parent_dentry_at(
             current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
@@ -405,7 +405,9 @@ pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
 }
 
 pub fn close(fd: usize) -> Result<usize, Errno> {
-    current::fdtable().lock().close(fd)?;
+    // Drop Arc<dyn FileOps> without lock
+    let file = current::fdtable().lock().take(fd)?;
+    drop(file);
 
     Ok(0)
 }
@@ -496,7 +498,7 @@ pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
     let path = uptr_path.read()?;
 
     if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?;
+        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
     } else {
         let file = current::fdtable().lock().get(dirfd)?;
         vfs::load_dentry_at(file.get_dentry().ok_or(Errno::ENOTDIR)?, &path)?;
@@ -511,7 +513,7 @@ pub fn faccessat2(dirfd: usize, uptr_path: UString, _mode: usize, _flags: usize)
     let path = uptr_path.read()?;
 
     if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?;
+        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
     } else {
         let file = current::fdtable().lock().get(dirfd)?;
         vfs::load_dentry_at(file.get_dentry().ok_or(Errno::ENOTDIR)?, &path)?;
@@ -549,7 +551,7 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
             vfs::load_dentry_at
         };
         let dentry = if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| helper(cwd, &path))
+            current::with_cwd(|cwd| helper(&cwd, &path))
         } else {
             helper(
                 current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
@@ -570,7 +572,7 @@ pub fn statfs64(uptr_path: UString, uptr_buf: UPtr<Statfs>) -> SyscallRet {
     uptr_buf.should_not_null()?;
     
     let path = uptr_path.read()?;
-    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?;
+    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
 
     let statfs = vfs::statfs(dentry.sno())?;
 
@@ -599,7 +601,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
         &uptr_path.read()?
     };
     let dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
+        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
     } else {
         vfs::load_dentry_at(
             current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
@@ -649,7 +651,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let path = uptr_path.read()?;
 
     let (parent, name) = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?.ok_or(Errno::EEXIST)?
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EEXIST)?
     } else {
         vfs::load_parent_dentry_at(
             current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
@@ -729,7 +731,7 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
     let path = uptr_path.read()?;
 
     let parent_dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
         vfs::load_parent_dentry(&path)?.ok_or(Errno::EOPNOTSUPP)
     }?;
@@ -750,7 +752,7 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
     let new_name = uptr_newname.read()?;
 
     let new_dentry = if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &new_name))
+        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &new_name))
     } else {
         vfs::load_dentry(&new_name)
     }?;
@@ -768,7 +770,7 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     let new_path = uptr_newpath.read()?;
 
     let old_dentry = if olddirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &old_path))
+        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &old_path))
     } else {
         vfs::load_dentry_at(
             current::fdtable().lock().get(olddirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
@@ -777,7 +779,7 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     }?;
 
     let new_parent_dentry = if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
         vfs::load_parent_dentry(&new_path)?.ok_or(Errno::EOPNOTSUPP)
     }?;
@@ -811,12 +813,12 @@ pub fn renameat2(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_n
     let new_path = uptr_newpath.read()?;
 
     let old_parent_dentry = if olddirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &old_path))?.ok_or(Errno::EOPNOTSUPP)
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &old_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
         vfs::load_parent_dentry(&old_path)?.ok_or(Errno::EOPNOTSUPP)
     }?;
     let new_parent_dentry = if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
         vfs::load_parent_dentry(&new_path)?.ok_or(Errno::EOPNOTSUPP)
     }?;
@@ -846,7 +848,7 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let path = uptr_path.read()?;
 
     let dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
+        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
     } else {
         vfs::load_dentry_at(
             current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,
@@ -882,7 +884,7 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, _flags
     let path = uptr_path.read()?;
 
     let dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(cwd, &path))?
+        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
     } else {
         vfs::load_dentry_at(
             current::fdtable().lock().get(dirfd)?.get_dentry().ok_or(Errno::ENOTDIR)?,

@@ -94,13 +94,13 @@ impl Stty {
     pub fn new(name: String, serial: Box<dyn SerialOps>) -> Self {
         Stty {
             name,
-            serial: SpinLock::new(serial),
-            recv_buffer: SpinLock::new(RingBuffer::new(0)),
-            line: SpinLock::new(LineBuffer::new()),
-            waiters: SpinLock::new(WaitQueue::new()),
-            winsize: SpinLock::new((25, 80)),
+            serial: SpinLock::new(serial, "Stty::serial"),
+            recv_buffer: SpinLock::new(RingBuffer::new(0), "Stty::recv_buffer"),
+            line: SpinLock::new(LineBuffer::new(), "Stty::line"),
+            waiters: SpinLock::new(WaitQueue::new(), "Stty::waiters"),
+            winsize: SpinLock::new((25, 80), "Stty::winsize"),
 
-            attr: SpinLock::new(Attr::default()),
+            attr: SpinLock::new(Attr::default(), "Stty::attr"),
         }
     }
 

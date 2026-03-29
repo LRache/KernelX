@@ -28,9 +28,9 @@ impl TCB {
         
         if signum.is_kill() {
             self.parent().exit(128 + signum.num() as u8);
-            current::schedule();
+            // current::schedule();
 
-            unreachable!();
+            // unreachable!();
         }
         
         let (action, stack) = {
@@ -42,9 +42,9 @@ impl TCB {
             match signum.default_action() {
                 SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
                     self.parent().exit(128 + signum.num() as u8);
-                    current::schedule();
+                    // current::schedule();
 
-                    unreachable!();
+                    // unreachable!();
                 },
                 _ => return
             }

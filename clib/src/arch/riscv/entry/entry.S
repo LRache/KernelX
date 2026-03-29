@@ -60,7 +60,7 @@ __riscv_others_entry:
     slli a0, a0, 12
     or a3, t0, a0
 
-    la t0, kentry
+    la t0, main
 
     sfence.vma
     csrw satp, a0

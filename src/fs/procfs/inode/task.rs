@@ -78,9 +78,9 @@ impl InodeOps for TaskDirInode {
         kstat.st_mode = self.mode()?.bits();
         kstat.st_nlink = 1;
 
-        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
-        fill_kstat_common(&mut kstat, &pcb.first_task());
-        
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
+
         Ok(kstat)
     }
 
@@ -142,8 +142,8 @@ impl InodeOps for TaskMapsInode {
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
-        let addrspace = pcb.first_task().get_addrspace().clone();
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let addrspace = tcb.get_addrspace().clone();
         let areas = addrspace.with_map_manager_mut(|manager| manager.snapshot());
 
         read_iter_text(buf, offset, areas.iter(), |area| {
@@ -217,9 +217,9 @@ impl InodeOps for TaskMapsInode {
         kstat.st_mode = self.mode()?.bits();
         kstat.st_nlink = 1;
 
-        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
-        fill_kstat_common(&mut kstat, &pcb.first_task());
-        
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
+
         Ok(kstat)
     }
 
@@ -274,8 +274,8 @@ impl InodeOps for TaskExeInode {
     }
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
-        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
-        let exe_path = pcb.exec_path();
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let exe_path = tcb.parent().exec_path();
         let exe_path_bytes = exe_path.as_bytes();
         let to_copy = min(buf.len(), exe_path_bytes.len());
         buf[..to_copy].copy_from_slice(&exe_path_bytes[..to_copy]);
@@ -296,8 +296,8 @@ impl InodeOps for TaskExeInode {
         kstat.st_mode = self.mode()?.bits();
         kstat.st_nlink = 1;
         
-        let pcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
-        fill_kstat_common(&mut kstat, &pcb.first_task());
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
 
         Ok(kstat)
     }

@@ -11,6 +11,12 @@ fn main() {
     let arch_bits = env::var("ARCH_BITS").unwrap();
     let kernelx_home = env::var("KERNELX_HOME").unwrap();
     let sysroot = env::var("SYSROOT").unwrap();
+    let config_backtrace = env::var("CONFIG_BACKTRACE").unwrap_or_default();
+    let compile_mode = env::var("COMPILE_MODE").unwrap_or("release".into());
+    let build_type = match compile_mode.as_str() {
+        "debug" => "Debug",
+        _ => "Release",
+    };
     let lwext4_lib = &format!("lwext4-{arch}");
     {
         let status = Command::new("make")
@@ -22,6 +28,8 @@ fn main() {
                 &format!("ARCH={arch}"),
                 &format!("ARCH_BITS={arch_bits}"),
                 &format!("SYSROOT={sysroot}"),
+                &format!("CONFIG_BACKTRACE={config_backtrace}"),
+                &format!("BUILD_TYPE={build_type}"),
             ])
             .arg(format!("ARCH={arch}"))
             .arg(format!(

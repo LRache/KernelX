@@ -111,7 +111,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
         scheduler::push_task(child);
     }
 
-    // kinfo!("clone: created child task with TID {}", child_tid);
+    crate::kinfo!("clone: created child task with TID {}", child_tid);
 
     Ok(child_tid as usize)
 }
@@ -151,11 +151,10 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
 
         current::pcb().exec(current::tcb(), file, &argv_ref, &envp_ref)?;
         current::tcb().wake_parent_waiting_vfork();
-    }    
+    }
+    // kinfo!("{:?}", current::task().lockstate().held());
+    Ok(0)
 
-    current::schedule();
-
-    unreachable!()
 }
 
 bitflags! {
@@ -196,29 +195,26 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
     Ok(wait_pid as usize)
 }
 
-pub fn exit(code: usize) -> Result<usize, Errno> {
+pub fn exit(code: usize) -> SyscallRet {
     let tcb = current::tcb();
     tcb.exit(code as u8);
 
     tcb.wake_parent_waiting_vfork();
-    
-    current::schedule();
-    
-    unreachable!()
+
+    Ok(0)
 }
 
-pub fn exit_group(code: usize) -> Result<usize, Errno> {
+pub fn exit_group(code: usize) -> SyscallRet {
     let pcb = current::pcb();
     pcb.exit(code as u8);
 
     current::tcb().wake_parent_waiting_vfork();
-    
-    current::schedule();
-    
-    unreachable!();
+
+    // kinfo!("{:?}", current::task().lockstate().held());
+    Ok(0)
 }
 
-pub fn set_tid_address(tid_address: usize) -> SysResult<usize> {
+pub fn set_tid_address(tid_address: usize) -> SyscallRet {
     let tcb = current::tcb();
     tcb.set_tid_address(tid_address);
     Ok(tcb.tid() as usize)

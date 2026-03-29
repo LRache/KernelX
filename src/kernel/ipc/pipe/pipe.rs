@@ -31,7 +31,7 @@ impl Pipe {
             inner,
             meta: None,
             writable,
-            blocked: SpinLock::new(blocked),
+            blocked: SpinLock::new(blocked, "Pipe::blocked"),
         }
     }
 
@@ -65,7 +65,8 @@ impl FileOps for Pipe {
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        self.inner.write_from_user(ubuf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.inner.write_from_user(ubuf, blocked)
     }
 
     fn readable(&self) -> bool {

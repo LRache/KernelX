@@ -1,29 +1,29 @@
 use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
+use spin::Mutex;
 
-use crate::kernel::scheduler::{Tid, current};
+use crate::kernel::scheduler::{Tid, current, watchdog};
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::event::Event;
-use crate::klib::SpinLock;
-use crate::arch;
+use crate::{arch, kwarn};
 
 use super::processor::Processor;
 
 pub struct Scheduler {
-    ready_queue: SpinLock<VecDeque<Arc<dyn Task>>>,
+    ready_queue: Mutex<VecDeque<Arc<dyn Task>>>,
 }
 
 impl Scheduler {
     const fn new() -> Self {
         Self {
-            ready_queue: SpinLock::new(VecDeque::new()),
+            ready_queue: Mutex::new(VecDeque::new()),
         }
     }
 
     fn push_task(&self, task: Arc<dyn Task>) {
         let mut ready_queue = self.ready_queue.lock();
         ready_queue.iter().for_each(|t| {
-            debug_assert!(t.tid() != task.tid(), "Task {} is already in ready queue!", t.tid());
+            debug_assert!(!Arc::ptr_eq(t, &task), "Task {} is already in ready queue!", t.tid());
         });
         ready_queue.push_back(task);
     }
@@ -43,6 +43,11 @@ pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
     SCHEDULER.fetch_next_task()
 }
 
+pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &str) {
+    task.block_uninterruptible(reason);
+    watchdog::add_blocked_task(task);
+}
+
 pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> bool {
     if task.wakeup(event) {
         push_task(task);
@@ -52,9 +57,13 @@ pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> bool {
     }
 }
 
-pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) {
+pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) -> bool {
     if task.wakeup_uninterruptible(event) {
+        watchdog::remove_blocked_task(task.tid());
         push_task(task);
+        true
+    } else {
+        false
     }
 }
 

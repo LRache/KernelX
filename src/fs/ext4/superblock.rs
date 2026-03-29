@@ -69,7 +69,7 @@ impl Ext4SuperBlock {
         let superblock = Ext4Filesystem::new(BlockDeviceImpls::new(driver), FsConfig::default()).map_err(map_error_to_kernel)?;
 
         Ok(Arc::new(Self {
-            superblock: Arc::new(SleepLock::new(superblock))
+            superblock: Arc::new(SleepLock::new(superblock, "Ext4SuperBlock::superblock"))
         }))
     }
 }

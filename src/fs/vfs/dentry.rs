@@ -25,9 +25,9 @@ impl Dentry {
             inode_index: Index { sno: sno, ino: inode.get_ino() },
             name: name.into(),
             parent: Some(parent.clone()),
-            children: SpinLock::new(BTreeMap::new()),
-            inode: SpinLock::new(Arc::downgrade(inode)),
-            mount_to: SpinLock::new(None),
+            children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
+            inode: SpinLock::new(Arc::downgrade(inode), "Dentry::inode"),
+            mount_to: SpinLock::new(None, "Dentry::mount_to"),
         }
     }
 
@@ -36,9 +36,9 @@ impl Dentry {
             inode_index: Index { sno, ino: inode.get_ino() },
             name: "/".into(),
             parent: None,
-            children: SpinLock::new(BTreeMap::new()),
-            inode: SpinLock::new(Arc::downgrade(inode)),
-            mount_to: SpinLock::new(None),
+            children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
+            inode: SpinLock::new(Arc::downgrade(inode), "Dentry::inode"),
+            mount_to: SpinLock::new(None, "Dentry::mount_to"),
         }
     }
 
@@ -72,9 +72,7 @@ impl Dentry {
     }
 
     pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
-        let mut children = self.children.lock();
-
-        if let Some(child) = children.get(name) && let Some(child) = child.upgrade() {
+        if let Some(child) = self.children.lock().get(name) && let Some(child) = child.upgrade() {
             return Ok(child);
         }
         
@@ -83,9 +81,14 @@ impl Dentry {
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
 
         let new_child = Arc::new(Self::new(name, self, &inode, lookup_sno));
-        children.insert(name.into(), Arc::downgrade(&new_child));
-        
-        Ok(new_child)
+
+        let mut children = self.children.lock();
+        if let Some(existing_child) = children.get(name) && existing_child.upgrade().is_some() {
+            Ok(existing_child.upgrade().unwrap())
+        } else {
+            children.insert(name.into(), Arc::downgrade(&new_child));
+            Ok(new_child)
+        }
     }
 
     pub fn lookup_nocached(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
@@ -125,9 +128,9 @@ impl Dentry {
                 inode_index: Index { sno: mount_to_sno, ino: mount_to.get_ino() },
                 name: self.name.clone(),
                 parent: self.parent.clone(),
-                children: SpinLock::new(BTreeMap::new()),
-                inode: SpinLock::new(Arc::downgrade(mount_to)),
-                mount_to: SpinLock::new(None),
+                children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
+                inode: SpinLock::new(Arc::downgrade(mount_to), "Dentry::inode"),
+                mount_to: SpinLock::new(None, "Dentry::mount_to"),
             }
         ));
     }

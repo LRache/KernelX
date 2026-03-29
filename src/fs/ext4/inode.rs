@@ -25,7 +25,7 @@ impl Ext4Inode {
         Self {
             ino,
             superblock,
-            dents_cache: SpinLock::new(None)
+            dents_cache: SpinLock::new(None, "Ext4Inode::dents_cache")
         }
     }
 }

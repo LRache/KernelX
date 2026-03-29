@@ -5,7 +5,7 @@ edition = "2024"
 build = "scripts/build.rs"
 
 [features]
-default = ["deadlock-detect", "log-info", "no-smp"]
+# default = ["deadlock-detect", "log-info", "no-smp"]
 
 log-warn  = []
 log-info  = ["log-warn"]
@@ -16,6 +16,7 @@ warn-unimplemented-syscall = []
 
 deadlock-detect = []
 no-smp = []
+nolock = ["no-smp"]
 swap-memory = []
 backtrace = []
 

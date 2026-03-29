@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::boxed::Box;
-use spin::RwLock;
 
 use crate::kernel::config;
 use crate::kernel::mm::maparea::area::Area;
@@ -10,6 +9,7 @@ use crate::kernel::mm::MapPerm;
 use crate::kernel::errno::SysResult;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
+use crate::klib::SpinLock;
 
 use super::nofilemap::FrameState;
 
@@ -98,7 +98,7 @@ impl UserStack {
 
         let kpage = self.frames[page_index].cow_to_allocated(addrspace);
         
-        addrspace.pagetable().write().mmap_replace(
+        addrspace.pagetable().lock().mmap_replace(
             config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE,
             kpage,
             MapPerm::R | MapPerm::W | MapPerm::U,
@@ -210,7 +210,7 @@ impl UserStack {
     */
     /// Push arguments and environment variables onto the user stack.
     pub fn push_argv_envp_auxv(&mut self, argv: &[&str], envp: &[&str], auxv: &Auxv, addrspace: &AddrSpace) -> SysResult<usize> {
-        let mut pagetable = addrspace.pagetable().write();
+        let mut pagetable = addrspace.pagetable().lock();
         let mut top = config::USER_STACK_TOP;
         
         let mut envp_ptrs = Vec::with_capacity(envp.len());
@@ -267,7 +267,7 @@ impl Area for UserStack {
         if page_index < self.get_max_page_count() {            
             let page = match &self.frames[page_index] {
                 FrameState::Unallocated => {
-                    self.allocate_page(page_index, &mut addrspace.pagetable().write(), addrspace)
+                    self.allocate_page(page_index, &mut addrspace.pagetable().lock(), addrspace)
                 }
                 FrameState::Allocated(frame) | FrameState::Cow(frame) => frame.get_page_swap_in(),
             };
@@ -283,7 +283,7 @@ impl Area for UserStack {
         if page_index < self.get_max_page_count() {
             let page = match &self.frames[page_index] {
                 FrameState::Unallocated => {
-                    let mut pagetable = addrspace.pagetable().write();
+                    let mut pagetable = addrspace.pagetable().lock();
                     self.allocate_page(page_index, &mut pagetable, addrspace)
                 }
                 FrameState::Allocated(frame) => frame.get_page_swap_in(),
@@ -302,8 +302,8 @@ impl Area for UserStack {
         MapPerm::R | MapPerm::W | MapPerm::U
     }
 
-    fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
-        let mut new_pagetable = new_pagetable.write();
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
+        let mut new_pagetable = new_pagetable.lock();
         
         let new_frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
@@ -321,7 +321,7 @@ impl Area for UserStack {
             }
         }).collect();
 
-        let mut self_pagetable = self_pagetable.write();
+        let mut self_pagetable = self_pagetable.lock();
         self.frames.iter_mut().enumerate().for_each(|(index, frame)| {
             *frame = match frame {
                 FrameState::Unallocated => {
@@ -368,7 +368,7 @@ impl Area for UserStack {
                 #[cfg(not(feature = "swap-memory"))]
                 {
                     let _ = frame;
-                    panic!("Page at index {} is already allocated, addr={:#x}, flags={:?}", page_index, addr, addrspace.pagetable().read().mapped_flag(addr));
+                    panic!("Page at index {} is already allocated, addr={:#x}, flags={:?}", page_index, addr, addrspace.pagetable().lock().mapped_flag(addr));
                 }
             }
             FrameState::Cow(frame) => {
@@ -379,14 +379,14 @@ impl Area for UserStack {
                     #[cfg(not(feature = "swap-memory"))]
                     {
                         let _ = frame;
-                        panic!("Access type is not write for COW page at index {}, addr={:#x}, flags={:?}", page_index, addr, addrspace.pagetable().read().mapped_flag(addr));
+                        panic!("Access type is not write for COW page at index {}, addr={:#x}, flags={:?}", page_index, addr, addrspace.pagetable().lock().mapped_flag(addr));
                     }
                 } else {
                     self.copy_on_write_page(page_index, addrspace);
                 }
             }
             FrameState::Unallocated => {
-                let mut pagetable = addrspace.pagetable().write();
+                let mut pagetable = addrspace.pagetable().lock();
                 self.allocate_page(page_index, &mut pagetable, addrspace);
             }
         }
@@ -402,8 +402,8 @@ impl Area for UserStack {
         self.get_max_page_count()
     }
 
-    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
-        let mut pagetable = pagetable.write();
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        let mut pagetable = pagetable.lock();
         for (page_index, frame) in self.frames.iter_mut().enumerate() {
             if !frame.is_unallocated() {
                 let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
