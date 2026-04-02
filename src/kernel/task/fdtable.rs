@@ -88,6 +88,28 @@ impl FDTable {
         }
     }
 
+    pub fn dup(&mut self, fd: usize, min_fd: Option<usize>, flags: FDFlags) -> SysResult<usize> {
+        if let Some(min_fd) = min_fd {
+            if let Some(new_fd) = self.table
+                                        .iter()
+                                        .skip(min_fd)
+                                        .position(|f| f.is_none())
+                                        .map(|p| p + min_fd) 
+            {
+                self.table[new_fd] = Some(FDItem {
+                    file: self.get(fd)?,
+                    flags
+                });
+                Ok(new_fd)
+            } else {
+                Err(Errno::EINVAL)
+            }
+        } else {
+            let file = self.get(fd)?;
+            self.push(file, flags)
+        }
+    }
+
     pub fn take(&mut self, fd: usize) -> SysResult<Arc<dyn FileOps>> {
         if fd < self.table.len() {
             if self.table[fd].is_none() {

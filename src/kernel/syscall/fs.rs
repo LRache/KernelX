@@ -20,9 +20,7 @@ use super::def::*;
 
 pub fn dup(oldfd: usize) -> SyscallRet {
     let mut fdtable = current::fdtable().lock();
-    let file = fdtable.get(oldfd)?;
-    let newfd = fdtable.push(file.clone(), FDFlags::empty())?;
-    Ok(newfd)
+    fdtable.dup(oldfd, None, FDFlags::empty())
 }
 
 pub fn dup2(oldfd: usize, newfd: usize) -> SyscallRet {
@@ -109,9 +107,7 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 
         FcntlCmd::F_DUPFD_CLOEXEC => {
             let mut fdtable = current::fdtable().lock();
-            let file = fdtable.get(fd)?;
-            let fd = fdtable.push(file, FDFlags { cloexec: true })?;
-            Ok(fd)
+            fdtable.dup(fd, Some(arg), FDFlags { cloexec: true })
         }
 
         _ => Err(Errno::EINVAL),
