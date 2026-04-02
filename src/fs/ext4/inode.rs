@@ -248,6 +248,5 @@ impl InodeOps for Ext4Inode {
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
         // No-op drop until inode lifecycle is migrated to lwext4_rust.
-        self.superblock.lock().flush().map_err(map_error_to_kernel).unwrap();
     }
 }
