@@ -302,9 +302,7 @@ impl Area for UserStack {
         MapPerm::R | MapPerm::W | MapPerm::U
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
-        let mut new_pagetable = new_pagetable.lock();
-        
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {       
         let new_frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
@@ -345,13 +343,7 @@ impl Area for UserStack {
     }
 
     fn try_to_fix_memory_fault(&mut self, addr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
-        // ktrace!("UserStack::try_to_fix_memory_fault: addr={:#x}, access_type={:?}, frames={:x?}", addr, access_type, self.frames);
-        
         if addr >= config::USER_STACK_TOP {
-            return false;
-        }
-
-        if access_type == MemAccessType::Execute {
             return false;
         }
 
@@ -368,7 +360,7 @@ impl Area for UserStack {
                 #[cfg(not(feature = "swap-memory"))]
                 {
                     let _ = frame;
-                    panic!("Page at index {} is already allocated, addr={:#x}, flags={:?}", page_index, addr, addrspace.pagetable().lock().mapped_flag(addr));
+                    // Maybe the page is allocated and mapped by the other task.
                 }
             }
             FrameState::Cow(frame) => {
