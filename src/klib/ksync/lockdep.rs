@@ -109,7 +109,7 @@ pub fn on_acquire(helds: &[&'static str], new_name: &'static str) {
     let new_id = new_name.as_ptr() as usize;
     
     if helds.iter().find(|&&held| held.as_ptr() as usize == new_id).is_some() {
-        crate::kwarn!("lockdep: lock order violation! Attempting to acquire '{}' while already holding it, helds={:?}", new_name, helds);
+        panic!("lockdep: lock order violation! Attempting to acquire '{}' while already holding it, helds={:?}", new_name, helds);
     }
     
     let mut graph = LOCK_DEP_GRAPH.lock();
