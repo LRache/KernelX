@@ -54,6 +54,9 @@ impl Iterator for Iter<'_> {
         let length = core::cmp::min(remaining, arch::PGSIZE - (kaddr % arch::PGSIZE));
         self.offset += length;
 
+        debug_assert!(kaddr % arch::PGSIZE + length <= arch::PGSIZE);
+        debug_assert!(kaddr != 0);
+
         Some(Ok(unsafe { core::slice::from_raw_parts_mut(kaddr as *mut u8, length) }) )
     }
 }
