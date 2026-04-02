@@ -7,7 +7,7 @@ use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
 use crate::kernel::mm::vdso;
 use crate::kernel::task::{PCB, TCB};
-use crate::kernel::scheduler::{Tid, current};
+use crate::kernel::scheduler::Tid;
 use crate::kernel::errno::{SysResult, Errno};
 
 use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};

@@ -111,8 +111,6 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
         scheduler::push_task(child);
     }
 
-    crate::kinfo!("clone: created child task with TID {}", child_tid);
-
     Ok(child_tid as usize)
 }
 

@@ -5,7 +5,7 @@ use spin::Mutex;
 use crate::kernel::scheduler::{Tid, current, watchdog};
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::event::Event;
-use crate::{arch, kwarn};
+use crate::arch;
 
 use super::processor::Processor;
 

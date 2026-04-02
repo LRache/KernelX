@@ -2,7 +2,6 @@ cfg_if::cfg_if! {
     if #[cfg(target_arch = "riscv64")] {
         mod riscv;
         use riscv as arch_impl;  
-        pub use riscv::csr::scause;
     } else if #[cfg(target_arch = "loongarch64")] {
         mod loongarch;
         use loongarch as arch_impl;
