@@ -226,6 +226,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         124 => task::sched_yield(0),
         151 => task::setfsuid(1),
         152 => task::setfsgid(1),
+        153 => misc::times(1),
         157 => task::setsid(0),
         172 => task::getpid(0),
         173 => task::getppid(0),

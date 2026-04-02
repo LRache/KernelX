@@ -38,7 +38,7 @@ pub struct PCB {
     pub parent: SpinLock<Option<Arc<PCB>>>,
     state: SpinLock<State>,
     exec_path: SpinLock<String>,
-    
+
     pub tasks: SleepLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
@@ -49,6 +49,11 @@ pub struct PCB {
     children: SleepLock<Vec<Arc<PCB>>>,
 
     pub itimer_ids: SpinLock<[Option<u64>; 3]>,
+
+    /// CPU time snapshot taken at exit (own threads). Preserved after recycle clears tasks.
+    tasks_time_usage_capture: SpinLock<(Duration, Duration)>,
+    /// Cumulative CPU time of all waited-for (reaped) children, including their descendants.
+    waited_children_time_usage: SpinLock<(Duration, Duration)>,
 }
 
 impl PCB {
@@ -72,6 +77,9 @@ impl PCB {
             children: SleepLock::new(Vec::new(), "PCB::children"),
 
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
+
+            tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
+            waited_children_time_usage: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::waited_children_time_usage"),
         })
     }
 
@@ -99,6 +107,9 @@ impl PCB {
             children: SleepLock::new(Vec::new(), "static::initpcb::children"),
 
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
+
+            tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
+            waited_children_time_usage: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::waited_children_time_usage"),
         });
 
         let (first_task, exec_path) = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
@@ -179,6 +190,13 @@ impl PCB {
         Ok(new_tcb)
     }
 
+    pub fn remove_task(&self, tcb: &TCB) {
+        let mut tasks = self.tasks.lock();
+        if let Some(pos) = tasks.iter().position(|t| t.tid() == tcb.tid()) {
+            tasks.swap_remove(pos);
+        }
+    }
+
     pub fn exec(
         self: &Arc<Self>, 
         tcb: &TCB, 
@@ -215,6 +233,8 @@ impl PCB {
             deinit();
             panic!("Init process exited with code {}, system will halt.", code);
         }
+
+        // crate::kinfo!("pcb {} exited with code {}", self.pid(), code);
         
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|tcb| {
@@ -228,6 +248,7 @@ impl PCB {
         // at which point it is safe to reclaim the resources.
         drop(tasks);
 
+        *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();
         *self.state.lock() = State::Exited(code);
         
         if let Some(parent) = self.parent.lock().as_ref() {
@@ -264,6 +285,7 @@ impl PCB {
         
         if let Some(child) = child {
             if let Some(exit_code) = child.recycle() {
+                self.accumulate_waited_child(&child);
                 return Ok(Some(exit_code));
             }
             
@@ -290,10 +312,12 @@ impl PCB {
                 } else {
                     return Err(Errno::ECHILD); // The child process was recycled by other waiters
                 };
-                    
+
+                self.accumulate_waited_child(&child);
+
                 let mut children = self.children.lock();
                 children.retain(|c| c.pid() != pid);
-                
+
                 return Ok(Some(exit_code));
             } else {
                 return Ok(None);
@@ -308,18 +332,30 @@ impl PCB {
     }
 
     pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, u8)>> {
-        let mut children = self.children.lock();
-    
-        if let Some(child) = children.iter().find(|c| c.is_exited()) {
-            let pid = child.pid();
-            if let Some(exit_code) = child.recycle() {
-                children.retain(|c| c.pid() != pid);
-                return Ok(Some((pid, exit_code)));
-            }
-        }
-
-        drop(children);
         
+    
+        // if let Some(child) = children.iter().find(|c| c.is_exited()) {
+        //     let pid = child.pid();
+        //     if let Some(exit_code) = child.recycle() {
+        //         children.retain(|c| c.pid() != pid);
+        //         return Ok(Some((pid, exit_code)));
+        //     }
+        // }
+
+        if let Some(child) = {
+            let mut children = self.children.lock();
+            if let Some(pos) = children.iter().position(|c| c.is_exited()) {
+                Some(children.swap_remove(pos))
+            } else {
+                None
+            }
+        } {
+            if let Some(exit_code) = child.recycle() {
+                self.accumulate_waited_child(&child);
+                return Ok(Some((child.pid(), exit_code)));
+            }
+        };
+
         if !blocked {
             return Ok(None);
         }
@@ -342,6 +378,7 @@ impl PCB {
                         }
                     };
                     if let Some(exit_code) = child.recycle() {
+                        self.accumulate_waited_child(&child);
                         return Ok(Some((pid, exit_code)));
                     } else {
                         continue; // The child process was recycled by other waiters
@@ -361,6 +398,21 @@ impl PCB {
 
     pub fn pending_signals(&self) -> &SpinLock<PendingSignalQueue> {
         &self.signal.pending
+    }
+
+    /// Returns cumulative CPU time of all waited-for children (and their descendants).
+    pub fn children_usage_time(&self) -> (Duration, Duration) {
+        *self.waited_children_time_usage.lock()
+    }
+
+    /// Called by the parent after successfully reaping `child` via wait.
+    /// Accumulates the child's own exit time and its waited-children time into self.
+    fn accumulate_waited_child(&self, child: &PCB) {
+        let (child_u, child_s) = *child.tasks_time_usage_capture.lock();
+        let (desc_u, desc_s) = *child.waited_children_time_usage.lock();
+        let mut wct = self.waited_children_time_usage.lock();
+        wct.0 += child_u + desc_u;
+        wct.1 += child_s + desc_s;
     }
 
     pub fn tasks_usage_time(&self) -> (Duration, Duration) {
