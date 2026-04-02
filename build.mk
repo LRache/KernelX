@@ -1,5 +1,7 @@
 COMPILE_MODE ?= debug
 
+OBJCOPY ?= llvm-objcopy-21
+
 KERNELX_HOME := $(strip $(patsubst %/, %, $(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 
 BUILD = $(abspath build/$(ARCH)$(ARCH_BITS))
@@ -81,15 +83,18 @@ all: kernel
 kernel: clib vdso $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
 	@ cp $(RUST_KERNEL) $(KERNEL_VM)
-	@ $(CROSS_COMPILE)objcopy -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
+	@ $(OBJCOPY) -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
 
 $(KERNEL_VM): $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
 	@ cp $(RUST_KERNEL) $(KERNEL_VM)
 
+image: $(KERNEL_IMAGE)
+
 $(KERNEL_IMAGE): $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
-	@ $(CROSS_COMPILE)objcopy -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
+	echo "+ OBJCOPY $(RUST_KERNEL) $(KERNEL_IMAGE)"
+	@ $(OBJCOPY) -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
 
 $(CLIB): clib
 
@@ -113,13 +118,9 @@ endif
 check:
 	$(BUILD_ENV) cargo check $(CARGO_FLAGS)
 
-objcopy:
-	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) build/$(PLATFORM)/kernel.bin
-	@ echo "Generated kernel.bin"
-
 clean:
 	@ $(BUILD_ENV) make -C clib clean
 	@ $(BUILD_ENV) make -C vdso clean
 	@ $(BUILD_ENV) cargo clean
 
-.PHONY: all clib vdso $(RUST_KERNEL)
+.PHONY: all clib vdso image $(RUST_KERNEL)
