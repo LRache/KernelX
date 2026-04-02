@@ -11,6 +11,7 @@ use crate::kernel::errno::SysResult;
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::Task;
+use crate::kernel::task::manager;
 use crate::kernel::usync::futex;
 use crate::kernel::config;
 use crate::kernel::task::def::TaskCloneFlags;
@@ -24,7 +25,6 @@ use crate::kernel::errno::Errno;
 use crate::kernel::scheduler::{TaskState, Tid, KernelStack};
 use crate::fs::file::{File, FileFlags};
 use crate::fs::{Perm, PermFlags, vfs};
-use crate::kinfo;
 use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::arch;
@@ -461,6 +461,9 @@ impl TCB {
         if self.parent.pid() == self.tid {
             self.parent.exit(code);
         }
+
+        self.parent.remove_task(self);
+        manager::remove(self.tid);
         
         // cleanup addrspace before scheduler
         if Arc::strong_count(&self.addrspace) == 1 {
@@ -583,9 +586,3 @@ impl Task for TCB {
 
 unsafe impl Send for TCB {}
 unsafe impl Sync for TCB {}
-
-impl Drop for TCB {
-    fn drop(&mut self) {
-        kinfo!("Dropping TCB with TID {}", self.tid);
-    }
-}
