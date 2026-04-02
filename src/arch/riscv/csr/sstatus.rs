@@ -32,6 +32,10 @@ impl Sstatus {
         self
     }
 
+    pub fn sie(&self) -> bool {
+        (self.sstatus & (1 << 1)) != 0
+    }
+
     pub fn set_sie(&mut self, enable: bool) -> &mut Self {
         if enable {
             self.sstatus |= 1 << 1;
@@ -39,6 +43,10 @@ impl Sstatus {
             self.sstatus &= !(1 << 1);
         }
         self
+    }
+
+    pub fn spp(&self) -> bool {
+        (self.sstatus & (1 << 8)) == 0
     }
 
     pub fn set_spp(&mut self, user: bool) -> &mut Self {

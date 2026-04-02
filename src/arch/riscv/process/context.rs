@@ -15,6 +15,8 @@ pub struct UserContext {
     /* 36 */ pub usertrap_handler: usize,
     /* 37 */ pub fpregs: [u64; 33], // Floating point registers and fcsr
     pub user_entry: usize, // User program entry point
+
+    pub fpregs_dirty: bool, // Whether the floating point registers have been used/modified
 }
 
 impl UserContextTrait for UserContext {
@@ -30,6 +32,7 @@ impl UserContextTrait for UserContext {
             usertrap_handler: usertrap_handler as usize,
             fpregs: [0; 33],
             user_entry: 0,
+            fpregs_dirty: true, // Clean the floating point registers on first use
         }
     }
 
