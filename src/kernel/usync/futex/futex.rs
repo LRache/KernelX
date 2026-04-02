@@ -62,11 +62,11 @@ impl Futex {
     }
 }
 
-static FUTEXES: SpinLock<BTreeMap<usize, SpinLock<Futex>>> = SpinLock::new(BTreeMap::new());
+static FUTEXES: SpinLock<BTreeMap<usize, SpinLock<Futex>>> = SpinLock::new(BTreeMap::new(), "static::FUTEXES");
 
 pub fn wait_current(kaddr: usize, expected: i32, bitset: u32) -> SysResult<()> {
     let mut futexes = FUTEXES.lock();
-    let futex = futexes.entry(kaddr).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) })));
+    let futex = futexes.entry(kaddr).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) }), "Futex"));
         
     let mut futex = futex.lock();
     futex.wait_current(expected, bitset)
@@ -109,7 +109,7 @@ pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> Sys
         return Ok(0);
     };
 
-    let futex2_spinlock = futexes.entry(kaddr2).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) })));
+    let futex2_spinlock = futexes.entry(kaddr2).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) }), "Futex"));
     let mut futex2 = futex2_spinlock.lock();
     futex2.wait_list.append(&mut pending);
 

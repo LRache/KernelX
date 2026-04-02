@@ -2,8 +2,8 @@ use alloc::boxed::Box;
 use alloc::collections::BinaryHeap;
 use alloc::sync::Arc;
 use core::cmp::Reverse;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
-use spin::Mutex;
 
 use crate::kernel::event::Event;
 use crate::kernel::scheduler;
@@ -14,25 +14,21 @@ use crate::klib::SpinLock;
 use super::event::TimerEvent;
 
 struct Timer {
-    wait_queue: Mutex<BinaryHeap<Reverse<TimerEvent>>>,
-    next_timer_id: SpinLock<u64>,
+    wait_queue: SpinLock<BinaryHeap<Reverse<TimerEvent>>>,
+    next_timer_id: AtomicUsize,
 }
 
 impl Timer {
     const fn new() -> Self {
         Self {
-            wait_queue: Mutex::new(BinaryHeap::new()),
-            next_timer_id: SpinLock::new(0),
+            wait_queue: SpinLock::new(BinaryHeap::new(), "Timer::wait_queue"),
+            next_timer_id: AtomicUsize::new(0),
         }
     }
 
     pub fn add_timer(&self, time: Duration, callback: Box<dyn FnOnce()>) -> u64 {
         let time = arch::get_time_us() + time.as_micros() as u64;
-        let new_id = {
-            let mut id_lock = self.next_timer_id.lock();
-            *id_lock += 1;
-            *id_lock
-        };
+        let new_id = self.next_timer_id.fetch_add(1, Ordering::Relaxed) as u64;
         self.wait_queue.lock().push(Reverse(TimerEvent { time, callback, id: new_id }));
         new_id
     } 

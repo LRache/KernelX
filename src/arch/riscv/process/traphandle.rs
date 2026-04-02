@@ -10,11 +10,6 @@ use crate::arch::riscv::plic;
 use crate::arch::UserContextTrait;
 use crate::kinfo;
 
-unsafe extern "C" {
-    fn asm_usertrap_entry (user_context: *mut   UserContext) -> !;
-    fn asm_usertrap_return(user_context: *const UserContext) -> !;
-}
-
 fn handle_syscall() {
     let tcb = current::tcb();
 
@@ -44,12 +39,12 @@ fn handle_external_interrupt() {
 
 
 fn svadu_mark_page_accessed(uaddr: usize) -> bool {
-    let mut pagetable = current::addrspace().pagetable().write();
+    let mut pagetable = current::addrspace().pagetable().lock();
     pagetable.mark_page_accessed(uaddr)
 }
 
 fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
-    let mut pagetable = current::addrspace().pagetable().write();
+    let mut pagetable = current::addrspace().pagetable().lock();
     pagetable.mark_page_accessed_and_dirty(uaddr)
 }
 
@@ -62,7 +57,10 @@ unsafe extern "C" {
 }
 
 pub fn usertrap_handler() -> ! {
-    stvec::write(asm_kerneltrap_entry as usize);
+    debug_assert!(Sstatus::read().sie() == false, "Interrupts should be disabled when handling user traps");
+    debug_assert!(Sstatus::read().spp() == true, "User trap should come from user mode");
+    
+    stvec::write(asm_kerneltrap_entry as *const () as usize);
     let user_context = current::tcb().user_context();
     user_context.set_user_entry(sepc::read());
 
@@ -75,10 +73,11 @@ pub fn usertrap_handler() -> ! {
         } else if cpu_info.float_supported() {
             unsafe { asm_save_float(user_context.fpregs.as_mut_ptr()); }
         }
+        user_context.fpregs_dirty = true;
     }
 
     trap::trap_enter();
-    
+
     match scause::cause() {
         scause::Cause::Trap(trap) => {
             match trap {
@@ -131,20 +130,30 @@ pub fn usertrap_handler() -> ! {
             }
         },
     }
-    
+
+    if current::tcb().is_exited() {
+        current::schedule();
+        unreachable!();
+    }
+
     return_to_user();
 }
 
-fn usertrap_return(user_context: *const UserContext) -> ! {
+unsafe extern "C" {
+    fn asm_usertrap_entry (user_context: *mut   UserContext) -> !;
+    fn asm_usertrap_return(user_context: *const UserContext) -> !;
+}
+
+fn usertrap_return(user_context: &UserContext) -> ! {
     let trampoline_usertrap_return = 
-        (TRAMPOLINE_BASE + (asm_usertrap_return as usize - asm_usertrap_entry as usize)) 
+        (TRAMPOLINE_BASE + (asm_usertrap_return as *const () as usize - asm_usertrap_entry as *const () as usize)) 
         as usize;
     
     unsafe {
         core::arch::asm!(
             "jr {target}",
             target = in(reg) trampoline_usertrap_return,
-            in("a0") user_context,
+            in("a0") user_context as *const UserContext as usize,
             options(noreturn)
         );
     }
@@ -166,21 +175,27 @@ pub fn return_to_user() -> ! {
         unsafe { asm_restore_float(tcb.user_context().fpregs.as_ptr()); }
     }
 
+    let user_context = tcb.user_context();
+    if user_context.fpregs_dirty {
+        unsafe { asm_restore_double(user_context.fpregs.as_mut_ptr()); }
+        user_context.fpregs_dirty = false;
+    }
+
     Sstatus::read()
+        .set_sie(false)
         .set_spie(true) // Enable interrupts in user mode
         .set_spp(true) // Set previous mode to user
         .set_fs(SstatusFs::Clean)
         .write();
-    
-    let user_context_ptr = tcb.get_user_context_ptr();
 
-    // ktrace!("Return to user mode: entry={:#x}, user_context={:#x}", tcb.user_context().get_user_entry(), user_context_ptr as usize);
-
-    usertrap_return(user_context_ptr);
+    usertrap_return(user_context);
 }
 
 #[unsafe(no_mangle)]
 pub fn kerneltrap_handler() {
+    debug_assert!(Sstatus::read().sie() == false, "Interrupts should be disabled when handling kernel traps");
+    debug_assert!(Sstatus::read().spp() == false, "Interrupts should come from supervisor mode when handling kernel traps");
+    
     let sepc = sepc::read();
 
     let cause = scause::cause();
@@ -211,11 +226,9 @@ pub fn kerneltrap_handler() {
                     kinfo!("Kernel software interrupt occurred");
                 },
                 scause::Interrupt::Timer => {
-                    // kinfo!("Kernel timer interrupt occurred");
                     trap::timer_interrupt();
                 },
                 scause::Interrupt::External => {
-                    // kinfo!("Kernel external interrupt occurred");
                     handle_external_interrupt();
                 },
                 scause::Interrupt::Counter => {

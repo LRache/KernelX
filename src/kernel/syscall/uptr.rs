@@ -24,6 +24,7 @@ macro_rules! impl_from_usize {
 pub trait UserStruct: Sized + Copy {}
 
 impl UserStruct for u8 {}
+impl UserStruct for u32 {}
 impl UserStruct for usize {}
 impl UserStruct for () {}
 

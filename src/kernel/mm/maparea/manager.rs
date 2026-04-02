@@ -2,13 +2,13 @@ use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::RwLock;
 
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::AnonymousArea;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::arch::{self, PageTable};
+use crate::klib::SpinLock;
 use crate::{ktrace, print};
 
 use super::area::Area;
@@ -38,7 +38,7 @@ impl Manager {
         }
     }
 
-    pub fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Manager {
+    pub fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Manager {
         let new_areas = self.areas.iter_mut().map(|(ubase, area)| {
             (*ubase, area.fork(self_pagetable, new_pagetable))
         }).collect();
@@ -194,7 +194,7 @@ impl Manager {
     /// let new_area = Box::new(AnonymousArea::new(addr, perm, page_count));
     /// manager.map_area_fixed(addr, new_area)?;
     /// ```
-    pub fn map_area_fixed(&mut self, uaddr: usize, area: Box<dyn Area>, pagetable: &RwLock<PageTable>) {
+    pub fn map_area_fixed(&mut self, uaddr: usize, area: Box<dyn Area>, pagetable: &SpinLock<PageTable>) {
         debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
         
         let new_area_end = uaddr + area.size();
@@ -225,7 +225,7 @@ impl Manager {
         self.areas.insert(uaddr, area);
     }
 
-    pub fn unmap_area(&mut self, uaddr: usize, page_count: usize, pagetable: &RwLock<PageTable>) -> SysResult<()> {
+    pub fn unmap_area(&mut self, uaddr: usize, page_count: usize, pagetable: &SpinLock<PageTable>) -> SysResult<()> {
         debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
         debug_assert!(page_count > 0, "page_count should be greater than 0");
 
@@ -273,7 +273,7 @@ impl Manager {
     /// # Returns
     /// * `Ok(())` - Success
     /// * `Err(Errno)` - Error (e.g., invalid address range, no mapping found)
-    pub fn set_map_area_perm(&mut self, uaddr: usize, page_count: usize, perm: MapPerm, pagetable: &RwLock<PageTable>) -> Result<(), Errno> {
+    pub fn set_map_area_perm(&mut self, uaddr: usize, page_count: usize, perm: MapPerm, pagetable: &SpinLock<PageTable>) -> SysResult<()> {
         debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr must be page-aligned");
         
         if page_count == 0 {
@@ -431,5 +431,9 @@ impl Manager {
         }
         
         false
+    }
+
+    pub fn cleanup(&mut self) {
+        self.areas.clear();
     }
 }

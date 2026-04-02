@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.11)
 project(lwext4 C)
 
+include(${KERNELX_HOME}/scripts/cmake/common.cmake)
 
 include_directories(include)
 include_directories(${PROJECT_BINARY_DIR}/include)

@@ -1,21 +1,21 @@
 use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use spin::mutex::Mutex;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::fs::inode::InodeOps;
 use crate::fs::inode;
 use crate::fs::filesystem::FileSystemOps;
 use crate::klib::InitedCell;
+use crate::klib::{SpinLock, SleepLock};
 
 use super::dentry::Dentry;
 use super::SuperBlockTable;
 
 pub struct VirtualFileSystem {
     pub(super) cache: inode::Cache,
-    pub(super) mountpoint: Mutex<Vec<Arc<Dentry>>>,
-    pub superblock_table: Mutex<SuperBlockTable>,
+    pub(super) mountpoint: SpinLock<Vec<Arc<Dentry>>>,
+    pub superblock_table: SleepLock<SuperBlockTable>,
     pub(super) fstype_map: BTreeMap<&'static str, &'static dyn FileSystemOps>,
     pub(super) root: InitedCell<Arc<Dentry>>,
 }
@@ -24,8 +24,8 @@ impl VirtualFileSystem {
     pub fn new() -> Self {
         VirtualFileSystem {
             cache: inode::Cache::new(),
-            mountpoint: Mutex::new(Vec::new()),
-            superblock_table: Mutex::new(SuperBlockTable::new()),
+            mountpoint: SpinLock::new(Vec::new(), "VirtualFileSystem::mountpoint"),
+            superblock_table: SleepLock::new(SuperBlockTable::new(), "VirtualFileSystem::superblock_table"),
             fstype_map: BTreeMap::new(),
             root: InitedCell::uninit(),
         }

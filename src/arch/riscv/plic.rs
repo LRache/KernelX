@@ -153,7 +153,7 @@ pub fn from_fdt(fdt: &Fdt, fdt_node: &FdtNode) {
     };
     
     if let Some(plic) = helper() {
-        PLIC.init(Some(SpinLock::new(plic)));
+        PLIC.init(Some(SpinLock::new(plic, "PLIC")));
     } else {
         not_found();
     }

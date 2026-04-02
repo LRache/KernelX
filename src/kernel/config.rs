@@ -1,3 +1,5 @@
+use crate::arch;
+
 pub const USER_STACK_TOP: usize = 1 << 38; // Example user stack top address
 pub const USER_STACK_PAGE_COUNT_MAX: usize = 2048; // Example user stack page count
 
@@ -17,16 +19,22 @@ pub const UTASK_KSTACK_PAGE_COUNT: usize = 32; // Kernel stack page count for us
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Kernel stack page count for user tasks
 pub const KTASK_KSTACK_PAGE_COUNT: usize = 16; // Kernel stack page count for kernel tasks
 pub const KERNEL_HEAP_SIZE: usize = 0x4000000;
-pub const KERNEL_PAGE_SHRINK_WATERLEVEL_LOW : usize = 70; // LOW Threshold% for kernel page shrinker
-pub const KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH: usize = 85; // HIGH Threshold% for kernel page shrinker
 pub const SCHEDULER_KSTACK_PAGE_COUNT: usize = 4; // Scheduler kernel stack size
+
+cfg_if::cfg_if!(
+    if #[cfg(feature = "swap-memory")] {
+        pub const KERNEL_PAGE_SHRINK_WATERLEVEL_LOW : usize = 70; // LOW Threshold% for kernel page shrinker
+        pub const KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH: usize = 85; // HIGH Threshold% for kernel page shrinker
+    }
+);
 
 pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process
 
-pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer
-pub const PIPE_BUFFER_PAGES: usize = 16; // Number of pages allocated for pipe buffer
+// pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer
+pub const PIPE_BUFFER_PAGES: usize = 32; // Number of pages allocated for pipe buffer
+pub const PIPE_CAPACITY: usize = PIPE_BUFFER_PAGES * arch::PGSIZE;
 
 /* ------ BOOT ARGS ------- */
 pub const DEFAULT_BOOT_ROOT_FSTYPE: &str = "ext4";

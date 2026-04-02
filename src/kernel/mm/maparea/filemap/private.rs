@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::boxed::Box;
-use spin::RwLock;
 
 use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
@@ -9,6 +8,7 @@ use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::klib::SpinLock;
 use crate::fs::file::File;
 
 pub struct PrivateFileMapArea {
@@ -77,7 +77,7 @@ impl PrivateFileMapArea {
 
         let kpage = frame.get_page();
 
-        addrspace.pagetable().write().mmap(self.ubase + area_offset, kpage, self.perm);
+        addrspace.pagetable().lock().mmap(self.ubase + area_offset, kpage, self.perm);
         self.frames[page_index] = FrameState::Allocated(Arc::new(SwappableNoFileFrame::allocated(uaddr, frame, addrspace)));
         
         kpage
@@ -94,7 +94,7 @@ impl PrivateFileMapArea {
             _ => panic!("Invalid type for copy-on-write"),
         };
 
-        addrspace.pagetable().write().mmap_replace(self.ubase + area_offset, kpage, self.perm);
+        addrspace.pagetable().lock().mmap_replace(self.ubase + area_offset, kpage, self.perm);
         self.frames[page_index] = FrameState::Allocated(Arc::new(frame));
 
         kpage
@@ -171,17 +171,16 @@ impl Area for PrivateFileMapArea {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
         
-        let mut pagetable = new_pagetable.write();
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
                 FrameState::Allocated(frame) | FrameState::Cow(frame) => {
                     if let Some(kpage) = frame.get_page() {
                         let uaddr = self.ubase + page_index * arch::PGSIZE;
-                        pagetable.mmap(uaddr, kpage, cow_perm);
+                        new_pagetable.mmap(uaddr, kpage, cow_perm);
                     }
                     FrameState::Cow(frame.clone())
                 }
@@ -189,7 +188,7 @@ impl Area for PrivateFileMapArea {
         }).collect();
 
         // Update original mapping to be COW
-        let mut self_pagetable = self_pagetable.write();
+        let mut self_pagetable = self_pagetable.lock();
         self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
             if matches!(frame, FrameState::Allocated(_)) {
                 if let FrameState::Allocated(f) = core::mem::replace(frame, FrameState::Unallocated) {
@@ -228,7 +227,10 @@ impl Area for PrivateFileMapArea {
                     #[cfg(feature = "swap-memory")]
                     self.handle_memory_fault_on_swapped_allocated(&allocated, addrspace);
                     #[cfg(not(feature = "swap-memory"))]
-                    return false;
+                    {
+                        let _ = allocated;
+                        return false;
+                    }
                     // unreachable!("Memory fault on already allocated file page at address: {:#x}, access={:?}", uaddr, access_type);
                 }
                 FrameState::Cow(_) => {
@@ -286,11 +288,11 @@ impl Area for PrivateFileMapArea {
         (self, Box::new(new_area))
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
         self.perm = perm;
         
         // Update page table permissions for all allocated pages
-        let mut pagetable = pagetable.write();
+        let mut pagetable = pagetable.lock();
         for (page_index, frame) in self.frames.iter().enumerate() {
             if let FrameState::Allocated(frame) = frame {
                 if let Some(_) = frame.get_page() {
@@ -301,8 +303,8 @@ impl Area for PrivateFileMapArea {
         }
     }
 
-    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
-        let mut pagetable = pagetable.write();
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        let mut pagetable = pagetable.lock();
         for (page_index, frame) in self.frames.iter_mut().enumerate() {
             if let FrameState::Allocated(_) | FrameState::Cow(_) = frame {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;

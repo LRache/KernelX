@@ -3,8 +3,6 @@
 ///   [count * { u64 LE: addr, u32 LE: name_offset }]
 ///   [string pool: null-terminated UTF-8]
 ///
-
-#[cfg(feature = "backtrace")]
 static SYMBOL_BYTES: &[u8] = include_bytes!(env!("KERNELX_SYMBOLS_PATH"));
 
 /// 查找 `pc` 所属的函数名及偏移量。

@@ -4,6 +4,7 @@ mod task;
 
 pub mod current;
 pub mod tid;
+pub mod watchdog;
 
 pub use scheduler::*;
 pub use processor::*;

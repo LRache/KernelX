@@ -6,7 +6,7 @@ use super::SpinLock;
 
 static STATE: Lazy<SpinLock<u32>> = Lazy::new(|| {
     let time = arch::get_time_us() as u32;
-    SpinLock::new(time ^ 0xDEECE66D)
+    SpinLock::new(time ^ 0xDEECE66D, "STATE")
 });
 
 pub fn random() -> u32 {

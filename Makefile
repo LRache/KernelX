@@ -1,6 +1,8 @@
 KERNEL = build/$(ARCH)$(ARCH_BITS)/vmkernelx
 KERNEL_IMAGE = build/$(ARCH)$(ARCH_BITS)/Image
 
+OBJDUMP ?= llvm-objdump-21
+
 all: kernel
 
 include config/config.mk
@@ -12,6 +14,9 @@ init:
 
 kernel:
 	@ $(MAKE) -f build.mk kernel $(KERNEL_CONFIG)
+
+image:
+	@ $(MAKE) -f build.mk image $(KERNEL_CONFIG)
 
 vdso:
 	@ make -f build.mk vdso $(KERNEL_CONFIG)
@@ -38,7 +43,7 @@ gdb: kernel
 	@ make -f scripts/qemu.mk qemu-gdb $(QEMU_ARGS)
 
 objdump: kernel
-	@ $(CROSS_COMPILE)objdump -d $(KERNEL) > kernel.asm
+	@ $(OBJDUMP) -d $(KERNEL) > kernel.asm
 	@ echo "Generated kernel.asm"
 
 package: kernel

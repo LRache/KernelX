@@ -19,10 +19,23 @@ pub fn trap_return() {
     tcb.recive_pending_signal_from_parent();
     tcb.handle_signal();
 
-    let counter = &mut tcb.time_counter.lock();
+    let mut counter = tcb.time_counter.lock();
     counter.user_start = Some(timer::now());
     let system_start = counter.system_start.take().unwrap();
     counter.system_time += timer::now() - system_start;
+    drop(counter);
+
+    #[cfg(feature = "deadlock-detect")]
+    {
+        use crate::kernel::scheduler::Task;
+
+        let lockstate = tcb.lockstate();
+        debug_assert!(lockstate.held().is_empty(), "Task {} is returning from trap while still holding locks: {:?}", current::tid(), lockstate.held());
+    }
+
+    if tcb.state_dead_to_exited() {
+        current::schedule();
+    }
 }
 
 pub fn timer_interrupt() {

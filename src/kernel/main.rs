@@ -1,9 +1,13 @@
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
+
 use alloc::collections::BTreeMap;
 
 use crate::kernel::event::timer;
 use crate::kernel::config;
 use crate::kernel::mm;
 use crate::kernel::scheduler;
+use crate::kernel::scheduler::Processor;
 use crate::kernel::scheduler::Task;
 use crate::kernel::task;
 use crate::kernel::kthread;
@@ -38,6 +42,10 @@ fn free_init() {
 static BOOT_ARGS: InitedCell<BTreeMap<&'static str, &'static str>> = InitedCell::uninit();
 
 fn kinit() {
+    timer::init();
+
+    mm::vdso::init();
+    
     fs::mount_init_fs(
         BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT),
         BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE),
@@ -54,6 +62,8 @@ fn kinit() {
         BOOT_ARGS.get("initargs").unwrap_or(&""),
         BOOT_ARGS.get("tty").unwrap_or(&config::DEFAULT_INITTTY),
     );
+
+    kthread::spawn(scheduler::watchdog::kwatchdog);
 
     kinfo!("KernelX initialized successfully!");
 
@@ -81,6 +91,8 @@ pub fn parse_boot_args(bootargs: &'static str) {
     BOOT_ARGS.init(bootargs_map);
 }
 
+static FIRST_BOOTED: AtomicBool = AtomicBool::new(true);
+
 const LOGO: &str = r#"
   _  __                               _  __  __
  | |/ /   ___   _ __   _ __     ___  | | \ \/ /
@@ -91,29 +103,26 @@ const LOGO: &str = r#"
 
 #[unsafe(no_mangle)]
 extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
-    kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
-    mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
-    driver::init();
-    arch::init();
+    let processor = Processor::new(hartid);
+    arch::set_percpu_data(&processor as *const Processor as usize);
 
-    kinfo!("Welcome to KernelX!");
-    kinfo!("Initializing KernelX...");
-    
-    fs::init();
-    arch::scan_device();
-    timer::init();
-    
-    let inittask = kthread::spawn(kinit);
-    debug_assert!(inittask.tid() == 0);
+    if FIRST_BOOTED.swap(false, Ordering::SeqCst) {
+        kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
+        mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
+        arch::init();
+        fs::init();
+        driver::init();
+        arch::scan_device();
 
-    arch::setup_all_cores(hartid);
+        let inittask = kthread::spawn(kinit);
+        debug_assert!(inittask.tid() == 0);
 
-    kentry(hartid);
-}
+        arch::setup_all_cores(hartid);
+    }
 
-#[unsafe(no_mangle)]
-extern "C" fn kentry(hartid: usize) -> ! {
-    kinfo!("Hart {} booted.", hartid);
+    // kinfo!("Welcome to KernelX!");
+    // kinfo!("Initializing KernelX...");
+
     arch::set_next_time_event_us(10000);
     arch::enable_timer_interrupt();
     arch::enable_device_interrupt(hartid);
@@ -121,23 +130,13 @@ extern "C" fn kentry(hartid: usize) -> ! {
     scheduler::run_tasks(hartid);
 }
 
-#[cfg(feature = "backtrace")]
-#[inline(never)]
-fn backtrace_inner() {
-    panic!("backtrace test");
-}
-
-#[cfg(feature = "backtrace")]
-#[inline(never)]
-fn test_backtrace() {
-    backtrace_inner();
-}
-
-pub fn exit() -> ! {
+pub fn deinit() {
     fs::fini();
 
     #[cfg(feature = "swap-memory")]
     crate::kernel::mm::swappable::fini();
-    
+}
+
+pub fn exit() -> ! {
     driver::chosen::kpmu::shutdown();
 }

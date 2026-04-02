@@ -1,7 +1,6 @@
 use spin::Mutex;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
-use crate::println;
 
 unsafe extern "C" {
     fn init_heap(start: *mut c_void, size: usize);
@@ -23,7 +22,7 @@ impl HeapAllocator {
     pub fn init(&self, heap_start: usize, heap_size: usize) {
         unsafe {
             init_heap(heap_start as *mut c_void, heap_size);
-            println!("Heap initialized successfully!");
+            // println!("Heap initialized successfully!");
         }
     }
 }

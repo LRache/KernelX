@@ -7,7 +7,7 @@ use crate::driver::RTCDriverOps;
 use crate::kernel::errno::SysResult;
 use crate::klib::SpinLock;
 
-static KCLOCK: SpinLock<Option<Arc<dyn RTCDriverOps>>> = SpinLock::new(None);
+static KCLOCK: SpinLock<Option<Arc<dyn RTCDriverOps>>> = SpinLock::new(None, "static::KCLOCK");
 
 pub fn register(clock: Arc<dyn RTCDriverOps>) {
     *KCLOCK.lock() = Some(clock);

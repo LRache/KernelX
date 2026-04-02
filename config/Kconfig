@@ -85,6 +85,25 @@ config COMPILE_MODE
 	default "debug" if COMPILE_MODE_DEBUG
 	default "release" if COMPILE_MODE_RELEASE
 
+config NO_SMP
+	bool "No-SMP mode (single CPU)"
+	default y if QEMU_CPUS = 1
+	default n
+	help
+	  Disable SMP support. Enables the no-smp Cargo feature, which removes
+	  multi-core synchronization overhead. Set this when targeting a
+	  single-CPU system or emulator configuration.
+
+config NOLOCK
+	bool "No-lock mode"
+	depends on NO_SMP=y
+	default n
+	help
+	  Disable all locking in SpinLock and SleepLock. Both types become
+	  thin wrappers over UnsafeCell with zero synchronization overhead.
+	  Only safe on single-CPU (no-smp) systems. Enabling this implicitly
+	  activates the no-smp Cargo feature.
+
 endmenu
 
 menu "Debug Configuration"
@@ -151,6 +170,14 @@ config BACKTRACE
 	  Enable stack backtrace on kernel panic.
 	  Embeds a symbol table into the kernel image for function name resolution.
 	  Requires force-frame-pointers=yes (set automatically).
+
+config DEADLOCK_DETECT
+	bool "Enable deadlock detection"
+	default n
+	help
+	  Enable runtime deadlock detection for SpinLock and SleepLock.
+	  Enables the deadlock-detect Cargo feature. Adds overhead; intended
+	  for debug builds only.
 
 endmenu
 

@@ -10,22 +10,22 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::fs::inode::{InodeOps, Mode};
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::klib::SpinLock;
+use crate::klib::{SpinLock, SleepLock};
 
 use super::superblock::{SuperBlockInner, map_error_to_kernel};
 
 pub struct Ext4Inode {
     ino: u32,
-    superblock: Arc<SpinLock<SuperBlockInner>>,
+    superblock: Arc<SleepLock<SuperBlockInner>>,
     dents_cache: SpinLock<Option<Vec<DirResult>>>,
 }
 
 impl Ext4Inode {
-    pub fn new(ino: u32, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
-        Self { 
-            ino, 
-            superblock, 
-            dents_cache: SpinLock::new(None)
+    pub fn new(ino: u32, superblock: Arc<SleepLock<SuperBlockInner>>) -> Self {
+        Self {
+            ino,
+            superblock,
+            dents_cache: SpinLock::new(None, "Ext4Inode::dents_cache")
         }
     }
 }
@@ -42,6 +42,10 @@ impl InodeOps for Ext4Inode {
     fn create(&self, name: &str, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         if !self.mode()?.contains(Mode::S_IFDIR) {
             return Err(Errno::ENOTDIR);
+        }
+
+        if self.superblock.lock().lookup(self.ino, name).is_ok() {
+            return Err(Errno::EEXIST);
         }
         
         *self.dents_cache.lock() = None; // Invalidate cache
@@ -64,14 +68,6 @@ impl InodeOps for Ext4Inode {
         };
 
         let ino = superblock.create(self.ino, name, ty, mode.bits() as u32).map_err(map_error_to_kernel)?;
-        if let Ok(now) = kclock::now() {
-            superblock.with_inode_ref(ino, |inode_ref| {
-                inode_ref.set_atime(&now);
-                inode_ref.set_mtime(&now);
-                inode_ref.set_ctime(&now);
-                Ok(())
-            }).map_err(map_error_to_kernel)?;
-        }   
         
         Ok(Arc::new(Self::new(ino, self.superblock.clone())))
     }
@@ -252,6 +248,5 @@ impl InodeOps for Ext4Inode {
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
         // No-op drop until inode lifecycle is migrated to lwext4_rust.
-        self.superblock.lock().flush().map_err(map_error_to_kernel).unwrap();
     }
 }

@@ -7,7 +7,7 @@ use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
 use crate::kernel::mm::vdso;
 use crate::kernel::task::{PCB, TCB};
-use crate::kernel::scheduler::{Tid, current};
+use crate::kernel::scheduler::Tid;
 use crate::kernel::errno::{SysResult, Errno};
 
 use super::{SignalNum, PendingSignal, SignalDefaultAction, SignalActionFlags};
@@ -28,9 +28,9 @@ impl TCB {
         
         if signum.is_kill() {
             self.parent().exit(128 + signum.num() as u8);
-            current::schedule();
+            // current::schedule();
 
-            unreachable!();
+            // unreachable!();
         }
         
         let (action, stack) = {
@@ -42,9 +42,9 @@ impl TCB {
             match signum.default_action() {
                 SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
                     self.parent().exit(128 + signum.num() as u8);
-                    current::schedule();
+                    // current::schedule();
 
-                    unreachable!();
+                    // unreachable!();
                 },
                 _ => return
             }
@@ -129,9 +129,7 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
             
-            scheduler::wakeup_task(self.clone(), Event::Signal);
-
-            return true;
+            return scheduler::wakeup_task(self.clone(), Event::Signal)
         }
 
         let mask = self.get_signal_mask();
@@ -139,11 +137,9 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
             
-            scheduler::wakeup_task(self.clone(), Event::Signal);
-            
-            return true;
+            scheduler::wakeup_task(self.clone(), Event::Signal)
         } else {
-            return false;
+            false
         }
     }
 

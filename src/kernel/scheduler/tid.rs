@@ -1,18 +1,14 @@
-use spin::Mutex;
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kernel::syscall::UserStruct;
 
 pub type Tid = i32;
-
 impl UserStruct for Tid {}
 
 pub const TID_START: Tid = 0;
 
-static NEXT_TID: Mutex<Tid> = Mutex::new(TID_START);
+static NEXT_TID: AtomicI32 = AtomicI32::new(TID_START);
 
 pub fn alloc() -> Tid {
-    let mut next_tid = NEXT_TID.lock();
-    let tid = *next_tid;
-    *next_tid += 1;
-    tid
+    NEXT_TID.fetch_add(1, Ordering::Relaxed)
 }

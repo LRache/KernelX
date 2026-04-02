@@ -1,5 +1,7 @@
 use core::alloc::Layout;
-use crate::klib::{InitedCell, SpinLock};
+use spin::mutex::SpinMutex;
+
+use crate::klib::InitedCell;
 use crate::arch;
 
 struct FrameAllocator {
@@ -51,7 +53,7 @@ impl FrameAllocator {
     }
 }
 
-static FRAME_ALLOCATOR: InitedCell<SpinLock<FrameAllocator>> = InitedCell::uninit();
+static FRAME_ALLOCATOR: InitedCell<SpinMutex<FrameAllocator>> = InitedCell::uninit();
 // static META_PTR_BASE: InitedCell<usize> = InitedCell::uninit();
 // static FRAME_BASE: InitedCell<usize> = InitedCell::uninit();
 
@@ -69,7 +71,7 @@ pub fn init(frame_start: usize, frame_end: usize) {
     
     let mut allocator = buddy_system_allocator::FrameAllocator::new();
     allocator.add_frame(frame_base, frame_end);
-    FRAME_ALLOCATOR.init(SpinLock::new(FrameAllocator::new(allocator, total)));
+    FRAME_ALLOCATOR.init(SpinMutex::new(FrameAllocator::new(allocator, total)));
 }
 
 // fn page_meta_ref(page: usize) -> &'static mut *const () {

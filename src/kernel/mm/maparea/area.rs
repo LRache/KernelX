@@ -1,10 +1,9 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use spin::RwLock;
 
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
-use crate::kernel::mm::PhysPageFrame;
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::arch::PageTable;
+use crate::klib::SpinLock;
 
 #[derive(Debug)]
 pub enum Frame {
@@ -35,7 +34,7 @@ pub trait Area {
     
     fn perm(&self) -> MapPerm;
 
-    fn fork(&mut self, self_pagetable: &RwLock<PageTable>, fork_pagetable: &RwLock<PageTable>) -> Box<dyn Area>;
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, fork_pagetable: &mut PageTable) -> Box<dyn Area>;
 
     fn try_to_fix_memory_fault(
         &mut self, 
@@ -53,11 +52,11 @@ pub trait Area {
         unimplemented!("split not implemented for the area type: {}", self.type_name());
     }
     
-    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &RwLock<PageTable>) {
+    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>) {
         unimplemented!("set_perm not implemented for the area type: {}", self.type_name());
     }
     
-    fn unmap(&mut self, _pagetable: &RwLock<PageTable>) {
+    fn unmap(&mut self, _pagetable: &SpinLock<PageTable>) {
         unimplemented!("unmap not implemented for the area type: {}", self.type_name());
     }
 

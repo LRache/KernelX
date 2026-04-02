@@ -22,7 +22,7 @@ static COUNTER: SpinLock<Counter> = SpinLock::new(Counter {
     swap_out_time: Duration::ZERO,
     shrink_count: 0,
     shrink_time: Duration::ZERO,
-});
+}, "static::COUNTER");
 
 pub fn print_perf_info() {
     let counter = COUNTER.lock();
@@ -66,7 +66,7 @@ struct Swapper {
 impl Swapper {
     fn new() -> Self {
         Self {
-            lru: SpinLock::new(LRUCache::new()),
+            lru: SpinLock::new(LRUCache::new(), "Swapper::lru"),
         }
     }
 

@@ -83,7 +83,7 @@ impl<T: StaticFsInfo> Inode<T> {
     pub fn new(ino: u32, meta: InodeMeta, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
         Self {
             ino,
-            meta: SpinLock::new(meta),
+            meta: SpinLock::new(meta, "Inode::meta"),
             superblock,
             _marker: core::marker::PhantomData,
         }

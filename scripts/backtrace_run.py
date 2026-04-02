@@ -47,9 +47,10 @@ def resolve_address(elf: str, addr: str) -> str:
         return str(e)
 
 
-def print_backtrace_locations(bt_lines: list[str], elf: str) -> None:
+def print_backtrace_locations(bt_lines: list[str], elf: str, index: int = 0, total: int = 1) -> None:
+    label = f"  Backtrace Source Locations" if total == 1 else f"  Backtrace #{index + 1} Source Locations"
     print(f"\n{BLUE}{'─' * 60}{RESET}")
-    print(f"{BLUE}  Backtrace Source Locations{RESET}")
+    print(f"{BLUE}{label}{RESET}")
     print(f"{BLUE}{'─' * 60}{RESET}")
     for line in bt_lines:
         m = FRAME_RE.search(line)
@@ -165,17 +166,22 @@ def run_qemu(cmd: list[str]) -> bytes:
     return buf
 
 
-def extract_backtrace(output: bytes) -> list[str]:
+def extract_backtraces(output: bytes) -> list[list[str]]:
     lines = output.decode("utf-8", errors="replace").splitlines()
-    in_bt, bt_lines = False, []
+    all_bts: list[list[str]] = []
+    in_bt = False
+    current: list[str] = []
     for line in lines:
         if BACKTRACE_START in line:
             in_bt = True
+            current = []
         elif BACKTRACE_END in line:
             in_bt = False
+            if current:
+                all_bts.append(current)
         elif in_bt:
-            bt_lines.append(line)
-    return bt_lines
+            current.append(line)
+    return all_bts
 
 
 def main():
@@ -196,10 +202,11 @@ def main():
         parser.error("No QEMU command specified after --")
 
     output = run_qemu(cmd)
-    bt_lines = extract_backtrace(output)
+    all_bts = extract_backtraces(output)
 
-    if bt_lines:
-        print_backtrace_locations(bt_lines, args.elf)
+    if all_bts:
+        for i, bt_lines in enumerate(all_bts):
+            print_backtrace_locations(bt_lines, args.elf, index=i, total=len(all_bts))
     else:
         print(f"\n{CYAN}(no stack backtrace found in output){RESET}\n")
 

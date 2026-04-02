@@ -1,13 +1,17 @@
 use core::time::Duration;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
-use spin::Mutex;
+use core::cell::UnsafeCell;
 
 use crate::driver::chosen::kclock;
+use crate::fs::file::FileOps;
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
+use crate::kernel::errno::SysResult;
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::Task;
+use crate::kernel::task::manager;
 use crate::kernel::usync::futex;
 use crate::kernel::config;
 use crate::kernel::task::def::TaskCloneFlags;
@@ -25,19 +29,20 @@ use crate::klib::SpinLock;
 use crate::arch::{UserContext, KernelContext, UserContextTrait};
 use crate::arch;
 use crate::ktrace;
-
 #[derive(Debug, Clone, Copy)]
 pub struct TaskStateSet {
-    pub state: TaskState,
+    state: TaskState,
+    dead: bool,
     
     pub pending_signal: Option<PendingSignal>,
     pub signal_to_wait: SignalSet,
 }
 
-impl TaskStateSet {
-    pub fn new() -> Self {
+impl Default for TaskStateSet {
+    fn default() -> Self {
         Self {
             state: TaskState::Ready,
+            dead: false,
             pending_signal: None,
             signal_to_wait: SignalSet::empty()
         }
@@ -66,12 +71,12 @@ pub struct TCB {
     tid: Tid,
     create_time: Duration,
     parent: Arc<PCB>,
-    tid_address: Mutex<Option<usize>>,
+    tid_address: SpinLock<Option<usize>>,
     pub robust_list: SpinLock<Option<usize>>,
     
     user_context_ptr: *mut UserContext,
     user_context_uaddr: usize,
-    kernel_context: KernelContext,
+    kernel_context: UnsafeCell<KernelContext>,
     pub kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
@@ -83,6 +88,9 @@ pub struct TCB {
     pub wakeup_event: SpinLock<Option<Event>>,
     parent_waiting_vfork: SpinLock<Option<Arc<dyn Task>>>,
     pub time_counter: SpinLock<TimeCounter>,
+
+    #[cfg(feature = "deadlock-detect")]
+    lockstate: crate::klib::ksync::LockState,
 }
 
 impl TCB {
@@ -109,23 +117,25 @@ impl TCB {
             tid,
             create_time: kclock::now().unwrap_or(Duration::ZERO),
             parent: parent.clone(),
-            tid_address: Mutex::new(None),
-            robust_list: SpinLock::new(None),
-            
+            tid_address: SpinLock::new(None, "TCB::tid_address"),
+            robust_list: SpinLock::new(None, "TCB::robust_list"),
+
             user_context_ptr,
             user_context_uaddr,
-            kernel_context: KernelContext::new(&kernel_stack),
+            kernel_context: UnsafeCell::new(KernelContext::new(&kernel_stack)),
             kernel_stack,
 
             addrspace,
             fdtable,
 
-            signal_mask: SpinLock::new(SignalSet::empty()),
-            
-            state: SpinLock::new(TaskStateSet::new()),
-            wakeup_event: SpinLock::new(None),
-            parent_waiting_vfork: SpinLock::new(None),
-            time_counter: SpinLock::new(TimeCounter::new()),
+            signal_mask: SpinLock::new(SignalSet::empty(), "TCB::signal_mask"),
+
+            state: SpinLock::new(TaskStateSet::default(), "TCB::state"),
+            wakeup_event: SpinLock::new(None, "TCB::wakeup_event"),
+            parent_waiting_vfork: SpinLock::new(None, "TCB::parent_waiting_vfork"),
+            time_counter: SpinLock::new(TimeCounter::new(), "TCB::time_counter"),
+            #[cfg(feature = "deadlock-detect")]
+            lockstate: crate::klib::ksync::LockState::new(),
         });
 
         tcb
@@ -138,7 +148,7 @@ impl TCB {
         argv: &[&str],
         envp: &[&str],
         tty: &str
-    ) -> Arc<Self> {
+    ) -> (Arc<Self>, String) {
         let file = vfs::open_file(
             initpath, 
             FileFlags::dontcare(),
@@ -170,6 +180,8 @@ impl TCB {
                 return Self::new_inittask(tid, parent, interpreter, &new_argv, envp, tty);
             }
         }
+
+        let exec_path = file.get_dentry().unwrap().get_path();
         
         let mut addrspace = AddrSpace::new();
         let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)
@@ -212,10 +224,10 @@ impl TCB {
             parent,
             user_context, 
             addrspace,
-            Arc::new(SpinLock::new(fdtable))
+            Arc::new(SpinLock::new(fdtable, "TCB::fdtable"))
         );
         
-        tcb
+        (tcb, exec_path)
     }
 
     pub fn new_clone(
@@ -248,7 +260,7 @@ impl TCB {
         let new_fdtable = if flags.files {
             self.fdtable.clone()
         } else {
-            Arc::new(SpinLock::new(self.fdtable.lock().fork()))
+            Arc::new(SpinLock::new(self.fdtable.lock().fork(), "TCB::fdtable"))
         };
 
         let new_tcb = Self::new(
@@ -267,7 +279,7 @@ impl TCB {
         file: Arc<File>,
         argv: &[&str],
         envp: &[&str],
-    ) -> Result<Arc<Self>, Errno> {
+    ) -> SysResult<(Arc<Self>, String)> {
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file.read_at(&mut first_line, 0)?;
@@ -295,7 +307,8 @@ impl TCB {
             }
         }
 
-        let file = Arc::new(file);
+        // SAFETY: File MUTS HAVE dentry and path.
+        let exec_path = file.get_dentry().unwrap().get_path();
         
         let mut addrspace = AddrSpace::new();
         let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)?;
@@ -328,7 +341,7 @@ impl TCB {
             self.fdtable().clone(),
         );
 
-        Ok(new_tcb)
+        Ok((new_tcb, exec_path))
     }
 
     pub fn tid(&self) -> i32 {
@@ -402,18 +415,42 @@ impl TCB {
         self.create_time
     }
 
-    pub fn with_state_mut<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut TaskStateSet) -> R,
-    {
+    // pub fn with_state_mut<F, R>(&self, f: F) -> R
+    // where
+    //     F: FnOnce(&mut TaskStateSet) -> R,
+    // {
+    //     let mut state = self.state.lock();
+    //     f(&mut state)
+    // }
+
+    pub fn set_dead(&self) {
         let mut state = self.state.lock();
-        f(&mut state)
+        state.dead = true;
+    }
+
+    pub fn state_dead_to_exited(&self) -> bool {
+        let mut state = self.state.lock();
+        if state.dead {
+            state.state = TaskState::Exited;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn exit(&self, code: u8) {
+        debug_assert!(current::tid() == self.tid, "current tid {} != self.tid {}", current::tid(), self.tid);
+        
         let mut state = self.state.lock();
+        state.dead = true;
 
-        if let Some(tid_address) = *self.tid_address.lock() {
+        drop(state);
+
+        let tid_address_guard = self.tid_address.lock();
+        let tid_address = *tid_address_guard;
+        drop(tid_address_guard);
+
+        if let Some(tid_address) = tid_address {
             if let Ok(tid_kaddr) = self.addrspace.translate_write(tid_address) {
                 // debug_assert!(tid_kaddr & 0x3 == 0);
                 unsafe { *(tid_kaddr as *mut Tid) = 0 };
@@ -421,13 +458,22 @@ impl TCB {
             }
         }
 
-        state.state = TaskState::Exited;
-
-        drop(state);
-
         if self.parent.pid() == self.tid {
             self.parent.exit(code);
         }
+
+        self.parent.remove_task(self);
+        manager::remove(self.tid);
+        
+        // cleanup addrspace before scheduler
+        if Arc::strong_count(&self.addrspace) == 1 {
+            self.addrspace.cleanup();
+        }
+    }
+
+    pub fn is_exited(&self) -> bool {
+        let state = self.state.lock();
+        state.state == TaskState::Exited
     }
 
     pub fn set_parent_waiting_vfork(&self, parent: Option<Arc<dyn Task>>) {
@@ -447,8 +493,8 @@ impl Task for TCB {
         self.tid
     }
 
-    fn get_kcontext_ptr(&self) -> *mut KernelContext {
-        &self.kernel_context as *const KernelContext as *mut KernelContext
+    fn kcontext(&self) -> &mut KernelContext {
+        unsafe { (self.kernel_context.get() as *mut KernelContext).as_mut() }.unwrap()
     }
 
     fn kstack(&self) -> &KernelStack {
@@ -508,7 +554,7 @@ impl Task for TCB {
     }
 
     fn wakeup(&self, event: Event) -> bool {
-        let mut state = self.state().lock();
+        let mut state = self.state.lock();
         if state.state != TaskState::Blocked {
             return false;
         }
@@ -517,18 +563,24 @@ impl Task for TCB {
         true
     }
 
-    fn wakeup_uninterruptible(&self, event: Event) {
-        let mut state = self.state().lock();
-        match state.state {
-            TaskState::Blocked | TaskState::BlockedUninterruptible => {},
-            _ => return,
+    fn wakeup_uninterruptible(&self, event: Event) -> bool {
+        let mut state = self.state.lock();
+        if !matches!(state.state, TaskState::Blocked | TaskState::BlockedUninterruptible) {
+            crate::kwarn!("Failed to wakeup_uninterruptible task {}, state is not blocked: {:?}", self.tid, state.state);
+            return false;
         }
         state.state = TaskState::Ready;
         *self.wakeup_event.lock() = Some(event);
+        true
     }
 
     fn take_wakeup_event(&self) -> Option<Event> {
         self.wakeup_event.lock().take()
+    }
+
+    #[cfg(feature = "deadlock-detect")]
+    fn lockstate(&self) -> &crate::klib::ksync::LockState {
+        &self.lockstate
     }
 }
 

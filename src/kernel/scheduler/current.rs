@@ -1,7 +1,6 @@
 use core::time::Duration;
 
 use alloc::sync::Arc;
-use spin::Mutex;
 
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::SignalActionTable;
@@ -71,7 +70,7 @@ pub fn pcb() -> &'static Arc<PCB> {
     tcb().parent()
 }
 
-pub fn signal_actions() -> &'static Mutex<SignalActionTable> {
+pub fn signal_actions() -> &'static SpinLock<SignalActionTable> {
     let pcb = pcb();
     pcb.signal_actions()
 }
@@ -87,9 +86,9 @@ pub fn fdtable() -> &'static SpinLock<FDTable> {
 }
 
 pub fn with_cwd<F, R>(f: F) -> R 
-where F: FnOnce(&Arc<Dentry>) -> R {
+where F: FnOnce(Arc<Dentry>) -> R {
     let pcb = pcb();
-    pcb.with_cwd(f)
+    f(pcb.cwd())
 }
 
 pub mod copy_to_user {

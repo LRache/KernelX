@@ -1,3 +1,5 @@
+use core::cell::UnsafeCell;
+
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 
@@ -21,10 +23,12 @@ fn kthread_trampoline(ptr: usize) {
 
 pub struct KThread {
     tid: Tid,
-    kcontext: KernelContext,
+    kcontext: UnsafeCell<KernelContext>,
     kstack: KernelStack,
     state: SpinLock<TaskState>,
     wakeup_event: SpinLock<Option<Event>>,
+    #[cfg(feature = "deadlock-detect")]
+    lockstate: crate::klib::ksync::LockState,
 }
 
 impl KThread {
@@ -34,17 +38,21 @@ impl KThread {
 
         let kstack = KernelStack::new(crate::kernel::config::KTASK_KSTACK_PAGE_COUNT);
         let mut kcontext = KernelContext::new(&kstack);
-        kcontext.set_entry(kthread_trampoline as usize);
-        kcontext.a0 = ptr;
+        kcontext.set_entry(kthread_trampoline as usize).set_arg0(ptr);
         Self {
             tid,
-            kcontext,
+            kcontext: UnsafeCell::new(kcontext),
             kstack,
-            state: SpinLock::new(TaskState::Ready),
-            wakeup_event: SpinLock::new(None),
+            state: SpinLock::new(TaskState::Ready, "KThread::state"),
+            wakeup_event: SpinLock::new(None, "KThread::wakeup_event"),
+            #[cfg(feature = "deadlock-detect")]
+            lockstate: crate::klib::ksync::LockState::new(),
         }
     }
 }
+
+unsafe impl Send for KThread {}
+unsafe impl Sync for KThread {}
 
 impl Task for KThread {
     fn tid(&self) -> Tid {
@@ -59,8 +67,8 @@ impl Task for KThread {
         &self.kstack
     }
 
-    fn get_kcontext_ptr(&self) -> *mut crate::arch::KernelContext {
-        &self.kcontext as *const _ as *mut _
+    fn kcontext(&self) -> &mut KernelContext {
+        unsafe { self.kcontext.get().as_mut() }.unwrap()
     }
 
     fn run_if_ready(&self) -> bool {
@@ -119,14 +127,15 @@ impl Task for KThread {
         true
     }
 
-    fn wakeup_uninterruptible(&self, event: Event) {
+    fn wakeup_uninterruptible(&self, event: Event) -> bool {
         let mut state = self.state.lock();
         match *state {
             TaskState::Blocked | TaskState::BlockedUninterruptible => {},
-            _ => return,
+            _ => return false,
         }
         *state = TaskState::Ready;
         *self.wakeup_event.lock() = Some(event);
+        true
     }
 
     fn take_wakeup_event(&self) -> Option<Event> {
@@ -135,6 +144,11 @@ impl Task for KThread {
 
     fn set_exited(&self) {
         *self.state.lock() = TaskState::Exited;
+    }
+
+    #[cfg(feature = "deadlock-detect")]
+    fn lockstate(&self) -> &crate::klib::ksync::LockState {
+        &self.lockstate
     }
 }
 

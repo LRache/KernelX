@@ -63,7 +63,7 @@ pub struct SuperBlock<T: StaticFsInfo> {
 
 impl<T: StaticFsInfo> SuperBlock<T> {
     pub fn new() -> Self {
-        let inner = Arc::new(SpinLock::new(SuperBlockInner::new()));
+        let inner = Arc::new(SpinLock::new(SuperBlockInner::new(), "SuperBlock::inner"));
 
         {
             inner.lock().alloc_inode(|ino| {

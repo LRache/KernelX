@@ -7,7 +7,7 @@ use lwext4_rust::EXT4_DEV_BSIZE;
 use crate::driver::chosen::kclock;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
-use crate::klib::SpinLock;
+use crate::klib::SleepLock;
 use crate::fs::ext4::inode::Ext4Inode;
 use crate::fs::filesystem::SuperBlockOps;
 use crate::fs::InodeOps;
@@ -61,15 +61,15 @@ impl SystemHal for SystemHalImpls {
 pub(super) type SuperBlockInner = Ext4Filesystem<SystemHalImpls, BlockDeviceImpls>;
 
 pub struct Ext4SuperBlock {
-    superblock: Arc<SpinLock<SuperBlockInner>>
+    superblock: Arc<SleepLock<SuperBlockInner>>
 }
 
 impl Ext4SuperBlock {
     pub fn new(driver: Arc<dyn BlockDriverOps>) -> SysResult<Arc<Self>> {
         let superblock = Ext4Filesystem::new(BlockDeviceImpls::new(driver), FsConfig::default()).map_err(map_error_to_kernel)?;
 
-        Ok(Arc::new(Self { 
-            superblock: Arc::new(SpinLock::new(superblock))
+        Ok(Arc::new(Self {
+            superblock: Arc::new(SleepLock::new(superblock, "Ext4SuperBlock::superblock"))
         }))
     }
 }
@@ -87,7 +87,7 @@ impl SuperBlockOps for Ext4SuperBlock {
     }
 
     fn unmount(&self) -> SysResult<()> {
-        Ok(())
+        self.superblock.lock().flush().map_err(map_error_to_kernel)
     }
 
     fn statfs(&self) -> SysResult<Statfs> {

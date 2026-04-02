@@ -1,14 +1,14 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::boxed::Box;
-use spin::RwLock;
 
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
-use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
+use crate::arch;
 use crate::fs::file::File;
+use crate::klib::SpinLock;
 
 use super::area::Frame;
 
@@ -51,7 +51,7 @@ impl ELFArea {
         }
     }
 
-    fn load_page(&mut self, page_index: usize, pagetable: &RwLock<PageTable>) -> usize {
+    fn load_page(&mut self, page_index: usize, pagetable: &SpinLock<PageTable>) -> usize {
         debug_assert!(page_index < self.frames.len());
         debug_assert!(self.frames[page_index].is_unallocated());
 
@@ -67,13 +67,13 @@ impl ELFArea {
 
         let page = frame.get_page();
 
-        pagetable.write().mmap(self.ubase + area_offset, frame.get_page(), self.perm);
+        pagetable.lock().mmap(self.ubase + area_offset, frame.get_page(), self.perm);
         self.frames[page_index] = Frame::Allocated(Arc::new(frame));
 
         page
     }
 
-    fn copy_on_write_page(&mut self, page_index: usize, pagetable: &RwLock<PageTable>) -> usize {
+    fn copy_on_write_page(&mut self, page_index: usize, pagetable: &SpinLock<PageTable>) -> usize {
         assert!(page_index < self.frames.len());
         assert!(self.frames[page_index].is_cow());
 
@@ -89,7 +89,7 @@ impl ELFArea {
 
         let page = new_frame.get_page();
 
-        pagetable.write().mmap_replace(self.ubase + page_index * arch::PGSIZE, page, self.perm);
+        pagetable.lock().mmap_replace(self.ubase + page_index * arch::PGSIZE, page, self.perm);
         self.frames[page_index] = Frame::Allocated(Arc::new(new_frame));
 
         page
@@ -151,9 +151,8 @@ impl Area for ELFArea {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
-        let mut new_pagetable = new_pagetable.write();
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
                 Frame::Unallocated => Frame::Unallocated,
@@ -168,7 +167,7 @@ impl Area for ELFArea {
             }
         }).collect();
 
-        let mut self_pagetable = self_pagetable.write();
+        let mut self_pagetable = self_pagetable.lock();
         self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
             *frame = match frame {
                 Frame::Unallocated => Frame::Unallocated,
@@ -212,7 +211,7 @@ impl Area for ELFArea {
                     self.load_page(page_index, addrspace.pagetable());
                 }
                 Frame::Allocated(_) => {
-                    panic!("Page is already allocated.");
+                    // Maybe the page is allocated and mapped by the other task.
                 }
                 Frame::Cow(_) => {
                     if access_type == MemAccessType::Write {
@@ -270,8 +269,8 @@ impl Area for ELFArea {
         (self, Box::new(new_area))
     }
 
-    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
-        let mut pagetable = pagetable.write();
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        let mut pagetable = pagetable.lock();
         for (page_index, frame) in self.frames.iter_mut().enumerate() {
             if let Frame::Allocated(_) | Frame::Cow(_) = frame {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
@@ -281,10 +280,10 @@ impl Area for ELFArea {
         }
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
         self.perm = perm;
         let cow_perm = perm - MapPerm::W;
-        let mut pagetable = pagetable.write();
+        let mut pagetable = pagetable.lock();
         self.frames.iter().enumerate().for_each(|(page_index, frame)| {
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match frame {

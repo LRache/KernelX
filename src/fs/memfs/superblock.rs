@@ -3,12 +3,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use spin::Mutex;
 
 use super::inode::MemoryFileSystemInode;
 use crate::fs::inode::Inode;
 use crate::fs::filesystem::SuperBlock;
 use crate::kernel::errno::Errno;
+use crate::klib::SpinLock;
 
 struct Entry {
     pub inode: MemoryFileSystemInode,
@@ -17,7 +17,7 @@ struct Entry {
 
 pub struct MemoryFileSystemSuperBlock {
     sno: u32,
-    entries: Mutex<Vec<Entry>>,
+    entries: SpinLock<Vec<Entry>>,
 }
 
 unsafe extern "C" {

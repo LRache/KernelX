@@ -8,7 +8,7 @@ use num_enum::TryFromPrimitive;
 use crate::fs::file::FileOps;
 use crate::kernel::event::{Event, FileEvent, PollEventSet, timer};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet, SignalNum, signum};
-use crate::kernel::scheduler::{Task, TaskState, current};
+use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::errno::Errno;
@@ -157,10 +157,6 @@ fn select(
         return Ok(ready_count);
     }
 
-    if waiting_files.is_empty() {
-        return Ok(0);
-    }
-
     let timer_id = if let Some(duration) = timeout {
         if !duration.is_zero() {
             Some(timer::add_timer(current::task().clone(), duration))
@@ -174,6 +170,9 @@ fn select(
             return Ok(0);
         }
     } else {
+        if waiting_files.is_empty() {
+            return Ok(0);
+        }
         None
     };
 
@@ -185,7 +184,7 @@ fn select(
     old_signal_mask.map(|mask| {
         tcb.set_signal_mask(mask);
     });
-    tcb.state().lock().state = TaskState::Running;
+    // tcb.state().lock().state = TaskState::Running;
 
     let event = tcb.take_wakeup_event().unwrap();
 
@@ -221,7 +220,7 @@ pub fn pselect6_time32(
     uptr_timeout: UPtr<uapi::Timespec32>,
     uptr_sigmask: UPtr<SignalSet>,
 ) -> SysResult<usize> {
-    if nfds == 0 || nfds > FD_SET_SIZE {
+    if nfds > FD_SET_SIZE {
         return Err(Errno::EINVAL);
     }
 

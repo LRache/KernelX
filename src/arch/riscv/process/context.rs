@@ -15,6 +15,8 @@ pub struct UserContext {
     /* 36 */ pub usertrap_handler: usize,
     /* 37 */ pub fpregs: [u64; 33], // Floating point registers and fcsr
     pub user_entry: usize, // User program entry point
+
+    pub fpregs_dirty: bool, // Whether the floating point registers have been used/modified
 }
 
 impl UserContextTrait for UserContext {
@@ -30,6 +32,7 @@ impl UserContextTrait for UserContext {
             usertrap_handler: usertrap_handler as usize,
             fpregs: [0; 33],
             user_entry: 0,
+            fpregs_dirty: true, // Clean the floating point registers on first use
         }
     }
 
@@ -101,10 +104,10 @@ impl UserContextTrait for UserContext {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct KernelContext {
-    pub ra: usize,
-    pub sp: usize,
-    pub s : [usize; 12],
-    pub a0: usize,
+    ra: usize,
+    sp: usize,
+    s : [usize; 12],
+    a0: usize,
 }
  
 impl KernelContext {
@@ -126,8 +129,18 @@ impl KernelContext {
         }
     }
 
-    pub fn set_entry(&mut self, entry: usize) {
+    pub fn set_entry(&mut self, entry: usize) -> &mut Self {
         self.ra = entry;
+        self
+    }
+
+    pub fn set_arg0(&mut self, arg: usize) -> &mut Self {
+        self.a0 = arg;
+        self
+    }
+
+    pub fn frame_pointer(&self) -> usize {
+        self.s[0] // s0/fp
     }
 }
 

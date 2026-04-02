@@ -1,4 +1,8 @@
+use core::ptr::NonNull;
 use alloc::sync::Arc;
+
+#[cfg(debug_assertions)]
+use alloc::collections::vec_deque::VecDeque;
 
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::TCB;
@@ -6,16 +10,23 @@ use crate::arch;
 
 pub struct Processor {
     hart_id: usize,
-    task: *const Arc<dyn Task>,
-    idle_kernel_context: arch::KernelContext,
+    task: Option<NonNull<Arc<dyn Task>>>,
+    idle_kernel_context: arch::KernelContext, 
+
+    #[cfg(debug_assertions)]
+    locked_spin: VecDeque<&'static str>,
+    // irq_spinlock_count: usize,
 }
 
 impl<'a> Processor {
     pub fn new(hart_id: usize) -> Self {
         Self {
             hart_id,
-            task: 0 as *const Arc<dyn Task>,
+            task: None,
             idle_kernel_context: arch::KernelContext::new_idle(),
+            #[cfg(debug_assertions)]
+            locked_spin: VecDeque::new(),
+            // irq_spinlock_count: 0,
         }
     }
 
@@ -24,10 +35,16 @@ impl<'a> Processor {
     }
 
     pub fn has_task(&self) -> bool {
-        !self.task.is_null()
+        self.task.is_some()
     }
+    
     pub fn task(&self) -> &'a Arc<dyn Task> {
-        unsafe { &*self.task }
+        let p = if cfg!(debug_assertions) {
+            self.task.unwrap()
+        } else {
+            unsafe { self.task.unwrap_unchecked() }
+        };
+        unsafe { p.as_ref() }
     }
 
     pub fn tcb(&self) -> &TCB {
@@ -35,13 +52,45 @@ impl<'a> Processor {
     }
 
     pub fn switch_to_task(&mut self, task: &'a Arc<dyn Task>) {
-        self.task = task;
-        arch::kernel_switch(&mut self.idle_kernel_context, task.get_kcontext_ptr());
-        self.task = 0 as *const Arc<dyn Task>;
+        self.task = Some(NonNull::from(task));
+        arch::kernel_switch(&mut self.idle_kernel_context, task.kcontext());
+        self.task = None;
     }
 
     pub fn schedule(&mut self) {
+        #[cfg(feature = "deadlock-detect")]
+        if !self.locked_spin.is_empty() {
+            use crate::println;
+
+            println!("Spinlocks held by processor {} when trying to schedule:", self.hart_id);
+            let mut i = 0;
+            while let Some(name) = self.locked_spin.pop_back() {
+                println!("[{}] {}", i, name);
+                i += 1;
+            }
+            panic!("Processor {} is trying to schedule while holding spinlocks.", self.hart_id);
+        }
         arch::disable_interrupt();
-        arch::kernel_switch(self.task().get_kcontext_ptr(), &mut self.idle_kernel_context);
+        arch::kernel_switch(self.task().kcontext(), &mut self.idle_kernel_context);
     }
+
+    #[cfg(feature = "deadlock-detect")]
+    pub fn acquire_spinlock(&mut self, name: &'static str) {
+        self.locked_spin.push_back(name);
+    }
+
+    #[cfg(not(feature = "deadlock-detect"))]
+    pub fn acquire_spinlock(&mut self, _name: &'static str) {}
+
+    #[cfg(feature = "deadlock-detect")]
+    pub fn release_spinlock(&mut self, name: &'static str) {
+        if let Some(pos) = self.locked_spin.iter().rposition(|&n| n == name) {
+            self.locked_spin.remove(pos);
+        } else {
+            panic!("Processor {} is releasing spinlock '{}' which it does not hold!", self.hart_id, name);
+        }
+    }
+
+    #[cfg(not(feature = "deadlock-detect"))]
+    pub fn release_spinlock(&mut self, _name: &'static str) {}
 }

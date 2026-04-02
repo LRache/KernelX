@@ -21,7 +21,7 @@ impl SwapperDisk {
     fn new(driver: Arc<dyn BlockDriverOps>) -> Self {
         let block_size = driver.get_block_size() as usize;
         let len = block_size * driver.get_block_count() as usize / arch::PGSIZE;
-        let bitvec = SpinLock::new(BitVec::repeat(false, len));
+        let bitvec = SpinLock::new(BitVec::repeat(false, len), "SwapperDisk::bitvec");
         let block_per_slot = arch::PGSIZE / block_size;
         
         debug_assert!(block_per_slot * block_size == arch::PGSIZE);

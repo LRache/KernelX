@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::boxed::Box;
-use spin::RwLock;
 
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
+use crate::klib::SpinLock;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
 
@@ -43,7 +43,7 @@ impl AnonymousArea {
         let uaddr = self.ubase + page_index * arch::PGSIZE;
         let (allocated, kpage) = FrameState::allocate(uaddr, addrspace);
 
-        addrspace.pagetable().write().mmap(uaddr, kpage, self.perm);
+        addrspace.pagetable().lock().mmap(uaddr, kpage, self.perm);
         self.frames[page_index] = allocated;
 
         kpage
@@ -55,7 +55,7 @@ impl AnonymousArea {
 
         let kpage = self.frames[page_index].cow_to_allocated(addrspace);
 
-        addrspace.pagetable().write().mmap_replace(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
+        addrspace.pagetable().lock().mmap_replace(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
 
         kpage
     }
@@ -138,9 +138,9 @@ impl Area for AnonymousArea {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &RwLock<PageTable>, new_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let perm = self.perm - MapPerm::W;
-        let mut new_pagetable = new_pagetable.write();
+        
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
@@ -180,7 +180,7 @@ impl Area for AnonymousArea {
         }).collect();
 
         if !self.shared {
-            let mut self_pagetable = self_pagetable.write();
+            let mut self_pagetable = self_pagetable.lock();
             self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
                 match frame {
                     FrameState::Allocated(allocated) => {
@@ -222,10 +222,6 @@ impl Area for AnonymousArea {
                 FrameState::Allocated(frame) => {
                     #[cfg(feature = "swap-memory")]
                     self.handle_memory_fault_on_swapped_allocated(frame, addrspace);
-                    
-                    #[cfg(not(feature = "swap-memory"))]
-                    // Page is already allocated, this shouldn't happen
-                    panic!("Memory fault on already allocated page at address: {:#x}, access_type: {:?}, perm: {:?}", uaddr, access_type, self.perm);
                 }
                 FrameState::Cow(frame) => {
                     if access_type != MemAccessType::Write {
@@ -279,14 +275,14 @@ impl Area for AnonymousArea {
         self.ubase
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
         if perm == self.perm {
             return;
         }
         
         self.perm = perm;
 
-        let mut pagetable = pagetable.write();
+        let mut pagetable = pagetable.lock();
         for frame in self.frames.iter() {
             if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
                 if !frame.is_swapped_out() {
@@ -298,8 +294,8 @@ impl Area for AnonymousArea {
         }
     }
 
-    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
-        let mut pagetable = pagetable.write();
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        let mut pagetable = pagetable.lock();
         for frame in self.frames.iter_mut() {
             #[cfg(feature = "swap-memory")]
             if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {

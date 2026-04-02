@@ -1,5 +1,7 @@
 COMPILE_MODE ?= debug
 
+OBJCOPY ?= llvm-objcopy-21
+
 KERNELX_HOME := $(strip $(patsubst %/, %, $(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 
 BUILD = $(abspath build/$(ARCH)$(ARCH_BITS))
@@ -53,7 +55,17 @@ ifeq ($(CONFIG_WARN_UNIMPLEMENTED_SYSCALL),y)
 RUST_FEATURES += warn-unimplemented-syscall
 endif
 
+ifeq ($(CONFIG_NO_SMP),y)
 RUST_FEATURES += no-smp
+endif
+
+ifeq ($(CONFIG_DEADLOCK_DETECT),y)
+RUST_FEATURES += deadlock-detect
+endif
+
+ifeq ($(CONFIG_NOLOCK),y)
+RUST_FEATURES += nolock
+endif
 
 ifeq ($(CONFIG_BACKTRACE),y)
 RUST_FEATURES += backtrace
@@ -61,7 +73,7 @@ RUSTFLAGS += -C force-frame-pointers=yes
 endif
 
 CARGO_FLAGS += --target $(RUST_TARGET)
-CARGO_FLAGS += --features "$(RUST_FEATURES)"
+CARGO_FLAGS += --no-default-features --features "$(RUST_FEATURES)"
 ifeq ($(COMPILE_MODE),release)
 CARGO_FLAGS += --release
 endif
@@ -71,15 +83,18 @@ all: kernel
 kernel: clib vdso $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
 	@ cp $(RUST_KERNEL) $(KERNEL_VM)
-	@ $(CROSS_COMPILE)objcopy -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
+	@ $(OBJCOPY) -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
 
 $(KERNEL_VM): $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
 	@ cp $(RUST_KERNEL) $(KERNEL_VM)
 
+image: $(KERNEL_IMAGE)
+
 $(KERNEL_IMAGE): $(RUST_KERNEL)
 	@ mkdir -p $(BUILD)
-	@ $(CROSS_COMPILE)objcopy -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
+	echo "+ OBJCOPY $(RUST_KERNEL) $(KERNEL_IMAGE)"
+	@ $(OBJCOPY) -O binary $(RUST_KERNEL) $(KERNEL_IMAGE)
 
 $(CLIB): clib
 
@@ -101,15 +116,11 @@ ifeq ($(CONFIG_BACKTRACE),y)
 endif
 
 check:
-	@ $(BUILD_ENV) cargo check $(CARGO_FLAGS)
-
-objcopy:
-	@ $(CROSS_COMPILE)objcopy -O binary $(KERNEL) build/$(PLATFORM)/kernel.bin
-	@ echo "Generated kernel.bin"
+	$(BUILD_ENV) cargo check $(CARGO_FLAGS)
 
 clean:
 	@ $(BUILD_ENV) make -C clib clean
 	@ $(BUILD_ENV) make -C vdso clean
 	@ $(BUILD_ENV) cargo clean
 
-.PHONY: all clib vdso $(RUST_KERNEL)
+.PHONY: all clib vdso image $(RUST_KERNEL)

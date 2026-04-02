@@ -14,4 +14,6 @@ pub enum Event {
     WaitSignal { signum: SignalNum },
     Signal,
     VFork,
+    IOComplete,
+    SleepLock,
 }

@@ -1,7 +1,5 @@
 
-#Release
-#Debug
-BUILD_TYPE = Release
+BUILD_TYPE ?= Release
 
 ifneq ($(shell test -d .git), 0)
 GIT_SHORT_HASH:= $(shell git rev-parse --short HEAD)
@@ -25,6 +23,8 @@ COMMON_DEFINITIONS =                                      \
 	-DCMAKE_INSTALL_PREFIX=./install \
 	-DLIB_ONLY=TRUE \
 	-DSYSROOT=$(SYSROOT) \
+	-DKERNELX_HOME=$(KERNELX_HOME) \
+	-DCONFIG_BACKTRACE=$(CONFIG_BACKTRACE) \
 
 TOOLCHAIN_FILE = $(KERNELX_HOME)/scripts/cmake/toolchain/$(ARCH)$(ARCH_BITS).cmake
 

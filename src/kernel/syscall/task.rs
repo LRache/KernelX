@@ -2,12 +2,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{File, FileFlags};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
-use crate::kernel::scheduler::{current, Tid};
+use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::scheduler;
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr, UString};
@@ -83,16 +83,15 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
     };
 
     let child = current::pcb().clone_task(current::tcb(), stack, &task_flags, tls)?;
+    let child_tid = child.tid();
 
     if flags.contains(CloneFlags::CHILD_SETTID) {
-        let _ = child.get_addrspace().copy_to_user(uptr_child_tid, 0 as Tid);
+        let _ = child.get_addrspace().copy_to_user(uptr_child_tid, child_tid);
     }
 
     if flags.contains(CloneFlags::CHILD_CLEARTID) {
         child.set_tid_address(uptr_child_tid);
     }
-
-    let child_tid = child.tid();
 
     if flags.contains(CloneFlags::PARENT_SETTID) {
         uptr_parent_tid.write(child_tid)?;
@@ -111,8 +110,6 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
     } else {
         scheduler::push_task(child);
     }
-
-    // kinfo!("clone: created child task with TID {}", child_tid);
 
     Ok(child_tid as usize)
 }
@@ -150,15 +147,12 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
         let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
         let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
 
-        let exec_path = file.get_dentry().unwrap().get_path();
-
-        current::pcb().exec(current::tcb(), file, exec_path, &argv_ref, &envp_ref)?;
+        current::pcb().exec(current::tcb(), file, &argv_ref, &envp_ref)?;
         current::tcb().wake_parent_waiting_vfork();
-    }    
+    }
+    // kinfo!("{:?}", current::task().lockstate().held());
+    Ok(0)
 
-    current::schedule();
-
-    unreachable!()
 }
 
 bitflags! {
@@ -168,7 +162,7 @@ bitflags! {
     }
 }
 
-pub fn wait4(pid: usize, uptr_status: usize, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
+pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
     let options = WaitOptions::from_bits(options).unwrap_or(WaitOptions::empty());
     let pid = pid as isize;  
@@ -192,40 +186,36 @@ pub fn wait4(pid: usize, uptr_status: usize, options: usize, _user_rusages: usiz
         }
     }
 
-    if uptr_status != 0 {
-        let status: u32 = (exit_code as u32 & 0xff) << 8; // WEXITSTATUS
-        copy_to_user::object(uptr_status, status)?;
+    if !status.is_null() {
+        status.write((exit_code as u32 & 0xff) << 8)?; // WEXITSTATUS
     }
 
     Ok(wait_pid as usize)
 }
 
-pub fn exit(code: usize) -> Result<usize, Errno> {
+pub fn exit(code: usize) -> SyscallRet {
     let tcb = current::tcb();
     tcb.exit(code as u8);
 
     tcb.wake_parent_waiting_vfork();
-    
-    current::schedule();
-    
-    unreachable!()
+
+    Ok(0)
 }
 
-pub fn exit_group(code: usize) -> Result<usize, Errno> {
+pub fn exit_group(code: usize) -> SyscallRet {
     let pcb = current::pcb();
     pcb.exit(code as u8);
 
     current::tcb().wake_parent_waiting_vfork();
-    
-    current::schedule();
-    
-    unreachable!()
+
+    // kinfo!("{:?}", current::task().lockstate().held());
+    Ok(0)
 }
 
-pub fn set_tid_address(tid_address: usize) -> Result<usize, Errno> {
+pub fn set_tid_address(tid_address: usize) -> SyscallRet {
     let tcb = current::tcb();
     tcb.set_tid_address(tid_address);
-    Ok(0)
+    Ok(tcb.tid() as usize)
 }
 
 pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {

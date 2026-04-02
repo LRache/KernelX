@@ -6,13 +6,12 @@ use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::vec;
-use spin::RwLock;
 
 use crate::fs::InodeOps;
 use crate::fs::inode::Index as InodeIndex;
 use crate::kernel::mm::{MapPerm, PhysPageFrame, AddrSpace, MemAccessType};
 use crate::kernel::mm::maparea::Area;
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
 
@@ -49,27 +48,27 @@ impl Drop for MappedFileEntry {
 }
 
 struct Manager {
-    mapped: SpinLock<BTreeMap<InodeIndex, Arc<SpinLock<MappedFileEntry>>>>,
+    mapped: SpinLock<BTreeMap<InodeIndex, Arc<SleepLock<MappedFileEntry>>>>,
 }
 
 impl Manager {
     pub const fn new() -> Self {
         Self {
-            mapped: SpinLock::new(BTreeMap::new()),
+            mapped: SpinLock::new(BTreeMap::new(), "static::filemap::shared::Manager"),
         }
     }
 
-    pub fn open_mapped_file(&self, inode: Arc<dyn InodeOps>, index: InodeIndex) -> Arc<SpinLock<MappedFileEntry>> {
+    pub fn open_mapped_file(&self, inode: Arc<dyn InodeOps>, index: InodeIndex) -> Arc<SleepLock<MappedFileEntry>> {
         let mut mapped = self.mapped.lock();
         if let Some(entry) = mapped.get(&index) {
             entry.lock().ref_count += 1;
             return entry.clone();
         } else {
-            let entry = Arc::new(SpinLock::new(MappedFileEntry {
+            let entry = Arc::new(SleepLock::new(MappedFileEntry {
                 inode: inode,
                 shared: BTreeMap::new(),
                 ref_count: 1,
-            }));
+            }, "MappedFileEntry"));
             mapped.insert(index, entry.clone());
             return entry;
         }
@@ -100,7 +99,7 @@ enum FrameState {
 }
 
 pub struct SharedFileMapArea {
-    entry: Arc<SpinLock<MappedFileEntry>>,
+    entry: Arc<SleepLock<MappedFileEntry>>,
     ubase: usize,
     offset: usize,
     states: Vec<FrameState>,
@@ -136,7 +135,7 @@ impl SharedFileMapArea {
         }
 
         let kpage = self.entry.lock().get_page(page_index)?;
-        Some(kpage + uaddr & arch::PGSIZE)
+        Some(kpage + (uaddr & arch::PGSIZE))
     }
 }
 
@@ -153,9 +152,9 @@ impl Area for SharedFileMapArea {
         self.perm
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &RwLock<PageTable>) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
         self.perm = perm;
-        let mut pagetable = pagetable.write();
+        let mut pagetable = pagetable.lock();
         self.states.iter().enumerate().for_each(|(page_index, &state)| {
             if state == FrameState::Allocated {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
@@ -172,7 +171,7 @@ impl Area for SharedFileMapArea {
         self.states.len() * arch::PGSIZE
     }
 
-    fn fork(&mut self, _self_pagetable: &RwLock<PageTable>, _fork_pagetable: &RwLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, _fork_pagetable: &mut PageTable) -> Box<dyn Area> {
         let new_area = SharedFileMapArea {
             entry: self.entry.clone(),
             ubase: self.ubase,
@@ -206,7 +205,7 @@ impl Area for SharedFileMapArea {
 
         if self.states[page_index] == FrameState::Unallocated {
             let kpage = self.entry.lock().get_page(page_index).expect("Failed to get page in try_to_fix_memory_fault");
-            let mut pagetable = addrspace.pagetable().write();
+            let mut pagetable = addrspace.pagetable().lock();
             pagetable.mmap(
                 self.ubase + page_index * arch::PGSIZE,
                 kpage,
@@ -218,8 +217,8 @@ impl Area for SharedFileMapArea {
         return true;
     }
 
-    fn unmap(&mut self, pagetable: &RwLock<PageTable>) {
-        let mut pagetable = pagetable.write();
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        let mut pagetable = pagetable.lock();
         self.states.iter().enumerate().for_each(|(page_index, &state)| {
             if state == FrameState::Allocated {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;

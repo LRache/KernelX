@@ -235,6 +235,38 @@ pub struct Sysinfo {
 }
 impl UserStruct for Sysinfo {}
 
+/// Clock ticks per second, matching the Linux userspace CLK_TCK value.
+const CLK_TCK: u64 = 100;
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct Tms {
+    tms_utime:  usize, // user CPU time of process
+    tms_stime:  usize, // system CPU time of process
+    tms_cutime: usize, // user CPU time of waited-for children
+    tms_cstime: usize, // system CPU time of waited-for children
+}
+
+impl UserStruct for Tms {}
+
+pub fn times(uptr_tms: UPtr<Tms>) -> SyscallRet {
+    let pcb = current::pcb();
+    let (utime, stime) = pcb.tasks_usage_time();
+    let (cutime, cstime) = pcb.children_usage_time();
+
+    let tms = Tms {
+        tms_utime:  (utime.as_millis()  as u64 * CLK_TCK / 1000) as usize,
+        tms_stime:  (stime.as_millis()  as u64 * CLK_TCK / 1000) as usize,
+        tms_cutime: (cutime.as_millis() as u64 * CLK_TCK / 1000) as usize,
+        tms_cstime: (cstime.as_millis() as u64 * CLK_TCK / 1000) as usize,
+    };
+
+    uptr_tms.write(tms)?;
+
+    let uptime_ticks = (arch::uptime().as_millis() as u64 * CLK_TCK / 1000) as usize;
+    Ok(uptime_ticks)
+}
+
 pub fn sysinfo(uptr_sysinfo: UPtr<Sysinfo>) -> SyscallRet {
     uptr_sysinfo.should_not_null()?;
     let mut sysinfo = Sysinfo::default();
