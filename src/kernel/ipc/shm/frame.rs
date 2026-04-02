@@ -9,11 +9,10 @@ pub struct ShmFrames {
 
 impl ShmFrames {
     pub fn new(page_count: usize) -> Self {
-        let mut frames = Vec::new();
-        for _ in 0..page_count {
-            frames.push(PhysPageFrame::alloc());
-        }
-        ShmFrames {
+        let frames = (0..page_count)
+            .map(|_| PhysPageFrame::alloc_zeroed())
+            .collect::<Vec<_>>();
+        Self {
             frames: SpinLock::new(frames, "ShmFrames::frames")
         }
     }
