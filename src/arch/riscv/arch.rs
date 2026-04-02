@@ -41,22 +41,22 @@ impl ArchTrait for Arch {
             static __riscv_others_entry: u8;
         }
 
-        // kinfo!("Starting other harts...");
+        kinfo!("Starting other harts...");
 
-        // for hartid in 0..core_count() {
-        //     if hartid != current_core {
-        //         let stack = page::alloc_contiguous(config::SCHEDULER_KSTACK_PAGE_COUNT);
-        //         if let Err(error) = sbi_driver::hart_start(
-        //             hartid, 
-        //             core::ptr::addr_of!(__riscv_others_entry) as usize,
-        //             stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE
-        //         ) {
-        //             kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
-        //         } else {
-        //             kinfo!("Hart {} started successfully", hartid);
-        //         }
-        //     }
-        // }
+        for hartid in 0..core_count() {
+            if hartid != current_core {
+                let stack = page::alloc_contiguous(config::SCHEDULER_KSTACK_PAGE_COUNT);
+                if let Err(error) = sbi_driver::hart_start(
+                    hartid, 
+                    core::ptr::addr_of!(__riscv_others_entry) as usize,
+                    stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE
+                ) {
+                    kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
+                } else {
+                    kinfo!("Hart {} started successfully", hartid);
+                }
+            }
+        }
     }
     
     #[inline(always)]
