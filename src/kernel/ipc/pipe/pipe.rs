@@ -4,7 +4,7 @@ use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
-use crate::fs::{Dentry, InodeOps};
+use crate::fs::{Dentry, InodeOps, Mode};
 use crate::fs::file::{FileFlags, FileOps, SeekWhence};
 use crate::klib::SpinLock;
 
@@ -26,6 +26,8 @@ impl Pipe {
     pub fn new(inner: Arc<PipeInner>, writable: bool, blocked: bool) -> Self {
         if writable {
             inner.increment_writer_count();
+        } else {
+            inner.increment_reader_count();
         }
         Self {
             inner,
@@ -53,11 +55,13 @@ impl FileOps for Pipe {
     }
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        self.inner.read_to_user(ubuf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.inner.read_to_user(ubuf, blocked)
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
-        self.inner.write(buf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.inner.write(buf, blocked)
     }
 
     fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
@@ -83,7 +87,7 @@ impl FileOps for Pipe {
 
     fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::empty();
-        kstat.st_mode = 0o100666; // Regular file with rw-rw-rw- permissions
+        kstat.st_mode = Mode::S_IFIFO.bits() as u32 | 0o666;
         kstat.st_nlink = 1;
 
         Ok(kstat)
@@ -123,6 +127,8 @@ impl Drop for Pipe {
     fn drop(&mut self) {
         if self.writable {
             self.inner.decrement_writer_count();
+        } else {
+            self.inner.decrement_reader_count();
         }
     }
 }
