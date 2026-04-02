@@ -291,8 +291,9 @@ pub fn shmget(key: usize, size: usize, shmflg: usize) -> SyscallRet {
 
 pub fn shmat(shmid: usize, shmaddr: usize, shmflg: usize) -> SyscallRet {
     let addr_space = current::addrspace();
+    let pid = current::pid();
     let flags = shm::ShmFlag::from_bits_truncate(shmflg);
-    let addr = shm::attach_shm(shmid, addr_space, shmaddr, flags)?;
+    let addr = shm::attach_shm(shmid, pid, addr_space, shmaddr, flags)?;
     Ok(addr)
 }
 
@@ -314,18 +315,9 @@ pub fn shmctl(shmid: usize, cmd: usize, _buf: usize) -> SyscallRet {
     }
 }
 
-pub fn shmdt(_shmaddr: usize) -> SyscallRet {
-    // TODO: Implement shmdt based on address
-    // Currently our manager uses shmid to detach, but syscall uses address.
-    // We need to find shmid from address or change manager to support detach by address.
-    // For now, return ENOSYS or implement a lookup.
-    
-    // Since we don't have reverse lookup yet, let's leave it as TODO or 
-    // we can iterate over areas in addrspace to find the shm area?
-    // But shm_manager needs shmid.
-    
-    // Real implementation would look up the VMA at shmaddr, check if it's a SHM VMA,
-    // get the shmid/shm object from it, and then detach.
-    
-    Err(Errno::ENOSYS)
+pub fn shmdt(shmaddr: usize) -> SyscallRet {
+    let addr_space = current::addrspace();
+    let pid = current::pid();
+    shm::detach_shm_by_addr(pid, shmaddr, addr_space)?;
+    Ok(0)
 }

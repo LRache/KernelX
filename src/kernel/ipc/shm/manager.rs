@@ -4,10 +4,11 @@ use alloc::sync::Arc;
 use bitflags::bitflags;
 
 use crate::kernel::mm::{MapPerm, AddrSpace};
-use crate::kernel::mm::maparea::ShmArea;
 use crate::arch::PGSIZE;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::Tid;
 use crate::klib::SpinLock;
+use crate::kernel::mm::maparea::ShmArea;
 
 use super::frame::ShmFrames;
 
@@ -55,6 +56,8 @@ pub struct ShmIdentifier {
 pub struct ShmManager {
     shms: BTreeMap<usize, ShmIdentifier>,
     next_shmid: usize,
+    /// Reverse mapping: (pid, attach_addr) -> shmid, used by shmdt
+    attach_map: BTreeMap<(Tid, usize), usize>,
 }
 
 impl ShmManager {
@@ -62,6 +65,7 @@ impl ShmManager {
         Self {
             shms: BTreeMap::new(),
             next_shmid: 1,
+            attach_map: BTreeMap::new(),
         }
     }
 
@@ -124,10 +128,23 @@ impl ShmManager {
         self.shms.get_mut(&shmid)
     }
     
-    // Called on shmat
-    pub fn attach(&mut self, shmid: usize, addrspace: &AddrSpace, shmaddr: usize, shmflg: ShmFlag) -> SysResult<usize> {
+    // Called on shmat. `make_area` is a closure that constructs the concrete Area
+    // given (uaddr, Arc<ShmFrames>, perm, shmid); this avoids a circular import
+    // between this module and mm::maparea::shm.
+    pub fn attach(
+        &mut self,
+        shmid: usize,
+        pid: Tid,
+        addrspace: &AddrSpace,
+        shmaddr: usize,
+        shmflg: ShmFlag,
+    ) -> SysResult<usize> {
         let shm = self.shms.get_mut(&shmid).ok_or(Errno::EINVAL)?;
+        if shm.deleted {
+            return Err(Errno::EINVAL);
+        }
         let page_count = shm.frames.page_count();
+        let frames = shm.frames.clone();
 
         // Permissions
         let mut perm = MapPerm::R | MapPerm::U;
@@ -138,27 +155,55 @@ impl ShmManager {
             perm |= MapPerm::X;
         }
 
-        addrspace.with_map_manager_mut(|map_manager| {
+        let uaddr = addrspace.with_map_manager_mut(|map_manager| {
             // Determine address
             let uaddr = if shmaddr == 0 {
                 map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)?
-            } else {
-                let aligned_addr = (shmaddr + PGSIZE - 1) & !(PGSIZE - 1);
-                if map_manager.is_map_range_overlapped(aligned_addr, page_count * PGSIZE) {
+            } else if shmflg.contains(ShmFlag::SHM_RND) {
+                // SHM_RND: round down to page boundary
+                let aligned_addr = shmaddr & !(PGSIZE - 1);
+                if map_manager.is_map_range_overlapped(aligned_addr, page_count) {
                     return Err(Errno::EINVAL);
                 }
                 aligned_addr
+            } else {
+                // No SHM_RND: address must already be page-aligned
+                if shmaddr & (PGSIZE - 1) != 0 {
+                    return Err(Errno::EINVAL);
+                }
+                if map_manager.is_map_range_overlapped(shmaddr, page_count) {
+                    return Err(Errno::EINVAL);
+                }
+                shmaddr
             };
 
-            let shm_area = Box::new(ShmArea::new(uaddr, shm.frames.clone(), perm));
-            shm.ref_count += 1;
-            shm.ds.atime = 0; // TODO: update time
-
-            map_manager.map_area(uaddr, shm_area);
-
+            // let area = make_area(uaddr, frames, perm, shmid);
+            let area = Box::new(ShmArea::new(uaddr, frames, perm, shmid));
+            map_manager.map_area(uaddr, area);
 
             Ok(uaddr)
-        })
+        })?;
+
+        let shm = self.shms.get_mut(&shmid).unwrap();
+        shm.ref_count += 1;
+        self.attach_map.insert((pid, uaddr), shmid);
+
+        Ok(uaddr)
+    }
+
+    /// Decrement ref_count for `shmid`. Called from `ShmArea::drop`.
+    pub fn on_area_drop(&mut self, shmid: usize) {
+        let should_remove = if let Some(shm) = self.shms.get_mut(&shmid) {
+            if shm.ref_count > 0 {
+                shm.ref_count -= 1;
+            }
+            shm.deleted && shm.ref_count == 0
+        } else {
+            false
+        };
+        if should_remove {
+            self.shms.remove(&shmid);
+        }
     }
 
     // Called on shmdt
@@ -203,12 +248,35 @@ pub fn get_or_create_shm(key: usize, size: usize, flags: IpcGetFlag) -> SysResul
     SHM_MANAGER.lock().get_or_create(key, size, flags)
 }
 
-pub fn attach_shm(shmid: usize, addr_space: &AddrSpace, shmaddr: usize, shmflg: ShmFlag) -> SysResult<usize> {
-    SHM_MANAGER.lock().attach(shmid, addr_space, shmaddr, shmflg)
+pub fn attach_shm(shmid: usize, pid: Tid, addrspace: &AddrSpace, shmaddr: usize, shmflg: ShmFlag) -> SysResult<usize> {
+    SHM_MANAGER.lock().attach(shmid, pid, addrspace, shmaddr, shmflg)
 }
 
-pub fn detach_shm(shmid: usize) -> SysResult<()> {
-    SHM_MANAGER.lock().detach(shmid)
+pub fn detach_shm_by_addr(pid: Tid, shmaddr: usize, addr_space: &AddrSpace) -> SysResult<()> {
+    let (shmid, page_count) = {
+        let mut mgr = SHM_MANAGER.lock();
+        let shmid = mgr.attach_map.remove(&(pid, shmaddr)).ok_or(Errno::EINVAL)?;
+        let page_count = mgr.shms.get(&shmid).map(|s| s.frames.page_count()).unwrap_or(0);
+        (shmid, page_count)
+    };
+    // Unmap the area; ShmArea::drop will call on_area_drop to fix up ref_count.
+    if page_count > 0 {
+        addr_space.with_map_manager_mut(|map_manager| {
+            map_manager.unmap_area(shmaddr, page_count, addr_space.pagetable())
+        })?;
+    }
+    let _ = shmid; // ref_count decremented by ShmArea::drop
+    Ok(())
+}
+
+pub fn on_shm_area_drop(shmid: usize) {
+    SHM_MANAGER.lock().on_area_drop(shmid);
+}
+
+pub fn on_shm_area_attach(shmid: usize) {
+    if let Some(shm) = SHM_MANAGER.lock().shms.get_mut(&shmid) {
+        shm.ref_count += 1;
+    }
 }
 
 pub fn mark_remove_shm(shmid: usize) -> SysResult<()> {
