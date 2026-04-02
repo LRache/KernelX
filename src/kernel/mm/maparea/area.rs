@@ -34,7 +34,7 @@ pub trait Area {
     
     fn perm(&self) -> MapPerm;
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, fork_pagetable: &SpinLock<PageTable>) -> Box<dyn Area>;
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, fork_pagetable: &mut PageTable) -> Box<dyn Area>;
 
     fn try_to_fix_memory_fault(
         &mut self, 

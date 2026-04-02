@@ -171,17 +171,16 @@ impl Area for PrivateFileMapArea {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
         
-        let mut pagetable = new_pagetable.lock();
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
                 FrameState::Allocated(frame) | FrameState::Cow(frame) => {
                     if let Some(kpage) = frame.get_page() {
                         let uaddr = self.ubase + page_index * arch::PGSIZE;
-                        pagetable.mmap(uaddr, kpage, cow_perm);
+                        new_pagetable.mmap(uaddr, kpage, cow_perm);
                     }
                     FrameState::Cow(frame.clone())
                 }

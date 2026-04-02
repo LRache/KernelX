@@ -11,7 +11,7 @@ use crate::fs::InodeOps;
 use crate::fs::inode::Index as InodeIndex;
 use crate::kernel::mm::{MapPerm, PhysPageFrame, AddrSpace, MemAccessType};
 use crate::kernel::mm::maparea::Area;
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
 
@@ -48,7 +48,7 @@ impl Drop for MappedFileEntry {
 }
 
 struct Manager {
-    mapped: SpinLock<BTreeMap<InodeIndex, Arc<SpinLock<MappedFileEntry>>>>,
+    mapped: SpinLock<BTreeMap<InodeIndex, Arc<SleepLock<MappedFileEntry>>>>,
 }
 
 impl Manager {
@@ -58,13 +58,13 @@ impl Manager {
         }
     }
 
-    pub fn open_mapped_file(&self, inode: Arc<dyn InodeOps>, index: InodeIndex) -> Arc<SpinLock<MappedFileEntry>> {
+    pub fn open_mapped_file(&self, inode: Arc<dyn InodeOps>, index: InodeIndex) -> Arc<SleepLock<MappedFileEntry>> {
         let mut mapped = self.mapped.lock();
         if let Some(entry) = mapped.get(&index) {
             entry.lock().ref_count += 1;
             return entry.clone();
         } else {
-            let entry = Arc::new(SpinLock::new(MappedFileEntry {
+            let entry = Arc::new(SleepLock::new(MappedFileEntry {
                 inode: inode,
                 shared: BTreeMap::new(),
                 ref_count: 1,
@@ -99,7 +99,7 @@ enum FrameState {
 }
 
 pub struct SharedFileMapArea {
-    entry: Arc<SpinLock<MappedFileEntry>>,
+    entry: Arc<SleepLock<MappedFileEntry>>,
     ubase: usize,
     offset: usize,
     states: Vec<FrameState>,
@@ -135,7 +135,7 @@ impl SharedFileMapArea {
         }
 
         let kpage = self.entry.lock().get_page(page_index)?;
-        Some(kpage + uaddr & arch::PGSIZE)
+        Some(kpage + (uaddr & arch::PGSIZE))
     }
 }
 
@@ -171,7 +171,7 @@ impl Area for SharedFileMapArea {
         self.states.len() * arch::PGSIZE
     }
 
-    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, _fork_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, _fork_pagetable: &mut PageTable) -> Box<dyn Area> {
         let new_area = SharedFileMapArea {
             entry: self.entry.clone(),
             ubase: self.ubase,

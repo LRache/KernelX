@@ -138,9 +138,9 @@ impl Area for AnonymousArea {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let perm = self.perm - MapPerm::W;
-        let mut new_pagetable = new_pagetable.lock();
+        
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
@@ -222,10 +222,6 @@ impl Area for AnonymousArea {
                 FrameState::Allocated(frame) => {
                     #[cfg(feature = "swap-memory")]
                     self.handle_memory_fault_on_swapped_allocated(frame, addrspace);
-                    
-                    #[cfg(not(feature = "swap-memory"))]
-                    // Page is already allocated, this shouldn't happen
-                    panic!("Memory fault on already allocated page at address: {:#x}, access_type: {:?}, perm: {:?}", uaddr, access_type, self.perm);
                 }
                 FrameState::Cow(frame) => {
                     if access_type != MemAccessType::Write {

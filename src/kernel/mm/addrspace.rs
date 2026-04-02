@@ -79,13 +79,13 @@ impl AddrSpace {
     }
 
     pub fn fork(self: &Arc<Self>) -> Arc<AddrSpace> {
-        let new_pagetable = SpinLock::new(create_pagetable(), "AddrSpace::fork.new_pagetable");
+        let mut new_pagetable = create_pagetable();
 
-        let new_map_manager = self.map_manager.lock().fork(&self.pagetable, &new_pagetable);
+        let new_map_manager = self.map_manager.lock().fork(&self.pagetable, &mut new_pagetable);
 
         let addrspace = Arc::new(AddrSpace {
             map_manager: SleepLock::new(new_map_manager, "AddrSpace::map_manager"),
-            pagetable: new_pagetable,
+            pagetable: SpinLock::new(new_pagetable, "AddrSpace::pagetable"),
             usercontext_frames: SpinLock::new(Vec::new(), "AddrSpace::usercontext_frames"),
 
             #[cfg(feature = "swap-memory")]

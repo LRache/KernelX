@@ -5,8 +5,8 @@ use alloc::boxed::Box;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{MapPerm, MemAccessType};
-use crate::arch::{self, scause};
 use crate::arch::{PageTable, PageTableTrait};
+use crate::arch;
 use crate::fs::file::File;
 use crate::klib::SpinLock;
 
@@ -151,9 +151,8 @@ impl Area for ELFArea {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
-        let mut new_pagetable = new_pagetable.lock();
         let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
             match frame {
                 Frame::Unallocated => Frame::Unallocated,
@@ -212,8 +211,7 @@ impl Area for ELFArea {
                     self.load_page(page_index, addrspace.pagetable());
                 }
                 Frame::Allocated(_) => {
-                    panic!("Page is already allocated, addr={:#x}, access={:?}, perm={:?}, page_index={}, base={:#x}, scause={:x}", uaddr, access_type, addrspace.pagetable().lock().mapped_perm(uaddr).unwrap(), page_index, self.ubase, scause::read());
-                    arch::get_kernel_stack_top();
+                    // Maybe the page is allocated and mapped by the other task.
                 }
                 Frame::Cow(_) => {
                     if access_type == MemAccessType::Write {
