@@ -157,10 +157,6 @@ fn select(
         return Ok(ready_count);
     }
 
-    if waiting_files.is_empty() {
-        return Ok(0);
-    }
-
     let timer_id = if let Some(duration) = timeout {
         if !duration.is_zero() {
             Some(timer::add_timer(current::task().clone(), duration))
@@ -174,6 +170,9 @@ fn select(
             return Ok(0);
         }
     } else {
+        if waiting_files.is_empty() {
+            return Ok(0);
+        }
         None
     };
 
@@ -221,7 +220,7 @@ pub fn pselect6_time32(
     uptr_timeout: UPtr<uapi::Timespec32>,
     uptr_sigmask: UPtr<SignalSet>,
 ) -> SysResult<usize> {
-    if nfds == 0 || nfds > FD_SET_SIZE {
+    if nfds > FD_SET_SIZE {
         return Err(Errno::EINVAL);
     }
 
