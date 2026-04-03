@@ -11,71 +11,44 @@ jobs:
     container:
       image: debian:bookworm-slim
 
+    env:
+      RUSTUP_HOME: /usr/local/rustup
+      CARGO_HOME: /usr/local/cargo
+
     steps:
-      - name: Install base tools
+      - name: Setup build environment
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             curl wget gnupg ca-certificates lsb-release software-properties-common \
-            make cmake ninja-build \
-            gcc g++ vim \
-            git python3 python3-pip \
-            xz-utils file \
+            make cmake ninja-build gcc g++ git python3 xz-utils file \
+            gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu \
+            qemu-system-misc \
           && rm -rf /var/lib/apt/lists/*
-
-      - name: Install LLVM 21
-        run: |
-          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
-          chmod +x /tmp/llvm.sh
-          /tmp/llvm.sh 21
-          rm /tmp/llvm.sh
+          curl -fsSL https://apt.llvm.org/llvm.sh | bash -s -- 21
           rm -rf /var/lib/apt/lists/*
           for tool in clang clang++ ld.lld llvm-objcopy llvm-objdump llvm-ar llvm-nm llvm-strip; do
             ln -sf /usr/bin/${tool}-21 /usr/local/bin/${tool}
           done
-
-      - name: Install RISC-V toolchain and QEMU
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends \
-            gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu \
-            qemu-system-misc \
-          && rm -rf /var/lib/apt/lists/*
           for bin in /usr/bin/riscv64-linux-gnu-*; do
             name=$(basename "$bin")
-            link="/usr/local/bin/riscv64-unknown-linux-gnu-${name#riscv64-linux-gnu-}"
-            ln -sf "$bin" "$link"
+            ln -sf "$bin" "/usr/local/bin/riscv64-unknown-linux-gnu-${name#riscv64-linux-gnu-}"
           done
-
-      - name: Install Rust nightly
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-            sh -s -- -y --no-modify-path --default-toolchain nightly
-          echo "/usr/local/cargo/bin" >> $GITHUB_PATH
-        env:
-          RUSTUP_HOME: /usr/local/rustup
-          CARGO_HOME: /usr/local/cargo
-
-      - name: Setup Rust target
-        run: |
+          sed -i 's|^# include <gnu/stubs-lp64.h>|//&|' /usr/riscv64-linux-gnu/include/gnu/stubs.h
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain nightly
+          export PATH=/usr/local/cargo/bin:$PATH
           rustup target add riscv64gc-unknown-none-elf
           rustup component add rust-src
-        env:
-          RUSTUP_HOME: /usr/local/rustup
-          CARGO_HOME: /usr/local/cargo
-          PATH: /usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-      - name: Patch sysroot header
-        run: sed -i 's|^# include <gnu/stubs-lp64.h>|//&|' /usr/riscv64-linux-gnu/include/gnu/stubs.h
+          echo "/usr/local/cargo/bin" >> $GITHUB_PATH
 
       - name: Checkout KernelX
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Clone and build test suite
+      - name: Download test image
         run: |
-          git clone https://github.com/LRache/KernelX-testsuit.git ../KernelX-testsuit
-          cd ../KernelX-testsuit/testsuit-for-oskernel
-          bash build.sh
+          wget -q https://github.com/LRache/KernelX-testsuit/releases/download/v0.0.1/testsuit-for-oskernel-riscv64.img.xz
+          xz -d testsuit-for-oskernel-riscv64.img.xz
 
       - name: Build kernel
         run: |
@@ -87,8 +60,7 @@ jobs:
             CONFIG_LOG_LEVEL=trace \
             CONFIG_NO_SMP=y \
             CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
-            COMPILE_MODE=debug \
-            SYSROOT=/usr/riscv64-linux-gnu
+            COMPILE_MODE=debug
 
       - name: Run tests in QEMU
         timeout-minutes: 30
@@ -99,7 +71,7 @@ jobs:
             CONFIG_QEMU_MACHINE=virt \
             CONFIG_QEMU_MEMORY=1G \
             CONFIG_QEMU_CPUS=1 \
-            CONFIG_DISK_IMAGE=../KernelX-testsuit/testsuit-for-oskernel/sdcard-rv.img \
+            CONFIG_DISK_IMAGE=testsuit-for-oskernel-riscv64.img \
             CONFIG_INITPATH=/testcode/runtest.sh \
             CONFIG_INITCWD=/ \
             CONFIG_ROOT_DEVICE="virtio_mmio@10001000" \
