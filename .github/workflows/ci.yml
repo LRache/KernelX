@@ -50,7 +50,7 @@ jobs:
           wget -q https://github.com/LRache/KernelX-testsuit/releases/download/v0.0.1/testsuit-for-oskernel-riscv64.img.xz
           xz -d testsuit-for-oskernel-riscv64.img.xz
 
-      - name: Build kernel
+      - name: Build riscv64 kernel
         run: |
           make -f build.mk kernel \
             ARCH=riscv \
@@ -60,9 +60,10 @@ jobs:
             CONFIG_LOG_LEVEL=trace \
             CONFIG_NO_SMP=y \
             CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
-            COMPILE_MODE=debug
+            COMPILE_MODE=debug \
+            SYSROOT=/usr/riscv64-linux-gnu
 
-      - name: Run tests in QEMU
+      - name: Test testsuits-for-oskernel-riscv64
         timeout-minutes: 30
         run: |
           timeout 1800 make -f scripts/qemu.mk qemu-run \
@@ -78,8 +79,6 @@ jobs:
             CONFIG_BOOTARGS="rtc=rtc@101000" \
           | tee qemu_output.log || true
 
-      - name: Check test result
-        run: |
           if grep -q '\[PANIC\] Init process exited with code 0, system will halt.' qemu_output.log; then
             echo "Tests passed."
           else
