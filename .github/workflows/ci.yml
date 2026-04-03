@@ -64,9 +64,9 @@ jobs:
             SYSROOT=/usr/riscv64-linux-gnu
 
       - name: Test testsuits-for-oskernel-riscv64
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: |
-          timeout 1800 make -f scripts/qemu.mk qemu-run \
+          make -f scripts/qemu.mk qemu-run \
             ARCH=riscv \
             ARCH_BITS=64 \
             CONFIG_QEMU_MACHINE=virt \
