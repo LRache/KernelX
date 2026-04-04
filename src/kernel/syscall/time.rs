@@ -102,6 +102,15 @@ pub fn clock_gettime(_clockid: usize, uptr_timespec: UPtr<Timespec>) -> SysResul
     Ok(0)
 }
 
+pub fn clock_getres(_clockid: usize, uptr_timespec: UPtr<Timespec>) -> SysResult<usize> {
+    if !uptr_timespec.is_null() {
+        // Report 1ns resolution
+        let res = Timespec { tv_sec: 0, tv_nsec: 1 };
+        uptr_timespec.write(res)?;
+    }
+    Ok(0)
+}
+
 pub fn timer_create(_clockid: usize, _uptr_sev: usize, _uptr_timerid: UPtr<usize>) -> SysResult<usize> {
     Ok(0)
 }
