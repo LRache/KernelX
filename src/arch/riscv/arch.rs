@@ -2,7 +2,7 @@ use core::time::Duration;
 
 use alloc::sync::Arc;
 
-use crate::arch::riscv::{csr, load_device_tree, plic, process, sbi_driver};
+use crate::arch::riscv::{csr, load_device_tree, plic, task, sbi_driver};
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
 use crate::arch::{self, Arch, ArchTrait, UserContextTrait};
 use crate::kernel::config;
@@ -11,7 +11,7 @@ use crate::kernel::mm::{MapPerm, page};
 use crate::driver::chosen;
 use crate::{driver, kinfo, kwarn};
 
-use super::KernelContext;
+use super::task::context::KernelContext;
 use super::pagetable::kernelpagetable;
 use super::csr::{Sstatus, SIE, stvec};
 use super::{time_frequency, kernel_switch, core_count};
@@ -22,7 +22,7 @@ unsafe extern "C" {
     static __riscv_kaddr_offset: usize;
 }
 
-impl ArchTrait for Arch {
+impl ArchTrait for Arch {    
     fn init() {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;
@@ -77,7 +77,7 @@ impl ArchTrait for Arch {
 
     #[inline(always)]
     fn return_to_user() -> ! {
-        process::traphandle::return_to_user();
+        task::traphandle::return_to_user()
     }
 
     #[inline(always)]

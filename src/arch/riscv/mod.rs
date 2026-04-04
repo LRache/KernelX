@@ -1,6 +1,6 @@
 mod pagetable;
 mod sbi_driver;
-mod process;
+mod task;
 mod fdt;
 mod plic;
 pub mod csr;
@@ -9,7 +9,7 @@ mod cpu;
 
 pub use context::{UserContext, KernelContext, SigContext};
 pub use switch::kernel_switch;
-pub use process::*;
+pub use task::*;
 pub use pagetable::*;
 pub use fdt::load_device_tree;
 

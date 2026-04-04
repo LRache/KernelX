@@ -1,6 +1,6 @@
 use crate::arch::arch::UserContextTrait;
 use crate::arch::riscv::pagetable::get_kernel_satp;
-use crate::arch::riscv::process::traphandle::{usertrap_handler, return_to_user};
+use crate::arch::riscv::task::traphandle::{usertrap_handler, return_to_user};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::KernelStack;
 
