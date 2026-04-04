@@ -5,7 +5,7 @@ use crate::fs::vfs;
 use crate::kernel::scheduler::current;
 use crate::kernel::config;
 use crate::kernel::errno::Errno;
-use crate::kernel::syscall::uptr::{UserPointer, UBuffer, UPtr};
+use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::uapi;
 use crate::klib::random::random;
@@ -279,13 +279,41 @@ pub fn sync() -> SyscallRet {
     vfs::sync_all().map(|_| 0)
 }
 
+// TODO: implement sched_setaffinity syscall
+pub fn sched_setaffinity(_pid: usize, _cpusetsize: usize, _uptr_mask: UBuffer) -> SyscallRet {
+    // Pretend success, ignore the mask
+    Ok(0)
+}
+
 // TODO: implement sched_getaffinity syscall
-pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UPtr<u8>) -> SyscallRet {
+pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UBuffer) -> SyscallRet {
     if cpusetsize == 0 {
         return Err(Errno::EINVAL);
     }
 
-    uptr_mask.write(1)?; // only one CPU (CPU 0) is available
+    let mut cpuset_buffer = vec![0u8; cpusetsize];
+    cpuset_buffer[0] = 1; // only one CPU (CPU 0) is available
 
+    uptr_mask.write(0, &cpuset_buffer)?;
+
+    Ok(cpusetsize)
+}
+
+// TODO: implement real scheduling policy setting
+pub fn sched_setscheduler(_pid: usize, _policy: usize, _uptr_param: UPtr<u32>) -> SyscallRet {
+    // Pretend success, always using SCHED_OTHER
+    Ok(0)
+}
+
+// TODO: implement real scheduling policy query
+pub fn sched_getscheduler(_pid: usize) -> SyscallRet {
+    // Return SCHED_OTHER (0) as the default policy
+    Ok(0)
+}
+
+// TODO: implement real scheduling parameter query
+pub fn sched_getparam(_pid: usize, uptr_param: UPtr<u32>) -> SyscallRet {
+    // Write sched_priority = 0 (default for SCHED_OTHER)
+    uptr_param.write(0)?;
     Ok(0)
 }
