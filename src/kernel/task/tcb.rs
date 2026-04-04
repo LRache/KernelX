@@ -238,9 +238,7 @@ impl TCB {
         flags: &TaskCloneFlags,
         tls: Option<usize>,
     ) -> Arc<Self> {
-        let mut new_user_context = self.with_user_context(|user_context| {
-            user_context.new_clone()
-        });
+        let mut new_user_context = self.user_context().new_clone();
 
         let new_addrspace = if flags.vm {
             new_user_context.set_user_stack_top(userstack);
@@ -352,20 +350,8 @@ impl TCB {
         self.user_context_uaddr
     }
 
-    pub fn get_user_context_ptr(&self) -> *mut UserContext {
-        self.user_context_ptr
-    }
-
     pub fn parent(&self) -> &Arc<PCB> {
         &self.parent
-    }
-
-    pub fn with_user_context<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&UserContext) -> R,
-    {
-        let user_context = unsafe { self.user_context_ptr.as_ref().unwrap() };
-        f(user_context)
     }
 
     pub fn with_user_context_mut<F, R>(&self, f: F) -> R
