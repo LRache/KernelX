@@ -1,6 +1,6 @@
-use crate::{kernel::mm::MapPerm};
-use crate::kernel::mm;
 use crate::arch::PageTableTrait;
+use crate::kernel::mm;
+use crate::kernel::mm::MapPerm;
 
 use super::pte::{Addr, PTE, PTEFlags, PTETable};
 
@@ -38,8 +38,11 @@ pub struct PageTableImpls<T: PageAllocator> {
 
 impl<T: PageAllocator> PageTableImpls<T> {
     pub fn create(&mut self) {
-        debug_assert!(self.root == 0, "PageTable root should be zero when creating a new PageTable");
-        
+        debug_assert!(
+            self.root == 0,
+            "PageTable root should be zero when creating a new PageTable"
+        );
+
         self.root = mm::page::alloc_zero();
     }
 
@@ -51,27 +54,27 @@ impl<T: PageAllocator> PageTableImpls<T> {
         }
     }
 
-    pub fn find_pte(&self, vaddr: usize) -> Option<PTE> {        
+    pub fn find_pte(&self, vaddr: usize) -> Option<PTE> {
         self.find_pte_vpn(Addr::from_vaddr(vaddr).vpn())
     }
 
     fn find_pte_vpn(&self, vpns: [usize; PAGE_TABLE_LEVELS]) -> Option<PTE> {
         debug_assert!(self.root != 0);
         let mut ptetable = PTETable::new(self.root as *mut usize);
-        
+
         for (level, vpn) in vpns.iter().enumerate() {
             let pte = ptetable.get(*vpn);
             if !pte.is_valid() {
                 return None;
             }
-            
+
             if level == LEAF_LEVEL {
                 return Some(pte);
             }
-            
+
             ptetable = pte.next_level();
         }
-        
+
         unreachable!("Page table traversal should always return before this point")
     }
 
@@ -83,14 +86,14 @@ impl<T: PageAllocator> PageTableImpls<T> {
     fn find_pte_or_create_vpn(&mut self, vpn: [usize; PAGE_TABLE_LEVELS]) -> PTE {
         debug_assert!(self.root != 0);
         let mut ptetable = PTETable::new(self.root as *mut usize);
-        
+
         for level in 0..PAGE_TABLE_LEVELS {
             let mut pte = ptetable.get(vpn[level]);
-            
+
             if level == LEAF_LEVEL {
                 return pte;
             }
-            
+
             if !pte.is_valid() {
                 // Create a new page table entry
                 let page = T::alloc_zero();
@@ -102,7 +105,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
 
             ptetable = pte.next_level();
         }
-        
+
         unreachable!("Page table traversal should always return before this point")
     }
 
@@ -115,7 +118,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
                 }
             }
         }
-        
+
         ptetable.free();
     }
 
@@ -139,7 +142,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
         flags = flags | PTEFlags::A | PTEFlags::D;
 
         let mut pte = self.find_pte_or_create(kaddr);
-        
+
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_paddr(paddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
@@ -158,7 +161,8 @@ impl<T: PageAllocator> PageTableImpls<T> {
             let flags = pte.flags();
             if !flags.contains(PTEFlags::A) {
                 pte.set_flags(flags | PTEFlags::A);
-                pte.write_back().expect("Failed to write back PTE when marking page accessed");
+                pte.write_back()
+                    .expect("Failed to write back PTE when marking page accessed");
                 return true;
             }
         }
@@ -170,7 +174,8 @@ impl<T: PageAllocator> PageTableImpls<T> {
             let flags = pte.flags();
             if !flags.contains(PTEFlags::D) || !flags.contains(PTEFlags::A) {
                 pte.set_flags(flags | PTEFlags::D | PTEFlags::A);
-                pte.write_back().expect("Failed to write back PTE when marking page dirty");
+                pte.write_back()
+                    .expect("Failed to write back PTE when marking page dirty");
                 return true;
             }
         }
@@ -199,8 +204,13 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         flags |= PTEFlags::A | PTEFlags::D;
 
         let mut pte = self.find_pte_or_create(uaddr);
-        debug_assert!(!pte.is_valid(), "PTE should NOT be valid before mmap, uaddr= {:#x}, kaddr = {:#x}", uaddr, kaddr);
-        
+        debug_assert!(
+            !pte.is_valid(),
+            "PTE should NOT be valid before mmap, uaddr= {:#x}, kaddr = {:#x}",
+            uaddr,
+            kaddr
+        );
+
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
@@ -223,7 +233,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
     }
-    
+
     fn mmap_replace_kaddr(&mut self, uaddr: usize, kaddr: usize) {
         let mut pte = self.find_pte_or_create(uaddr);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
@@ -249,7 +259,9 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
             // Using atomic opearation is unnessary here,
             // because pagetable is write-locked during munmap_with_check.
             if pte.ppn().to_addr().kaddr() == kaddr {
-                pte.set_flags(PTEFlags::empty()).write_back().expect("Failed to write back PTE for munmap_with_check");
+                pte.set_flags(PTEFlags::empty())
+                    .write_back()
+                    .expect("Failed to write back PTE for munmap_with_check");
                 return true;
             } else {
                 return false;
@@ -264,7 +276,9 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
             let flags = pte.flags();
             let accessed = flags.contains(PTEFlags::A);
             let dirty = flags.contains(PTEFlags::D);
-            pte.set_flags(flags.difference(PTEFlags::A | PTEFlags::D)).write_back().expect("Failed to write back PTE when taking access and dirty bits");
+            pte.set_flags(flags.difference(PTEFlags::A | PTEFlags::D))
+                .write_back()
+                .expect("Failed to write back PTE when taking access and dirty bits");
             (accessed, dirty)
         })
     }

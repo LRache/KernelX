@@ -1,8 +1,8 @@
 use core::alloc::Layout;
 use spin::mutex::SpinMutex;
 
-use crate::klib::InitedCell;
 use crate::arch;
+use crate::klib::InitedCell;
 
 struct FrameAllocator {
     allocator: buddy_system_allocator::FrameAllocator,
@@ -22,7 +22,7 @@ impl FrameAllocator {
             #[cfg(feature = "swap-memory")]
             waterlevel_high: total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH / 100,
             #[cfg(feature = "swap-memory")]
-            waterlevel_low:  total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_LOW / 100,
+            waterlevel_low: total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_LOW / 100,
         }
     }
 
@@ -62,13 +62,13 @@ pub fn init(frame_start: usize, frame_end: usize) {
     // let zone_size = frame_end - frame_start;
     // let ptr_zone_size = zone_size / (arch::PGSIZE + core::mem::size_of::<*const u8>()) * core::mem::size_of::<*const u8>();
     // META_PTR_BASE.init(frame_start);
-    
+
     // let frame_base = (frame_start + ptr_zone_size + arch::PGSIZE - 1) & !(arch::PGSIZE - 1);
     // FRAME_BASE.init(frame_base);
 
     let frame_base = frame_start;
     let total = (frame_end - frame_start) / arch::PGSIZE;
-    
+
     let mut allocator = buddy_system_allocator::FrameAllocator::new();
     allocator.add_frame(frame_base, frame_end);
     FRAME_ALLOCATOR.init(SpinMutex::new(FrameAllocator::new(allocator, total)));
@@ -102,12 +102,12 @@ pub fn alloc_with_shrink() -> usize {
         let to_shrink = allocator.allocated - allocator.waterlevel_low + 1;
         let min_to_shrink = to_shrink / 4 + 1;
         drop(allocator);
-        
+
         crate::kernel::mm::swappable::shrink(to_shrink, min_to_shrink);
-        
-        return FRAME_ALLOCATOR.lock().alloc().unwrap()
+
+        return FRAME_ALLOCATOR.lock().alloc().unwrap();
     }
-        
+
     allocator.alloc().unwrap()
 }
 
@@ -131,7 +131,7 @@ pub fn alloc_contiguous(pages: usize) -> usize {
 
 // pub fn alloc_with_meta<T>(meta: T) -> usize {
 //     let page = alloc();
-//     let meta_ptr = page_meta_ref(page);   
+//     let meta_ptr = page_meta_ref(page);
 //     unsafe {
 //         let ptr = alloc::alloc::alloc(Layout::new::<T>()) as *mut T;
 //         if ptr.is_null() {
@@ -173,12 +173,28 @@ pub fn free_contiguous(addr: usize, pages: usize) {
 // }
 
 pub fn copy(src: usize, dst: usize) {
-    debug_assert!(src % arch::PGSIZE == 0, "Source address must be page-aligned: {:#x}", src);
-    debug_assert!(dst % arch::PGSIZE == 0, "Destination address must be page-aligned: {:#x}", dst);
-    debug_assert!(src != dst, "Source and destination addresses must be different: {:#x}", src);
-    
+    debug_assert!(
+        src % arch::PGSIZE == 0,
+        "Source address must be page-aligned: {:#x}",
+        src
+    );
+    debug_assert!(
+        dst % arch::PGSIZE == 0,
+        "Destination address must be page-aligned: {:#x}",
+        dst
+    );
+    debug_assert!(
+        src != dst,
+        "Source and destination addresses must be different: {:#x}",
+        src
+    );
+
     unsafe {
-        core::ptr::copy_nonoverlapping(src as *const usize, dst as *mut usize, arch::PGSIZE / core::mem::size_of::<usize>());
+        core::ptr::copy_nonoverlapping(
+            src as *const usize,
+            dst as *mut usize,
+            arch::PGSIZE / core::mem::size_of::<usize>(),
+        );
     }
 }
 
@@ -193,31 +209,28 @@ pub fn zero(kpage: usize) {
 
 #[macro_export]
 macro_rules! safe_page_write {
-    ($addr:expr, $buffer:expr) => {
-        {
-            let addr = $addr;
-            let buffer = $buffer;
-            
-            // Only perform bounds checking in debug mode
-            if cfg!(debug_assertions) {
-                if (addr & $crate::arch::PGMASK) + buffer.len() > $crate::arch::PGSIZE {
-                    panic!(
-                        "Buffer exceeds page size at {}:{}:{}\n  addr = {:#x}, len = {:#x}",
-                        file!(),
-                        line!(),
-                        column!(),
-                        addr,
-                        buffer.len()
-                    );
-                }
-            }
+    ($addr:expr, $buffer:expr) => {{
+        let addr = $addr;
+        let buffer = $buffer;
 
-            unsafe {
-                core::slice::from_raw_parts_mut(addr as *mut u8, buffer.len())
-                    .copy_from_slice(buffer);
+        // Only perform bounds checking in debug mode
+        if cfg!(debug_assertions) {
+            if (addr & $crate::arch::PGMASK) + buffer.len() > $crate::arch::PGSIZE {
+                panic!(
+                    "Buffer exceeds page size at {}:{}:{}\n  addr = {:#x}, len = {:#x}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    addr,
+                    buffer.len()
+                );
             }
         }
-    };
+
+        unsafe {
+            core::slice::from_raw_parts_mut(addr as *mut u8, buffer.len()).copy_from_slice(buffer);
+        }
+    }};
 }
 
 #[derive(Debug)]

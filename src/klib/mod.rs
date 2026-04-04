@@ -1,14 +1,13 @@
-pub mod print;
+pub mod backtrace;
+pub mod defer;
+pub mod dmesg;
+pub mod initcell;
 pub mod kalloc;
 pub mod klog;
-pub mod backtrace;
 pub mod ksync;
-pub mod initcell;
+pub mod print;
 pub mod random;
-pub mod defer;
 pub mod ring;
-pub mod dmesg;
 
-pub use ksync::SpinLock;
-pub use ksync::SleepLock;
 pub use initcell::InitedCell;
+pub use ksync::{SleepLock, SpinLock};

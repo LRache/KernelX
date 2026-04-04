@@ -1,19 +1,19 @@
 // TODO: Test and verify the shared file mapping area implementation.
 // TODO: Implement the swapped filed page frame
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
+use crate::arch;
+use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::InodeOps;
 use crate::fs::inode::Index as InodeIndex;
-use crate::kernel::mm::{MapPerm, PhysPageFrame, AddrSpace, MemAccessType};
 use crate::kernel::mm::maparea::Area;
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::{SleepLock, SpinLock};
-use crate::arch::{PageTable, PageTableTrait};
-use crate::arch;
 
 struct MappedFileEntry {
     inode: Arc<dyn InodeOps>,
@@ -42,7 +42,9 @@ impl Drop for MappedFileEntry {
         // Write back all pages
         for (page_index, frame) in self.shared.iter() {
             let offset = page_index * arch::PGSIZE;
-            self.inode.writeat(frame.slice(), offset).expect("Failed to write back.");
+            self.inode
+                .writeat(frame.slice(), offset)
+                .expect("Failed to write back.");
         }
     }
 }
@@ -64,11 +66,14 @@ impl Manager {
             entry.lock().ref_count += 1;
             return entry.clone();
         } else {
-            let entry = Arc::new(SleepLock::new(MappedFileEntry {
-                inode: inode,
-                shared: BTreeMap::new(),
-                ref_count: 1,
-            }, "MappedFileEntry"));
+            let entry = Arc::new(SleepLock::new(
+                MappedFileEntry {
+                    inode: inode,
+                    shared: BTreeMap::new(),
+                    ref_count: 1,
+                },
+                "MappedFileEntry",
+            ));
             mapped.insert(index, entry.clone());
             return entry;
         }
@@ -114,7 +119,7 @@ impl SharedFileMapArea {
         inode: Arc<dyn InodeOps>,
         index: InodeIndex,
         offset: usize,
-        page_count: usize
+        page_count: usize,
     ) -> Self {
         let states = vec![FrameState::Unallocated; page_count];
         let entry = MANAGER.open_mapped_file(inode, index);
@@ -166,7 +171,7 @@ impl Area for SharedFileMapArea {
     fn page_count(&self) -> usize {
         self.states.len()
     }
-    
+
     fn size(&self) -> usize {
         self.states.len() * arch::PGSIZE
     }
@@ -180,7 +185,7 @@ impl Area for SharedFileMapArea {
             perm: self.perm,
             inode_index: self.inode_index,
         };
-        
+
         Box::new(new_area)
     }
 
@@ -193,24 +198,24 @@ impl Area for SharedFileMapArea {
     }
 
     fn try_to_fix_memory_fault(
-            &mut self, 
-            uaddr: usize, 
-            _access_type: MemAccessType, 
-            addrspace: &Arc<AddrSpace>
-        ) -> bool {
+        &mut self,
+        uaddr: usize,
+        _access_type: MemAccessType,
+        addrspace: &Arc<AddrSpace>,
+    ) -> bool {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index >= self.states.len() {
             return false;
         }
 
         if self.states[page_index] == FrameState::Unallocated {
-            let kpage = self.entry.lock().get_page(page_index).expect("Failed to get page in try_to_fix_memory_fault");
+            let kpage = self
+                .entry
+                .lock()
+                .get_page(page_index)
+                .expect("Failed to get page in try_to_fix_memory_fault");
             let mut pagetable = addrspace.pagetable().lock();
-            pagetable.mmap(
-                self.ubase + page_index * arch::PGSIZE,
-                kpage,
-                self.perm,
-            );
+            pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
             self.states[page_index] = FrameState::Allocated;
         }
 

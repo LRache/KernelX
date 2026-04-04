@@ -6,11 +6,11 @@ use crate::fs::file::{File, FileFlags};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
+use crate::kernel::scheduler;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::{Tid, current};
-use crate::kernel::scheduler;
 use crate::kernel::syscall::SyscallRet;
-use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr, UString};
+use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::task::def::TaskCloneFlags;
 
 pub fn sched_yield() -> SyscallRet {
@@ -69,7 +69,7 @@ bitflags! {
 
 pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
-    
+
     let task_flags = TaskCloneFlags {
         vm: flags.contains(CloneFlags::VM),
         files: flags.contains(CloneFlags::FILES),
@@ -120,9 +120,10 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
 
         let path = uptr_path.read()?;
 
-        let file = current::with_cwd(|cwd| 
-            vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::new(PermFlags::X))
-        )?.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
+        let file =
+            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::new(PermFlags::X)))?
+                .downcast_arc::<File>()
+                .map_err(|_| Errno::ENOEXEC)?;
 
         let helper = |uarray: UArray<UString>| -> SysResult<Vec<String>> {
             if uarray.is_null() {
@@ -152,7 +153,6 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
     }
     // kinfo!("{:?}", current::task().lockstate().held());
     Ok(0)
-
 }
 
 bitflags! {
@@ -165,7 +165,7 @@ bitflags! {
 pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
     let options = WaitOptions::from_bits(options).unwrap_or(WaitOptions::empty());
-    let pid = pid as isize;  
+    let pid = pid as isize;
 
     let wait_pid;
     let exit_code: usize;

@@ -1,5 +1,5 @@
-use core::time::Duration;
 use alloc::sync::Arc;
+use core::time::Duration;
 
 use crate::kernel::mm::swappable::LRUCache;
 use crate::klib::{InitedCell, SpinLock};
@@ -15,21 +15,36 @@ struct Counter {
     shrink_time: Duration,
 }
 
-static COUNTER: SpinLock<Counter> = SpinLock::new(Counter {
-    swap_in_count: 0,
-    swap_out_count: 0,
-    swap_in_time: Duration::ZERO,
-    swap_out_time: Duration::ZERO,
-    shrink_count: 0,
-    shrink_time: Duration::ZERO,
-}, "static::COUNTER");
+static COUNTER: SpinLock<Counter> = SpinLock::new(
+    Counter {
+        swap_in_count: 0,
+        swap_out_count: 0,
+        swap_in_time: Duration::ZERO,
+        swap_out_time: Duration::ZERO,
+        shrink_count: 0,
+        shrink_time: Duration::ZERO,
+    },
+    "static::COUNTER",
+);
 
 pub fn print_perf_info() {
     let counter = COUNTER.lock();
     crate::kinfo!("Anonymous Swapper Performance Info:");
-    crate::kinfo!("  Swap In: {} times, total time: {:?}", counter.swap_in_count, counter.swap_in_time);
-    crate::kinfo!("  Swap Out: {} times, total time: {:?}", counter.swap_out_count, counter.swap_out_time);
-    crate::kinfo!("  Shrink: {} times, total time: {:?}", counter.shrink_count, counter.shrink_time);
+    crate::kinfo!(
+        "  Swap In: {} times, total time: {:?}",
+        counter.swap_in_count,
+        counter.swap_in_time
+    );
+    crate::kinfo!(
+        "  Swap Out: {} times, total time: {:?}",
+        counter.swap_out_count,
+        counter.swap_out_time
+    );
+    crate::kinfo!(
+        "  Shrink: {} times, total time: {:?}",
+        counter.shrink_count,
+        counter.shrink_time
+    );
 }
 
 pub fn counter_swap_in(time: Duration) {
@@ -52,10 +67,7 @@ struct SwapEntry {
 
 impl SwapEntry {
     fn new(frame: Arc<dyn SwappableFrame>) -> Self {
-        Self {
-            frame,
-            dirty: false,
-        }
+        Self { frame, dirty: false }
     }
 }
 
@@ -81,7 +93,7 @@ impl Swapper {
     fn shrink(&self, page_count: usize, min_to_shrink: usize) {
         let shrink_start = crate::kernel::event::timer::now();
         let mut lru = self.lru.lock();
-        
+
         let mut swapped_count = 0;
         for _ in 0..(page_count * 2) {
             if let Some((key, entry)) = lru.tail() {
@@ -113,14 +125,14 @@ impl Swapper {
             for _ in swapped_count..min_to_shrink {
                 if let Some((_, entry)) = lru.tail() {
                     let frame = &entry.frame;
-                    
+
                     // Swap out this frame
                     let mut dirty = entry.dirty;
                     if !dirty {
                         let (_, d) = frame.take_access_dirty_bit().unwrap_or((false, false));
                         dirty |= d;
                     }
-                    
+
                     let start = crate::kernel::event::timer::now();
                     frame.swap_out(dirty);
                     lru.pop_lru();

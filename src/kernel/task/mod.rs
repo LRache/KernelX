@@ -1,11 +1,11 @@
-mod tcb;
-mod pcb;
-pub mod manager;
-pub mod fdtable;
 pub mod def;
+pub mod fdtable;
+pub mod manager;
+mod pcb;
+mod tcb;
 
-pub use tcb::*;
+pub use manager::{create_initprocess, with_initpcb};
 pub use pcb::*;
-pub use manager::{with_initpcb, create_initprocess};
+pub use tcb::*;
 
 use manager::INIT_UTASK_TID;

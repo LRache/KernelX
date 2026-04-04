@@ -9,7 +9,7 @@ pub enum Event {
     ReadReady,
     WriteReady,
     Timeout,
-    Futex, 
+    Futex,
     Process { child: Tid },
     WaitSignal { signum: SignalNum },
     Signal,

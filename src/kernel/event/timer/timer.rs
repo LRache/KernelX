@@ -5,10 +5,10 @@ use core::cmp::Reverse;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
+use crate::arch;
 use crate::kernel::event::Event;
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::Task;
-use crate::arch;
 use crate::klib::SpinLock;
 
 use super::event::TimerEvent;
@@ -29,9 +29,13 @@ impl Timer {
     pub fn add_timer(&self, time: Duration, callback: Box<dyn FnOnce()>) -> u64 {
         let time = arch::get_time_us() + time.as_micros() as u64;
         let new_id = self.next_timer_id.fetch_add(1, Ordering::Relaxed) as u64;
-        self.wait_queue.lock().push(Reverse(TimerEvent { time, callback, id: new_id }));
+        self.wait_queue.lock().push(Reverse(TimerEvent {
+            time,
+            callback,
+            id: new_id,
+        }));
         new_id
-    } 
+    }
 
     pub fn wakeup_expired(&self, current_time: u64) {
         loop {
@@ -51,8 +55,7 @@ impl Timer {
     }
 
     pub fn remove(&self, timer_id: u64) {
-        self.wait_queue.lock()
-                       .retain(|event| event.0.id != timer_id);
+        self.wait_queue.lock().retain(|event| event.0.id != timer_id);
     }
 }
 
@@ -68,9 +71,12 @@ pub fn now() -> Duration {
 }
 
 pub fn add_timer(task: Arc<dyn Task>, time: Duration) -> u64 {
-    TIMER.add_timer(time, Box::new(move || {
-        scheduler::wakeup_task(task, Event::Timeout);
-    }))
+    TIMER.add_timer(
+        time,
+        Box::new(move || {
+            scheduler::wakeup_task(task, Event::Timeout);
+        }),
+    )
 }
 
 pub fn add_timer_with_callback(time: Duration, callback: Box<dyn FnOnce()>) -> u64 {

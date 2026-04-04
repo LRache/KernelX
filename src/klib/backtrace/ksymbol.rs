@@ -2,7 +2,6 @@
 ///   [u32 LE: count]
 ///   [count * { u64 LE: addr, u32 LE: name_offset }]
 ///   [string pool: null-terminated UTF-8]
-///
 static SYMBOL_BYTES: &[u8] = include_bytes!(env!("KERNELX_SYMBOLS_PATH"));
 
 /// 查找 `pc` 所属的函数名及偏移量。
@@ -24,9 +23,8 @@ pub fn lookup(pc: usize) -> Option<(&'static str, usize)> {
     let entries = &data[4..entries_end];
     let string_pool = &data[entries_end..];
 
-    let addr_at = |i: usize| -> usize {
-        u64::from_le_bytes(entries[i * 12..i * 12 + 8].try_into().unwrap_or([0; 8])) as usize
-    };
+    let addr_at =
+        |i: usize| -> usize { u64::from_le_bytes(entries[i * 12..i * 12 + 8].try_into().unwrap_or([0; 8])) as usize };
 
     if addr_at(0) > pc {
         return None;
@@ -44,9 +42,7 @@ pub fn lookup(pc: usize) -> Option<(&'static str, usize)> {
     }
 
     let func_addr = addr_at(lo);
-    let name_offset = u32::from_le_bytes(
-        entries[lo * 12 + 8..lo * 12 + 12].try_into().ok()?
-    ) as usize;
+    let name_offset = u32::from_le_bytes(entries[lo * 12 + 8..lo * 12 + 12].try_into().ok()?) as usize;
 
     if name_offset >= string_pool.len() {
         return None;

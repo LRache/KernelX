@@ -1,28 +1,18 @@
-use core::sync::atomic::AtomicBool;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::collections::BTreeMap;
 
 use crate::kernel::event::timer;
-use crate::kernel::config;
-use crate::kernel::mm;
-use crate::kernel::scheduler;
-use crate::kernel::scheduler::Processor;
-use crate::kernel::scheduler::Task;
-use crate::kernel::task;
-use crate::kernel::kthread;
-use crate::arch;
-use crate::fs;
-use crate::driver;
-use crate::klib::{kalloc, InitedCell};
-use crate::kinfo;
-use crate::print;
+use crate::kernel::scheduler::{Processor, Task};
+use crate::kernel::{config, kthread, mm, scheduler, task};
+use crate::klib::{InitedCell, kalloc};
+use crate::{arch, driver, fs, kinfo, print};
 
 #[allow(dead_code)]
 fn free_init() {
     unsafe extern "C" {
         static __init_start: u8;
-        static __init_end:   u8;
+        static __init_end: u8;
     }
 
     let kstart = core::ptr::addr_of!(__init_start) as usize;
@@ -45,7 +35,7 @@ fn kinit() {
     timer::init();
 
     mm::vdso::init();
-    
+
     fs::mount_init_fs(
         BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT),
         BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE),
@@ -126,7 +116,7 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     arch::set_next_time_event_us(10000);
     arch::enable_timer_interrupt();
     arch::enable_device_interrupt(hartid);
-    
+
     scheduler::run_tasks(hartid);
 }
 

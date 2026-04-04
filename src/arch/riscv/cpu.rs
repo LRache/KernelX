@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 use fdt::node::FdtNode;
 
-use crate::klib::InitedCell;
 use crate::kinfo;
+use crate::klib::InitedCell;
 
 pub struct CPUInfo {
     svadu_enabled: bool,
@@ -33,16 +33,16 @@ pub fn load_cpu_node(cpus_node: &FdtNode) {
         TIME_FREQ.init(freq as u32);
     }
     kinfo!("Init timebase frequency = {}Hz", *TIME_FREQ);
-    
+
     let mut cpus = Vec::new();
-    for child in cpus_node.children() {        
+    for child in cpus_node.children() {
         let isa_support = child.property("riscv,isa").and_then(|p| p.as_str()).unwrap_or("");
         let extensions: Vec<&str> = isa_support.split('_').collect();
-        
+
         let svadu_enabled = extensions.iter().find(|&&ext| ext == "svadu").is_some();
 
         let base = extensions[0];
-        let float_supported =  base.contains('f'); 
+        let float_supported = base.contains('f');
         let double_supported = base.contains('d');
 
         cpus.push(CPUInfo {

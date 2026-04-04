@@ -49,7 +49,7 @@ impl SignalAction {
 
 pub struct SignalActionTable {
     actions: [SignalAction; 63],
-    stack: Option<(usize, usize)> // (ss_sp, ss_size)
+    stack: Option<(usize, usize)>, // (ss_sp, ss_size)
 }
 
 impl SignalActionTable {

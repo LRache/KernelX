@@ -5,8 +5,8 @@ use crate::kernel::syscall::UserStruct;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Timespec {
-    pub tv_sec:  u64,     // seconds
-    pub tv_nsec: u64,     // nanoseconds
+    pub tv_sec: u64,  // seconds
+    pub tv_nsec: u64, // nanoseconds
 }
 
 impl UserStruct for Timespec {}
@@ -29,8 +29,8 @@ impl From<Duration> for Timespec {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Timeval {
-    pub tv_sec:  u64,     // seconds
-    pub tv_usec: u64,     // microseconds
+    pub tv_sec: u64,  // seconds
+    pub tv_usec: u64, // microseconds
 }
 
 impl UserStruct for Timeval {}
@@ -53,8 +53,8 @@ impl From<Duration> for Timeval {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Timespec32 {
-    pub tv_sec:  i32,     // seconds
-    pub tv_nsec: i32,     // nanoseconds
+    pub tv_sec: i32,  // seconds
+    pub tv_nsec: i32, // nanoseconds
 }
 
 impl UserStruct for Timespec32 {}
@@ -68,8 +68,8 @@ impl Into<Duration> for Timespec32 {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct TimeVal {
-    pub tv_sec:  usize,    // seconds
-    pub tv_usec: usize,    // microseconds
+    pub tv_sec: usize,  // seconds
+    pub tv_usec: usize, // microseconds
 }
 
 impl TimeVal {

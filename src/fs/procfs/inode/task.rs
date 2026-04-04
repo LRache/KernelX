@@ -56,16 +56,32 @@ impl InodeOps for TaskDirInode {
             ".." => Ok(RootInode::INO),
             "maps" => Ok(TaskMapsInode::ino_from_tid(self.tid)),
             "exe" => Ok(TaskExeInode::ino_from_tid(self.tid)),
-            _ => Err(Errno::ENOENT)
+            _ => Err(Errno::ENOENT),
         }
     }
 
     fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
         let d = match index {
-            0 => Some(DirResult { ino: Self::ino_from_tid(self.tid), name: ".".into(), file_type: FileType::Directory}),
-            1 => Some(DirResult { ino: RootInode::INO, name: "..".into(), file_type: FileType::Directory}),
-            2 => Some(DirResult { ino: TaskMapsInode::ino_from_tid(self.tid), name: "maps".into(), file_type: FileType::Regular}),
-            3 => Some(DirResult { ino: TaskExeInode::ino_from_tid(self.tid), name: "exe".into(), file_type: FileType::Symlink}),
+            0 => Some(DirResult {
+                ino: Self::ino_from_tid(self.tid),
+                name: ".".into(),
+                file_type: FileType::Directory,
+            }),
+            1 => Some(DirResult {
+                ino: RootInode::INO,
+                name: "..".into(),
+                file_type: FileType::Directory,
+            }),
+            2 => Some(DirResult {
+                ino: TaskMapsInode::ino_from_tid(self.tid),
+                name: "maps".into(),
+                file_type: FileType::Regular,
+            }),
+            3 => Some(DirResult {
+                ino: TaskExeInode::ino_from_tid(self.tid),
+                name: "exe".into(),
+                file_type: FileType::Symlink,
+            }),
             _ => None,
         };
 
@@ -105,7 +121,7 @@ impl InodeOps for TaskDirInode {
 }
 
 pub struct TaskMapsInode {
-    tid: Tid
+    tid: Tid,
 }
 
 impl TaskMapsInode {
@@ -149,14 +165,7 @@ impl InodeOps for TaskMapsInode {
         read_iter_text(buf, offset, areas.iter(), |area| {
             let perms = Self::perm_string(area.perm);
             let mut line = String::with_capacity(50);
-            let _ = writeln!(
-                line,
-                "{:016x}-{:016x} {} {}",
-                area.start,
-                area.end,
-                perms,
-                area.name
-            );
+            let _ = writeln!(line, "{:016x}-{:016x} {} {}", area.start, area.end, perms, area.name);
             Ok(line)
         })
 
@@ -238,7 +247,7 @@ impl InodeOps for TaskMapsInode {
 }
 
 pub struct TaskExeInode {
-    tid: Tid
+    tid: Tid,
 }
 
 impl TaskExeInode {
@@ -295,7 +304,7 @@ impl InodeOps for TaskExeInode {
         kstat.st_ino = self.get_ino() as u64;
         kstat.st_mode = self.mode()?.bits();
         kstat.st_nlink = 1;
-        
+
         let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
         fill_kstat_common(&mut kstat, &tcb);
 

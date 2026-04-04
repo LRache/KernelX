@@ -1,13 +1,13 @@
-use core::time::Duration;
 use alloc::sync::Arc;
+use core::time::Duration;
 use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::fs::Dentry;
+use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::fs::file::{DirResult, FileFlags, FileOps};
 
-use super::{Mode, FileType};
+use super::{FileType, Mode};
 
 pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
@@ -36,7 +36,7 @@ pub trait InodeOps: DowncastSync {
     fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
         unimplemented!()
     }
-    
+
     fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
         unimplemented!()
     }
@@ -59,7 +59,7 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn size(&self) -> SysResult<u64>;
-    
+
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::empty())
     }
@@ -67,7 +67,7 @@ pub trait InodeOps: DowncastSync {
     fn chmod(&self, _mode: Mode) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
-      
+
     fn owner(&self) -> SysResult<(Uid, Uid)> {
         Ok((0, 0))
     }

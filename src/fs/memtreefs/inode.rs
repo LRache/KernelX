@@ -1,19 +1,19 @@
-use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
 
+use crate::arch;
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::kernel::errno::{SysResult, Errno};
+use crate::fs::inode::Mode;
+use crate::fs::{Dentry, FileType, InodeOps};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::fs::{Dentry, FileType, InodeOps};
-use crate::fs::inode::Mode;
-use crate::arch;
 use crate::klib::SpinLock;
 
-use super::superblock::{SuperBlockInner, StaticFsInfo};
+use super::superblock::{StaticFsInfo, SuperBlockInner};
 
 #[derive(Default)]
 struct Timespec {
@@ -120,12 +120,9 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             let mut child_meta = InodeMeta::new(mode, ino, self.ino);
             child_meta.links += 1;
 
-            let inode = Arc::new(Self::new(
-                ino, child_meta,
-                self.superblock.clone()
-            ));
+            let inode = Arc::new(Self::new(ino, child_meta, self.superblock.clone()));
             children.insert(name.into(), ino);
-            
+
             meta.links += 1;
 
             sb.insert_inode(ino, inode.clone());
@@ -298,13 +295,16 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             if let Some((name, &ino)) = children.iter().nth(index) {
                 if ino == self.ino {
                     // skip "."
-                    return Ok(Some((DirResult {
-                        ino,
-                        name: name.clone(),
-                        file_type: FileType::Directory,
-                    }, index + 1)));
+                    return Ok(Some((
+                        DirResult {
+                            ino,
+                            name: name.clone(),
+                            file_type: FileType::Directory,
+                        },
+                        index + 1,
+                    )));
                 }
-                
+
                 let file_type = {
                     let sb = self.superblock.lock();
                     let inode = sb.get_inode(ino)?;

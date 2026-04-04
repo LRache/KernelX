@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 
+use crate::fs::InodeOps;
+use crate::fs::file::DirResult;
+use crate::fs::vfs::Dentry;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
-use crate::fs::file::DirResult;
-use crate::fs::InodeOps;
-use crate::fs::vfs::Dentry;
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::SleepLock;
 
 use super::{FileOps, SeekWhence};
 
@@ -13,16 +13,24 @@ use super::{FileOps, SeekWhence};
 pub struct FileFlags {
     pub readable: bool,
     pub writable: bool,
-    pub blocked: bool
+    pub blocked: bool,
 }
 
 impl FileFlags {
     pub const fn dontcare() -> Self {
-        FileFlags { readable: true, writable: true, blocked: true }
+        FileFlags {
+            readable: true,
+            writable: true,
+            blocked: true,
+        }
     }
 
     pub const fn readonly() -> Self {
-        FileFlags { readable: true, writable: false, blocked: true }
+        FileFlags {
+            readable: true,
+            writable: false,
+            blocked: true,
+        }
     }
 }
 
@@ -30,7 +38,7 @@ pub struct File {
     inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
     pos: SleepLock<usize>,
-    
+
     pub flags: FileFlags,
 }
 
@@ -40,7 +48,7 @@ impl File {
             inode,
             dentry,
             pos: SleepLock::new(0, "File::pos"),
-            flags
+            flags,
         }
     }
 
@@ -68,7 +76,7 @@ impl File {
                 dent.ino = parent.get_inode().get_ino();
             }
         }
-        
+
         Ok(Some((dent, old_pos)))
     }
 }
@@ -78,7 +86,7 @@ impl FileOps for File {
         let mut pos = self.pos.lock();
         let len = self.inode.readat(buf, *pos)?;
         *pos += len;
-        
+
         Ok(len)
     }
 
@@ -91,7 +99,7 @@ impl FileOps for File {
         let mut pos = self.pos.lock();
         let len = self.inode.writeat(buf, *pos)?;
         *pos += len;
-        
+
         Ok(len)
     }
 
@@ -131,12 +139,12 @@ impl FileOps for File {
                 size as isize + offset
             }
         };
-        
+
         if new_pos < 0 {
             return Err(Errno::EINVAL);
         }
         *pos = new_pos as usize;
-        
+
         Ok(*pos)
     }
 

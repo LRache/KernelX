@@ -1,13 +1,12 @@
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
-use crate::kernel::mm::AddrSpace;
-use crate::kernel::mm::maparea::area::Area;
-use crate::kernel::mm::{MapPerm, MemAccessType};
-use crate::klib::SpinLock;
-use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
+use crate::arch::{PageTable, PageTableTrait};
+use crate::kernel::mm::maparea::area::Area;
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::klib::SpinLock;
 
 use super::nofilemap::FrameState;
 
@@ -18,20 +17,20 @@ pub struct AnonymousArea {
     ubase: usize,
     perm: MapPerm,
     frames: Vec<FrameState>,
-    shared: bool
+    shared: bool,
 }
 
 impl AnonymousArea {
     pub fn new(ubase: usize, perm: MapPerm, page_count: usize, shared: bool) -> Self {
         // Anonymous areas should be page-aligned
         debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
-        
+
         let frames = Vec::from_iter((0..page_count).map(|_| FrameState::Unallocated));
         Self {
             ubase,
             perm,
             frames,
-            shared
+            shared,
         }
     }
 
@@ -55,7 +54,10 @@ impl AnonymousArea {
 
         let kpage = self.frames[page_index].cow_to_allocated(addrspace);
 
-        addrspace.pagetable().lock().mmap_replace(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
+        addrspace
+            .pagetable()
+            .lock()
+            .mmap_replace(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
 
         kpage
     }
@@ -63,7 +65,7 @@ impl AnonymousArea {
     #[cfg(feature = "swap-memory")]
     fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         let page = frame.get_page_swap_in();
-        // FIXME: if the page is swapped out again before we mmap, 
+        // FIXME: if the page is swapped out again before we mmap,
         // there could be issues
         addrspace.pagetable().write().mmap(frame.uaddr(), page, self.perm);
     }
@@ -72,11 +74,10 @@ impl AnonymousArea {
     fn handle_cow_read_swapped_out(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
         let kpage = frame.get_page_swap_in();
-        addrspace.pagetable().write().mmap(
-            frame.uaddr(), 
-            kpage, 
-            self.perm - MapPerm::W
-        );
+        addrspace
+            .pagetable()
+            .write()
+            .mmap(frame.uaddr(), kpage, self.perm - MapPerm::W);
     }
 }
 
@@ -86,15 +87,11 @@ impl Area for AnonymousArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-        
+
         if let Some(page_frame) = self.frames.get(page_index) {
             let page = match page_frame {
-                FrameState::Unallocated => {
-                    self.allocate_page(page_index, addrspace)
-                }
-                FrameState::Allocated(frame) | FrameState::Cow(frame) => {
-                    frame.get_page_swap_in()
-                }
+                FrameState::Unallocated => self.allocate_page(page_index, addrspace),
+                FrameState::Allocated(frame) | FrameState::Cow(frame) => frame.get_page_swap_in(),
             };
 
             Some(page + page_offset)
@@ -112,12 +109,10 @@ impl Area for AnonymousArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-        
+
         if let Some(page_frame) = self.frames.get_mut(page_index) {
             let page = match page_frame {
-                FrameState::Unallocated => {
-                    self.allocate_page(page_index, addrspace)
-                }
+                FrameState::Unallocated => self.allocate_page(page_index, addrspace),
                 FrameState::Allocated(frame) => {
                     // frame_get_page_swapped(frame)
                     frame.get_page_swap_in()
@@ -140,77 +135,71 @@ impl Area for AnonymousArea {
 
     fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let perm = self.perm - MapPerm::W;
-        
-        let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
-            match frame {
+
+        let frames = self
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(page_index, frame)| match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
                 FrameState::Allocated(frame) => {
                     if self.shared {
                         if let Some(kpage) = frame.get_page() {
-                            new_pagetable.mmap(
-                                self.ubase + page_index * arch::PGSIZE,
-                                kpage,
-                                self.perm
-                            );
+                            new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
                         }
                         FrameState::Allocated(frame.clone())
                     } else {
                         if let Some(kpage) = frame.get_page() {
-                            new_pagetable.mmap(
-                                self.ubase + page_index * arch::PGSIZE,
-                                kpage,
-                                perm
-                            );
+                            new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, perm);
                         }
                         FrameState::Cow(frame.clone())
                     }
-                },
+                }
                 FrameState::Cow(frame) => {
                     debug_assert!(!self.shared, "Shared frames should not be CoW");
                     if let Some(kpage) = frame.get_page() {
-                        new_pagetable.mmap(
-                            self.ubase + page_index * arch::PGSIZE,
-                            kpage,
-                            perm
-                        );
+                        new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, perm);
                     }
                     FrameState::Cow(frame.clone())
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         if !self.shared {
             let mut self_pagetable = self_pagetable.lock();
-            self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
-                match frame {
+            self.frames
+                .iter_mut()
+                .enumerate()
+                .for_each(|(page_index, frame)| match frame {
                     FrameState::Allocated(allocated) => {
                         if let Some(_) = allocated.get_page() {
                             if self.perm.contains(MapPerm::W) {
-                                self_pagetable.mmap_replace_perm(
-                                    self.ubase + page_index * arch::PGSIZE,
-                                    perm
-                                );
+                                self_pagetable.mmap_replace_perm(self.ubase + page_index * arch::PGSIZE, perm);
                             }
                         }
                         *frame = FrameState::Cow(allocated.clone());
-                    },
+                    }
                     _ => {}
-                }
-            });
+                });
         }
 
         let new_area = AnonymousArea {
             ubase: self.ubase,
             perm: self.perm,
             frames,
-            shared: self.shared
+            shared: self.shared,
         };
 
         Box::new(new_area)
     }
 
     #[allow(unused_variables)]
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
+    fn try_to_fix_memory_fault(
+        &mut self,
+        uaddr: usize,
+        access_type: MemAccessType,
+        addrspace: &Arc<AddrSpace>,
+    ) -> bool {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -228,13 +217,16 @@ impl Area for AnonymousArea {
                         #[cfg(feature = "swap-memory")]
                         self.handle_cow_read_swapped_out(frame, addrspace);
                         #[cfg(not(feature = "swap-memory"))]
-                        panic!("Memory fault on CoW page without write access at address: {:#x}, access_type: {:?}, perm: {:?}", uaddr, access_type, self.perm);
+                        panic!(
+                            "Memory fault on CoW page without write access at address: {:#x}, access_type: {:?}, perm: {:?}",
+                            uaddr, access_type, self.perm
+                        );
                     } else {
                         self.copy_on_write_page(page_index, addrspace);
                     }
                 }
             }
-            
+
             true
         } else {
             false
@@ -252,23 +244,26 @@ impl Area for AnonymousArea {
 
     fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
         debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
-        debug_assert!(uaddr >= self.ubase && uaddr < self.ubase + self.size(), "uaddr out of range for split, urange: [{:#x}, {:#x}), uaddr: {:#x}", self.ubase, self.ubase + self.size(), uaddr);
+        debug_assert!(
+            uaddr >= self.ubase && uaddr < self.ubase + self.size(),
+            "uaddr out of range for split, urange: [{:#x}, {:#x}), uaddr: {:#x}",
+            self.ubase,
+            self.ubase + self.size(),
+            uaddr
+        );
 
         let split_index = (uaddr - self.ubase) / arch::PGSIZE;
         let new_ubase = self.ubase + split_index * arch::PGSIZE;
-        
+
         let new_frames = self.frames.split_off(split_index);
         let new_area = AnonymousArea {
             ubase: new_ubase,
             perm: self.perm,
             frames: new_frames,
-            shared: self.shared
+            shared: self.shared,
         };
 
-        (
-            self, 
-            Box::new(new_area)
-        )
+        (self, Box::new(new_area))
     }
 
     fn ubase(&self) -> usize {
@@ -279,7 +274,7 @@ impl Area for AnonymousArea {
         if perm == self.perm {
             return;
         }
-        
+
         self.perm = perm;
 
         let mut pagetable = pagetable.lock();

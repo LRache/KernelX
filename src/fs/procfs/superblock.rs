@@ -2,9 +2,9 @@ use alloc::sync::Arc;
 
 use crate::arch;
 use crate::driver::BlockDriverOps;
-use crate::kernel::errno::{SysResult, Errno};
-use crate::fs::{Mode, InodeOps};
 use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::{InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
 
 use super::inode;
@@ -41,7 +41,7 @@ impl SuperBlockOps for SuperBlock {
             _ => Err(Errno::ENOENT),
         }
     }
-    
+
     fn create_temp(&self, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         Err(Errno::EROFS)
     }

@@ -1,9 +1,9 @@
-mod vfs;
+mod dentry;
 mod fileop;
 mod fsop;
-mod dentry;
-mod superblock_table;
 mod init;
+mod superblock_table;
+mod vfs;
 
 use superblock_table::SuperBlockTable;
 
@@ -12,8 +12,8 @@ pub use fileop::*;
 pub use fsop::*;
 pub use init::init;
 
-use vfs::VirtualFileSystem;
 use crate::klib::InitedCell;
+use vfs::VirtualFileSystem;
 
 static VFS: InitedCell<VirtualFileSystem> = InitedCell::uninit();
 

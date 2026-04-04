@@ -30,7 +30,7 @@ pub trait DriverOps: Send + Sync {
     fn handle_interrupt(&self) {}
 }
 
-use downcast_rs::{impl_downcast, Downcast};
+use downcast_rs::{Downcast, impl_downcast};
 
 pub trait BlockDriverOps: DriverOps + Downcast {
     fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()>;
@@ -59,7 +59,7 @@ pub trait BlockDriverOps: DriverOps + Downcast {
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<(), ()> {
         let block_size = self.get_block_size() as usize;
         debug_assert!(block_size <= 512);
-        
+
         let mut length = buf.len();
         let mut block = offset / block_size;
 
@@ -72,7 +72,7 @@ pub trait BlockDriverOps: DriverOps + Downcast {
 
             let read_size = core::cmp::min(block_size - block_offset, length);
             buf[buf_offset..buf_offset + read_size].copy_from_slice(&block_buf[block_offset..block_offset + read_size]);
-            
+
             buf_offset += read_size;
             length -= read_size;
             block += 1;
@@ -80,10 +80,10 @@ pub trait BlockDriverOps: DriverOps + Downcast {
 
         while length != 0 {
             self.read_block(block, &mut block_buf)?;
-            
+
             let read_size = core::cmp::min(length, block_size);
             buf[buf_offset..buf_offset + read_size].copy_from_slice(&block_buf[..read_size]);
-            
+
             buf_offset += read_size;
             length -= read_size;
             block += 1;
@@ -94,7 +94,7 @@ pub trait BlockDriverOps: DriverOps + Downcast {
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), ()> {
         let block_size = self.get_block_size() as usize;
         debug_assert!(block_size <= 512);
-        
+
         let mut length = buf.len();
         let mut block = offset / block_size;
 
@@ -106,7 +106,8 @@ pub trait BlockDriverOps: DriverOps + Downcast {
             self.read_block(block, &mut block_buf)?;
 
             let write_size = core::cmp::min(block_size - block_offset, length);
-            block_buf[block_offset..block_offset + write_size].copy_from_slice(&buf[buf_offset..buf_offset + write_size]);
+            block_buf[block_offset..block_offset + write_size]
+                .copy_from_slice(&buf[buf_offset..buf_offset + write_size]);
             self.write_block(block, &block_buf)?;
 
             buf_offset += write_size;
@@ -152,11 +153,11 @@ pub trait CharDriverOps: DriverOps + Downcast {
 
 impl_downcast!(CharDriverOps);
 
-pub trait PMUDriverOps : Sync + Send {
+pub trait PMUDriverOps: Sync + Send {
     fn shutdown(&self) -> !;
 }
 
-pub trait RTCDriverOps : DriverOps + Downcast + Send + Sync {
+pub trait RTCDriverOps: DriverOps + Downcast + Send + Sync {
     fn now(&self) -> SysResult<Duration>;
 }
 

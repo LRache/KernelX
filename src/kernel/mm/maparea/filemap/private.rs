@@ -1,35 +1,28 @@
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
-use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
-use crate::kernel::mm::PhysPageFrame;
+use crate::arch::{PageTable, PageTableTrait};
+use crate::fs::file::File;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
-use crate::fs::file::File;
 
 pub struct PrivateFileMapArea {
     ubase: usize,
     perm: MapPerm,
-    
+
     file: Arc<File>,
     file_offset: usize,
     file_length: usize,
-    
+
     frames: Vec<FrameState>,
 }
 
 impl PrivateFileMapArea {
-    pub fn new(
-        ubase: usize,
-        perm: MapPerm,
-        file: Arc<File>, 
-        file_offset: usize,
-        file_length: usize
-    ) -> Self {
+    pub fn new(ubase: usize, perm: MapPerm, file: Arc<File>, file_offset: usize, file_length: usize) -> Self {
         // File mapping areas should be page-aligned
         debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
         debug_assert!(file_offset % arch::PGSIZE == 0, "file_offset should be page-aligned");
@@ -54,9 +47,9 @@ impl PrivateFileMapArea {
         let file_offset = self.file_offset + area_offset;
 
         let uaddr = self.ubase + area_offset;
-        
+
         let frame = PhysPageFrame::alloc_zeroed();
-        
+
         // Try to read from file, but only within the specified file_length
         if area_offset < self.file_length {
             let mut buffer = [0u8; arch::PGSIZE];
@@ -64,7 +57,7 @@ impl PrivateFileMapArea {
             // - Don't read beyond the file_length boundary
             // - Don't read beyond one page
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
-            
+
             match self.file.read_at(&mut buffer[..length], file_offset) {
                 Ok(_) => {
                     frame.copy_from_slice(0, &buffer[..length]);
@@ -77,16 +70,23 @@ impl PrivateFileMapArea {
 
         let kpage = frame.get_page();
 
-        addrspace.pagetable().lock().mmap(self.ubase + area_offset, kpage, self.perm);
-        self.frames[page_index] = FrameState::Allocated(Arc::new(SwappableNoFileFrame::allocated(uaddr, frame, addrspace)));
-        
+        addrspace
+            .pagetable()
+            .lock()
+            .mmap(self.ubase + area_offset, kpage, self.perm);
+        self.frames[page_index] =
+            FrameState::Allocated(Arc::new(SwappableNoFileFrame::allocated(uaddr, frame, addrspace)));
+
         kpage
     }
 
     fn copy_on_write_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
         debug_assert!(page_index < self.frames.len());
-        
-        debug_assert!(self.perm.contains(MapPerm::W), "Original mapping must have write permission for copy-on-write");
+
+        debug_assert!(
+            self.perm.contains(MapPerm::W),
+            "Original mapping must have write permission for copy-on-write"
+        );
 
         let area_offset = page_index * arch::PGSIZE;
         let (frame, kpage) = match &self.frames[page_index] {
@@ -94,7 +94,10 @@ impl PrivateFileMapArea {
             _ => panic!("Invalid type for copy-on-write"),
         };
 
-        addrspace.pagetable().lock().mmap_replace(self.ubase + area_offset, kpage, self.perm);
+        addrspace
+            .pagetable()
+            .lock()
+            .mmap_replace(self.ubase + area_offset, kpage, self.perm);
         self.frames[page_index] = FrameState::Allocated(Arc::new(frame));
 
         kpage
@@ -104,11 +107,7 @@ impl PrivateFileMapArea {
     fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         debug_assert!(frame.is_swapped_out(), "FrameState is not swapped out");
         let kpage = frame.get_page_swap_in();
-        addrspace.pagetable().write().mmap(
-            frame.uaddr(),
-            kpage,
-            self.perm,
-        );
+        addrspace.pagetable().write().mmap(frame.uaddr(), kpage, self.perm);
     }
 }
 
@@ -118,16 +117,14 @@ impl Area for PrivateFileMapArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-        
+
         if let Some(page_frame) = self.frames.get(page_index) {
             let page = match page_frame {
                 FrameState::Unallocated => {
                     // Lazy loading: load page from file on first access
                     self.load_page(page_index, addrspace)
                 }
-                FrameState::Allocated(frame) | FrameState::Cow(frame) => {
-                    frame.get_page_swap_in()
-                }
+                FrameState::Allocated(frame) | FrameState::Cow(frame) => frame.get_page_swap_in(),
             };
 
             Some(page + page_offset)
@@ -145,16 +142,14 @@ impl Area for PrivateFileMapArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-        
+
         if let Some(page_frame) = self.frames.get_mut(page_index) {
             let page = match page_frame {
                 FrameState::Unallocated => {
                     // Lazy loading: load page from file on first write
                     self.load_page(page_index, addrspace)
                 }
-                FrameState::Allocated(frame) => {
-                    frame.get_page_swap_in() 
-                }
+                FrameState::Allocated(frame) => frame.get_page_swap_in(),
                 FrameState::Cow(_) => {
                     // Copy-on-write: create a new copy for this process
                     self.copy_on_write_page(page_index, addrspace)
@@ -173,9 +168,12 @@ impl Area for PrivateFileMapArea {
 
     fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
-        
-        let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
-            match frame {
+
+        let frames = self
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(page_index, frame)| match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
                 FrameState::Allocated(frame) | FrameState::Cow(frame) => {
                     if let Some(kpage) = frame.get_page() {
@@ -184,8 +182,8 @@ impl Area for PrivateFileMapArea {
                     }
                     FrameState::Cow(frame.clone())
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         // Update original mapping to be COW
         let mut self_pagetable = self_pagetable.lock();
@@ -213,7 +211,12 @@ impl Area for PrivateFileMapArea {
         Box::new(new_area)
     }
 
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
+    fn try_to_fix_memory_fault(
+        &mut self,
+        uaddr: usize,
+        access_type: MemAccessType,
+        addrspace: &Arc<AddrSpace>,
+    ) -> bool {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -234,11 +237,15 @@ impl Area for PrivateFileMapArea {
                     // unreachable!("Memory fault on already allocated file page at address: {:#x}, access={:?}", uaddr, access_type);
                 }
                 FrameState::Cow(_) => {
-                    debug_assert!(access_type == MemAccessType::Write, "Memory fault on CoW file page for read access at address: {:#x}", uaddr);
+                    debug_assert!(
+                        access_type == MemAccessType::Write,
+                        "Memory fault on CoW file page for read access at address: {:#x}",
+                        uaddr
+                    );
                     self.copy_on_write_page(page_index, addrspace);
                 }
             }
-            
+
             true
         } else {
             false
@@ -290,7 +297,7 @@ impl Area for PrivateFileMapArea {
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
         self.perm = perm;
-        
+
         // Update page table permissions for all allocated pages
         let mut pagetable = pagetable.lock();
         for (page_index, frame) in self.frames.iter().enumerate() {

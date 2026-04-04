@@ -1,12 +1,10 @@
-use alloc::collections::BTreeMap;
-use alloc::collections::LinkedList;
+use alloc::collections::{BTreeMap, LinkedList};
 use alloc::sync::Arc;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::scheduler;
-use crate::kernel::scheduler::Task;
-use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::{Task, current};
 use crate::klib::SpinLock;
 
 struct FutexWaitQueueItem {
@@ -31,12 +29,12 @@ impl Futex {
         if *self.kvalue != expected {
             return Err(Errno::EAGAIN);
         }
-        
+
         self.wait_list.push_back(FutexWaitQueueItem {
             tcb: current::task().clone(),
             bitset,
         });
-        
+
         Ok(())
     }
 
@@ -46,9 +44,9 @@ impl Futex {
         while let Some(item) = cursor.current() {
             if (item.bitset & mask) != 0 {
                 let item = cursor.remove_current().unwrap();
-                
+
                 scheduler::wakeup_task(item.tcb.clone(), Event::Futex);
-                
+
                 woken += 1;
                 if woken >= num {
                     break;
@@ -66,12 +64,13 @@ static FUTEXES: SpinLock<BTreeMap<usize, SpinLock<Futex>>> = SpinLock::new(BTree
 
 pub fn wait_current(kaddr: usize, expected: i32, bitset: u32) -> SysResult<()> {
     let mut futexes = FUTEXES.lock();
-    let futex = futexes.entry(kaddr).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) }), "Futex"));
-        
+    let futex = futexes
+        .entry(kaddr)
+        .or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) }), "Futex"));
+
     let mut futex = futex.lock();
     futex.wait_current(expected, bitset)
 }
-
 
 pub fn wake(kaddr: usize, num: usize, mask: u32) -> SysResult<usize> {
     let futexes = FUTEXES.lock();
@@ -109,7 +108,9 @@ pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> Sys
         return Ok(0);
     };
 
-    let futex2_spinlock = futexes.entry(kaddr2).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) }), "Futex"));
+    let futex2_spinlock = futexes
+        .entry(kaddr2)
+        .or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) }), "Futex"));
     let mut futex2 = futex2_spinlock.lock();
     futex2.wait_list.append(&mut pending);
 

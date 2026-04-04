@@ -4,9 +4,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
 
-use crate::{fs::devfs, kinfo, kwarn};
+use crate::fs::devfs;
+use crate::{kinfo, kwarn};
 
-use super::{DriverMatcher, Device, DriverOps, BlockDriverOps, CharDriverOps, RTCDriverOps};
+use super::{BlockDriverOps, CharDriverOps, Device, DriverMatcher, DriverOps, RTCDriverOps};
 
 static MATCHERS: RwLock<Vec<&'static dyn DriverMatcher>> = RwLock::new(Vec::new());
 static INTERRUPT_MAP: RwLock<BTreeMap<u32, Arc<dyn DriverOps>>> = RwLock::new(BTreeMap::new());
@@ -35,7 +36,7 @@ pub fn found_device(device: &Device) {
         }
 
         DRIVERS.write().insert(name.clone(), driver.clone());
-        
+
         devfs::add_device(name, driver);
     }
 }

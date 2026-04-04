@@ -1,14 +1,13 @@
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use alloc::sync::Arc;
-use alloc::boxed::Box;
-
+use crate::arch::KernelContext;
 use crate::kernel::event::Event;
-use crate::kernel::scheduler::{Task, TaskState, Tid, KernelStack, tid, current};
 use crate::kernel::scheduler;
+use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, current, tid};
 use crate::kernel::task::TCB;
 use crate::klib::SpinLock;
-use crate::arch::KernelContext;
 
 /// All kthreads enter through this trampoline. `ptr` arrives in `a0`
 /// (restored by `asm_kernel_switch`) and is a thin pointer to a
@@ -93,7 +92,7 @@ impl Task for KThread {
         debug_assert!(current::tid() == self.tid);
         let mut state = self.state.lock();
         match *state {
-            TaskState::Ready | TaskState::Running => {},
+            TaskState::Ready | TaskState::Running => {}
             _ => return false,
         }
         *state = TaskState::Blocked;
@@ -104,7 +103,7 @@ impl Task for KThread {
         debug_assert!(current::tid() == self.tid);
         let mut state = self.state.lock();
         match *state {
-            TaskState::Ready | TaskState::Running => {},
+            TaskState::Ready | TaskState::Running => {}
             _ => return false,
         }
         *state = TaskState::BlockedUninterruptible;
@@ -130,7 +129,7 @@ impl Task for KThread {
     fn wakeup_uninterruptible(&self, event: Event) -> bool {
         let mut state = self.state.lock();
         match *state {
-            TaskState::Blocked | TaskState::BlockedUninterruptible => {},
+            TaskState::Blocked | TaskState::BlockedUninterruptible => {}
             _ => return false,
         }
         *state = TaskState::Ready;

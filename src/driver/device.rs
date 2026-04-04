@@ -28,9 +28,7 @@ impl<'a> Device<'a> {
     // }
 
     pub fn new(fdt_node: &'a FdtNode) -> Device<'a> {
-        Device {
-            fdt_node,
-        }
+        Device { fdt_node }
     }
 
     pub fn mmio(&self) -> Option<(usize, usize)> {
@@ -61,7 +59,10 @@ impl<'a> Device<'a> {
     }
 
     pub fn interrupt_number(&self) -> Option<u32> {
-        self.fdt_node.property("interrupts").and_then(|p| p.as_usize()).map(|v| v as u32)
+        self.fdt_node
+            .property("interrupts")
+            .and_then(|p| p.as_usize())
+            .map(|v| v as u32)
     }
 }
 

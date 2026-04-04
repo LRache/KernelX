@@ -82,7 +82,9 @@ impl<T, R: LockerTrait> Mutex<T, R> {
         if !self.locker.try_lock(&self.name) {
             #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
             if current::has_task() {
-                current::task().lockstate().set_waiting(Some((self.name, self.acquire_bt.lock().clone().unwrap())));
+                current::task()
+                    .lockstate()
+                    .set_waiting(Some((self.name, self.acquire_bt.lock().clone().unwrap())));
             }
             while !self.locker.try_lock(&self.name) {
                 self.locker.spin();
@@ -99,7 +101,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             lockstate.set_waiting(None);
         }
 
-        #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))] 
+        #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
         {
             *self.acquire_bt.lock() = Some(backtrace::backtrace_chain());
         }

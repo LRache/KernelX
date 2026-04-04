@@ -1,4 +1,5 @@
 use crate::kernel::errno::Errno;
+
 use super::*;
 
 macro_rules! syscall_table {
@@ -151,7 +152,7 @@ macro_rules! syscall_table {
             }
         }
     };
-    
+
     (@call $handler:ident :: $func:ident, 0, $args:ident) => {
         $handler::$func()
     };
@@ -175,7 +176,7 @@ macro_rules! syscall_table {
     };
 }
 
-pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {    
+pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
     syscall_table! {
         num, args;
 
@@ -217,7 +218,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         166 => fs::umask(1),
         276 => fs::renameat2(5),
         439 => fs::faccessat2(4),
-        
+
         // Task
         17  => task::getcwd(2),
         49  => task::chdir(1),
@@ -236,7 +237,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         220 => task::clone(5),
         221 => task::execve(3),
         260 => task::wait4(4),
-        
+
         // Memory
         214 => mm::brk(1),
         215 => mm::munmap(2),
@@ -244,7 +245,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         226 => mm::mprotect(3),
         227 => mm::msync(3),
         233 => mm::madvise(0),
-        
+
         // Futex
         98  => futex::futex(6),
         99  => futex::set_robust_list(1),

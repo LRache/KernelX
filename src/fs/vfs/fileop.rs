@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
 
+use crate::fs::file::{File, FileFlags, FileOps};
 use crate::fs::inode::Mode;
 use crate::fs::perm::Perm;
 use crate::fs::vfs::dentry::{self, Dentry};
-use crate::fs::file::{File, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
 
 use super::vfs;
@@ -28,7 +28,7 @@ pub fn load_dentry(path: &str) -> SysResult<Arc<Dentry>> {
     vfs().lookup_dentry(vfs().get_root(), path)
 }
 
-pub fn load_parent_dentry(path: & str) -> SysResult<Option<(Arc<Dentry>, &str)>> {
+pub fn load_parent_dentry(path: &str) -> SysResult<Option<(Arc<Dentry>, &str)>> {
     vfs().lookup_parent_dentry(vfs().get_root(), path)
 }
 
@@ -56,9 +56,9 @@ pub fn openat_file(dir: &Arc<Dentry>, path: &str, flags: FileFlags, perm: &Perm)
 }
 
 pub fn create_file(dir: &Arc<Dentry>, name: &str, flags: FileFlags, mode: Mode) -> SysResult<Arc<dyn FileOps>> {
-   let inode = dir.create(name, mode)?;
-   let dentry = Arc::new(dentry::Dentry::new(name, dir, &inode, dir.sno()));
-   Ok(inode.wrap_file(Some(dentry), flags))
+    let inode = dir.create(name, mode)?;
+    let dentry = Arc::new(dentry::Dentry::new(name, dir, &inode, dir.sno()));
+    Ok(inode.wrap_file(Some(dentry), flags))
 }
 
 pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysResult<Arc<dyn FileOps>> {

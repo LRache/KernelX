@@ -8,7 +8,7 @@ use crate::kernel::uapi::FileStat;
 
 pub struct CharDevInode {
     ino: u32,
-    driver: Arc<dyn CharDriverOps>
+    driver: Arc<dyn CharDriverOps>,
 }
 
 impl CharDevInode {
@@ -61,7 +61,7 @@ impl InodeOps for CharDevInode {
 
 pub struct BlockDevInode {
     ino: u32,
-    driver: Arc<dyn BlockDriverOps>
+    driver: Arc<dyn BlockDriverOps>,
 }
 
 impl BlockDevInode {
@@ -80,13 +80,15 @@ impl InodeOps for BlockDevInode {
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        self.driver.read_at(offset, buf)
+        self.driver
+            .read_at(offset, buf)
             .map(|_| buf.len())
             .map_err(|_| Errno::EIO)
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
-        self.driver.write_at(offset, buf)
+        self.driver
+            .write_at(offset, buf)
             .map(|_| buf.len())
             .map_err(|_| Errno::EIO)
     }
@@ -113,7 +115,7 @@ impl InodeOps for BlockDevInode {
     fn type_name(&self) -> &'static str {
         "devfs"
     }
-    
+
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(File::new(self, dentry.unwrap(), flags))
     }

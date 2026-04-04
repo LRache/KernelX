@@ -1,10 +1,9 @@
-use fdt::node::FdtNode;
 use fdt::Fdt;
+use fdt::node::FdtNode;
 
 use crate::arch::riscv::plic;
+use crate::driver::{Device, found_device};
 use crate::kernel::parse_boot_args;
-use crate::driver::Device;
-use crate::driver::found_device;
 use crate::{kinfo, kwarn};
 
 use super::cpu::load_cpu_node;
@@ -15,19 +14,19 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     if magic != 0xd00dfeed {
         return Err(());
     }
-        
+
     let total_size = u32::from_be(data[1]) as usize;
 
     let data: &'static [u8] = unsafe { core::slice::from_raw_parts(fdt, total_size) };
 
     let fdt = Fdt::new(data).unwrap();
-    
+
     let cpus_node = fdt.find_node("/cpus").unwrap();
     load_cpu_node(&cpus_node);
-    
+
     let soc_node = fdt.find_node("/soc").unwrap();
     load_plic_node(&fdt, &soc_node);
-    
+
     for child in soc_node.children() {
         load_soc_node(&child);
     }
@@ -52,9 +51,9 @@ fn load_soc_node(child: &FdtNode) {
 
 fn load_plic_node(fdt: &Fdt, soc_node: &FdtNode) {
     if let Some(child) = soc_node.children().find(|child| {
-        child.compatible().is_some_and(|compatibles| {
-            compatibles.all().into_iter().any(|c| c == "riscv,plic0")
-        })
+        child
+            .compatible()
+            .is_some_and(|compatibles| compatibles.all().into_iter().any(|c| c == "riscv,plic0"))
     }) {
         plic::from_fdt(fdt, &child);
     } else {

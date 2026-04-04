@@ -1,10 +1,8 @@
-
 use crate::arch::arch::UserContextTrait;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::KernelStack;
 
 const USER_STACK_SIZE: usize = 0x8000;
-
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -16,14 +14,14 @@ pub struct UserContext {
     /* 35 */ pub kernel_pgd: usize,
     /* 36 */ pub usertrap_handler: usize,
     /* 37 */ pub fpregs: [u64; 32], // Floating point registers
-    pub fcsr: u64, // Floating point control and status register
+    pub fcsr: u64,         // Floating point control and status register
     pub user_entry: usize, // User program entry point
 }
 
 impl UserContextTrait for UserContext {
     fn new() -> Self {
         // let kernel_pgd = get_kernel_pgd();
-        
+
         UserContext {
             gpr: [0; 32],
             kernel_tp: 0,
@@ -44,7 +42,7 @@ impl UserContextTrait for UserContext {
         new_context.kernel_tp = 0; // Reset kernel thread pointer
 
         new_context.gpr[4] = 0; // a0, clone returns 0 to the child process
-        
+
         new_context
     }
 
@@ -88,7 +86,7 @@ impl UserContextTrait for UserContext {
     fn get_user_entry(&self) -> usize {
         self.user_entry
     }
-    
+
     fn set_user_entry(&mut self, entry: usize) -> &mut Self {
         self.user_entry = entry;
         self
@@ -112,7 +110,7 @@ pub struct KernelContext {
     pub s: [usize; 9],
     pub a0: usize,
 }
- 
+
 impl KernelContext {
     pub fn new(kernel_stack: &KernelStack) -> Self {
         KernelContext {
@@ -123,13 +121,13 @@ impl KernelContext {
             a0: 0,
         }
     }
-    
+
     pub fn new_idle() -> Self {
         KernelContext {
             ra: 0,
             sp: 0,
             fp: 0,
-            s : [0; 9],
+            s: [0; 9],
             a0: 0,
         }
     }
@@ -144,8 +142,8 @@ impl KernelContext {
 #[derive(Clone, Copy, Debug)]
 pub struct SigContext {
     pub pc: usize,
-    pub gregs:  [usize; 31], // General registers
-    pub fpregs: [u64; 32],   // Floating point registers
+    pub gregs: [usize; 31], // General registers
+    pub fpregs: [u64; 32],  // Floating point registers
     pub fcsr: u64,
 }
 
@@ -164,7 +162,7 @@ impl From<UserContext> for SigContext {
     fn from(uc: UserContext) -> Self {
         let mut gregs: [usize; 31] = [0; 31];
         gregs.copy_from_slice(&uc.gpr[1..32]);
-        
+
         SigContext {
             pc: uc.user_entry,
             gregs,
@@ -180,12 +178,7 @@ unsafe impl Sync for UserContext {}
 unsafe impl Send for KernelContext {}
 unsafe impl Sync for KernelContext {}
 
-pub fn new_user(
-    entry_point: usize,
-    user_stack_top: usize,
-    kernel_stack_top: usize,
-    arg: usize,
-) -> UserContext {
+pub fn new_user(entry_point: usize, user_stack_top: usize, kernel_stack_top: usize, arg: usize) -> UserContext {
     let mut context = UserContext::new();
     context.set_user_entry(entry_point);
     context.set_user_stack_top(user_stack_top);

@@ -1,14 +1,13 @@
 use alloc::boxed::Box;
 use bitflags::bitflags;
 
+use crate::arch;
 use crate::fs::file::{File, FileOps};
-use crate::kernel::mm::MapPerm;
-use crate::kernel::mm::maparea::{Area, AnonymousArea, PrivateFileMapArea, SharedFileMapArea};
-use crate::kernel::scheduler::*;
 use crate::kernel::errno::Errno;
+use crate::kernel::mm::MapPerm;
+use crate::kernel::mm::maparea::{AnonymousArea, Area, PrivateFileMapArea, SharedFileMapArea};
+use crate::kernel::scheduler::*;
 use crate::kernel::syscall::SyscallRet;
-use crate::{arch, kinfo};
-use crate::ktrace;
 
 pub fn brk(brk: usize) -> SyscallRet {
     let r = current::addrspace().increase_userbrk(brk);
@@ -27,9 +26,15 @@ bitflags! {
 impl Into<MapPerm> for MMapProt {
     fn into(self) -> MapPerm {
         let mut perm = MapPerm::U;
-        if self.contains(MMapProt::READ ) { perm |= MapPerm::R; }
-        if self.contains(MMapProt::WRITE) { perm |= MapPerm::W; }
-        if self.contains(MMapProt::EXEC ) { perm |= MapPerm::X; }
+        if self.contains(MMapProt::READ) {
+            perm |= MapPerm::R;
+        }
+        if self.contains(MMapProt::WRITE) {
+            perm |= MapPerm::W;
+        }
+        if self.contains(MMapProt::EXEC) {
+            perm |= MapPerm::X;
+        }
         perm
     }
 }
@@ -55,11 +60,17 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
     }
 
     let prot = MMapProt::from_bits(prot).ok_or(Errno::EINVAL)?;
-        
+
     let mut perm = MapPerm::U;
-    if prot.contains(MMapProt::READ ) { perm |= MapPerm::R; }
-    if prot.contains(MMapProt::WRITE) { perm |= MapPerm::W; }
-    if prot.contains(MMapProt::EXEC ) { perm |= MapPerm::X; }
+    if prot.contains(MMapProt::READ) {
+        perm |= MapPerm::R;
+    }
+    if prot.contains(MMapProt::WRITE) {
+        perm |= MapPerm::W;
+    }
+    if prot.contains(MMapProt::EXEC) {
+        perm |= MapPerm::X;
+    }
 
     let mut area: Box<dyn Area> = if flags.contains(MMapFlags::ANONYMOUS) {
         if fd != usize::MAX {
@@ -75,10 +86,10 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         }
 
         let file = current::fdtable()
-                            .lock()
-                            .get(fd)?
-                            .downcast_arc::<File>()
-                            .map_err(|_| Errno::EINVAL)?;
+            .lock()
+            .get(fd)?
+            .downcast_arc::<File>()
+            .map_err(|_| Errno::EINVAL)?;
 
         let inode = file.get_inode().unwrap().clone();
         let index = file.get_dentry().unwrap().get_inode_index();
@@ -87,37 +98,26 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
             // if length % arch::PGSIZE != 0 {
             //     return Err(Errno::EINVAL);
             // }
-            
+
             let pagecount = (length + arch::PGSIZE - 1) / arch::PGSIZE;
-            Box::new(SharedFileMapArea::new(
-                0,
-                perm,
-                inode,
-                index,
-                offset,
-                pagecount,
-            ))
+            Box::new(SharedFileMapArea::new(0, perm, inode, index, offset, pagecount))
         } else {
-            Box::new(PrivateFileMapArea::new(
-                0,
-                perm,
-                file,
-                offset,
-                length
-            ))
+            Box::new(PrivateFileMapArea::new(0, perm, file, offset, length))
         }
     };
 
     current::addrspace().with_map_manager_mut(|map_manager| {
         let fixed = flags.contains(MMapFlags::FIXED);
         let ubase = if addr == 0 || (!fixed && map_manager.is_range_mapped(addr, length)) {
-            map_manager.find_mmap_ubase((length + arch::PGSIZE - 1) / arch::PGSIZE).ok_or(Errno::ENOMEM)?
+            map_manager
+                .find_mmap_ubase((length + arch::PGSIZE - 1) / arch::PGSIZE)
+                .ok_or(Errno::ENOMEM)?
         } else {
             addr
         };
 
         area.set_ubase(ubase);
-        
+
         if fixed {
             map_manager.map_area_fixed(ubase, area, current::addrspace().pagetable());
         } else {
@@ -130,7 +130,6 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
 
 pub fn munmap(addr: usize, length: usize) -> SyscallRet {
     if addr % arch::PGSIZE != 0 || length == 0 {
-        kinfo!("munmap invalid addr/length: addr={:#x}, length={}", addr, length);
         return Err(Errno::EINVAL);
     }
 
@@ -145,8 +144,6 @@ pub fn munmap(addr: usize, length: usize) -> SyscallRet {
 
 pub fn mprotect(addr: usize, length: usize, prot: usize) -> SyscallRet {
     let prot = MMapProt::from_bits(prot).ok_or(Errno::EINVAL)?;
-    
-    ktrace!("mprotect called: addr={:#x}, length={}, prot={:#x}", addr, length, prot);
 
     if length == 0 || length % arch::PGSIZE != 0 || addr % arch::PGSIZE != 0 {
         return Err(Errno::EINVAL);

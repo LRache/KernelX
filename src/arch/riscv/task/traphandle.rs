@@ -1,19 +1,16 @@
+use crate::arch::UserContextTrait;
 use crate::arch::riscv::cpu::get_cpu_info;
+use crate::arch::riscv::csr::*;
+use crate::arch::riscv::{TRAMPOLINE_BASE, UserContext, plic};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
-use crate::kernel::trap;
-use crate::kernel::syscall;
-use crate::arch::riscv::csr::*;
-use crate::arch::riscv::UserContext;
-use crate::arch::riscv::TRAMPOLINE_BASE;
-use crate::arch::riscv::plic;
-use crate::arch::UserContextTrait;
+use crate::kernel::{syscall, trap};
 use crate::kinfo;
 
 fn handle_syscall() {
     let tcb = current::tcb();
 
-    tcb.with_user_context_mut(|user_context|{
+    tcb.with_user_context_mut(|user_context| {
         let syscall_args: syscall::Args = [
             user_context.gpr[10], // a0
             user_context.gpr[11], // a1
@@ -37,7 +34,6 @@ fn handle_external_interrupt() {
     }
 }
 
-
 fn svadu_mark_page_accessed(uaddr: usize) -> bool {
     let mut pagetable = current::addrspace().pagetable().lock();
     pagetable.mark_page_accessed(uaddr)
@@ -57,9 +53,12 @@ unsafe extern "C" {
 }
 
 pub fn usertrap_handler() -> ! {
-    debug_assert!(Sstatus::read().sie() == false, "Interrupts should be disabled when handling user traps");
+    debug_assert!(
+        Sstatus::read().sie() == false,
+        "Interrupts should be disabled when handling user traps"
+    );
     debug_assert!(Sstatus::read().spp() == true, "User trap should come from user mode");
-    
+
     stvec::write(asm_kerneltrap_entry as *const () as usize);
     let user_context = current::tcb().user_context();
     user_context.set_user_entry(sepc::read());
@@ -69,9 +68,13 @@ pub fn usertrap_handler() -> ! {
 
     if sstatus.fs() == SstatusFs::Dirty {
         if cpu_info.double_supported() {
-            unsafe { asm_save_double(user_context.fpregs.as_mut_ptr()); }
+            unsafe {
+                asm_save_double(user_context.fpregs.as_mut_ptr());
+            }
         } else if cpu_info.float_supported() {
-            unsafe { asm_save_float(user_context.fpregs.as_mut_ptr()); }
+            unsafe {
+                asm_save_float(user_context.fpregs.as_mut_ptr());
+            }
         }
         user_context.fpregs_dirty = true;
     }
@@ -79,54 +82,57 @@ pub fn usertrap_handler() -> ! {
     trap::trap_enter();
 
     match scause::cause() {
-        scause::Cause::Trap(trap) => {
-            match trap {
-                scause::Trap::EcallU => handle_syscall(),
-                scause::Trap::InstPageFault => {
-                    let addr = stval::read();
-                    if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
-                        trap::memory_fault(addr, MemAccessType::Execute);
-                    }
-                },
-                scause::Trap::LoadPageFault => {
-                    let addr = stval::read();
-                    if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
-                        trap::memory_fault(addr, MemAccessType::Read);
-                    }
-                },
-                scause::Trap::StorePageFault => {
-                    let addr = stval::read();
-                    if cpu_info.svadu_enabled() || !svadu_mark_page_accessed_and_dirty(addr) {
-                        trap::memory_fault(addr, MemAccessType::Write);
-                    }
-                },
-                scause::Trap::IllegalInst => {
-                    trap::illegal_inst();
-                }
-                scause::Trap::InstAddrMisaligned | scause::Trap::LoadAddrMisaligned | scause::Trap::StoreAddrMisaligned => {
-                    trap::memory_misaligned();
-                }
-                _ => {
-                    let inst: u32 = current::addrspace().copy_from_user(sepc::read()).unwrap();
-                    panic!("Unhandled user trap: {:?}, sepc={:#x}, stval={:#x}, stinst={:#x}, cause={:?}", trap, sepc::read(), stval::read(), inst, scause::cause());
+        scause::Cause::Trap(trap) => match trap {
+            scause::Trap::EcallU => handle_syscall(),
+            scause::Trap::InstPageFault => {
+                let addr = stval::read();
+                if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
+                    trap::memory_fault(addr, MemAccessType::Execute);
                 }
             }
+            scause::Trap::LoadPageFault => {
+                let addr = stval::read();
+                if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
+                    trap::memory_fault(addr, MemAccessType::Read);
+                }
+            }
+            scause::Trap::StorePageFault => {
+                let addr = stval::read();
+                if cpu_info.svadu_enabled() || !svadu_mark_page_accessed_and_dirty(addr) {
+                    trap::memory_fault(addr, MemAccessType::Write);
+                }
+            }
+            scause::Trap::IllegalInst => {
+                trap::illegal_inst();
+            }
+            scause::Trap::InstAddrMisaligned | scause::Trap::LoadAddrMisaligned | scause::Trap::StoreAddrMisaligned => {
+                trap::memory_misaligned();
+            }
+            _ => {
+                let inst: u32 = current::addrspace().copy_from_user(sepc::read()).unwrap();
+                panic!(
+                    "Unhandled user trap: {:?}, sepc={:#x}, stval={:#x}, stinst={:#x}, cause={:?}",
+                    trap,
+                    sepc::read(),
+                    stval::read(),
+                    inst,
+                    scause::cause()
+                );
+            }
         },
-        
-        scause::Cause::Interrupt(interrupt) => {
-            match interrupt {
-                scause::Interrupt::Software => {
-                    kinfo!("Software interrupt occurred");
-                },
-                scause::Interrupt::Timer => {
-                    trap::timer_interrupt();
-                },
-                scause::Interrupt::External => {
-                    handle_external_interrupt();
-                },
-                scause::Interrupt::Counter => {
-                    kinfo!("Counter interrupt occurred");
-                },
+
+        scause::Cause::Interrupt(interrupt) => match interrupt {
+            scause::Interrupt::Software => {
+                kinfo!("Software interrupt occurred");
+            }
+            scause::Interrupt::Timer => {
+                trap::timer_interrupt();
+            }
+            scause::Interrupt::External => {
+                handle_external_interrupt();
+            }
+            scause::Interrupt::Counter => {
+                kinfo!("Counter interrupt occurred");
             }
         },
     }
@@ -140,15 +146,15 @@ pub fn usertrap_handler() -> ! {
 }
 
 unsafe extern "C" {
-    fn asm_usertrap_entry (user_context: *mut   UserContext) -> !;
+    fn asm_usertrap_entry(user_context: *mut UserContext) -> !;
     fn asm_usertrap_return(user_context: *const UserContext) -> !;
 }
 
 fn usertrap_return(user_context: &UserContext) -> ! {
-    let trampoline_usertrap_return = 
-        (TRAMPOLINE_BASE + (asm_usertrap_return as *const () as usize - asm_usertrap_entry as *const () as usize)) 
+    let trampoline_usertrap_return = (TRAMPOLINE_BASE
+        + (asm_usertrap_return as *const () as usize - asm_usertrap_entry as *const () as usize))
         as usize;
-    
+
     unsafe {
         core::arch::asm!(
             "jr {target}",
@@ -161,7 +167,7 @@ fn usertrap_return(user_context: &UserContext) -> ! {
 
 pub fn return_to_user() -> ! {
     trap::trap_return();
-    
+
     let tcb = current::tcb();
 
     sepc::write(tcb.user_context().get_user_entry());
@@ -170,14 +176,20 @@ pub fn return_to_user() -> ! {
 
     let cpu_info = get_cpu_info(current::hart_id());
     if cpu_info.double_supported() {
-        unsafe { asm_restore_double(tcb.user_context().fpregs.as_ptr()); }
+        unsafe {
+            asm_restore_double(tcb.user_context().fpregs.as_ptr());
+        }
     } else if cpu_info.float_supported() {
-        unsafe { asm_restore_float(tcb.user_context().fpregs.as_ptr()); }
+        unsafe {
+            asm_restore_float(tcb.user_context().fpregs.as_ptr());
+        }
     }
 
     let user_context = tcb.user_context();
     if user_context.fpregs_dirty {
-        unsafe { asm_restore_double(user_context.fpregs.as_mut_ptr()); }
+        unsafe {
+            asm_restore_double(user_context.fpregs.as_mut_ptr());
+        }
         user_context.fpregs_dirty = false;
     }
 
@@ -193,50 +205,65 @@ pub fn return_to_user() -> ! {
 
 #[unsafe(no_mangle)]
 pub fn kerneltrap_handler() {
-    debug_assert!(Sstatus::read().sie() == false, "Interrupts should be disabled when handling kernel traps");
-    debug_assert!(Sstatus::read().spp() == false, "Interrupts should come from supervisor mode when handling kernel traps");
-    
+    debug_assert!(
+        Sstatus::read().sie() == false,
+        "Interrupts should be disabled when handling kernel traps"
+    );
+    debug_assert!(
+        Sstatus::read().spp() == false,
+        "Interrupts should come from supervisor mode when handling kernel traps"
+    );
+
     let sepc = sepc::read();
 
     let cause = scause::cause();
     // kinfo!("Kernel trap handler invoked, caused by: {:?}", cause);
     match cause {
-        scause::Cause::Trap(trap) => {
-            match trap {
-                scause::Trap::StorePageFault => {
-                    let stval = stval::read();
-                    if current::has_task() {
-                        let task = current::task();
-                        let kstack = task.kstack();
-                        if kstack.check_stack_overflow(stval) {
-                            panic!("Kernel stack overflow detected at address: {:#x}, pc={:#x}, tid={}", stval, sepc, current::tid());
-                        }
+        scause::Cause::Trap(trap) => match trap {
+            scause::Trap::StorePageFault => {
+                let stval = stval::read();
+                if current::has_task() {
+                    let task = current::task();
+                    let kstack = task.kstack();
+                    if kstack.check_stack_overflow(stval) {
+                        panic!(
+                            "Kernel stack overflow detected at address: {:#x}, pc={:#x}, tid={}",
+                            stval,
+                            sepc,
+                            current::tid()
+                        );
                     }
-                    panic!("Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}", stval, sepc, trap);
                 }
-                _ => {
-                    panic!("Unhandled kernel trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}", trap, sepc, stval::read(), scause::cause());
-                }
+                panic!(
+                    "Kernel page fault at address: {:#x}, sepc={:#x}, cause={:?}",
+                    stval, sepc, trap
+                );
+            }
+            _ => {
+                panic!(
+                    "Unhandled kernel trap: {:?}, sepc={:#x}, stval={:#x}, cause={:?}",
+                    trap,
+                    sepc,
+                    stval::read(),
+                    scause::cause()
+                );
             }
         },
-        
-        scause::Cause::Interrupt(interrupt) => {
-            match interrupt {
-                scause::Interrupt::Software => {
-                    kinfo!("Kernel software interrupt occurred");
-                },
-                scause::Interrupt::Timer => {
-                    trap::timer_interrupt();
-                },
-                scause::Interrupt::External => {
-                    handle_external_interrupt();
-                },
-                scause::Interrupt::Counter => {
-                    kinfo!("Kernel counter interrupt occurred");
-                },
+
+        scause::Cause::Interrupt(interrupt) => match interrupt {
+            scause::Interrupt::Software => {
+                kinfo!("Kernel software interrupt occurred");
+            }
+            scause::Interrupt::Timer => {
+                trap::timer_interrupt();
+            }
+            scause::Interrupt::External => {
+                handle_external_interrupt();
+            }
+            scause::Interrupt::Counter => {
+                kinfo!("Kernel counter interrupt occurred");
             }
         },
-        
     }
 
     Sstatus::read().set_spp(false).write(); // Set previous mode to supervisor

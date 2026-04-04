@@ -1,14 +1,13 @@
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use alloc::string::String;
-use virtio_drivers::device::blk::{VirtIOBlk, BlkReq, BlkResp, RespStatus};
+use alloc::sync::Arc;
+use virtio_drivers::device::blk::{BlkReq, BlkResp, RespStatus, VirtIOBlk};
 use virtio_drivers::transport::mmio::MmioTransport;
 
-use crate::driver::BlockDriverOps;
-use crate::driver::{DeviceType, DriverOps};
 use crate::driver::virtio::VirtIOHal;
+use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
 use crate::kernel::event::Event;
-use crate::kernel::scheduler::{self, current, Task};
+use crate::kernel::scheduler::{self, Task, current};
 use crate::klib::SpinLock;
 
 const BLOCK_SIZE: usize = 512;
@@ -102,16 +101,14 @@ impl BlockDriverOps for VirtIOBlockDriver {
 
         let token = {
             let mut driver = self.driver.lock();
-            unsafe { driver.read_blocks_nb(block, &mut req, buf, &mut resp) }
-                .map_err(|_| ())?
+            unsafe { driver.read_blocks_nb(block, &mut req, buf, &mut resp) }.map_err(|_| ())?
         };
 
         self.wait_for_token(token);
 
         {
             let mut driver = self.driver.lock();
-            unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) }
-                .map_err(|_| ())?;
+            unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) }.map_err(|_| ())?;
         }
         self.wake_next();
 
@@ -128,16 +125,14 @@ impl BlockDriverOps for VirtIOBlockDriver {
 
         let token = {
             let mut driver = self.driver.lock();
-            unsafe { driver.write_blocks_nb(block, &mut req, buf, &mut resp) }
-                .map_err(|_| ())?
+            unsafe { driver.write_blocks_nb(block, &mut req, buf, &mut resp) }.map_err(|_| ())?
         };
 
         self.wait_for_token(token);
 
         {
             let mut driver = self.driver.lock();
-            unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) }
-                .map_err(|_| ())?;
+            unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) }.map_err(|_| ())?;
         }
         self.wake_next();
 
@@ -154,16 +149,14 @@ impl BlockDriverOps for VirtIOBlockDriver {
 
         let token = {
             let mut driver = self.driver.lock();
-            unsafe { driver.read_blocks_nb(start_block, &mut req, buf, &mut resp) }
-                .map_err(|_| ())?
+            unsafe { driver.read_blocks_nb(start_block, &mut req, buf, &mut resp) }.map_err(|_| ())?
         };
 
         self.wait_for_token(token);
 
         {
             let mut driver = self.driver.lock();
-            unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) }
-                .map_err(|_| ())?;
+            unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) }.map_err(|_| ())?;
         }
         self.wake_next();
 
@@ -180,16 +173,14 @@ impl BlockDriverOps for VirtIOBlockDriver {
 
         let token = {
             let mut driver = self.driver.lock();
-            unsafe { driver.write_blocks_nb(start_block, &mut req, buf, &mut resp) }
-                .map_err(|_| ())?
+            unsafe { driver.write_blocks_nb(start_block, &mut req, buf, &mut resp) }.map_err(|_| ())?
         };
 
         self.wait_for_token(token);
 
         {
             let mut driver = self.driver.lock();
-            unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) }
-                .map_err(|_| ())?;
+            unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) }.map_err(|_| ())?;
         }
         self.wake_next();
 
@@ -245,7 +236,8 @@ impl BlockDriverOps for VirtIOBlockDriver {
             self.read_block(block, &mut block_buf)?;
 
             let write_size = core::cmp::min(BLOCK_SIZE - block_offset, length);
-            block_buf[block_offset..block_offset + write_size].copy_from_slice(&buf[buf_offset..buf_offset + write_size]);
+            block_buf[block_offset..block_offset + write_size]
+                .copy_from_slice(&buf[buf_offset..buf_offset + write_size]);
             self.write_block(block, &block_buf)?;
 
             buf_offset += write_size;

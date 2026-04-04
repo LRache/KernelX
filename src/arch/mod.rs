@@ -1,7 +1,7 @@
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "riscv64")] {
         mod riscv;
-        use riscv as arch_impl;  
+        use riscv as arch_impl;
     } else if #[cfg(target_arch = "loongarch64")] {
         mod loongarch;
         use loongarch as arch_impl;
@@ -16,13 +16,13 @@ pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
 // pub type MappedPage<'a> = arch_impl::MappedPage<'a>;
 
-pub const PGSIZE: usize = arch_impl::PGSIZE;  
+pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;
 pub const TRAMPOLINE_BASE: usize = arch_impl::TRAMPOLINE_BASE;
 
 mod arch;
-pub use arch::{PageTableTrait, UserContextTrait};
 use arch::{Arch, ArchTrait};
+pub use arch::{PageTableTrait, UserContextTrait};
 
 macro_rules! arch_export {
     ($($func:ident($($arg:ident: $type:ty),*) -> $ret:ty);* $(;)?) => {
@@ -34,13 +34,13 @@ macro_rules! arch_export {
     };
 }
 
-use core::time::Duration;
 use crate::kernel::mm::MapPerm;
+use core::time::Duration;
 
 arch_export! {
     init() -> ();
     setup_all_cores(current_core: usize) -> ();
-    
+
     /* ----- Per-CPU Data ----- */
     set_percpu_data(data: usize) -> ();
     get_percpu_data() -> usize;
@@ -49,7 +49,7 @@ arch_export! {
     kernel_switch(from: *mut KernelContext, to: *mut KernelContext) -> ();
     get_user_pc() -> usize;
     return_to_user() -> !;
-    
+
     /* ----- Interrupt ------ */
     wait_for_interrupt() -> ();
     enable_interrupt  () -> ();

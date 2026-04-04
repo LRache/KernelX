@@ -1,5 +1,5 @@
 mod filesystem;
-mod superblock;
 mod inode;
+mod superblock;
 
 pub use filesystem::Ext4FileSystem;

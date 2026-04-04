@@ -1,14 +1,14 @@
-use core::usize;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::usize;
 
-use crate::driver::{DriverOps, CharDriverOps, DeviceType};
 use crate::driver::char::serial::SerialOps;
-use crate::kernel::errno::{SysResult, Errno};
+use crate::driver::{CharDriverOps, DeviceType, DriverOps};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::AddrSpace;
-use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi::termios::{InputFlags, LocalFlags, OutputFlags, Termios};
 use crate::klib::SpinLock;
@@ -132,9 +132,7 @@ fn putchar_helper(serial: &mut Box<dyn SerialOps>, c: u8, onlcr: bool, ocrnl: bo
             }
             while !serial.putchar(b'\n') {}
         }
-        _ => {
-            while !serial.putchar(c) {}
-        }
+        _ => while !serial.putchar(c) {},
     }
 }
 
@@ -142,7 +140,7 @@ impl DriverOps for Stty {
     fn name(&self) -> &str {
         "stty"
     }
-    
+
     fn device_name(&self) -> String {
         self.name.clone()
     }
@@ -166,25 +164,22 @@ impl DriverOps for Stty {
                     if attr.igncr {
                         continue;
                     }
-                    if attr.icrnl {
-                        b'\n'
-                    } else {
-                        b'\r'
-                    }
-                },
+                    if attr.icrnl { b'\n' } else { b'\r' }
+                }
                 b'\n' => {
                     if attr.inlcr {
                         b'\r'
                     } else {
                         b'\n'
                     }
-                },
+                }
                 _ => c,
             };
 
             let mut push_to_buffer = true;
             match c {
-                0x7f => { // DEL
+                0x7f => {
+                    // DEL
                     let mut line = self.line.lock();
                     if attr.canonical {
                         if attr.echoe {
@@ -202,7 +197,8 @@ impl DriverOps for Stty {
                         serial.putchar(0x08); // Backspace
                     }
                 }
-                0x3 => { // Ctrl-C
+                0x3 => {
+                    // Ctrl-C
                     if attr.canonical {
                         if current::has_task() {
                             let _ = current::pcb().send_signal(signum::SIGQUIT, SiCode::EMPTY, KSiFields::Empty, None);
@@ -214,7 +210,8 @@ impl DriverOps for Stty {
                         serial.putchar(b'C');
                     }
                 }
-                0x4 => { // Ctrl-D
+                0x4 => {
+                    // Ctrl-D
                     if attr.echo {
                         serial.putchar(b'^');
                         serial.putchar(b'D');
@@ -229,8 +226,10 @@ impl DriverOps for Stty {
                         serial.putchar(b'\n');
                     }
                     if attr.canonical {
-                        self.line.lock().input_char(b'\n')
-                                        .move_to_ring_buffer(&mut *recv_buffer);
+                        self.line
+                            .lock()
+                            .input_char(b'\n')
+                            .move_to_ring_buffer(&mut *recv_buffer);
                     }
                 }
                 _ => {
@@ -240,7 +239,7 @@ impl DriverOps for Stty {
                     if attr.canonical {
                         self.line.lock().input_char(c);
                     }
-                },
+                }
             };
 
             if !attr.canonical && push_to_buffer {
@@ -272,14 +271,15 @@ impl CharDriverOps for Stty {
                     let mut read = 0;
                     let mut recv_buffer = self.recv_buffer.lock();
                     let attr = self.attr.lock();
-                    
+
                     for i in 0..buf.len() {
                         if let Some(mut c) = recv_buffer.pop() {
                             if attr.icrnl && c == b'\r' {
                                 c = b'\n';
                             } else if attr.inlcr && c == b'\n' {
                                 c = b'\r';
-                            } else if attr.canonical && c == 0x4 { // EOF
+                            } else if attr.canonical && c == 0x4 {
+                                // EOF
                                 return Ok(read);
                             }
                             buf[i] = c;
@@ -293,10 +293,10 @@ impl CharDriverOps for Stty {
                         return Ok(read);
                     }
                 }
-                
+
                 self.waiters.lock().wait_current(Event::ReadReady);
                 match current::block("read_stty") {
-                    Event::ReadReady => {},
+                    Event::ReadReady => {}
                     Event::Signal => return Err(Errno::EINTR),
                     _ => unreachable!(),
                 }
@@ -306,7 +306,7 @@ impl CharDriverOps for Stty {
             let mut read = 0;
 
             let attr = self.attr.lock();
-            
+
             for i in buf.iter_mut() {
                 if let Some(mut c) = recv_buffer.pop() {
                     if attr.icrnl && c == b'\r' {
@@ -332,7 +332,10 @@ impl CharDriverOps for Stty {
 
         if event.contains(PollEventSet::POLLIN) {
             if self.recv_buffer.lock().empty() {
-                self.waiters.lock().wait_current(Event::Poll { event: FileEvent::ReadReady, waker });
+                self.waiters.lock().wait_current(Event::Poll {
+                    event: FileEvent::ReadReady,
+                    waker,
+                });
                 return Ok(None);
             } else {
                 return Ok(Some(FileEvent::ReadReady));
@@ -345,7 +348,7 @@ impl CharDriverOps for Stty {
     fn wait_event_cancel(&self) {
         self.waiters.lock().remove(current::task());
     }
-    
+
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         #[repr(C)]
         #[derive(Clone, Copy)]
@@ -373,23 +376,37 @@ impl CharDriverOps for Stty {
             IOCTLReq::TCGETS => {
                 let attr = self.attr.lock();
                 let mut termios = Termios::default();
-                      
+
                 termios.c_iflag |= InputFlags::IUTF8;
-                if attr.icrnl { termios.c_iflag |= InputFlags::ICRNL; }
-                if attr.inlcr { termios.c_iflag |= InputFlags::INLCR; }
-                if attr.ocrnl { termios.c_oflag |= OutputFlags::OCRNL; }
-                if attr.onlcr { termios.c_oflag |= OutputFlags::ONLCR; }
-                if attr.opost { termios.c_oflag |= OutputFlags::OPOST; }
-                if attr.canonical { termios.c_lflag |= LocalFlags::ICANON; }
-                if attr.echo { termios.c_lflag |= LocalFlags::ECHO; }
-                
+                if attr.icrnl {
+                    termios.c_iflag |= InputFlags::ICRNL;
+                }
+                if attr.inlcr {
+                    termios.c_iflag |= InputFlags::INLCR;
+                }
+                if attr.ocrnl {
+                    termios.c_oflag |= OutputFlags::OCRNL;
+                }
+                if attr.onlcr {
+                    termios.c_oflag |= OutputFlags::ONLCR;
+                }
+                if attr.opost {
+                    termios.c_oflag |= OutputFlags::OPOST;
+                }
+                if attr.canonical {
+                    termios.c_lflag |= LocalFlags::ICANON;
+                }
+                if attr.echo {
+                    termios.c_lflag |= LocalFlags::ECHO;
+                }
+
                 use crate::kernel::uapi::termios::cc::*;
                 termios.c_cc[VINTR] = 0x03; // Ctrl-C
                 termios.c_cc[VQUIT] = 0x1c; // Ctrl-\
                 termios.c_cc[VERASE] = 0x7f; // DEL
                 termios.c_cc[VEOF] = 0x04; // Ctrl-D
                 addrspace.copy_to_user(arg, termios)?;
-                
+
                 Ok(0)
             }
             IOCTLReq::TCSETS => {
@@ -425,9 +442,7 @@ impl CharDriverOps for Stty {
                 // TODO: implement TCGETS2
                 Ok(0)
             }
-            _ => {
-                Err(Errno::EINVAL)
-            }
+            _ => Err(Errno::EINVAL),
         }
     }
 }

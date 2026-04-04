@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
-use crate::fs::{Dentry, InodeOps, Mode};
-use crate::fs::file::{FileFlags, FileOps, SeekWhence};
 use crate::klib::SpinLock;
 
 use super::PipeInner;
@@ -110,7 +110,7 @@ impl FileOps for Pipe {
         self.inner.wait_event(waker, event, self.writable)
     }
 
-    fn wait_event_cancel(&self, ) {
+    fn wait_event_cancel(&self) {
         self.inner.wait_event_cancel();
     }
 

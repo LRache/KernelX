@@ -1,12 +1,12 @@
 use alloc::sync::Arc;
 
+use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
-use crate::fs::{Dentry, InodeOps, Mode};
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 
 pub struct NullInode {
-    ino: u32
+    ino: u32,
 }
 
 impl NullInode {

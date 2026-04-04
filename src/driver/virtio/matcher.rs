@@ -1,12 +1,12 @@
 use alloc::sync::Arc;
 use core::ptr::NonNull;
 use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
-use virtio_drivers::transport::{Transport, DeviceType};
+use virtio_drivers::transport::{DeviceType, Transport};
 
-use crate::kernel::mm::{MapPerm, page};
-use crate::arch::{self, map_kernel_addr}; 
+use crate::arch::{self, map_kernel_addr};
 use crate::driver::block::VirtIOBlockDriver;
-use crate::driver::{Device, DriverOps, DriverMatcher};
+use crate::driver::{Device, DriverMatcher, DriverOps};
+use crate::kernel::mm::{MapPerm, page};
 
 pub struct Matcher;
 
@@ -18,22 +18,15 @@ impl DriverMatcher for Matcher {
 
         let kbase = page::alloc_contiguous(arch::page_count(mmio_size));
         map_kernel_addr(kbase, mmio_base, mmio_size, MapPerm::R | MapPerm::W);
-        
-        let transport = unsafe {
-            MmioTransport::new(NonNull::new(kbase as *mut VirtIOHeader).unwrap()).ok()
-        }?;
-        
+
+        let transport = unsafe { MmioTransport::new(NonNull::new(kbase as *mut VirtIOHeader).unwrap()).ok() }?;
+
         if let Some(irq) = device.interrupt_number() {
             arch::enable_device_interrupt_irq(irq);
         }
 
         match transport.device_type() {
-            DeviceType::Block => {
-                Some(Arc::new(VirtIOBlockDriver::new(
-                    device.name().into(),
-                    transport
-                )))
-            }
+            DeviceType::Block => Some(Arc::new(VirtIOBlockDriver::new(device.name().into(), transport))),
             _ => None,
         }
     }

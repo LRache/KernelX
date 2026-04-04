@@ -1,15 +1,15 @@
 use alloc::sync::Arc;
 use bitvec::vec::BitVec;
 
-use crate::driver::BlockDriverOps;
 use crate::arch;
-use crate::kernel::mm::swappable::swapper::counter_swap_in;
-use crate::kernel::mm::swappable::swapper;
-use crate::kernel::mm::{AddrSpace, PhysPageFrame};
+use crate::driver::BlockDriverOps;
 use crate::kernel::mm::swappable::swappable::SwappableFrame;
+use crate::kernel::mm::swappable::swapper;
+use crate::kernel::mm::swappable::swapper::counter_swap_in;
+use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::klib::{InitedCell, SpinLock};
 
-use super::frame::{SwappableNoFileFrameInner, State, AllocatedFrame, NO_DISK_BLOCK};
+use super::frame::{AllocatedFrame, NO_DISK_BLOCK, State, SwappableNoFileFrameInner};
 
 struct SwapperDisk {
     bitvec: SpinLock<BitVec>,
@@ -23,29 +23,34 @@ impl SwapperDisk {
         let len = block_size * driver.get_block_count() as usize / arch::PGSIZE;
         let bitvec = SpinLock::new(BitVec::repeat(false, len), "SwapperDisk::bitvec");
         let block_per_slot = arch::PGSIZE / block_size;
-        
+
         debug_assert!(block_per_slot * block_size == arch::PGSIZE);
-        crate::kinfo!("Anonymous swapper: {} pages ({} KB) available.", len, len * arch::PGSIZE / 1024);
-        
+        crate::kinfo!(
+            "Anonymous swapper: {} pages ({} KB) available.",
+            len,
+            len * arch::PGSIZE / 1024
+        );
+
         Self {
             bitvec,
-            driver, 
+            driver,
             block_per_slot,
         }
     }
 
     pub fn read_page(&self, slot: usize, frame: &PhysPageFrame) {
         let start = crate::kernel::event::timer::now();
-        self.driver.read_blocks(
-            slot * self.block_per_slot,
-            frame.slice()
-        ).expect("Failed to read swapped out page from block device");
+        self.driver
+            .read_blocks(slot * self.block_per_slot, frame.slice())
+            .expect("Failed to read swapped out page from block device");
         let end = crate::kernel::event::timer::now();
         counter_swap_in(end - start);
     }
 
     pub fn write_page(&self, pos: usize, frame: &PhysPageFrame) {
-        self.driver.write_blocks(pos * self.block_per_slot, frame.slice()).expect("Failed to write back");
+        self.driver
+            .write_blocks(pos * self.block_per_slot, frame.slice())
+            .expect("Failed to write back");
     }
 
     pub fn alloc_slot(&self) -> Option<usize> {
@@ -78,7 +83,7 @@ impl SwapperDisk {
     //     array[pos] = kpage;
     // }
 
-    pub fn free_slot(&self,slot: usize) {
+    pub fn free_slot(&self, slot: usize) {
         // let mut array = self.array.lock();
         // array[pos] = 0;
         let mut bitvec = self.bitvec.lock();
@@ -112,9 +117,7 @@ impl SwappableNoFileFrameInner {
     pub fn get_page_swap_in(self: &Arc<Self>) -> usize {
         let mut state = self.state.lock();
         match &state.state {
-            State::Allocated(allocated) => {
-                allocated.frame.get_page()
-            },
+            State::Allocated(allocated) => allocated.frame.get_page(),
             State::SwappedOut => {
                 let start = crate::kernel::event::timer::now();
 
@@ -126,15 +129,12 @@ impl SwappableNoFileFrameInner {
                 // Don't free the slot here
 
                 let kpage = frame.get_page();
-                state.state = State::Allocated(AllocatedFrame{
-                    frame,
-                    dirty: false,
-                });
+                state.state = State::Allocated(AllocatedFrame { frame, dirty: false });
                 swapper::push_lru(kpage, self.clone()); // Note: This clone might be problematic if self is not Arc
 
                 let end = crate::kernel::event::timer::now();
                 counter_swap_in(end - start);
-                
+
                 kpage
             }
         }
@@ -143,9 +143,7 @@ impl SwappableNoFileFrameInner {
     pub fn copy(&self, addrspace: &AddrSpace) -> (Arc<SwappableNoFileFrameInner>, usize) {
         let state = self.state.lock();
         let new_frame = match &state.state {
-            State::Allocated(allocated) => {
-                allocated.frame.copy()
-            }
+            State::Allocated(allocated) => allocated.frame.copy(),
             State::SwappedOut => {
                 let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
                 debug_assert!(state.disk_slot != NO_DISK_BLOCK);
@@ -154,7 +152,11 @@ impl SwappableNoFileFrameInner {
             }
         };
         let kpage = new_frame.get_page();
-        let allocated = Arc::new(SwappableNoFileFrameInner::allocated(self.uaddr, new_frame, addrspace.family_chain().clone()));
+        let allocated = Arc::new(SwappableNoFileFrameInner::allocated(
+            self.uaddr,
+            new_frame,
+            addrspace.family_chain().clone(),
+        ));
         swapper::push_lru(kpage, allocated.clone());
         (allocated, kpage)
     }
@@ -177,12 +179,14 @@ impl SwappableFrame for SwappableNoFileFrameInner {
     // FIXME: The dirty bit should be token when unmapping pages
     fn swap_out(&self, dirty: bool) -> bool {
         let mut state = self.state.lock();
-        
+
         let self_slot = state.disk_slot;
 
         let allocated = match &mut state.state {
-            State::Allocated(allocated) => { allocated },
-            State::SwappedOut => { return false; }
+            State::Allocated(allocated) => allocated,
+            State::SwappedOut => {
+                return false;
+            }
         };
 
         let kpage = allocated.frame.get_page();
@@ -216,8 +220,10 @@ impl SwappableFrame for SwappableNoFileFrameInner {
     fn take_access_dirty_bit(&self) -> Option<(bool, bool)> {
         let mut state = self.state.lock();
         let allocated = match &mut state.state {
-            State::Allocated(allocated) => { allocated },
-            State::SwappedOut => { return None; }
+            State::Allocated(allocated) => allocated,
+            State::SwappedOut => {
+                return None;
+            }
         };
 
         let mut accessed = false;

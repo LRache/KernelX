@@ -1,22 +1,21 @@
 use core::time::Duration;
 
 use alloc::sync::Arc;
-use lwext4_rust::{BlockDevice, Ext4Error, Ext4Filesystem, Ext4Result, FsConfig, SystemHal};
-use lwext4_rust::EXT4_DEV_BSIZE;
+use lwext4_rust::{BlockDevice, EXT4_DEV_BSIZE, Ext4Error, Ext4Filesystem, Ext4Result, FsConfig, SystemHal};
 
+use crate::driver::BlockDriverOps;
 use crate::driver::chosen::kclock;
+use crate::fs::InodeOps;
+use crate::fs::ext4::inode::Ext4Inode;
+use crate::fs::filesystem::SuperBlockOps;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
 use crate::klib::SleepLock;
-use crate::fs::ext4::inode::Ext4Inode;
-use crate::fs::filesystem::SuperBlockOps;
-use crate::fs::InodeOps;
-use crate::driver::BlockDriverOps;
 
 pub(super) fn map_error_to_ext4(e: Errno, context: &'static str) -> Ext4Error {
-    Ext4Error { 
-        code: e as i32, 
-        context: Some(context)
+    Ext4Error {
+        code: e as i32,
+        context: Some(context),
     }
 }
 
@@ -25,7 +24,7 @@ pub(super) fn map_error_to_kernel(e: Ext4Error) -> Errno {
 }
 
 pub(super) struct BlockDeviceImpls {
-    driver: Arc<dyn BlockDriverOps>
+    driver: Arc<dyn BlockDriverOps>,
 }
 
 impl BlockDeviceImpls {
@@ -40,12 +39,16 @@ impl BlockDevice for BlockDeviceImpls {
     }
 
     fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Ext4Result<usize> {
-        self.driver.read_at(block_id as usize * EXT4_DEV_BSIZE as usize, buf).map_err(|_| map_error_to_ext4(Errno::EIO, "read_block"))?;
+        self.driver
+            .read_at(block_id as usize * EXT4_DEV_BSIZE as usize, buf)
+            .map_err(|_| map_error_to_ext4(Errno::EIO, "read_block"))?;
         Ext4Result::Ok(buf.len())
     }
 
     fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Ext4Result<usize> {
-        self.driver.write_at(block_id as usize * EXT4_DEV_BSIZE, buf).map_err(|_| map_error_to_ext4(Errno::EIO, "write_block"))?;
+        self.driver
+            .write_at(block_id as usize * EXT4_DEV_BSIZE, buf)
+            .map_err(|_| map_error_to_ext4(Errno::EIO, "write_block"))?;
         Ok(buf.len())
     }
 }
@@ -61,20 +64,21 @@ impl SystemHal for SystemHalImpls {
 pub(super) type SuperBlockInner = Ext4Filesystem<SystemHalImpls, BlockDeviceImpls>;
 
 pub struct Ext4SuperBlock {
-    superblock: Arc<SleepLock<SuperBlockInner>>
+    superblock: Arc<SleepLock<SuperBlockInner>>,
 }
 
 impl Ext4SuperBlock {
     pub fn new(driver: Arc<dyn BlockDriverOps>) -> SysResult<Arc<Self>> {
-        let superblock = Ext4Filesystem::new(BlockDeviceImpls::new(driver), FsConfig::default()).map_err(map_error_to_kernel)?;
+        let superblock =
+            Ext4Filesystem::new(BlockDeviceImpls::new(driver), FsConfig::default()).map_err(map_error_to_kernel)?;
 
         Ok(Arc::new(Self {
-            superblock: Arc::new(SleepLock::new(superblock, "Ext4SuperBlock::superblock"))
+            superblock: Arc::new(SleepLock::new(superblock, "Ext4SuperBlock::superblock")),
         }))
     }
 }
 
-unsafe impl Send for Ext4SuperBlock {}  
+unsafe impl Send for Ext4SuperBlock {}
 unsafe impl Sync for Ext4SuperBlock {}
 
 impl SuperBlockOps for Ext4SuperBlock {

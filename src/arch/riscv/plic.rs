@@ -3,15 +3,15 @@ use fdt::Fdt;
 use fdt::node::FdtNode;
 
 use crate::kernel::mm::page;
-use crate::klib::{SpinLock, InitedCell};
+use crate::klib::{InitedCell, SpinLock};
 use crate::{arch, kinfo, kwarn};
 
 mod reg {
-    pub const PRIORITY : usize = 0x0;
+    pub const PRIORITY: usize = 0x0;
     // pub const PENDING  : usize = 0x1000;
-    pub const SENABLE  : usize = 0x2000;
+    pub const SENABLE: usize = 0x2000;
     pub const SPRIORITY: usize = 0x200000;
-    pub const SCLAIM   : usize = 0x200004;
+    pub const SCLAIM: usize = 0x200004;
 }
 struct PLIC {
     base: usize,
@@ -70,16 +70,15 @@ impl PLIC {
     }
 
     pub fn claim_irq(&mut self, hart_id: usize) -> Option<u32> {
-        self.get_context_id(hart_id).map(|context_id| {
-            self.claim_context_irq(context_id)
-        })
+        self.get_context_id(hart_id)
+            .map(|context_id| self.claim_context_irq(context_id))
     }
 
     fn complete_context_irq(&self, context_id: usize, irq: u32) {
         let sclaim = reg::SCLAIM + context_id * 0x1000;
         self.write(sclaim, irq);
     }
-    
+
     pub fn complete_irq(&mut self, hart_id: usize, irq: u32) {
         let context_id = self.get_context_id(hart_id).unwrap();
         self.complete_context_irq(context_id, irq);
@@ -111,9 +110,15 @@ pub fn from_fdt(fdt: &Fdt, fdt_node: &FdtNode) {
                 let phandle = u32::from_be_bytes(slice[0..4].try_into().unwrap());
                 let hwirq = u32::from_be_bytes(slice[4..8].try_into().unwrap());
 
-                kinfo!("PLIC: Found context {} for phandle {} interrupt number {}", i, phandle, hwirq);
-                
-                if hwirq == 0x9 { // S-mode context
+                kinfo!(
+                    "PLIC: Found context {} for phandle {} interrupt number {}",
+                    i,
+                    phandle,
+                    hwirq
+                );
+
+                if hwirq == 0x9 {
+                    // S-mode context
                     let interrupt_controller_node = fdt.find_phandle(phandle)?;
                     let cpu_node = interrupt_controller_node.parent()?;
 
@@ -151,7 +156,7 @@ pub fn from_fdt(fdt: &Fdt, fdt_node: &FdtNode) {
             None
         }
     };
-    
+
     if let Some(plic) = helper() {
         PLIC.init(Some(SpinLock::new(plic, "PLIC")));
     } else {

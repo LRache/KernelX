@@ -1,39 +1,33 @@
-use core::time::Duration;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use core::cell::UnsafeCell;
+use core::time::Duration;
 
+use crate::arch::{KernelContext, UserContext, UserContextTrait};
 use crate::driver::chosen::kclock;
-use crate::fs::file::FileOps;
+use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
-use crate::kernel::errno::SysResult;
-use crate::kernel::scheduler;
-use crate::kernel::scheduler::current;
-use crate::kernel::scheduler::Task;
-use crate::kernel::task::manager;
-use crate::kernel::usync::futex;
-use crate::kernel::config;
-use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::PCB;
-use crate::kernel::task::fdtable::{FDFlags, FDTable};
-use crate::kernel::mm::{AddrSpace, elf};
-use crate::kernel::mm::maparea::{AuxKey, Auxv};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::{PendingSignal, SignalSet};
-use crate::kernel::errno::Errno;
-use crate::kernel::scheduler::{TaskState, Tid, KernelStack};
-use crate::fs::file::{File, FileFlags};
-use crate::fs::{Perm, PermFlags, vfs};
+use crate::kernel::mm::maparea::{AuxKey, Auxv};
+use crate::kernel::mm::{AddrSpace, elf};
+use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, current};
+use crate::kernel::task::def::TaskCloneFlags;
+use crate::kernel::task::fdtable::{FDFlags, FDTable};
+use crate::kernel::task::{PCB, manager};
+use crate::kernel::usync::futex;
+use crate::kernel::{config, scheduler};
 use crate::klib::SpinLock;
-use crate::arch::{UserContext, KernelContext, UserContextTrait};
-use crate::arch;
-use crate::ktrace;
+use crate::{arch, ktrace};
+
 #[derive(Debug, Clone, Copy)]
 pub struct TaskStateSet {
     state: TaskState,
     dead: bool,
-    
+
     pub pending_signal: Option<PendingSignal>,
     pub signal_to_wait: SignalSet,
 }
@@ -44,7 +38,7 @@ impl Default for TaskStateSet {
             state: TaskState::Ready,
             dead: false,
             pending_signal: None,
-            signal_to_wait: SignalSet::empty()
+            signal_to_wait: SignalSet::empty(),
         }
     }
 }
@@ -73,7 +67,7 @@ pub struct TCB {
     parent: Arc<PCB>,
     tid_address: SpinLock<Option<usize>>,
     pub robust_list: SpinLock<Option<usize>>,
-    
+
     user_context_ptr: *mut UserContext,
     user_context_uaddr: usize,
     kernel_context: UnsafeCell<KernelContext>,
@@ -95,15 +89,15 @@ pub struct TCB {
 
 impl TCB {
     pub fn new(
-        tid: i32, 
-        parent: &Arc<PCB>, 
-        
+        tid: i32,
+        parent: &Arc<PCB>,
+
         mut user_context: UserContext,
-        
+
         addrspace: Arc<AddrSpace>,
         fdtable: Arc<SpinLock<FDTable>>,
     ) -> Arc<Self> {
-        let kernel_stack = KernelStack::new(UTASK_KSTACK_PAGE_COUNT); 
+        let kernel_stack = KernelStack::new(UTASK_KSTACK_PAGE_COUNT);
         user_context.set_kernel_stack_top(kernel_stack.get_top());
 
         let (user_context_uaddr, user_context_ptr) = addrspace.alloc_usercontext_page();
@@ -142,25 +136,24 @@ impl TCB {
     }
 
     pub fn new_inittask(
-        tid: i32, 
+        tid: i32,
         parent: &Arc<PCB>,
         initpath: &str,
         argv: &[&str],
         envp: &[&str],
-        tty: &str
+        tty: &str,
     ) -> (Arc<Self>, String) {
-        let file = vfs::open_file(
-            initpath, 
-            FileFlags::dontcare(),
-            &Perm::new(PermFlags::R | PermFlags::X)
-        )
-        .expect("Failed to open init file")
-        .downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)
-        .expect("Failed to open init file as File");
-        
+        let file = vfs::open_file(initpath, FileFlags::dontcare(), &Perm::new(PermFlags::R | PermFlags::X))
+            .expect("Failed to open init file")
+            .downcast_arc::<File>()
+            .map_err(|_| Errno::ENOEXEC)
+            .expect("Failed to open init file as File");
+
         // Read the shebang
         let mut first_line = [0u8; 128];
-        let n = file.read_at(&mut first_line, 0).expect("Failed to read first line of init file");
+        let n = file
+            .read_at(&mut first_line, 0)
+            .expect("Failed to read first line of init file");
         let first_line = core::str::from_utf8(&first_line[..n]).unwrap_or("");
         let first_line = first_line.lines().next().unwrap_or("");
         let first_line = first_line.trim_end_matches('\n');
@@ -182,10 +175,10 @@ impl TCB {
         }
 
         let exec_path = file.get_dentry().unwrap().get_path();
-        
+
         let mut addrspace = AddrSpace::new();
-        let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)
-            .expect("Failed to load ELF for init task");
+        let (user_entry, dyn_info) =
+            elf::loader::load_elf(&file, &mut addrspace).expect("Failed to load ELF for init task");
 
         let mut auxv = Auxv::new();
         if let Some(dyn_info) = dyn_info {
@@ -201,13 +194,20 @@ impl TCB {
         auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
         auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
 
-        let userstack_top = addrspace.create_user_stack(argv, envp, &auxv).expect("Failed to push args and envp to userstack");
+        let userstack_top = addrspace
+            .create_user_stack(argv, envp, &auxv)
+            .expect("Failed to push args and envp to userstack");
 
         let tty = vfs::open_file(
-            tty, 
-            FileFlags { readable: true, writable: true, blocked: true },
-            &Perm::new(PermFlags::R | PermFlags::W)
-        ).expect("Failed to open tty for init task");
+            tty,
+            FileFlags {
+                readable: true,
+                writable: true,
+                blocked: true,
+            },
+            &Perm::new(PermFlags::R | PermFlags::W),
+        )
+        .expect("Failed to open tty for init task");
 
         let mut fdtable = FDTable::new();
         for _ in 0..3 {
@@ -218,15 +218,15 @@ impl TCB {
         let mut user_context = UserContext::new();
         user_context.set_user_stack_top(userstack_top);
         user_context.set_user_entry(user_entry);
-        
+
         let tcb = Self::new(
-            tid, 
+            tid,
             parent,
-            user_context, 
+            user_context,
             addrspace,
-            Arc::new(SpinLock::new(fdtable, "TCB::fdtable"))
+            Arc::new(SpinLock::new(fdtable, "TCB::fdtable")),
         );
-        
+
         (tcb, exec_path)
     }
 
@@ -261,23 +261,12 @@ impl TCB {
             Arc::new(SpinLock::new(self.fdtable.lock().fork(), "TCB::fdtable"))
         };
 
-        let new_tcb = Self::new(
-            tid,
-            parent,
-            new_user_context,
-            new_addrspace,
-            new_fdtable,
-        );
+        let new_tcb = Self::new(tid, parent, new_user_context, new_addrspace, new_fdtable);
 
         new_tcb
     }
 
-    pub fn new_exec(
-        &self,
-        file: Arc<File>,
-        argv: &[&str],
-        envp: &[&str],
-    ) -> SysResult<(Arc<Self>, String)> {
+    pub fn new_exec(&self, file: Arc<File>, argv: &[&str], envp: &[&str]) -> SysResult<(Arc<Self>, String)> {
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file.read_at(&mut first_line, 0)?;
@@ -296,18 +285,16 @@ impl TCB {
                     new_argv.push(arg);
                 }
 
-                let interpreter_file = vfs::open_file(
-                    interpreter, 
-                    FileFlags::dontcare(),
-                    &Perm::new(PermFlags::X)
-                )?.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
+                let interpreter_file = vfs::open_file(interpreter, FileFlags::dontcare(), &Perm::new(PermFlags::X))?
+                    .downcast_arc::<File>()
+                    .map_err(|_| Errno::ENOEXEC)?;
                 return self.new_exec(interpreter_file, &new_argv, envp);
             }
         }
 
         // SAFETY: File MUTS HAVE dentry and path.
         let exec_path = file.get_dentry().unwrap().get_path();
-        
+
         let mut addrspace = AddrSpace::new();
         let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)?;
 
@@ -425,8 +412,13 @@ impl TCB {
     }
 
     pub fn exit(&self, code: u8) {
-        debug_assert!(current::tid() == self.tid, "current tid {} != self.tid {}", current::tid(), self.tid);
-        
+        debug_assert!(
+            current::tid() == self.tid,
+            "current tid {} != self.tid {}",
+            current::tid(),
+            self.tid
+        );
+
         let mut state = self.state.lock();
         state.dead = true;
 
@@ -450,7 +442,7 @@ impl TCB {
 
         self.parent.remove_task(self);
         manager::remove(self.tid);
-        
+
         // cleanup addrspace before scheduler
         if Arc::strong_count(&self.addrspace) == 1 {
             self.addrspace.cleanup();
@@ -510,11 +502,16 @@ impl Task for TCB {
     }
 
     fn block(&self, _reason: &str) -> bool {
-        debug_assert!(current::tid() == self.tid, "current tid {} != self.tid {}", current::tid(), self.tid);
-        
+        debug_assert!(
+            current::tid() == self.tid,
+            "current tid {} != self.tid {}",
+            current::tid(),
+            self.tid
+        );
+
         let mut state = self.state.lock();
         match state.state {
-            TaskState::Ready | TaskState::Running => {},
+            TaskState::Ready | TaskState::Running => {}
             _ => return false,
         }
         state.state = TaskState::Blocked;
@@ -523,10 +520,10 @@ impl Task for TCB {
 
     fn block_uninterruptible(&self, _reason: &str) -> bool {
         debug_assert!(current::tid() == self.tid);
-        
+
         let mut state = self.state.lock();
         match state.state {
-            TaskState::Ready | TaskState::Running => {},
+            TaskState::Ready | TaskState::Running => {}
             _ => return false,
         }
         state.state = TaskState::BlockedUninterruptible;
@@ -552,7 +549,11 @@ impl Task for TCB {
     fn wakeup_uninterruptible(&self, event: Event) -> bool {
         let mut state = self.state.lock();
         if !matches!(state.state, TaskState::Blocked | TaskState::BlockedUninterruptible) {
-            crate::kwarn!("Failed to wakeup_uninterruptible task {}, state is not blocked: {:?}", self.tid, state.state);
+            crate::kwarn!(
+                "Failed to wakeup_uninterruptible task {}, state is not blocked: {:?}",
+                self.tid,
+                state.state
+            );
             return false;
         }
         state.state = TaskState::Ready;

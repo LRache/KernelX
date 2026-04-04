@@ -1,17 +1,17 @@
-use core::ptr::NonNull;
 use alloc::sync::Arc;
+use core::ptr::NonNull;
 
 #[cfg(debug_assertions)]
 use alloc::collections::vec_deque::VecDeque;
 
+use crate::arch;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::TCB;
-use crate::arch;
 
 pub struct Processor {
     hart_id: usize,
     task: Option<NonNull<Arc<dyn Task>>>,
-    idle_kernel_context: arch::KernelContext, 
+    idle_kernel_context: arch::KernelContext,
 
     #[cfg(debug_assertions)]
     locked_spin: VecDeque<&'static str>,
@@ -37,7 +37,7 @@ impl<'a> Processor {
     pub fn has_task(&self) -> bool {
         self.task.is_some()
     }
-    
+
     pub fn task(&self) -> &'a Arc<dyn Task> {
         let p = if cfg!(debug_assertions) {
             self.task.unwrap()
@@ -68,7 +68,10 @@ impl<'a> Processor {
                 println!("[{}] {}", i, name);
                 i += 1;
             }
-            panic!("Processor {} is trying to schedule while holding spinlocks.", self.hart_id);
+            panic!(
+                "Processor {} is trying to schedule while holding spinlocks.",
+                self.hart_id
+            );
         }
         arch::disable_interrupt();
         arch::kernel_switch(self.task().kcontext(), &mut self.idle_kernel_context);
@@ -87,7 +90,10 @@ impl<'a> Processor {
         if let Some(pos) = self.locked_spin.iter().rposition(|&n| n == name) {
             self.locked_spin.remove(pos);
         } else {
-            panic!("Processor {} is releasing spinlock '{}' which it does not hold!", self.hart_id, name);
+            panic!(
+                "Processor {} is releasing spinlock '{}' which it does not hold!",
+                self.hart_id, name
+            );
         }
     }
 

@@ -2,10 +2,10 @@ use alloc::string::String;
 use core::fmt::Debug;
 use core::mem::size_of;
 
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::current;
-use crate::kernel::errno::{SysResult, Errno};
+use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 
 /// Macro to implement From<usize> for user pointer types
 macro_rules! impl_from_usize {
@@ -32,17 +32,13 @@ pub trait UserPointer<T: UserStruct> {
     fn from_uaddr(uaddr: usize) -> Self;
 
     fn uaddr(&self) -> usize;
-    
+
     fn is_null(&self) -> bool {
         self.uaddr() == 0
     }
-    
+
     fn should_not_null(&self) -> SysResult<()> {
-        if self.is_null() {
-            Err(Errno::EINVAL)
-        } else {
-            Ok(())
-        }
+        if self.is_null() { Err(Errno::EINVAL) } else { Ok(()) }
     }
 
     fn kaddr(&self) -> SysResult<usize> {
@@ -95,7 +91,7 @@ impl<T: UserStruct> UserPointer<T> for UPtr<T> {
     }
 }
 
-impl <T: UserStruct> Debug for UPtr<T> {
+impl<T: UserStruct> Debug for UPtr<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "UPtr({:#x})", self.uaddr)
     }
@@ -174,11 +170,7 @@ impl UString {
     }
 
     pub fn should_not_null(&self) -> SysResult<()> {
-        if self.is_null() {
-            Err(Errno::EINVAL)
-        } else {
-            Ok(())
-        }
+        if self.is_null() { Err(Errno::EINVAL) } else { Ok(()) }
     }
 }
 

@@ -143,7 +143,7 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
             COLOR_RESET
         );
     }
-    
+
     backtrace::print_backtrace();
 
     exit();
@@ -155,17 +155,16 @@ pub extern "C" fn rust_kpanic(file: *const u8, line: u32, msg: *const u8) -> ! {
     // SAFETY: C 传入的字符串在 panic 路径上保证有效
     let (file_str, msg_str) = unsafe {
         let file_len = (0..).take_while(|&i| *file.add(i) != 0).count();
-        let msg_len  = (0..).take_while(|&i| *msg.add(i) != 0).count();
+        let msg_len = (0..).take_while(|&i| *msg.add(i) != 0).count();
         (
             core::str::from_utf8_unchecked(core::slice::from_raw_parts(file, file_len)),
-            core::str::from_utf8_unchecked(core::slice::from_raw_parts(msg,  msg_len)),
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(msg, msg_len)),
         )
     };
 
     println!(
         "{}{}[{}]{} {} @ {}:{}{}",
-        COLOR_BOLD, COLOR_RED, "PANIC", COLOR_RESET,
-        msg_str, file_str, line, COLOR_RESET
+        COLOR_BOLD, COLOR_RED, "PANIC", COLOR_RESET, msg_str, file_str, line, COLOR_RESET
     );
 
     backtrace::print_backtrace();

@@ -1,6 +1,6 @@
-use core::cmp::min;
 use alloc::string::ToString;
 use alloc::sync::Arc;
+use core::cmp::min;
 
 use crate::fs::file::{File, FileFlags, FileOps};
 use crate::fs::procfs::inode::fill_kstat_common;
@@ -46,13 +46,13 @@ impl InodeOps for TaskDirSelfInode {
         Ok(Some(len))
     }
 
-    fn fstat(&self) -> SysResult<FileStat> {        
+    fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::default();
         kstat.st_ino = self.get_ino() as u64;
         kstat.st_mode = self.mode()?.bits();
-        
+
         fill_kstat_common(&mut kstat, current::tcb());
-        
+
         Ok(kstat)
     }
 
@@ -61,7 +61,7 @@ impl InodeOps for TaskDirSelfInode {
             | Mode::S_IRUSR
             | Mode::S_IXUSR
             | Mode::S_IRGRP
-            | Mode::S_IXGRP  
+            | Mode::S_IXGRP
             | Mode::S_IROTH
             | Mode::S_IXOTH)
     }

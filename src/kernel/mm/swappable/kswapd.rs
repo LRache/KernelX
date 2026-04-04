@@ -1,7 +1,8 @@
 use core::time::Duration;
 
-use crate::kernel::{mm::page, scheduler::current};
 use super::shrink;
+use crate::kernel::mm::page;
+use crate::kernel::scheduler::current;
 
 fn kswapd() {
     loop {

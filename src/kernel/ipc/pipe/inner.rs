@@ -10,15 +10,15 @@ use crate::klib::{SleepLock, SpinLock};
 const PIPE_CAPACITY: usize = arch::PGSIZE * config::PIPE_BUFFER_PAGES;
 
 struct FIFO {
-    data: * mut [u8; PIPE_CAPACITY],
+    data: *mut [u8; PIPE_CAPACITY],
     head: usize,
     tail: usize,
-    length: usize
+    length: usize,
 }
 
 impl FIFO {
     fn new() -> Self {
-        let data = page::alloc_contiguous(config::PIPE_BUFFER_PAGES) as * mut [u8; PIPE_CAPACITY];
+        let data = page::alloc_contiguous(config::PIPE_BUFFER_PAGES) as *mut [u8; PIPE_CAPACITY];
         Self {
             data,
             head: 0,
@@ -64,13 +64,13 @@ impl FIFO {
         self.length -= n;
 
         // crate::kinfo!("after pop front, len={}", self.length);
-        
+
         Ok(n)
     }
 
     fn push_back(&mut self, byte: u8) -> bool {
         if self.length == PIPE_CAPACITY {
-            return false
+            return false;
         }
         let tail = self.tail;
         self.data_mut()[tail] = byte;
@@ -154,9 +154,9 @@ impl PipeInner {
             self.read_waiter.lock().wait_current(Event::ReadReady);
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
-                Event::ReadReady => {},
+                Event::ReadReady => {}
                 Event::Signal => return Err(Errno::EINTR),
-                _ => unreachable!()
+                _ => unreachable!(),
             }
         }
 
@@ -209,9 +209,9 @@ impl PipeInner {
             current::schedule();
 
             match current::task().take_wakeup_event().unwrap() {
-                Event::ReadReady => {},
+                Event::ReadReady => {}
                 Event::Signal => return Err(Errno::EINTR),
-                _ => unreachable!()
+                _ => unreachable!(),
             }
         }
     }
@@ -254,9 +254,9 @@ impl PipeInner {
                 current::schedule();
 
                 match current::task().take_wakeup_event().unwrap() {
-                    Event::WriteReady => {},
+                    Event::WriteReady => {}
                     Event::Signal => return Err(Errno::EINTR),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
             }
 
@@ -302,9 +302,9 @@ impl PipeInner {
                 current::schedule();
 
                 match current::task().take_wakeup_event().unwrap() {
-                    Event::WriteReady => {},
+                    Event::WriteReady => {}
                     Event::Signal => return Err(Errno::EINTR),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
             }
 
@@ -334,7 +334,13 @@ impl PipeInner {
             if fifo.len() > 0 {
                 return Ok(Some(FileEvent::ReadReady));
             }
-            self.read_waiter.lock().wait(current::task().clone(), Event::Poll { event: FileEvent::ReadReady, waker });
+            self.read_waiter.lock().wait(
+                current::task().clone(),
+                Event::Poll {
+                    event: FileEvent::ReadReady,
+                    waker,
+                },
+            );
         }
 
         if event.contains(PollEventSet::POLLOUT) {
@@ -345,7 +351,13 @@ impl PipeInner {
             if fifo.len() < *self.capacity.lock() {
                 return Ok(Some(FileEvent::WriteReady));
             }
-            self.write_waiter.lock().wait(current::task().clone(), Event::Poll { event: FileEvent::WriteReady, waker });
+            self.write_waiter.lock().wait(
+                current::task().clone(),
+                Event::Poll {
+                    event: FileEvent::WriteReady,
+                    waker,
+                },
+            );
         }
 
         Ok(None)
@@ -379,12 +391,16 @@ impl PipeInner {
         debug_assert!(*writer_count > 0);
         *writer_count -= 1;
         if *writer_count == 0 {
-            self.read_waiter.lock().wake_all(|e| {
-                match e {
-                    Event::Poll{ event: FileEvent::ReadReady, waker } => { Event::Poll{event: FileEvent::HangUp, waker} },
-                    _ => e
-                }
+            self.read_waiter.lock().wake_all(|e| match e {
+                Event::Poll {
+                    event: FileEvent::ReadReady,
+                    waker,
+                } => Event::Poll {
+                    event: FileEvent::HangUp,
+                    waker,
+                },
+                _ => e,
             }); // Wake up readers to notify them of EOF
         }
     }
-}  
+}

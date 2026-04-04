@@ -1,16 +1,15 @@
-use num_enum::TryFromPrimitive;
 use alloc::vec;
+use num_enum::TryFromPrimitive;
 
+use crate::arch;
 use crate::fs::vfs;
-use crate::kernel::scheduler::current;
-use crate::kernel::config;
 use crate::kernel::errno::Errno;
+use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::uapi;
-use crate::klib::random::random;
+use crate::kernel::{config, uapi};
 use crate::klib::dmesg;
-use crate::arch;
+use crate::klib::random::random;
 
 pub fn rseq() -> Result<usize, Errno> {
     // This syscall is a no-op in the current implementation.
@@ -43,8 +42,8 @@ impl Utsname {
         };
         let sysname = b"KernelX";
         ustname.sysname[..sysname.len()].copy_from_slice(sysname);
-        
-        let release = "5.0.0" ;
+
+        let release = "5.0.0";
         ustname.release[..release.len()].copy_from_slice(release.as_bytes());
 
         let machine = b"riscv64";
@@ -76,7 +75,12 @@ enum RLimitResource {
     NOFILE = 7,
 }
 
-pub fn prlimit64(_pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, uptr_old_limit: UPtr<RLimit>) -> SyscallRet {
+pub fn prlimit64(
+    _pid: usize,
+    resource: usize,
+    uptr_new_limit: UPtr<RLimit>,
+    uptr_old_limit: UPtr<RLimit>,
+) -> SyscallRet {
     let resource = RLimitResource::try_from(resource).map_err(|_| Errno::EINVAL)?;
 
     match resource {
@@ -124,7 +128,7 @@ pub fn prlimit64(_pid: usize, resource: usize, uptr_new_limit: UPtr<RLimit>, upt
 
 pub fn getrandom(ubuf: UBuffer, len: usize, _flags: usize) -> SyscallRet {
     ubuf.should_not_null()?;
-    
+
     let mut buf = vec![0u8; len];
     for chunk in buf.chunks_mut(4) {
         let rand = random();
@@ -152,20 +156,20 @@ pub fn get_mempolicy() -> SyscallRet {
 pub struct Rusage {
     ru_utime: uapi::TimeVal, // user CPU time used
     ru_stime: uapi::TimeVal, // system CPU time used
-    ru_maxrss: isize,      // maximum resident set size
-    ru_ixrss: isize,       // integral shared memory size
-    ru_idrss: isize,       // integral unshared data size
-    ru_isrss: isize,       // integral unshared stack size
-    ru_minflt: isize,      // page reclaims (soft page faults)
-    ru_majflt: isize,      // page faults (hard page faults)
-    ru_nswap: isize,       // swaps
-    ru_inblock: isize,     // block input operations
-    ru_oublock: isize,     // block output operations
-    ru_msgsnd: isize,      // IPC messages sent
-    ru_msgrcv: isize,      // IPC messages received
-    ru_nsignals: isize,    // signals received
-    ru_nvcsw: isize,       // voluntary context switches
-    ru_nivcsw: isize,      // involuntary context switches
+    ru_maxrss: isize,        // maximum resident set size
+    ru_ixrss: isize,         // integral shared memory size
+    ru_idrss: isize,         // integral unshared data size
+    ru_isrss: isize,         // integral unshared stack size
+    ru_minflt: isize,        // page reclaims (soft page faults)
+    ru_majflt: isize,        // page faults (hard page faults)
+    ru_nswap: isize,         // swaps
+    ru_inblock: isize,       // block input operations
+    ru_oublock: isize,       // block output operations
+    ru_msgsnd: isize,        // IPC messages sent
+    ru_msgrcv: isize,        // IPC messages received
+    ru_nsignals: isize,      // signals received
+    ru_nvcsw: isize,         // voluntary context switches
+    ru_nivcsw: isize,        // involuntary context switches
 }
 
 impl UserStruct for Rusage {}
@@ -201,9 +205,9 @@ pub enum RusageWho {
 
 pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
     let who = RusageWho::try_from(who).map_err(|_| Errno::EINVAL)?;
-    
+
     let mut rusage = Rusage::default();
-    
+
     match who {
         RusageWho::SELF => {
             let (utime, stime) = current::pcb().tasks_usage_time();
@@ -211,7 +215,7 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
             rusage.ru_stime = stime.into();
         }
     };
-    
+
     uptr_rusage.write(rusage)?;
 
     Ok(0)
@@ -242,8 +246,8 @@ const CLK_TCK: u64 = 100;
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct Tms {
-    tms_utime:  usize, // user CPU time of process
-    tms_stime:  usize, // system CPU time of process
+    tms_utime: usize,  // user CPU time of process
+    tms_stime: usize,  // system CPU time of process
     tms_cutime: usize, // user CPU time of waited-for children
     tms_cstime: usize, // system CPU time of waited-for children
 }
@@ -256,8 +260,8 @@ pub fn times(uptr_tms: UPtr<Tms>) -> SyscallRet {
     let (cutime, cstime) = pcb.children_usage_time();
 
     let tms = Tms {
-        tms_utime:  (utime.as_millis()  as u64 * CLK_TCK / 1000) as usize,
-        tms_stime:  (stime.as_millis()  as u64 * CLK_TCK / 1000) as usize,
+        tms_utime: (utime.as_millis() as u64 * CLK_TCK / 1000) as usize,
+        tms_stime: (stime.as_millis() as u64 * CLK_TCK / 1000) as usize,
         tms_cutime: (cutime.as_millis() as u64 * CLK_TCK / 1000) as usize,
         tms_cstime: (cstime.as_millis() as u64 * CLK_TCK / 1000) as usize,
     };
@@ -350,11 +354,7 @@ pub fn syslog(cmd: usize, ubuf: UBuffer, len: usize) -> SyscallRet {
             dmesg::dmesg_clear();
             Ok(0)
         }
-        SyslogAction::SizeUnread => {
-            Ok(dmesg::dmesg_size_unread())
-        }
-        SyslogAction::SizeBuffer => {
-            Ok(dmesg::dmesg_size_buffer())
-        }
+        SyslogAction::SizeUnread => Ok(dmesg::dmesg_size_unread()),
+        SyslogAction::SizeBuffer => Ok(dmesg::dmesg_size_buffer()),
     }
 }

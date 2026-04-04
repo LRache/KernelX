@@ -1,10 +1,11 @@
 use alloc::collections::btree_map::BTreeMap;
 
-use crate::{driver::manager::get_rtc_driver, kinfo, kwarn};
+use crate::driver::manager::get_rtc_driver;
+use crate::{kinfo, kwarn};
 
+pub mod kclock;
 pub mod kconsole;
 pub mod kpmu;
-pub mod kclock;
 
 pub fn init(bootargs: &BTreeMap<&'static str, &'static str>) {
     if let Some(name) = bootargs.get("rtc") {

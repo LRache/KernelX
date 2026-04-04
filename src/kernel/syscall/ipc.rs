@@ -1,21 +1,19 @@
 use alloc::sync::Arc;
-use num_enum::TryFromPrimitive;
-use core::time::Duration;
 use bitflags::bitflags;
+use core::time::Duration;
+use num_enum::TryFromPrimitive;
 
-use crate::kernel::config;
-use crate::kernel::event::{timer, Event};
-use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet, UnixSocket, SocketType};
-use crate::kernel::ipc::shm::{IpcGetFlag, IPC_RMID, IPC_SET, IPC_STAT};
-use crate::kernel::ipc::shm;
-use crate::kernel::scheduler::{current, Tid};
-use crate::kernel::syscall::UserStruct;
-use crate::kernel::syscall::uptr::{UserPointer, UArray, UPtr};
-use crate::kernel::task::fdtable::FDFlags;
-use crate::kernel::errno::Errno;
-use crate::kernel::uapi;
-use crate::kernel::task::manager;
 use crate::arch;
+use crate::kernel::errno::Errno;
+use crate::kernel::event::{Event, timer};
+use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet, SocketType, UnixSocket, shm};
+use crate::kernel::scheduler::{Tid, current};
+use crate::kernel::syscall::UserStruct;
+use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
+use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::task::manager;
+use crate::kernel::{config, uapi};
 
 use super::SyscallRet;
 
@@ -28,10 +26,10 @@ bitflags! {
 
 pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     let flags = PipeFlags::from_bits_truncate(flags);
-    let fd_flags = FDFlags{
+    let fd_flags = FDFlags {
         cloexec: flags.contains(PipeFlags::O_CLOEXEC),
     };
-    
+
     let blocked = !flags.contains(PipeFlags::O_NONBLOCK);
     let (read_end, write_end) = Pipe::create(config::PIPE_CAPACITY, blocked);
     let read_end = Arc::new(read_end);
@@ -97,14 +95,14 @@ pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UAr
 pub fn kill(pid: usize, signum: usize) -> SyscallRet {
     let pid = pid as i32;
     let signum = signum as u32;
-    
+
     if pid > 0 {
         let tcb = manager::get(pid).ok_or(Errno::ESRCH)?;
         tcb.parent().send_signal(
             signum.try_into()?,
             SiCode::SI_USER,
             KSiFields::kill(current::pid(), current::uid()),
-            None
+            None,
         )?;
     }
 
@@ -119,9 +117,9 @@ pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
         signum,
         SiCode::SI_TKILL,
         KSiFields::kill(current::pid(), current::uid()),
-        Some(tid)
+        Some(tid),
     )?;
-    
+
     Ok(0)
 }
 
@@ -136,7 +134,7 @@ pub fn tgkill(tgid: usize, tid: usize, signum: usize) -> SyscallRet {
             signum.try_into()?,
             SiCode::SI_TKILL,
             KSiFields::kill(current::pid(), current::uid()),
-            Some(tid)
+            Some(tid),
         )?;
     }
 
@@ -159,12 +157,11 @@ pub fn rt_sigprocmask(how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<S
     } else {
         Some(uptr_set.read()?)
     };
-    
+
     // let mut signal_mask = current::tcb().signal_mask.lock();
     // if !uptr_oldset.is_null() {
     //     uptr_oldset.write(*signal_mask)?;
     // }
-
 
     // if let Some(new_set) = new_set {
     //     *signal_mask = match how {
@@ -191,11 +188,16 @@ pub fn rt_sigprocmask(how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<S
     if !uptr_oldset.is_null() {
         uptr_oldset.write(old_set)?;
     }
-    
+
     Ok(0)
 }
 
-pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact: UPtr<uapi::Sigaction>, sigsetsize: usize) -> SyscallRet {
+pub fn rt_sigaction(
+    signum: usize,
+    uptr_act: UPtr<uapi::Sigaction>,
+    uptr_oldact: UPtr<uapi::Sigaction>,
+    sigsetsize: usize,
+) -> SyscallRet {
     assert!(sigsetsize == core::mem::size_of::<SignalSet>());
 
     let signum = (signum as u32).try_into()?;
@@ -209,7 +211,7 @@ pub fn rt_sigaction(signum: usize, uptr_act: UPtr<uapi::Sigaction>, uptr_oldact:
     if !uptr_act.is_null() {
         let new_action = uptr_act.read()?;
         let new_action = new_action.try_into()?;
-        
+
         signal_actions.set(signum, &new_action)?;
     }
 
@@ -234,7 +236,7 @@ bitflags! {
 
 pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) -> SyscallRet {
     uptr_ss.should_not_null()?;
-    
+
     let mut signal_actions = current::signal_actions().lock();
     if !uptr_oss.is_null() {
         let stack = if let Some((sp, size)) = signal_actions.get_stack() {
@@ -258,7 +260,7 @@ pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) ->
         if flags.contains(SignalStackFlags::SS_ONSTACK) {
             return Err(Errno::EINVAL);
         }
-        
+
         let s = if flags.contains(SignalStackFlags::SS_DISABLE) {
             None
         } else {
@@ -272,9 +274,9 @@ pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) ->
 
 pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
     mask.should_not_null()?;
-    
+
     let set = mask.read()?;
-    
+
     let tcb = current::tcb();
     let mut signal_mask = tcb.signal_mask.lock();
     let old = *signal_mask;
@@ -286,7 +288,7 @@ pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
 
     match event {
         Event::Signal => Err(Errno::EINTR),
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 
@@ -297,7 +299,7 @@ pub fn rt_sig_return() -> SyscallRet {
 
 pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeout: UPtr<uapi::Timespec>) -> SyscallRet {
     uptr_set.should_not_null()?;
-    
+
     let timeout = uptr_timeout.read_optional()?;
     let signal_set = uptr_set.read()?;
 

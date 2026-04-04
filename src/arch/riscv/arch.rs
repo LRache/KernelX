@@ -2,27 +2,27 @@ use core::time::Duration;
 
 use alloc::sync::Arc;
 
-use crate::arch::riscv::{csr, load_device_tree, plic, task, sbi_driver};
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
+use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task};
 use crate::arch::{self, Arch, ArchTrait, UserContextTrait};
-use crate::kernel::config;
-use crate::kernel::scheduler::current;
-use crate::kernel::mm::{MapPerm, page};
 use crate::driver::chosen;
+use crate::kernel::config;
+use crate::kernel::mm::{MapPerm, page};
+use crate::kernel::scheduler::current;
 use crate::{driver, kinfo, kwarn};
 
-use super::task::context::KernelContext;
+use super::csr::{SIE, Sstatus, stvec};
 use super::pagetable::kernelpagetable;
-use super::csr::{Sstatus, SIE, stvec};
-use super::{time_frequency, kernel_switch, core_count};
 use super::sbi_driver::SBIKConsole;
+use super::task::context::KernelContext;
+use super::{core_count, kernel_switch, time_frequency};
 
 unsafe extern "C" {
     static __riscv_copied_fdt: *const u8;
     static __riscv_kaddr_offset: usize;
 }
 
-impl ArchTrait for Arch {    
+impl ArchTrait for Arch {
     fn init() {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;
@@ -47,9 +47,9 @@ impl ArchTrait for Arch {
             if hartid != current_core {
                 let stack = page::alloc_contiguous(config::SCHEDULER_KSTACK_PAGE_COUNT);
                 if let Err(error) = sbi_driver::hart_start(
-                    hartid, 
+                    hartid,
                     core::ptr::addr_of!(__riscv_others_entry) as usize,
-                    stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE
+                    stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE,
                 ) {
                     kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
                 } else {
@@ -58,7 +58,7 @@ impl ArchTrait for Arch {
             }
         }
     }
-    
+
     #[inline(always)]
     fn set_percpu_data(data: usize) {
         unsafe { core::arch::asm!("mv tp, {data}", data = in(reg) data) };
@@ -84,11 +84,11 @@ impl ArchTrait for Arch {
     fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext) {
         kernel_switch(from, to);
     }
-    
+
     fn wait_for_interrupt() {
         unsafe { core::arch::asm!("wfi") };
     }
-    
+
     fn enable_interrupt() {
         Sstatus::read().set_sie(true).write();
     }
@@ -151,22 +151,16 @@ impl ArchTrait for Arch {
     }
 
     fn read_volatile<T>(src: *const T) -> T {
-        unsafe { 
+        unsafe {
             let v = core::ptr::read_volatile(src);
-            core::arch::asm!(
-                "fence i, r", 
-                options(nostack, preserves_flags)
-            );
+            core::arch::asm!("fence i, r", options(nostack, preserves_flags));
             v
         }
     }
 
     fn write_volatile<T>(dst: *mut T, val: T) {
         unsafe {
-            core::arch::asm!(
-                "fence w, i",
-                options(nostack, preserves_flags)
-            );
+            core::arch::asm!("fence w, i", options(nostack, preserves_flags));
             core::ptr::write_volatile(dst, val);
         }
     }

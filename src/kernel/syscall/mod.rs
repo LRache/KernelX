@@ -1,13 +1,13 @@
-mod task;
-mod mm;
-mod fs;
-mod misc;
-mod time;
-mod event;
-mod ipc;
-mod uid;
-mod futex;
 mod def;
+mod event;
+mod fs;
+mod futex;
+mod ipc;
+mod misc;
+mod mm;
+mod task;
+mod time;
+mod uid;
 
 mod num;
 mod uptr;

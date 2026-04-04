@@ -1,14 +1,14 @@
-use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use bitflags::bitflags;
 
-use crate::kernel::mm::{MapPerm, AddrSpace};
 use crate::arch::PGSIZE;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::maparea::ShmArea;
+use crate::kernel::mm::{AddrSpace, MapPerm};
 use crate::kernel::scheduler::Tid;
 use crate::klib::SpinLock;
-use crate::kernel::mm::maparea::ShmArea;
 
 use super::frame::ShmFrames;
 
@@ -98,18 +98,18 @@ impl ShmManager {
 
         // Create new
         if size == 0 {
-             return Err(Errno::EINVAL);
+            return Err(Errno::EINVAL);
         }
 
         let page_count = (size + PGSIZE - 1) / PGSIZE;
-        let frames = Arc::new(ShmFrames::new(page_count));    
+        let frames = Arc::new(ShmFrames::new(page_count));
         let id = self.next_shmid;
         self.next_shmid += 1;
 
         let shm = ShmIdentifier {
-            ds: ShmidDs { 
-                key, 
-                size, 
+            ds: ShmidDs {
+                key,
+                size,
                 mode: (flags.bits() & 0o777) as u32,
                 ctime: 0, // TODO: get time
                 atime: 0,
@@ -127,7 +127,7 @@ impl ShmManager {
     fn get(&mut self, shmid: usize) -> Option<&mut ShmIdentifier> {
         self.shms.get_mut(&shmid)
     }
-    
+
     // Called on shmat. `make_area` is a closure that constructs the concrete Area
     // given (uaddr, Arc<ShmFrames>, perm, shmid); this avoids a circular import
     // between this module and mm::maparea::shm.
@@ -261,9 +261,8 @@ pub fn detach_shm_by_addr(pid: Tid, shmaddr: usize, addr_space: &AddrSpace) -> S
     };
     // Unmap the area; ShmArea::drop will call on_area_drop to fix up ref_count.
     if page_count > 0 {
-        addr_space.with_map_manager_mut(|map_manager| {
-            map_manager.unmap_area(shmaddr, page_count, addr_space.pagetable())
-        })?;
+        addr_space
+            .with_map_manager_mut(|map_manager| map_manager.unmap_area(shmaddr, page_count, addr_space.pagetable()))?;
     }
     let _ = shmid; // ref_count decremented by ShmArea::drop
     Ok(())

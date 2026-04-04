@@ -1,15 +1,14 @@
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
-use alloc::string::String;
 
-use crate::fs::file::{File, FileOps, FileFlags, SeekWhence};
+use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
 use crate::fs::{Perm, PermFlags, vfs};
-use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::{maparea, AddrSpace, MapPerm};
 use crate::kernel::config;
-use crate::{arch, ktrace};
-use crate::println;
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::{AddrSpace, MapPerm, maparea};
+use crate::{arch, ktrace, println};
 
 use super::def::*;
 
@@ -25,42 +24,38 @@ pub struct DynInfo {
 pub fn read_ehdr(file: &Arc<File>) -> Result<Elf64Ehdr, Errno> {
     let mut header = [0u8; core::mem::size_of::<Elf64Ehdr>()];
     file.read(&mut header)?;
-    
-    let ehdr = unsafe {
-        &*(header.as_ptr() as *const Elf64Ehdr)
-    };
-    
+
+    let ehdr = unsafe { &*(header.as_ptr() as *const Elf64Ehdr) };
+
     Ok(*ehdr)
 }
 
 pub fn read_phdr(file: &Arc<File>) -> Result<Elf64Phdr, Errno> {
     let mut ph_buf = [0u8; core::mem::size_of::<Elf64Phdr>()];
     file.read(&mut ph_buf)?;
-    
-    let phdr = unsafe {
-        &*(ph_buf.as_ptr() as *const Elf64Phdr)
-    };
-    
+
+    let phdr = unsafe { &*(ph_buf.as_ptr() as *const Elf64Phdr) };
+
     Ok(*phdr)
 }
 
 pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace) -> Result<(usize, Option<DynInfo>), Errno> {
     let ehdr = read_ehdr(file)?;
-    
+
     if !ehdr.is_valid_elf() {
         ktrace!("Invalid ELF header: {:?}", ehdr.e_ident);
         return Err(Errno::ENOEXEC);
     }
-    
+
     if !ehdr.is_64bit() {
         println!("Unsupported ELF format: not 64-bit");
         return Err(Errno::ENOEXEC);
     }
-    
+
     if !ehdr.is_little_endian() {
         return Err(Errno::ENOEXEC);
     }
-    
+
     if !ehdr.is_riscv() {
         println!("Unsupported ELF format: not RISC-V");
         return Err(Errno::ENOEXEC);
@@ -88,9 +83,12 @@ pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace) -> Result<(usize, Optio
     let mut phdr_addr: Option<usize> = None;
 
     for i in 0..ph_num {
-        file.seek((ph_offset + i * core::mem::size_of::<Elf64Phdr>()) as isize, SeekWhence::BEG)?;
+        file.seek(
+            (ph_offset + i * core::mem::size_of::<Elf64Phdr>()) as isize,
+            SeekWhence::BEG,
+        )?;
         let phdr = read_phdr(file)?;
-        
+
         if phdr.is_load() {
             load_program_from_file(&phdr, file, addrspace, addr_base)?;
         } else if phdr.is_phdr() {
@@ -111,12 +109,12 @@ pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace) -> Result<(usize, Optio
             }
         }
     }
-    
+
     let phdr_addr = phdr_addr.unwrap_or(0);
 
     if let Some(interpreter_path) = &interpreter_path {
         let (interpreter_base, interpreter_entry) = load_interpreter(&interpreter_path, addrspace)?;
-    
+
         let dyn_info = DynInfo {
             user_entry: ehdr.e_entry as usize + addr_base,
             interpreter_base,
@@ -136,12 +134,15 @@ pub fn load_loadable_phdr(
     ph_num: usize,
     file: &Arc<File>,
     addrspace: &AddrSpace,
-    addr_base: usize
+    addr_base: usize,
 ) -> Result<(), Errno> {
     for i in 0..ph_num {
-        file.seek((ph_offset + i * core::mem::size_of::<Elf64Phdr>()) as isize, SeekWhence::BEG)?;
+        file.seek(
+            (ph_offset + i * core::mem::size_of::<Elf64Phdr>()) as isize,
+            SeekWhence::BEG,
+        )?;
         let phdr = read_phdr(file)?;
-        
+
         if phdr.is_load() {
             load_program_from_file(&phdr, file, addrspace, addr_base)?;
         }
@@ -154,7 +155,7 @@ pub fn load_program_from_file(
     phdr: &Elf64Phdr,
     file: &Arc<File>,
     addrspace: &AddrSpace,
-    addr_base: usize
+    addr_base: usize,
 ) -> Result<(), Errno> {
     let mut perm = MapPerm::U | MapPerm::R;
     if phdr.is_readable() {
@@ -167,7 +168,14 @@ pub fn load_program_from_file(
         perm |= MapPerm::X;
     }
 
-    ktrace!("Loading program from file, phdr.p_vaddr={:#x}, phdr.p_memsz={:#x}, phdr.p_type={:#x}, addr_base={:#x}, perm={:?}", phdr.p_vaddr, phdr.p_memsz, phdr.p_type, addr_base, perm);
+    ktrace!(
+        "Loading program from file, phdr.p_vaddr={:#x}, phdr.p_memsz={:#x}, phdr.p_type={:#x}, addr_base={:#x}, perm={:?}",
+        phdr.p_vaddr,
+        phdr.p_memsz,
+        phdr.p_type,
+        addr_base,
+        perm
+    );
 
     let pgoff = phdr.p_vaddr as usize % arch::PGSIZE;
     let ubase = (phdr.p_vaddr as usize + addr_base) & !arch::PGMASK;
@@ -185,25 +193,25 @@ fn load_interpreter(path: &str, addrspace: &AddrSpace) -> SysResult<(usize, usiz
     let file_flags = FileFlags::readonly();
     let file = vfs::open_file(path, file_flags, &Perm::new(PermFlags::X))?;
     let file = file.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
-    
+
     let ehdr = read_ehdr(&file)?;
-    
+
     if !ehdr.is_valid_elf() || !ehdr.is_64bit() || !ehdr.is_riscv() {
         return Err(Errno::ENOEXEC);
     }
-    
+
     if !ehdr.is_dynamic() {
         return Err(Errno::ENOEXEC);
     }
 
     let addr_base = config::USER_LINKER_ADDR_BASE;
-    
+
     load_loadable_phdr(
-        ehdr.e_phoff as usize, 
-        ehdr.e_phnum as usize, 
-        &file, 
-        addrspace, 
-        addr_base
+        ehdr.e_phoff as usize,
+        ehdr.e_phnum as usize,
+        &file,
+        addrspace,
+        addr_base,
     )?;
 
     Ok((addr_base, ehdr.e_entry as usize + addr_base))

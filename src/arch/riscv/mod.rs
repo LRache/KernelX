@@ -1,19 +1,19 @@
-mod pagetable;
-mod sbi_driver;
-mod task;
-mod fdt;
-mod plic;
-pub mod csr;
 mod arch;
 mod cpu;
+pub mod csr;
+mod fdt;
+mod pagetable;
+mod plic;
+mod sbi_driver;
+mod task;
 
-pub use context::{UserContext, KernelContext, SigContext};
+pub use context::{KernelContext, SigContext, UserContext};
+pub use fdt::load_device_tree;
+pub use pagetable::*;
 pub use switch::kernel_switch;
 pub use task::*;
-pub use pagetable::*;
-pub use fdt::load_device_tree;
 
-use cpu::{time_frequency, core_count};
+use cpu::{core_count, time_frequency};
 
 pub const PGBITS: usize = 12; // 4KB page size
 pub const PGSIZE: usize = 1 << PGBITS; // 4096 bytes

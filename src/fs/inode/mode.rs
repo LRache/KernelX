@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 
-use crate::{fs::perm::{Perm, PermFlags}, kernel::uapi::Uid};
+use crate::fs::perm::{Perm, PermFlags};
+use crate::kernel::uapi::Uid;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,9 +45,9 @@ impl Mode {
         };
 
         // (a & b) | ~a = ~a | b
-        (!perm.flags.contains(PermFlags::R) || self.contains(read_bit)) &&
-        (!perm.flags.contains(PermFlags::W) || self.contains(write_bit)) &&
-        (!perm.flags.contains(PermFlags::X) || self.contains(exec_bit))
+        (!perm.flags.contains(PermFlags::R) || self.contains(read_bit))
+            && (!perm.flags.contains(PermFlags::W) || self.contains(write_bit))
+            && (!perm.flags.contains(PermFlags::X) || self.contains(exec_bit))
     }
 }
 
@@ -65,14 +66,14 @@ pub enum FileType {
 impl Into<FileType> for Mode {
     fn into(self) -> FileType {
         match self & Mode::S_IFMT {
-            Mode::S_IFREG  => FileType::Regular,
-            Mode::S_IFDIR  => FileType::Directory,
-            Mode::S_IFLNK  => FileType::Symlink,
-            Mode::S_IFCHR  => FileType::CharDevice,
-            Mode::S_IFBLK  => FileType::BlockDevice,
-            Mode::S_IFIFO  => FileType::FIFO,
+            Mode::S_IFREG => FileType::Regular,
+            Mode::S_IFDIR => FileType::Directory,
+            Mode::S_IFLNK => FileType::Symlink,
+            Mode::S_IFCHR => FileType::CharDevice,
+            Mode::S_IFBLK => FileType::BlockDevice,
+            Mode::S_IFIFO => FileType::FIFO,
             Mode::S_IFSOCK => FileType::Socket,
-            _              => FileType::Unknown,
+            _ => FileType::Unknown,
         }
     }
 }

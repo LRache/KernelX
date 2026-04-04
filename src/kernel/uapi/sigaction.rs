@@ -1,8 +1,5 @@
-use crate::kernel::errno::Errno;
-use crate::kernel::errno::SysResult;
-use crate::kernel::ipc::SignalAction;
-use crate::kernel::ipc::SignalActionFlags;
-use crate::kernel::ipc::SignalSet;
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::ipc::{SignalAction, SignalActionFlags, SignalSet};
 use crate::kernel::syscall::UserStruct;
 
 #[repr(C)]

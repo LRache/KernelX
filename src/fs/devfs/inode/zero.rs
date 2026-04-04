@@ -1,10 +1,10 @@
 use alloc::sync::Arc;
 
 use crate::fs::Dentry;
-use crate::kernel::uapi::FileStat;
-use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::inode::{Mode, InodeOps};
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::inode::{InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::FileStat;
 
 pub struct ZeroInode {
     ino: u32,

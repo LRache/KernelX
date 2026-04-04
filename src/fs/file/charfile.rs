@@ -1,12 +1,12 @@
 use alloc::sync::Arc;
 
-use crate::kernel::errno::{SysResult, Errno};
-use crate::kernel::mm::AddrSpace;
-use crate::kernel::uapi::FileStat;
-use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::driver::CharDriverOps;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::mm::AddrSpace;
+use crate::kernel::uapi::FileStat;
 
 use super::SeekWhence;
 
@@ -20,14 +20,19 @@ pub struct CharFile {
 }
 
 impl CharFile {
-    pub fn new(driver: Arc<dyn CharDriverOps>, inode: Arc<dyn InodeOps>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Self {
-        CharFile { 
-            driver, 
-            inode, 
+    pub fn new(
+        driver: Arc<dyn CharDriverOps>,
+        inode: Arc<dyn InodeOps>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> Self {
+        CharFile {
+            driver,
+            inode,
             dentry,
             readable: flags.readable,
             writable: flags.writable,
-            blocked: flags.blocked
+            blocked: flags.blocked,
         }
     }
 }

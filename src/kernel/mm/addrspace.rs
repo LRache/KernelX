@@ -4,17 +4,15 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Lazy;
 
-use crate::safe_page_write;
-use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::{maparea, PhysPageFrame};
-use crate::kernel::mm::maparea::Auxv;
+use crate::arch::{PageTable, PageTableTrait, TRAMPOLINE_BASE, UserContext};
 use crate::kernel::config::USER_RANDOM_ADDR_BASE;
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::maparea::Auxv;
+use crate::kernel::mm::{PhysPageFrame, maparea};
 use crate::klib::{SleepLock, SpinLock};
-use crate::arch::{PageTable, PageTableTrait, UserContext, TRAMPOLINE_BASE};
-use crate::arch;
+use crate::{arch, safe_page_write};
 
-use super::{MemAccessType, MapPerm};
-use super::vdso;
+use super::{MapPerm, MemAccessType, vdso};
 
 cfg_if::cfg_if! {
     if #[cfg(feature="swap-memory")] {
@@ -22,27 +20,21 @@ cfg_if::cfg_if! {
     }
 }
 
-unsafe extern "C"{
+unsafe extern "C" {
     static __trampoline_start: u8;
 }
 
-static RANDOM_PAGE: Lazy<PhysPageFrame> = Lazy::new(|| {
-    PhysPageFrame::alloc()
-});
+static RANDOM_PAGE: Lazy<PhysPageFrame> = Lazy::new(|| PhysPageFrame::alloc());
 
 fn create_pagetable() -> PageTable {
     let mut pagetable = PageTable::new();
     pagetable.create();
     pagetable.mmap(
-        TRAMPOLINE_BASE, 
-        core::ptr::addr_of!(__trampoline_start) as usize, 
-        MapPerm::R | MapPerm::X
+        TRAMPOLINE_BASE,
+        core::ptr::addr_of!(__trampoline_start) as usize,
+        MapPerm::R | MapPerm::X,
     );
-    pagetable.mmap(
-        USER_RANDOM_ADDR_BASE,
-        RANDOM_PAGE.get_page(),
-        MapPerm::R | MapPerm::U
-    );
+    pagetable.mmap(USER_RANDOM_ADDR_BASE, RANDOM_PAGE.get_page(), MapPerm::R | MapPerm::U);
 
     vdso::map_to_pagetale(&mut pagetable);
 
@@ -62,7 +54,7 @@ pub struct AddrSpace {
 }
 
 impl AddrSpace {
-    pub fn new() -> Arc<Self> {        
+    pub fn new() -> Arc<Self> {
         let addrspace = Arc::new(AddrSpace {
             map_manager: SleepLock::new(maparea::Manager::new(), "AddrSpace::map_manager"),
             pagetable: SpinLock::new(create_pagetable(), "AddrSpace::pagetable"),
@@ -98,7 +90,7 @@ impl AddrSpace {
             addrspace.family_chain.lock().push_back(weak.clone());
             self.family_chain.lock().push_back(weak);
         }
-        
+
         addrspace
     }
 
@@ -110,7 +102,7 @@ impl AddrSpace {
     pub fn alloc_usercontext_page(&self) -> (usize, *mut UserContext) {
         let mut frames = self.usercontext_frames.lock();
         let frame = PhysPageFrame::alloc_zeroed();
-        
+
         let uaddr = TRAMPOLINE_BASE - (frames.len() + 1) * arch::PGSIZE;
         let kaddr = frame.get_page();
         let user_context_ptr = kaddr as *mut UserContext;
@@ -148,7 +140,10 @@ impl AddrSpace {
     }
 
     pub fn translate_write(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
-        self.map_manager.lock().translate_write(uaddr, self).ok_or(Errno::EFAULT)
+        self.map_manager
+            .lock()
+            .translate_write(uaddr, self)
+            .ok_or(Errno::EFAULT)
     }
 
     pub fn copy_to_user_buffer(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
@@ -159,10 +154,10 @@ impl AddrSpace {
 
         while left > 0 {
             let kaddr = map_manager.translate_write(uaddr, self).ok_or(Errno::EFAULT)?;
-            
+
             let page_offset = uaddr & (arch::PGSIZE - 1);
             let write_len = core::cmp::min(left, arch::PGSIZE - page_offset);
-            
+
             safe_page_write!(kaddr, &buffer[copied..copied + write_len]);
 
             copied += write_len;
@@ -174,9 +169,8 @@ impl AddrSpace {
     }
 
     pub fn copy_to_user<T: Copy>(&self, uaddr: usize, value: T) -> Result<(), Errno> {
-        let buffer = unsafe {
-            core::slice::from_raw_parts((&value as *const T) as *const u8, core::mem::size_of::<T>())
-        };
+        let buffer =
+            unsafe { core::slice::from_raw_parts((&value as *const T) as *const u8, core::mem::size_of::<T>()) };
         self.copy_to_user_buffer(uaddr, buffer)
     }
 
@@ -197,10 +191,10 @@ impl AddrSpace {
 
             let page_offset = uaddr & (arch::PGSIZE - 1);
             let read_len = core::cmp::min(left, arch::PGSIZE - page_offset);
-            
+
             let src = unsafe { core::slice::from_raw_parts(kaddr as *const u8, read_len) };
             buffer[copied..copied + read_len].copy_from_slice(src);
-            
+
             copied += read_len;
             left -= read_len;
             uaddr += read_len;
@@ -211,12 +205,8 @@ impl AddrSpace {
 
     pub fn copy_from_user<T: Copy>(&self, uaddr: usize) -> Result<T, Errno> {
         let mut value: T = unsafe { core::mem::zeroed() };
-        let buffer = unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut value as *mut T as *mut u8,
-                core::mem::size_of::<T>()
-            )
-        };
+        let buffer =
+            unsafe { core::slice::from_raw_parts_mut(&mut value as *mut T as *mut u8, core::mem::size_of::<T>()) };
         self.copy_from_user_buffer(uaddr, buffer)?;
         Ok(value)
     }
@@ -251,7 +241,8 @@ impl AddrSpace {
     }
 
     pub fn copy_from_user_slice<T: Copy>(&self, uaddr: usize, slice: &mut [T]) -> SysResult<()> {
-        let buffer = unsafe { core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, core::mem::size_of_val(slice)) };
+        let buffer =
+            unsafe { core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, core::mem::size_of_val(slice)) };
         self.copy_from_user_buffer(uaddr, buffer)
     }
 
@@ -286,7 +277,7 @@ impl AddrSpace {
     }
 
     pub fn cleanup(&self) {
-        // let pagetable = &mut self.pagetable.write();        
+        // let pagetable = &mut self.pagetable.write();
         let mut map_manager = self.map_manager.lock();
         map_manager.cleanup();
     }

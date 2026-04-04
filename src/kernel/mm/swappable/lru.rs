@@ -165,7 +165,7 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
             self.map.remove(&lru_node.key);
             Some(lru_node.key)
         } else {
-            None    
+            None
         }
     }
 

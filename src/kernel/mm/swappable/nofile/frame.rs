@@ -1,9 +1,8 @@
-use core::usize;
 use alloc::sync::Arc;
+use core::usize;
 
+use crate::kernel::mm::swappable::{AddrSpaceFamilyChain, swapper};
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
-use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
-use crate::kernel::mm::swappable::swapper;
 use crate::klib::SpinLock;
 
 pub(super) struct AllocatedFrame {
@@ -35,11 +34,11 @@ impl SwappableNoFileFrameInner {
             state: SpinLock::new(
                 FrameState {
                     state: State::Allocated(AllocatedFrame { frame, dirty: false }),
-                    disk_slot: NO_DISK_BLOCK
+                    disk_slot: NO_DISK_BLOCK,
                 },
-                "SwappableNoFileFrameInner::state"
+                "SwappableNoFileFrameInner::state",
             ),
-            family_chain,       
+            family_chain,
             uaddr,
         }
     }
@@ -51,7 +50,11 @@ pub struct SwappableNoFileFrame {
 
 impl SwappableNoFileFrame {
     pub fn allocated(uaddr: usize, frame: PhysPageFrame, addrspace: &AddrSpace) -> Self {
-        let inner = Arc::new(SwappableNoFileFrameInner::allocated(uaddr, frame, addrspace.family_chain().clone()));
+        let inner = Arc::new(SwappableNoFileFrameInner::allocated(
+            uaddr,
+            frame,
+            addrspace.family_chain().clone(),
+        ));
         Self { inner }
     }
 
@@ -70,12 +73,8 @@ impl SwappableNoFileFrame {
 
     pub fn get_page(&self) -> Option<usize> {
         match &self.inner.state.lock().state {
-            State::Allocated(allocated) => {
-                Some(allocated.frame.get_page())
-            },
-            State::SwappedOut => {
-                None
-            }
+            State::Allocated(allocated) => Some(allocated.frame.get_page()),
+            State::SwappedOut => None,
         }
     }
 

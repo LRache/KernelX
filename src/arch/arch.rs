@@ -25,10 +25,10 @@ pub trait PageTableTrait {
     // fn is_mapped(&self, uaddr: usize) -> bool;
 }
 
-pub trait ArchTrait {    
+pub trait ArchTrait {
     fn init();
     fn setup_all_cores(current_core: usize);
-    
+
     /* ----- Per-CPU Data ----- */
     fn set_percpu_data(data: usize);
     fn get_percpu_data() -> usize;
@@ -37,7 +37,7 @@ pub trait ArchTrait {
     fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext);
     fn get_user_pc() -> usize;
     fn return_to_user() -> !;
-    
+
     /* ----- Interrupt ------ */
     fn wait_for_interrupt();
     fn enable_interrupt();
@@ -68,7 +68,7 @@ pub trait ArchTrait {
 
 pub trait UserContextTrait: Clone {
     fn new() -> Self;
-    
+
     /// Create a clone of the current context for fork. The returned context
     /// will return 0 in the user program.
     fn new_clone(&self) -> Self;

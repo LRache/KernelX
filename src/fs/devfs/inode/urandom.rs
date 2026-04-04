@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
 
 use crate::fs::file::{File, FileFlags, FileOps};
-use crate::kernel::errno::SysResult;
 use crate::fs::{Dentry, InodeOps, Mode};
+use crate::kernel::errno::SysResult;
 use crate::kernel::uapi::FileStat;
 use crate::klib::random;
 

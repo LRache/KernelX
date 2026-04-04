@@ -1,15 +1,14 @@
-use alloc::sync::Arc;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use crate::kernel::scheduler;
-use crate::kernel::scheduler::current;
-use crate::kernel::scheduler::Task;
+use crate::kernel::scheduler::{Task, current};
 
 use super::Event;
 
 struct WaitQueueItem<T: Copy> {
     task: Arc<dyn Task>,
-    arg:  T,
+    arg: T,
 }
 
 pub struct WaitQueue<T: Copy> {

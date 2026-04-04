@@ -1,10 +1,9 @@
-use core::time::Duration;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::time::Duration;
 use spin::mutex::SpinMutex;
 
-use crate::kernel::scheduler::{Task, Tid};
-use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::{Task, Tid, current};
 use crate::klib::backtrace;
 
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(1);
@@ -16,18 +15,18 @@ pub fn kwatchdog() {
         BLOCKED_TASKS.lock().iter_mut().for_each(|(tid, (task, ticks))| {
             *ticks += 1;
             if *ticks >= 3 {
-                  crate::kwarn!("Watchdog: Tid {} has been blocked for {} ticks", tid, ticks);
+                crate::kwarn!("Watchdog: Tid {} has been blocked for {} ticks", tid, ticks);
 
                 #[cfg(feature = "backtrace")]
                 backtrace::print_backtrace_from_fp(task.kcontext().frame_pointer());
-                
+
                 #[cfg(feature = "deadlock-detect")]
                 if let Some((name, bt)) = task.lockstate().waiting() {
                     crate::kwarn!("Task is waiting on lock: {}", name);
                     crate::kwarn!("Lock was last acquired at:");
                     backtrace::print_backtrace_chain(&bt);
                 }
-                
+
                 *ticks = 0;
             }
         });

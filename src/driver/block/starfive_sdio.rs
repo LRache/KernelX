@@ -1,18 +1,17 @@
-use core::time::Duration;
 use alloc::string::String;
 use alloc::sync::Arc;
-use visionfive2_sd::{Vf2SdDriver, SDIo, SleepOps};
+use core::time::Duration;
+use visionfive2_sd::{SDIo, SleepOps, Vf2SdDriver};
 
-use crate::arch;
 use crate::arch::map_kernel_addr;
-use crate::kernel::mm::{MapPerm, page};
-use crate::driver::{BlockDriverOps, Device, DeviceType, DriverOps, DriverMatcher};
+use crate::driver::{BlockDriverOps, Device, DeviceType, DriverMatcher, DriverOps};
 use crate::kernel::event::timer;
+use crate::kernel::mm::{MapPerm, page};
 use crate::klib::SpinLock;
-use crate::kwarn;
+use crate::{arch, kwarn};
 
 struct SDIOImpls {
-    pub base: usize
+    pub base: usize,
 }
 
 impl SDIo for SDIOImpls {
@@ -55,15 +54,15 @@ impl SleepOps for SleepOpsImpls {
 
 pub struct Driver {
     name: String,
-    inner: SpinLock<Vf2SdDriver<SDIOImpls, SleepOpsImpls>>
+    inner: SpinLock<Vf2SdDriver<SDIOImpls, SleepOpsImpls>>,
 }
 
 impl Driver {
     pub fn new(name: String, base: usize) -> Self {
         let inner = Vf2SdDriver::new(SDIOImpls { base });
-        Driver { 
-            name, 
-            inner: SpinLock::new(inner, "Driver::inner")
+        Driver {
+            name,
+            inner: SpinLock::new(inner, "Driver::inner"),
         }
     }
 
@@ -120,7 +119,7 @@ pub struct Matcher;
 impl DriverMatcher for Matcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         device.match_compatible(&["snps,dw-mshc"])?;
-        
+
         let (mmio_base, mmio_size) = device.mmio()?;
         if mmio_base != 0x16020000 {
             return None;
@@ -129,7 +128,7 @@ impl DriverMatcher for Matcher {
         let pages = arch::page_count(mmio_size);
         let kpage = page::alloc_contiguous(pages);
         map_kernel_addr(kpage, mmio_base, mmio_size, MapPerm::RW);
-        
+
         let driver = Driver::new(device.name().into(), kpage);
         let r = driver.init();
         if let Err(e) = r {

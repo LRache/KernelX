@@ -1,13 +1,12 @@
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
-use crate::kernel::mm::{AddrSpace, PhysPageFrame};
-use crate::kernel::mm::maparea::area::Area;
-use crate::kernel::mm::{MapPerm, MemAccessType};
-use crate::arch::{PageTable, PageTableTrait};
 use crate::arch;
+use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::File;
+use crate::kernel::mm::maparea::area::Area;
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
 use super::area::Frame;
@@ -15,10 +14,10 @@ use super::area::Frame;
 pub struct ELFArea {
     ubase: usize,
     perm: MapPerm,
-    
+
     file: Arc<File>,
     file_offset: usize,
-    
+
     file_length: usize,
     memory_size: usize,
     frames: Vec<Frame>,
@@ -28,10 +27,10 @@ impl ELFArea {
     pub fn new(
         ubase: usize,
         perm: MapPerm,
-        file: Arc<File>, 
-        file_offset: usize, 
-        file_length: usize, 
-        memory_size: usize
+        file: Arc<File>,
+        file_offset: usize,
+        file_length: usize,
+        memory_size: usize,
     ) -> Self {
         // We only handle cases where file_offset and ubase are page-aligned.
         // The alignment should be guaranteed by the caller.
@@ -57,17 +56,21 @@ impl ELFArea {
 
         let area_offset = page_index * arch::PGSIZE;
         let file_offset = self.file_offset + area_offset;
-        
+
         let frame = PhysPageFrame::alloc_zeroed();
         if area_offset < self.file_length {
             // Read up to a page, but not beyond the file length for this segment.
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
-            self.file.read_at(&mut frame.slice()[..length], file_offset).expect("Failed to read file");
+            self.file
+                .read_at(&mut frame.slice()[..length], file_offset)
+                .expect("Failed to read file");
         }
 
         let page = frame.get_page();
 
-        pagetable.lock().mmap(self.ubase + area_offset, frame.get_page(), self.perm);
+        pagetable
+            .lock()
+            .mmap(self.ubase + area_offset, frame.get_page(), self.perm);
         self.frames[page_index] = Frame::Allocated(Arc::new(frame));
 
         page
@@ -89,7 +92,9 @@ impl ELFArea {
 
         let page = new_frame.get_page();
 
-        pagetable.lock().mmap_replace(self.ubase + page_index * arch::PGSIZE, page, self.perm);
+        pagetable
+            .lock()
+            .mmap_replace(self.ubase + page_index * arch::PGSIZE, page, self.perm);
         self.frames[page_index] = Frame::Allocated(Arc::new(new_frame));
 
         page
@@ -102,18 +107,12 @@ impl Area for ELFArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-        
+
         if let Some(page_frame) = self.frames.get(page_index) {
             let page = match page_frame {
-                Frame::Unallocated => {
-                    self.load_page(page_index, addrspace.pagetable())
-                }
-                Frame::Allocated(frame) => {
-                    frame.get_page()
-                }
-                Frame::Cow(frame) => {
-                    frame.get_page()
-                }
+                Frame::Unallocated => self.load_page(page_index, addrspace.pagetable()),
+                Frame::Allocated(frame) => frame.get_page(),
+                Frame::Cow(frame) => frame.get_page(),
             };
 
             Some(page + page_offset)
@@ -127,18 +126,12 @@ impl Area for ELFArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-        
+
         if let Some(page_frame) = self.frames.get(page_index) {
             let page = match page_frame {
-                Frame::Unallocated => {
-                    self.load_page(page_index, addrspace.pagetable())
-                }
-                Frame::Allocated(frame) => {
-                    frame.get_page()
-                }
-                Frame::Cow(_) => {
-                    self.copy_on_write_page(page_index, addrspace.pagetable())
-                }
+                Frame::Unallocated => self.load_page(page_index, addrspace.pagetable()),
+                Frame::Allocated(frame) => frame.get_page(),
+                Frame::Cow(_) => self.copy_on_write_page(page_index, addrspace.pagetable()),
             };
 
             Some(page + page_offset)
@@ -153,29 +146,25 @@ impl Area for ELFArea {
 
     fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
-        let frames = self.frames.iter().enumerate().map(|(page_index, frame)| {
-            match frame {
+        let frames = self
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(page_index, frame)| match frame {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    new_pagetable.mmap(
-                        self.ubase + page_index * arch::PGSIZE, 
-                        frame.get_page(),
-                        cow_perm
-                    );
+                    new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, frame.get_page(), cow_perm);
                     Frame::Cow(frame.clone())
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut self_pagetable = self_pagetable.lock();
         self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
             *frame = match frame {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    self_pagetable.mmap_replace_perm(
-                        self.ubase + page_index * arch::PGSIZE,
-                        cow_perm
-                    );
+                    self_pagetable.mmap_replace_perm(self.ubase + page_index * arch::PGSIZE, cow_perm);
                     Frame::Cow(frame.clone())
                 }
             };
@@ -194,7 +183,12 @@ impl Area for ELFArea {
         Box::new(new_area)
     }
 
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
+    fn try_to_fix_memory_fault(
+        &mut self,
+        uaddr: usize,
+        access_type: MemAccessType,
+        addrspace: &Arc<AddrSpace>,
+    ) -> bool {
         assert!(uaddr >= self.ubase);
 
         if access_type == MemAccessType::Execute && !self.perm.contains(MapPerm::X) {
@@ -237,7 +231,10 @@ impl Area for ELFArea {
 
     fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
         debug_assert!(uaddr % arch::PGSIZE == 0, "Split address must be page-aligned");
-        debug_assert!(uaddr >= self.ubase && uaddr < self.ubase + self.size(), "Split address must be within area bounds");
+        debug_assert!(
+            uaddr >= self.ubase && uaddr < self.ubase + self.size(),
+            "Split address must be within area bounds"
+        );
 
         let split_index = (uaddr - self.ubase) / arch::PGSIZE;
         let split_offset = split_index * arch::PGSIZE;
@@ -249,7 +246,7 @@ impl Area for ELFArea {
         } else {
             0
         };
-        
+
         let new_memory_size = self.memory_size - split_offset;
 
         // Update the file_length and memory_size for the first area (self)

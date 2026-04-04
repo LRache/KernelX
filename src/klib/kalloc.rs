@@ -1,6 +1,6 @@
-use spin::Mutex;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
+use spin::Mutex;
 
 unsafe extern "C" {
     fn init_heap(start: *mut c_void, size: usize);
@@ -14,9 +14,7 @@ struct HeapAllocator {
 
 impl HeapAllocator {
     pub const fn new() -> Self {
-        HeapAllocator {
-            mutex: Mutex::new(()),
-        }
+        HeapAllocator { mutex: Mutex::new(()) }
     }
 
     pub fn init(&self, heap_start: usize, heap_size: usize) {

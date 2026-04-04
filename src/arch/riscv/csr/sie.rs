@@ -1,16 +1,20 @@
 pub struct SIE {
-    sie: usize
+    sie: usize,
 }
 
 impl SIE {
     pub fn read() -> Self {
         let sie;
-        unsafe { core::arch::asm!("csrr {}, sie", out(reg) sie); }
+        unsafe {
+            core::arch::asm!("csrr {}, sie", out(reg) sie);
+        }
         SIE { sie }
     }
 
     pub fn write(&self) {
-        unsafe { core::arch::asm!("csrw sie, {}", in(reg) self.sie); }
+        unsafe {
+            core::arch::asm!("csrw sie, {}", in(reg) self.sie);
+        }
     }
 
     pub fn set_stie(&mut self, stie: bool) -> &mut Self {

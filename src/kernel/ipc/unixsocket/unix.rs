@@ -1,24 +1,21 @@
 use alloc::sync::Arc;
 
+use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::config;
-use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
-use crate::fs::{Dentry, InodeOps, Mode};
-use crate::fs::file::{FileFlags, FileOps, SeekWhence};
 use crate::klib::SpinLock;
 
-use crate::kernel::ipc::pipe::PipeInner;
 use super::msgpipe::MessagePipeInner;
 
 /// The channel type determines how data flows through the socket.
 enum Channel {
     /// Byte-stream (SOCK_STREAM): uses PipeInner, no message boundaries.
-    Stream {
-        rx: Arc<PipeInner>,
-        tx: Arc<PipeInner>,
-    },
+    Stream { rx: Arc<PipeInner>, tx: Arc<PipeInner> },
     /// Message-oriented (SOCK_DGRAM, SOCK_SEQPACKET): preserves message boundaries.
     Message {
         rx: Arc<MessagePipeInner>,
@@ -65,10 +62,7 @@ impl UnixSocket {
                 };
 
                 let sock_b = UnixSocket {
-                    channel: Channel::Stream {
-                        rx: pipe_b,
-                        tx: pipe_a,
-                    },
+                    channel: Channel::Stream { rx: pipe_b, tx: pipe_a },
                     blocked: SpinLock::new(blocked, "UnixSocket::blocked"),
                     sock_type,
                 };
@@ -94,10 +88,7 @@ impl UnixSocket {
                 };
 
                 let sock_b = UnixSocket {
-                    channel: Channel::Message {
-                        rx: pipe_b,
-                        tx: pipe_a,
-                    },
+                    channel: Channel::Message { rx: pipe_b, tx: pipe_a },
                     blocked: SpinLock::new(blocked, "UnixSocket::blocked"),
                     sock_type,
                 };

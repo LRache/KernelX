@@ -1,8 +1,8 @@
 use crate::arch;
 use crate::kernel::event::Event;
-use crate::kernel::task::TCB;
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
+use crate::kernel::task::TCB;
 
 use super::Tid;
 
@@ -10,16 +10,16 @@ use super::Tid;
 pub enum TaskState {
     /// The task is currently running on a CPU.
     Running,
-    
+
     /// The task is ready to run and can be scheduled on a CPU.
     Ready,
-    
+
     /// The task is blocked, waiting for an event.
     Blocked,
-    
+
     /// The task is blocked and cannot be interrupted until the event it is waiting for occurs.
     BlockedUninterruptible,
-    
+
     /// The task has exited. This state MUST BE set by the task itself.
     Exited,
 }

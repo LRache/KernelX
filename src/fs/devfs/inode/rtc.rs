@@ -2,12 +2,12 @@ use alloc::sync::Arc;
 
 use crate::driver::chosen::kclock;
 use crate::fs::Dentry;
-use crate::kernel::uapi::FileStat;
-use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::AddrSpace;
-use crate::fs::inode::{Mode, InodeOps};
 use crate::fs::file::{DirResult, FileFlags, FileOps, SeekWhence};
+use crate::fs::inode::{InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::mm::AddrSpace;
+use crate::kernel::uapi::FileStat;
 
 /// `_IOR('p', 0x09, struct rtc_time)`
 /// = (2 << 30) | (sizeof(RtcTime) << 16) | ('p' << 8) | 0x09
@@ -21,10 +21,10 @@ struct RtcTime {
     tm_min: i32,
     tm_hour: i32,
     tm_mday: i32,
-    tm_mon: i32,   // months since January [0, 11]
-    tm_year: i32,  // years since 1900
-    tm_wday: i32,  // days since Sunday [0, 6]
-    tm_yday: i32,  // days since January 1 [0, 365]
+    tm_mon: i32,  // months since January [0, 11]
+    tm_year: i32, // years since 1900
+    tm_wday: i32, // days since Sunday [0, 6]
+    tm_yday: i32, // days since January 1 [0, 365]
     tm_isdst: i32,
 }
 
@@ -211,7 +211,7 @@ fn epoch_to_rtc_time(epoch: u64) -> RtcTime {
         tm_min: min,
         tm_hour: hour,
         tm_mday: remaining + 1, // 1-based
-        tm_mon: mon,             // 0-based
+        tm_mon: mon,            // 0-based
         tm_year: (year - 1900) as i32,
         tm_wday: wday,
         tm_yday: yday,

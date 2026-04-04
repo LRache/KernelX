@@ -1,5 +1,4 @@
-use alloc::collections::BTreeMap;
-use alloc::collections::LinkedList;
+use alloc::collections::{BTreeMap, LinkedList};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use spin::mutex::SpinMutex;
@@ -15,9 +14,9 @@ pub struct LockState {
 
 impl LockState {
     pub const fn new() -> Self {
-        Self { 
+        Self {
             held: UnsafeCell::new(Vec::new()),
-            waiting: SpinMutex::new(None)
+            waiting: SpinMutex::new(None),
         }
     }
 
@@ -50,7 +49,6 @@ impl LockState {
 
 unsafe impl Send for LockState {}
 unsafe impl Sync for LockState {}
-
 
 /// One directed edge in the lock dependency graph.
 struct Edge {
@@ -107,11 +105,14 @@ fn find_path_backtrace<'a>(
 #[cfg(feature = "deadlock-detect")]
 pub fn on_acquire(helds: &[&'static str], new_name: &'static str) {
     let new_id = new_name.as_ptr() as usize;
-    
+
     if helds.iter().find(|&&held| held.as_ptr() as usize == new_id).is_some() {
-        panic!("lockdep: lock order violation! Attempting to acquire '{}' while already holding it, helds={:?}", new_name, helds);
+        panic!(
+            "lockdep: lock order violation! Attempting to acquire '{}' while already holding it, helds={:?}",
+            new_name, helds
+        );
     }
-    
+
     let mut graph = LOCK_DEP_GRAPH.lock();
 
     for &held in helds {
@@ -126,7 +127,10 @@ pub fn on_acquire(helds: &[&'static str], new_name: &'static str) {
                 "lockdep: lock order violation!\n  \
                  Acquiring '{}' while holding '{}',\n  \
                  but the reverse dependency '{}' -> ... -> '{}' was already recorded.",
-                new_name, held, new_name, held
+                new_name,
+                held,
+                new_name,
+                held
             );
             #[cfg(feature = "backtrace")]
             {

@@ -1,14 +1,13 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::fs::vfs::vfs::VirtualFileSystem;
+use crate::driver::BlockDriverOps;
 use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::vfs::vfs::VirtualFileSystem;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
-use crate::driver::BlockDriverOps;
 
-use super::vfs;
-use super::Dentry;
+use super::{Dentry, vfs};
 
 impl VirtualFileSystem {
     pub(super) fn register_filesystem(&mut self, name: &'static str, fs: &'static dyn FileSystemOps) {
@@ -36,9 +35,9 @@ impl VirtualFileSystem {
         let root_inode = self.load_inode(sno, root_ino)?;
 
         dentry.mount(&root_inode, sno);
-        
+
         self.mountpoint.lock().push(dentry);
-        
+
         Ok(())
     }
 

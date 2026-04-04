@@ -1,8 +1,7 @@
 use alloc::collections::LinkedList;
 
-use crate::arch;
 use crate::klib::backtrace::ksymbol;
-use crate::{print, println};
+use crate::{arch, print, println};
 
 #[inline(always)]
 fn next_frame(fp: *const usize) -> Option<(usize, *const usize)> {
@@ -61,7 +60,10 @@ fn print_frame(depth: usize, addr: usize) {
 pub fn print_backtrace_chain(chain: &LinkedList<usize>) {
     println!("\n--- Stack Backtrace ---");
 
-    chain.iter().enumerate().for_each(|(depth, addr)| print_frame(depth, *addr));
+    chain
+        .iter()
+        .enumerate()
+        .for_each(|(depth, addr)| print_frame(depth, *addr));
 
     println!("--- End of Backtrace ---\n");
 }
@@ -74,7 +76,7 @@ pub fn print_backtrace() {
 
 pub fn print_backtrace_from_fp(fp: usize) {
     println!("\n--- Stack Backtrace ---");
-    
+
     for_each_frame(fp as *const usize, print_frame);
 
     println!("--- End of Backtrace ---\n");

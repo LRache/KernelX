@@ -33,12 +33,8 @@ impl DmesgBuffer {
         if to_copy == 0 {
             return 0;
         }
-        
-        let start = if self.len < DMESG_BUF_SIZE {
-            0
-        } else {
-            self.head
-        };
+
+        let start = if self.len < DMESG_BUF_SIZE { 0 } else { self.head };
 
         for i in 0..to_copy {
             dest[i] = self.buf[(start + i) % DMESG_BUF_SIZE];

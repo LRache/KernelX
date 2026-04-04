@@ -1,11 +1,11 @@
-#[cfg(feature = "no-smp")]
-use core::cell::UnsafeCell;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+#[cfg(feature = "no-smp")]
+use core::cell::UnsafeCell;
 use spin::mutex::SpinMutex;
 
 use crate::kernel::event::Event;
-use crate::kernel::scheduler::{self, current, Task};
+use crate::kernel::scheduler::{self, Task, current};
 
 use super::locker::LockerTrait;
 use super::mutex::Mutex;
@@ -28,8 +28,6 @@ impl SleepLocker {
             waiters: SpinMutex::new(VecDeque::new()),
         }
     }
-
-    
 }
 
 impl LockerTrait for SleepLocker {
@@ -44,21 +42,23 @@ impl LockerTrait for SleepLocker {
             }
         }
         #[cfg(not(feature = "no-smp"))]
-        self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+        self.locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
     }
 
     fn spin(&self) {
         let task = current::task();
-        
+
         {
             let mut waiters = self.waiters.lock();
             waiters.push_back(task.clone());
         }
-        
+
         scheduler::block_task_uninterruptible(task.clone(), "sleep_lock");
         current::schedule();
     }
-    
+
     fn lock(&self, name: &'static str) {
         loop {
             if self.try_lock(name) {

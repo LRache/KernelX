@@ -2,10 +2,10 @@ use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
 use spin::Mutex;
 
-use crate::kernel::scheduler::{Tid, current, watchdog};
-use crate::kernel::scheduler::task::Task;
-use crate::kernel::event::Event;
 use crate::arch;
+use crate::kernel::event::Event;
+use crate::kernel::scheduler::task::Task;
+use crate::kernel::scheduler::{Tid, current, watchdog};
 
 use super::processor::Processor;
 
@@ -86,7 +86,7 @@ pub fn run_tasks(hartid: usize) -> ! {
             if !task.run_if_ready() {
                 continue;
             }
-            
+
             // TODO: What if the task is exited here?
             processor.switch_to_task(&task);
 

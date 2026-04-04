@@ -36,21 +36,39 @@ impl LockerTrait for SpinLocker {
             }
         }
         #[cfg(not(feature = "no-smp"))]
-        self.lock.compare_exchange(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_ok()
+        self.lock
+            .compare_exchange(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
     }
 
     fn spin(&self) {}
-    
+
     fn lock(&self, name: &'static str) {
         #[cfg(feature = "no-smp")]
         unsafe {
             if *self.lock.get() {
-                panic!("Deadlock detected in SpinLocker: single-core system cannot re-lock an already locked SpinLocker");
+                panic!(
+                    "Deadlock detected in SpinLocker: single-core system cannot re-lock an already locked SpinLocker"
+                );
             }
             *self.lock.get() = true;
         }
         #[cfg(not(feature = "no-smp"))]
-        while self.lock.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {}
+        while self
+            .lock
+            .compare_exchange_weak(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {}
         #[cfg(feature = "deadlock-detect")]
         current::processor().acquire_spinlock(name);
     }

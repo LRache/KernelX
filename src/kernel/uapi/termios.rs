@@ -72,8 +72,8 @@ pub struct Termios2 {
 }
 
 pub mod cc {
-    pub const VINTR:  usize = 0;
-    pub const VQUIT:  usize = 1;
+    pub const VINTR: usize = 0;
+    pub const VQUIT: usize = 1;
     pub const VERASE: usize = 2;
-    pub const VEOF:   usize = 4;
+    pub const VEOF: usize = 4;
 }

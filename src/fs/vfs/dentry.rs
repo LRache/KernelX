@@ -1,11 +1,11 @@
 use core::fmt::Debug;
 
-use alloc::sync::{Arc, Weak};
-use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::{Arc, Weak};
 
-use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::inode::{Index, InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::SpinLock;
 
 use super::vfs;
@@ -22,7 +22,10 @@ pub struct Dentry {
 impl Dentry {
     pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
         Self {
-            inode_index: Index { sno: sno, ino: inode.get_ino() },
+            inode_index: Index {
+                sno: sno,
+                ino: inode.get_ino(),
+            },
             name: name.into(),
             parent: Some(parent.clone()),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
@@ -33,7 +36,10 @@ impl Dentry {
 
     pub fn root(inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
         Self {
-            inode_index: Index { sno, ino: inode.get_ino() },
+            inode_index: Index {
+                sno,
+                ino: inode.get_ino(),
+            },
             name: "/".into(),
             parent: None,
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
@@ -72,10 +78,12 @@ impl Dentry {
     }
 
     pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
-        if let Some(child) = self.children.lock().get(name) && let Some(child) = child.upgrade() {
+        if let Some(child) = self.children.lock().get(name)
+            && let Some(child) = child.upgrade()
+        {
             return Ok(child);
         }
-        
+
         let lookup_ino = self.get_inode().lookup(name)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
@@ -83,7 +91,9 @@ impl Dentry {
         let new_child = Arc::new(Self::new(name, self, &inode, lookup_sno));
 
         let mut children = self.children.lock();
-        if let Some(existing_child) = children.get(name) && existing_child.upgrade().is_some() {
+        if let Some(existing_child) = children.get(name)
+            && existing_child.upgrade().is_some()
+        {
             Ok(existing_child.upgrade().unwrap())
         } else {
             children.insert(name.into(), Arc::downgrade(&new_child));
@@ -97,7 +107,7 @@ impl Dentry {
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
 
         let new_child = Arc::new(Self::new(name, self, &inode, lookup_sno));
-        
+
         Ok(new_child)
     }
 
@@ -123,16 +133,17 @@ impl Dentry {
     }
 
     pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>, mount_to_sno: u32) {
-        *self.mount_to.lock() = Some(Arc::new(
-            Dentry { 
-                inode_index: Index { sno: mount_to_sno, ino: mount_to.get_ino() },
-                name: self.name.clone(),
-                parent: self.parent.clone(),
-                children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
-                inode: SpinLock::new(Arc::downgrade(mount_to), "Dentry::inode"),
-                mount_to: SpinLock::new(None, "Dentry::mount_to"),
-            }
-        ));
+        *self.mount_to.lock() = Some(Arc::new(Dentry {
+            inode_index: Index {
+                sno: mount_to_sno,
+                ino: mount_to.get_ino(),
+            },
+            name: self.name.clone(),
+            parent: self.parent.clone(),
+            children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
+            inode: SpinLock::new(Arc::downgrade(mount_to), "Dentry::inode"),
+            mount_to: SpinLock::new(None, "Dentry::mount_to"),
+        }));
     }
 
     pub fn get_path(&self) -> String {
@@ -164,7 +175,7 @@ impl Dentry {
         self.get_inode().unlink(name)?;
 
         self.children.lock().remove(name);
-        
+
         Ok(())
     }
 
@@ -204,6 +215,12 @@ impl Dentry {
 
 impl Debug for Dentry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Dentry {{ sno: {}, ino: {}, name: {} }}", self.sno(), self.ino(), self.name)
+        write!(
+            f,
+            "Dentry {{ sno: {}, ino: {}, name: {} }}",
+            self.sno(),
+            self.ino(),
+            self.name
+        )
     }
 }

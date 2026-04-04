@@ -1,11 +1,11 @@
-use core::time::Duration;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::time::Duration;
 
 use crate::arch;
-use crate::kernel::errno::SysResult;
-use crate::driver::{Device, DeviceType, DriverOps, RTCDriverOps};
 use crate::driver::matcher::DriverMatcher;
+use crate::driver::{Device, DeviceType, DriverOps, RTCDriverOps};
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::{MapPerm, page};
 
 pub struct Driver {

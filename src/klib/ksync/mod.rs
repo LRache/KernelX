@@ -8,7 +8,7 @@ cfg_if::cfg_if! {
         mod mutex;
         mod spinlock;
         mod sleeplock;
-        
+
         #[cfg(feature = "deadlock-detect")]
         mod lockdep;
         #[cfg(feature = "deadlock-detect")]

@@ -1,20 +1,19 @@
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::time::Duration;
 
+use crate::fs::file::File;
+use crate::fs::{Dentry, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::main::deinit;
-use crate::kernel::scheduler::tid::Tid;
-use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::{self, manager, with_initpcb};
-use crate::kernel::scheduler::{Task, current, tid};
-use crate::kernel::scheduler;
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum};
-use crate::fs::file::File;
-use crate::fs::vfs;
-use crate::fs::Dentry;
+use crate::kernel::main::deinit;
+use crate::kernel::scheduler;
+use crate::kernel::scheduler::tid::Tid;
+use crate::kernel::scheduler::{Task, current, tid};
+use crate::kernel::task::def::TaskCloneFlags;
+use crate::kernel::task::{self, manager, with_initpcb};
 use crate::klib::{SleepLock, SpinLock};
 
 use super::tcb::TCB;
@@ -30,7 +29,7 @@ struct Signal {
 enum State {
     Running,
     Exited(u8),
-    Recycled
+    Recycled,
 }
 
 pub struct PCB {
@@ -79,11 +78,20 @@ impl PCB {
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
-            waited_children_time_usage: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::waited_children_time_usage"),
+            waited_children_time_usage: SpinLock::new(
+                (Duration::ZERO, Duration::ZERO),
+                "PCB::waited_children_time_usage",
+            ),
         })
     }
 
-    pub fn new_initprocess(initpath: &str, cwd: &str, argv: &[&str], envp: &[&str], tty: &str) -> SysResult<(Arc<PCB>, Arc<TCB>)> {
+    pub fn new_initprocess(
+        initpath: &str,
+        cwd: &str,
+        argv: &[&str],
+        envp: &[&str],
+        tty: &str,
+    ) -> SysResult<(Arc<PCB>, Arc<TCB>)> {
         let new_tid = tid::alloc();
 
         let cwd = vfs::load_dentry(cwd)?;
@@ -109,7 +117,10 @@ impl PCB {
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
-            waited_children_time_usage: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::waited_children_time_usage"),
+            waited_children_time_usage: SpinLock::new(
+                (Duration::ZERO, Duration::ZERO),
+                "PCB::waited_children_time_usage",
+            ),
         });
 
         let (first_task, exec_path) = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
@@ -128,7 +139,7 @@ impl PCB {
     }
 
     pub fn is_exited(&self) -> bool {
-         matches!(*self.state.lock(), State::Exited(_))
+        matches!(*self.state.lock(), State::Exited(_))
     }
 
     fn recycle(&self) -> Option<u8> {
@@ -166,8 +177,8 @@ impl PCB {
     }
 
     pub fn clone_task(
-        self: &Arc<Self>, 
-        tcb: &TCB, 
+        self: &Arc<Self>,
+        tcb: &TCB,
         userstack: usize,
         flags: &TaskCloneFlags,
         tls: Option<usize>,
@@ -197,13 +208,7 @@ impl PCB {
         }
     }
 
-    pub fn exec(
-        self: &Arc<Self>, 
-        tcb: &TCB, 
-        file: Arc<File>,
-        argv: &[&str], 
-        envp: &[&str]
-    ) -> SysResult<()> {        
+    pub fn exec(self: &Arc<Self>, tcb: &TCB, file: Arc<File>, argv: &[&str], envp: &[&str]) -> SysResult<()> {
         let (first_task, exec_path) = tcb.new_exec(file, argv, envp)?;
 
         {
@@ -235,12 +240,12 @@ impl PCB {
         }
 
         // crate::kinfo!("pcb {} exited with code {}", self.pid(), code);
-        
+
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|tcb| {
             tcb.set_dead();
         });
-        
+
         // NOTE: Dropping `tasks` here would release ownership of each TCB and
         // trigger their destructors, which may perform async I/O. That is not
         // permitted inside a scheduler context. Instead, we leave the TCBs alive
@@ -250,20 +255,22 @@ impl PCB {
 
         *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();
         *self.state.lock() = State::Exited(code);
-        
+
         if let Some(parent) = self.parent.lock().as_ref() {
             parent.waiting_task.lock().drain(..).for_each(|t| {
                 scheduler::wakeup_task(t, Event::Process { child: self.pid });
             });
-            
-            let fields = KSiFields::SigChld(SiSigChld { 
-                si_pid: self.pid, 
-                si_uid: current::uid(), 
-                si_status: code as i32, 
+
+            let fields = KSiFields::SigChld(SiSigChld {
+                si_pid: self.pid,
+                si_uid: current::uid(),
+                si_status: code as i32,
                 si_utime: 0,
-                si_stime: 0
+                si_stime: 0,
             });
-            parent.send_signal(signum::SIGCHLD, SiCode::SI_KERNEL, fields, None).unwrap_or(());
+            parent
+                .send_signal(signum::SIGCHLD, SiCode::SI_KERNEL, fields, None)
+                .unwrap_or(());
         }
 
         with_initpcb(|init_process| {
@@ -282,17 +289,17 @@ impl PCB {
             let children = self.children.lock();
             children.iter().find(|c| c.pid() == pid).cloned()
         };
-        
+
         if let Some(child) = child {
             if let Some(exit_code) = child.recycle() {
                 self.accumulate_waited_child(&child);
                 return Ok(Some(exit_code));
             }
-            
+
             if blocked {
                 loop {
                     self.waiting_task.lock().push(current::task().clone());
-                    
+
                     let event = current::block("wait_child");
                     match event {
                         Event::Process { child } => {
@@ -306,7 +313,7 @@ impl PCB {
                         _ => unreachable!("Unexpected event in wait_child: {:?}", event),
                     }
                 }
-                
+
                 let exit_code = if let Some(exit_code) = child.recycle() {
                     exit_code
                 } else {
@@ -322,7 +329,8 @@ impl PCB {
             } else {
                 return Ok(None);
             }
-        } else { // No child found
+        } else {
+            // No child found
             if blocked {
                 return Err(Errno::ECHILD);
             } else {
@@ -332,8 +340,6 @@ impl PCB {
     }
 
     pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, u8)>> {
-        
-    
         // if let Some(child) = children.iter().find(|c| c.is_exited()) {
         //     let pid = child.pid();
         //     if let Some(exit_code) = child.recycle() {
@@ -384,9 +390,7 @@ impl PCB {
                         continue; // The child process was recycled by other waiters
                     }
                 }
-                Event::Signal => {
-                    return Err(Errno::EINTR)
-                }
+                Event::Signal => return Err(Errno::EINTR),
                 _ => unreachable!(),
             }
         }

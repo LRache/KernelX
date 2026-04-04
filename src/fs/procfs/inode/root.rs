@@ -7,7 +7,8 @@ use crate::fs::procfs::inode::read_iter_text;
 use crate::fs::vfs::vfs;
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::scheduler::{tid::TID_START, Tid};
+use crate::kernel::scheduler::Tid;
+use crate::kernel::scheduler::tid::TID_START;
 use crate::kernel::task::manager;
 
 use super::{TaskDirInode, TaskDirSelfInode};
@@ -63,19 +64,35 @@ impl InodeOps for RootInode {
     fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
         const SPECIAL_ENTRIES: usize = 4; // ., .., self, mounts
         let d = match index {
-            0 => Some(DirResult { ino: Self::INO, name: ".".into(), file_type: FileType::Directory}),
-            1 => Some(DirResult { ino: Self::INO, name: "..".into(), file_type: FileType::Directory}),
-            2 => Some(DirResult { ino: TaskDirSelfInode::INO, name: "self".into(), file_type: FileType::Symlink}),
-            3 => Some(DirResult { ino: MountsInode::INO, name: "mounts".into(), file_type: FileType::Regular}),
-            i => {
-                manager::tcbs().lock().iter().nth(i - SPECIAL_ENTRIES).map(|(&pid, _)| {
-                    DirResult {
-                        ino: TaskDirInode::ino_from_tid(pid),
-                        name: pid.to_string(),
-                        file_type: FileType::Directory,
-                    }
-                })
-            }
+            0 => Some(DirResult {
+                ino: Self::INO,
+                name: ".".into(),
+                file_type: FileType::Directory,
+            }),
+            1 => Some(DirResult {
+                ino: Self::INO,
+                name: "..".into(),
+                file_type: FileType::Directory,
+            }),
+            2 => Some(DirResult {
+                ino: TaskDirSelfInode::INO,
+                name: "self".into(),
+                file_type: FileType::Symlink,
+            }),
+            3 => Some(DirResult {
+                ino: MountsInode::INO,
+                name: "mounts".into(),
+                file_type: FileType::Regular,
+            }),
+            i => manager::tcbs()
+                .lock()
+                .iter()
+                .nth(i - SPECIAL_ENTRIES)
+                .map(|(&pid, _)| DirResult {
+                    ino: TaskDirInode::ino_from_tid(pid),
+                    name: pid.to_string(),
+                    file_type: FileType::Directory,
+                }),
         };
 
         Ok(d.map(|r| (r, index + 1)))
@@ -141,10 +158,7 @@ impl InodeOps for MountsInode {
     }
 
     fn mode(&self) -> SysResult<Mode> {
-        Ok(Mode::S_IFREG
-            | Mode::S_IRUSR
-            | Mode::S_IRGRP
-            | Mode::S_IROTH)
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {

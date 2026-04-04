@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use crate::kernel::errno::SysResult;
 use crate::klib::SpinLock;
 
-use super::{InodeOps, Index};
+use super::{Index, InodeOps};
 
 pub struct Cache {
     cache: SpinLock<BTreeMap<Index, Arc<dyn InodeOps>>>,
@@ -23,7 +23,7 @@ impl Cache {
 
     // pub fn insert(&self, index: &Index, inode: Arc<dyn InodeOps>) -> SysResult<()> {
     //     let mut cache = self.cache.lock();
-        
+
     //     if cache.len() >= config::INODE_CACHE_SIZE {
     //         cache.retain(|_, inode| {
     //             Arc::strong_count(inode) > 1
@@ -34,9 +34,9 @@ impl Cache {
     //             return Err(Errno::ENOSPC);
     //         }
     //     }
-        
+
     //     cache.insert(*index, inode);
-        
+
     //     Ok(())
     // }
 

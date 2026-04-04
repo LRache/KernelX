@@ -232,7 +232,10 @@ impl MessagePipeInner {
             }
             self.read_waiter.lock().wait(
                 current::task().clone(),
-                Event::Poll { event: FileEvent::ReadReady, waker },
+                Event::Poll {
+                    event: FileEvent::ReadReady,
+                    waker,
+                },
             );
         }
 
@@ -245,7 +248,10 @@ impl MessagePipeInner {
             }
             self.write_waiter.lock().wait(
                 current::task().clone(),
-                Event::Poll { event: FileEvent::WriteReady, waker },
+                Event::Poll {
+                    event: FileEvent::WriteReady,
+                    waker,
+                },
             );
         }
 
@@ -279,13 +285,15 @@ impl MessagePipeInner {
         debug_assert!(*count > 0);
         *count -= 1;
         if *count == 0 {
-            self.read_waiter.lock().wake_all(|e| {
-                match e {
-                    Event::Poll { event: FileEvent::ReadReady, waker } => {
-                        Event::Poll { event: FileEvent::HangUp, waker }
-                    }
-                    _ => e,
-                }
+            self.read_waiter.lock().wake_all(|e| match e {
+                Event::Poll {
+                    event: FileEvent::ReadReady,
+                    waker,
+                } => Event::Poll {
+                    event: FileEvent::HangUp,
+                    waker,
+                },
+                _ => e,
             });
         }
     }

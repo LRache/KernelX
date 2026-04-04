@@ -1,14 +1,14 @@
-use alloc::sync::Arc;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 
 use crate::arch;
-use crate::kernel::errno::{SysResult, Errno};
 use crate::fs::filesystem::SuperBlockOps;
 use crate::fs::{InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
 use crate::klib::SpinLock;
 
-use super::inode::{InodeMeta, Inode as MemInode};
+use super::inode::{Inode as MemInode, InodeMeta};
 
 pub trait StaticFsInfo: Send + Sync + 'static {
     fn statfs_magic() -> u64;
@@ -29,7 +29,9 @@ impl SuperBlockInner {
     }
 
     pub fn alloc_inode<F>(&mut self, f: F) -> (u32, Arc<dyn InodeOps>)
-    where F: FnOnce(u32) -> Arc<dyn InodeOps> {
+    where
+        F: FnOnce(u32) -> Arc<dyn InodeOps>,
+    {
         let ino = self.max_inode;
         self.max_inode += 1;
         let inode = f(ino);
@@ -69,18 +71,15 @@ impl<T: StaticFsInfo> SuperBlock<T> {
             inner.lock().alloc_inode(|ino| {
                 Arc::new(MemInode::<T>::new(
                     ino,
-                    InodeMeta::new(
-                        Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap(),
-                        ino, 0
-                    ),
-                    inner.clone()
+                    InodeMeta::new(Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap(), ino, 0),
+                    inner.clone(),
                 ))
             });
         }
 
-        Self { 
-            inner, 
-            _marker: core::marker::PhantomData 
+        Self {
+            inner,
+            _marker: core::marker::PhantomData,
         }
     }
 
@@ -114,7 +113,8 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
 
         let inode: Arc<dyn InodeOps> = Arc::new(MemInode::<T>::new(
             ino,
-            InodeMeta::new(mode, ino, self.get_root_ino()), self.inner.clone()
+            InodeMeta::new(mode, ino, self.get_root_ino()),
+            self.inner.clone(),
         ));
         inner.insert_inode(ino, inode.clone());
 
@@ -131,5 +131,3 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
         Ok(statfs)
     }
 }
-
-

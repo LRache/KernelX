@@ -1,27 +1,23 @@
-mod virtio;
 mod device;
 mod driver;
-mod matcher;
 mod manager;
+mod matcher;
+mod virtio;
 
 pub mod block;
 pub mod char;
-pub mod rtc;
 pub mod chosen;
+pub mod rtc;
 
 use matcher::DriverMatcher;
 
 pub use device::{Device, DeviceType};
 pub use driver::*;
 
-pub use manager::{
-    get_block_driver,
-    register_matched_driver, found_device, 
-    handle_interrupt
-};
+pub use manager::{found_device, get_block_driver, handle_interrupt, register_matched_driver};
 // pub use fdt::load_device_tree;
 
 #[unsafe(link_section = ".text.init")]
-pub fn init() {    
+pub fn init() {
     matcher::register_matchers();
 }

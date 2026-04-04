@@ -1,9 +1,9 @@
-mod zero;
 mod null;
-mod urandom;
 mod rtc;
+mod urandom;
+mod zero;
 
-pub use zero::ZeroInode;
 pub use null::NullInode;
-pub use urandom::URandomInode;
 pub use rtc::RtcInode;
+pub use urandom::URandomInode;
+pub use zero::ZeroInode;

@@ -1,9 +1,9 @@
-mod fileop;
 mod charfile;
-mod file;
 mod dirresult;
+mod file;
+mod fileop;
 
-pub use fileop::{FileOps, SeekWhence};
-pub use file::*;
 pub use charfile::CharFile;
 pub use dirresult::DirResult;
+pub use file::*;
+pub use fileop::{FileOps, SeekWhence};
