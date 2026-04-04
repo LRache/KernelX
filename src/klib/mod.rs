@@ -7,6 +7,7 @@ pub mod initcell;
 pub mod random;
 pub mod defer;
 pub mod ring;
+pub mod dmesg;
 
 pub use ksync::SpinLock;
 pub use ksync::SleepLock;

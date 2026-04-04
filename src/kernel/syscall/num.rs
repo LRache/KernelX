@@ -252,6 +252,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         // Misc
         81  => misc::sync(0),
+        116 => misc::syslog(3),
         119 => misc::sched_setscheduler(3),
         120 => misc::sched_getscheduler(1),
         121 => misc::sched_getparam(2),

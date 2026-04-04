@@ -9,6 +9,7 @@ use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::uapi;
 use crate::klib::random::random;
+use crate::klib::dmesg;
 use crate::arch;
 
 pub fn rseq() -> Result<usize, Errno> {
@@ -316,4 +317,44 @@ pub fn sched_getparam(_pid: usize, uptr_param: UPtr<u32>) -> SyscallRet {
     // Write sched_priority = 0 (default for SCHED_OTHER)
     uptr_param.write(0)?;
     Ok(0)
+}
+
+#[derive(TryFromPrimitive)]
+#[repr(usize)]
+enum SyslogAction {
+    Read = 2,
+    ReadAll = 3,
+    ReadClear = 4,
+    Clear = 5,
+    SizeUnread = 9,
+    SizeBuffer = 10,
+}
+
+pub fn syslog(cmd: usize, ubuf: UBuffer, len: usize) -> SyscallRet {
+    match SyslogAction::try_from(cmd).map_err(|_| Errno::EINVAL)? {
+        SyslogAction::Read | SyslogAction::ReadAll => {
+            ubuf.should_not_null()?;
+            let mut buf = vec![0u8; len];
+            let n = dmesg::dmesg_read(&mut buf);
+            ubuf.write(0, &buf[..n])?;
+            Ok(n)
+        }
+        SyslogAction::ReadClear => {
+            ubuf.should_not_null()?;
+            let mut buf = vec![0u8; len];
+            let n = dmesg::dmesg_read_clear(&mut buf);
+            ubuf.write(0, &buf[..n])?;
+            Ok(n)
+        }
+        SyslogAction::Clear => {
+            dmesg::dmesg_clear();
+            Ok(0)
+        }
+        SyslogAction::SizeUnread => {
+            Ok(dmesg::dmesg_size_unread())
+        }
+        SyslogAction::SizeBuffer => {
+            Ok(dmesg::dmesg_size_buffer())
+        }
+    }
 }

@@ -15,7 +15,7 @@ pub const COLOR_BOLD: &str = "\x1b[1m";
 #[macro_export]
 macro_rules! kwarn {
     ($($arg:tt)*) => {
-        $crate::println!(
+        $crate::klogln!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_YELLOW,
@@ -42,7 +42,7 @@ macro_rules! kwarn {
 #[macro_export]
 macro_rules! kinfo {
     ($($arg:tt)*) => {
-        $crate::println!(
+        $crate::klogln!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_BLUE,
@@ -69,7 +69,7 @@ macro_rules! kinfo {
 #[macro_export]
 macro_rules! kdebug {
     ($($arg:tt)*) => {
-        $crate::println!(
+        $crate::klogln!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_CYAN,
@@ -95,7 +95,7 @@ macro_rules! kdebug {
 #[macro_export]
 macro_rules! ktrace {
     ($($arg:tt)*) => {
-        $crate::println!(
+        $crate::klogln!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_GREEN,
