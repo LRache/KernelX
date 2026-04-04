@@ -947,3 +947,36 @@ pub fn flock(fd: usize, _operation: usize) -> SyscallRet {
     let _file = current::fdtable().lock().get(fd)?;
     Ok(0)
 }
+
+pub fn mount(uptr_source: UString, uptr_target: UString, uptr_fstype: UString, _flags: usize, _data: usize) -> SyscallRet {
+    use crate::fs::devfs::devnode::BlockDevInode;
+
+    uptr_target.should_not_null()?;
+    uptr_fstype.should_not_null()?;
+
+    let target = uptr_target.read()?;
+    let fstype = uptr_fstype.read()?;
+
+    let device = if !uptr_source.is_null() {
+        let source = uptr_source.read()?;
+        // Resolve the source path to a block device inode
+        let dentry = vfs::load_dentry(&source)?;
+        let inode = dentry.get_inode();
+        if let Ok(blk_inode) = inode.downcast_arc::<BlockDevInode>() {
+            Some(blk_inode.driver().clone())
+        } else {
+            return Err(Errno::ENODEV);
+        }
+    } else {
+        None
+    };
+
+    vfs::mount(&target, &fstype, device)?;
+
+    Ok(0)
+}
+
+// TODO: Implement umount2 syscall
+pub fn umount2(_uptr_target: UString, _flags: usize) -> SyscallRet {
+    Err(Errno::ENOSYS)
+}

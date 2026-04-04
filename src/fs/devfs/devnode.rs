@@ -68,6 +68,10 @@ impl BlockDevInode {
     pub fn new(ino: u32, driver: Arc<dyn BlockDriverOps>) -> Self {
         Self { ino, driver }
     }
+
+    pub fn driver(&self) -> &Arc<dyn BlockDriverOps> {
+        &self.driver
+    }
 }
 
 impl InodeOps for BlockDevInode {

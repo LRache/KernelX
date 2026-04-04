@@ -186,6 +186,8 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         29  => fs::ioctl(3),
         32  => fs::flock(2),
         34  => fs::mkdirat(3),
+        39  => fs::umount2(2),
+        40  => fs::mount(5),
         35  => fs::unlinkat(3),
         36  => fs::symlinkat(3),
         37  => fs::linkat(4),
@@ -250,6 +252,10 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         // Misc
         81  => misc::sync(0),
+        119 => misc::sched_setscheduler(3),
+        120 => misc::sched_getscheduler(1),
+        121 => misc::sched_getparam(2),
+        122 => misc::sched_setaffinity(3),
         123 => misc::sched_getaffinity(3),
         160 => misc::newuname(1),
         165 => misc::getrusage(2),
@@ -280,6 +286,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         195 => ipc::shmctl(3),
         196 => ipc::shmat(3),
         197 => ipc::shmdt(1),
+        199 => ipc::socketpair(4),
 
         // Time
         101 => time::nanosleep(2),
@@ -289,6 +296,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         110 => time::timer_settime(4),
         111 => time::timer_delete(1),
         113 => time::clock_gettime(2),
+        114 => time::clock_getres(2),
         115 => time::clock_nanosleep(4),
         169 => time::gettimeofday(2),
 
