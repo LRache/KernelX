@@ -22,6 +22,7 @@ pub enum Errno {
     EISDIR  = 21,  // Is a directory
     EINVAL  = 22,  // Invalid argument
     EMFILE  = 24,  // Too many open files
+    ENOTTY  = 25,  // Not a typewriter (inappropriate ioctl)
     EFBIG   = 27,  // File too large
     ENOSPC  = 28,  // No space left on device
     ESPIPE  = 29,  // Illegal seek
@@ -29,7 +30,9 @@ pub enum Errno {
     EPIPE   = 32,  // Broken pipe
     ENOTEMPTY = 39,  // Directory not empty
     ENOSYS  = 38,  // Function not implemented
+    EAFNOSUPPORT = 97, // Address family not supported by protocol
     EOPNOTSUPP = 95, // Operation not supported on transport endpoint
+    EPROTONOSUPPORT = 93, // Protocol not supported
     ETIMEDOUT = 110, // Connection timed out
 }
 

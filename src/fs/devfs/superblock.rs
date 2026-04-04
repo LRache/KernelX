@@ -5,7 +5,9 @@ use crate::fs::devfs::devnode::CharDevInode;
 use crate::fs::{filesystem::FileSystemOps, memtreefs};
 use crate::klib::InitedCell;
 
-use super::{NullInode, ZeroInode,URandomInode};
+use crate::fs::{InodeOps, Mode};
+use crate::fs::memtreefs::inode::Inode as MemInode;
+use super::{NullInode, ZeroInode, URandomInode, RtcInode};
 
 struct DevfsInfo;
 impl memtreefs::StaticFsInfo for DevfsInfo {
@@ -34,6 +36,11 @@ pub fn init() {
     root.add_child("null".into(), Arc::new(NullInode::new(superblock.alloc_inode_number()))).unwrap();
     root.add_child("zero".into(), Arc::new(ZeroInode::new(superblock.alloc_inode_number()))).unwrap();
     root.add_child("urandom".into(), Arc::new(URandomInode::new(superblock.alloc_inode_number()))).unwrap();
+
+    // Create /dev/misc/ directory and add rtc
+    let misc_dir = root.create("misc", Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap()).unwrap();
+    let misc_dir = misc_dir.downcast_arc::<MemInode<DevfsInfo>>().ok().unwrap();
+    misc_dir.add_child("rtc".into(), Arc::new(RtcInode::new(superblock.alloc_inode_number()))).unwrap();
 
     DEV_SUPERBLOCK.init(Arc::new(superblock));
 }
