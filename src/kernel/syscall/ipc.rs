@@ -5,7 +5,7 @@ use bitflags::bitflags;
 
 use crate::kernel::config;
 use crate::kernel::event::{timer, Event};
-use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet};
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet, UnixSocket, SocketType};
 use crate::kernel::ipc::shm::{IpcGetFlag, IPC_RMID, IPC_SET, IPC_STAT};
 use crate::kernel::ipc::shm;
 use crate::kernel::scheduler::{current, Tid};
@@ -45,6 +45,51 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     }
 
     uptr_pipefd.write(0, &[read_fd as i32, write_fd as i32])?;
+
+    Ok(0)
+}
+
+const AF_UNIX: usize = 1;
+const SOCK_STREAM: usize = 1;
+const SOCK_DGRAM: usize = 2;
+const SOCK_SEQPACKET: usize = 5;
+const SOCK_NONBLOCK: usize = 0x800;
+const SOCK_CLOEXEC: usize = 0x80000;
+
+pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UArray<i32>) -> SyscallRet {
+    if domain != AF_UNIX {
+        return Err(Errno::EAFNOSUPPORT);
+    }
+    if protocol != 0 {
+        return Err(Errno::EPROTONOSUPPORT);
+    }
+
+    let flags = sock_type & (SOCK_NONBLOCK | SOCK_CLOEXEC);
+    let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
+
+    let socket_type = match base_type {
+        SOCK_STREAM => SocketType::Stream,
+        SOCK_DGRAM => SocketType::Dgram,
+        SOCK_SEQPACKET => SocketType::SeqPacket,
+        _ => return Err(Errno::EINVAL),
+    };
+
+    let blocked = flags & SOCK_NONBLOCK == 0;
+    let cloexec = flags & SOCK_CLOEXEC != 0;
+    let fd_flags = FDFlags { cloexec };
+
+    let (sock_a, sock_b) = UnixSocket::create_pair(socket_type, blocked);
+    let sock_a = Arc::new(sock_a);
+    let sock_b = Arc::new(sock_b);
+
+    let (fd_a, fd_b);
+    {
+        let mut fdtable = current::fdtable().lock();
+        fd_a = fdtable.push(sock_a, fd_flags)?;
+        fd_b = fdtable.push(sock_b, fd_flags)?;
+    }
+
+    uptr_sv.write(0, &[fd_a as i32, fd_b as i32])?;
 
     Ok(0)
 }
