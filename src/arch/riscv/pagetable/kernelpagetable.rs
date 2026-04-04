@@ -17,7 +17,6 @@ static KERNEL_SATP: InitedCell<usize> = InitedCell::uninit();
 
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
-    kinfo!("root=0x{:x}, offset=0x{:x}", unsafe { __riscv_kpgtable_root }, core::ptr::addr_of!(__riscv_kaddr_offset) as usize);
     let mut pagetable = PageTable::from_root(unsafe { __riscv_kpgtable_root });
 
     pagetable.mmap(
