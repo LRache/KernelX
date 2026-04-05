@@ -18,3 +18,7 @@ cfg_if::cfg_if! {
         pub use sleeplock::SleepLock;
     }
 }
+
+mod tasklocal;
+
+pub use tasklocal::TaskLocal;
