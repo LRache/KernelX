@@ -244,8 +244,11 @@ impl TCB {
     ) -> Arc<Self> {
         let mut new_user_context = self.user_context().new_clone();
 
-        let new_addrspace = if flags.vm {
+        if userstack != 0 {
             new_user_context.set_user_stack_top(userstack);
+        }
+
+        let new_addrspace = if flags.vm {
             self.addrspace.clone()
         } else {
             let addrspace = self.addrspace.fork();
