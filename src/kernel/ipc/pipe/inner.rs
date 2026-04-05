@@ -2,6 +2,7 @@ use crate::arch;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
+use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::page;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
@@ -101,7 +102,6 @@ impl FIFO {
             }
             self.length += max_to_push;
         }
-        // kinfo!("head={}, tail={}, ubuf.len={}", self.head, self.tail, ubuf.length());
 
         Ok(n)
     }
@@ -218,6 +218,7 @@ impl PipeInner {
 
     pub fn write(&self, buf: &[u8], blocked: bool) -> SysResult<usize> {
         if *self.reader_count.lock() == 0 {
+            let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, KSiFields::Empty, None);
             return Err(Errno::EPIPE);
         }
 
@@ -271,6 +272,7 @@ impl PipeInner {
 
     pub fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, blocked: bool) -> SysResult<usize> {
         if *self.reader_count.lock() == 0 {
+            let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, KSiFields::Empty, None);
             return Err(Errno::EPIPE);
         }
 
