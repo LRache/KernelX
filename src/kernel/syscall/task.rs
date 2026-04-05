@@ -34,6 +34,12 @@ pub fn getppid() -> SyscallRet {
     Ok(ppid as usize)
 }
 
+pub fn setpgid(pid: usize, pgid: usize) -> SyscallRet {
+    let _ = pid;
+    let _ = pgid;
+    Ok(0)
+}
+
 pub fn setsid() -> SyscallRet {
     let pcb = current::pcb();
     // pcb.set_sid();
@@ -175,14 +181,14 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
             wait_pid = result.0;
             exit_code = result.1 as usize;
         } else {
-            return Ok(usize::MAX);
+            return Ok(0);
         }
     } else {
         if let Some(result) = pcb.wait_child(pid as i32, !options.contains(WaitOptions::WNOHANG))? {
             wait_pid = pid as i32;
             exit_code = result as usize;
         } else {
-            return Ok(usize::MAX);
+            return Ok(0);
         }
     }
 

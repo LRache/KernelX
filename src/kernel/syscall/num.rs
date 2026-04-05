@@ -230,6 +230,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         151 => task::setfsuid(1),
         152 => task::setfsgid(1),
         153 => misc::times(1),
+        154 => task::setpgid(2),
         157 => task::setsid(0),
         172 => task::getpid(0),
         173 => task::getppid(0),
