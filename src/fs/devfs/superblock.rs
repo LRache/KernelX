@@ -1,14 +1,15 @@
-use crate::driver::{DeviceType, DriverOps};
-use crate::fs::devfs::devnode::CharDevInode;
-use crate::fs::filesystem::FileSystemOps;
-use crate::fs::memtreefs;
-use crate::klib::InitedCell;
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use super::{NullInode, RtcInode, URandomInode, ZeroInode};
+use crate::driver::{DeviceType, DriverOps};
+use crate::fs::devfs::devnode::CharDevInode;
+use crate::fs::filesystem::FileSystemOps;
 use crate::fs::memtreefs::inode::Inode as MemInode;
-use crate::fs::{InodeOps, Mode};
+use crate::fs::{InodeOps, Mode, memtreefs};
+use crate::klib::InitedCell;
+
+use super::{LoopInode, NullInode, RtcInode, URandomInode, ZeroInode};
 
 struct DevfsInfo;
 impl memtreefs::StaticFsInfo for DevfsInfo {
@@ -56,6 +57,15 @@ pub fn init() {
     misc_dir
         .add_child("rtc".into(), Arc::new(RtcInode::new(superblock.alloc_inode_number())))
         .unwrap();
+
+    // Create /dev/loop0 .. /dev/loop15
+    for i in 0..16 {
+        root.add_child(
+            format!("loop{}", i),
+            Arc::new(LoopInode::new(superblock.alloc_inode_number(), i)),
+        )
+        .unwrap();
+    }
 
     DEV_SUPERBLOCK.init(Arc::new(superblock));
 }

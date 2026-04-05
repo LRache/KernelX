@@ -1,8 +1,10 @@
+mod loop_dev;
 mod null;
 mod rtc;
 mod urandom;
 mod zero;
 
+pub use loop_dev::LoopInode;
 pub use null::NullInode;
 pub use rtc::RtcInode;
 pub use urandom::URandomInode;
