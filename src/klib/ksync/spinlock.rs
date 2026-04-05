@@ -1,3 +1,4 @@
+#[cfg(feature = "deadlock-detect")]
 use crate::kernel::scheduler::current;
 
 use super::locker::LockerTrait;
@@ -24,6 +25,7 @@ impl SpinLocker {
 
 impl LockerTrait for SpinLocker {
     fn try_lock(&self, name: &'static str) -> bool {
+        let _ = name;
         #[cfg(feature = "no-smp")]
         unsafe {
             if *self.lock.get() {
@@ -49,6 +51,7 @@ impl LockerTrait for SpinLocker {
     fn spin(&self) {}
 
     fn lock(&self, name: &'static str) {
+        let _ = name;
         #[cfg(feature = "no-smp")]
         unsafe {
             if *self.lock.get() {
@@ -74,6 +77,7 @@ impl LockerTrait for SpinLocker {
     }
 
     fn unlock(&self, name: &'static str) {
+        let _ = name;
         #[cfg(feature = "no-smp")]
         unsafe {
             *self.lock.get() = false;

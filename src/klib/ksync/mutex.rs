@@ -8,6 +8,7 @@ use spin::mutex::SpinMutex;
 
 #[cfg(feature = "deadlock-detect")]
 use crate::kernel::scheduler::current;
+#[cfg(feature = "deadlock-detect")]
 use crate::klib::backtrace;
 
 use super::locker::LockerTrait;
@@ -40,7 +41,7 @@ pub struct Mutex<T, R: LockerTrait> {
     data: UnsafeCell<T>,
     locker: R,
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "deadlock-detect")]
     name: &'static str,
 
     /// TID of the task currently holding this lock (-1 = unlocked).
@@ -59,7 +60,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             data: UnsafeCell::new(data),
             locker,
 
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "deadlock-detect")]
             name,
 
             #[cfg(feature = "deadlock-detect")]
@@ -67,6 +68,17 @@ impl<T, R: LockerTrait> Mutex<T, R> {
 
             #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
             acquire_bt: SpinMutex::new(None),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        #[cfg(feature = "deadlock-detect")]
+        {
+            self.name
+        }
+        #[cfg(not(feature = "deadlock-detect"))]
+        {
+            ""
         }
     }
 
@@ -79,14 +91,14 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             lockdep::on_acquire(task.lockstate().held(), self.name);
         }
 
-        if !self.locker.try_lock(&self.name) {
+        if !self.locker.try_lock(&self.name()) {
             #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
             if current::has_task() {
                 current::task()
                     .lockstate()
-                    .set_waiting(Some((self.name, self.acquire_bt.lock().clone().unwrap())));
+                    .set_waiting(Some((self.name(), self.acquire_bt.lock().clone().unwrap())));
             }
-            while !self.locker.try_lock(&self.name) {
+            while !self.locker.try_lock(&self.name()) {
                 self.locker.spin();
             }
         }
@@ -124,7 +136,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             *self.acquire_bt.lock() = None;
         }
 
-        self.locker.unlock(self.name);
+        self.locker.unlock(self.name());
     }
 
     pub fn is_locked(&self) -> bool {
