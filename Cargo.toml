@@ -44,3 +44,6 @@ lwext4_rust = { path = "./lib/lwext4_rust" }
 
 [build-dependencies]
 cc = "1.0"
+
+[lints.rust]
+unused_must_use = "deny"

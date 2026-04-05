@@ -21,7 +21,7 @@ impl<T: Copy> WaitQueueItem<T> {
     }
 
     fn wakeup(self, e: Event) {
-        scheduler::wakeup_task(self.task, e);
+        let _ = scheduler::wakeup_task(self.task, e);
     }
 }
 

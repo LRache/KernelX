@@ -74,7 +74,7 @@ pub fn add_timer(task: Arc<dyn Task>, time: Duration) -> u64 {
     TIMER.add_timer(
         time,
         Box::new(move || {
-            scheduler::wakeup_task(task, Event::Timeout);
+            let _ = scheduler::wakeup_task(task, Event::Timeout);
         }),
     )
 }

@@ -45,7 +45,7 @@ impl Futex {
             if (item.bitset & mask) != 0 {
                 let item = cursor.remove_current().unwrap();
 
-                scheduler::wakeup_task(item.tcb.clone(), Event::Futex);
+                let _ = scheduler::wakeup_task(item.tcb.clone(), Event::Futex);
 
                 woken += 1;
                 if woken >= num {
