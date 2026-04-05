@@ -4,8 +4,7 @@ use core::cell::UnsafeCell;
 
 use crate::arch::KernelContext;
 use crate::kernel::event::Event;
-use crate::kernel::scheduler;
-use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, current, tid};
+use crate::kernel::scheduler::{self, KernelStack, Task, TaskState, Tid, WakeupFailure, current, tid};
 use crate::kernel::task::TCB;
 use crate::klib::SpinLock;
 
@@ -116,14 +115,17 @@ impl Task for KThread {
         *state = TaskState::Ready;
     }
 
-    fn wakeup(&self, event: Event) -> bool {
+    fn wakeup(&self, event: Event) -> Result<(), WakeupFailure> {
         let mut state = self.state.lock();
-        if *state != TaskState::Blocked {
-            return false;
+        match *state {
+            TaskState::Blocked => {
+                *state = TaskState::Ready;
+                *self.wakeup_event.lock() = Some(event);
+                Ok(())
+            }
+            TaskState::BlockedUninterruptible => Err(WakeupFailure::BlockedUninterruptible),
+            _ => Err(WakeupFailure::NotBlocked),
         }
-        *state = TaskState::Ready;
-        *self.wakeup_event.lock() = Some(event);
-        true
     }
 
     fn wakeup_uninterruptible(&self, event: Event) -> bool {

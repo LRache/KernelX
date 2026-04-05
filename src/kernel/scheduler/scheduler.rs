@@ -5,7 +5,7 @@ use spin::Mutex;
 use crate::arch;
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::task::Task;
-use crate::kernel::scheduler::{Tid, current, watchdog};
+use crate::kernel::scheduler::{Tid, WakeupFailure, current, watchdog};
 
 use super::processor::Processor;
 
@@ -48,13 +48,10 @@ pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &str) {
     watchdog::add_blocked_task(task);
 }
 
-pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> bool {
-    if task.wakeup(event) {
+pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> Result<(), WakeupFailure> {
+    task.wakeup(event).map(|_| {
         push_task(task);
-        true
-    } else {
-        false
-    }
+    })
 }
 
 pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) -> bool {

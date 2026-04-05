@@ -58,6 +58,14 @@ impl Drop for KernelStack {
 unsafe impl Send for KernelStack {}
 unsafe impl Sync for KernelStack {}
 
+pub enum WakeupFailure {
+    /// The task is not blocked.
+    NotBlocked,
+
+    /// The task is blocked, but the event it is waiting for does not match the given event.
+    BlockedUninterruptible,
+}
+
 pub trait Task: Send + Sync {
     fn tid(&self) -> Tid;
     fn kcontext(&self) -> &mut arch::KernelContext;
@@ -70,7 +78,7 @@ pub trait Task: Send + Sync {
     fn block_uninterruptible(&self, reason: &str) -> bool;
     fn unblock(&self);
 
-    fn wakeup(&self, event: Event) -> bool;
+    fn wakeup(&self, event: Event) -> Result<(), WakeupFailure>;
     fn wakeup_uninterruptible(&self, event: Event) -> bool;
     fn take_wakeup_event(&self) -> Option<Event>;
 

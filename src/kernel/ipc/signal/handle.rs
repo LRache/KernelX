@@ -6,7 +6,7 @@ use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
 use crate::kernel::mm::vdso;
-use crate::kernel::scheduler::Tid;
+use crate::kernel::scheduler::{Tid, WakeupFailure};
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::{config, scheduler};
 
@@ -28,9 +28,7 @@ impl TCB {
 
         if signum.is_kill() {
             self.parent().exit(128 + signum.num() as u8);
-            // current::schedule();
-
-            // unreachable!();
+            return;
         }
 
         let (action, stack) = {
@@ -42,9 +40,7 @@ impl TCB {
             match signum.default_action() {
                 SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
                     self.parent().exit(128 + signum.num() as u8);
-                    // current::schedule();
-
-                    // unreachable!();
+                    return;
                 }
                 _ => return,
             }
@@ -59,13 +55,23 @@ impl TCB {
         }
         self.set_signal_mask(new_mask);
 
+        let user_context = self.user_context();
+
+        if action.flags.contains(SignalActionFlags::SA_RESTART) {
+            // skipped in syscall return, move back
+            if let Some(retreg) = self.pop_ucontext_syscall_retreg() {
+                user_context.move_back_to_syscall_instruction();
+                user_context.set_syscall_retval(retreg);
+            }
+        }
+
         let mut sigframe = SigFrame::empty();
         sigframe.info.si_signo = Into::<u32>::into(signum) as i32;
         sigframe.info.si_code = signal.si_code;
         sigframe.info.fields = signal.fields.into();
         sigframe.info.si_errno = 0;
         sigframe.ucontext.uc_sigmask = old_mask;
-        sigframe.ucontext.uc_mcontext = (*self.user_context()).into();
+        sigframe.ucontext.uc_mcontext = (*user_context).into();
 
         let mut stack_top = if action.flags.contains(SignalActionFlags::SA_ONSTACK) {
             match stack {
@@ -81,7 +87,8 @@ impl TCB {
             .copy_to_user(stack_top, sigframe)
             .expect("Failed to copy sigframe to user stack");
 
-        self.user_context()
+        let user_context = self.user_context();
+        user_context
             .set_sigaction_restorer(vdso::addr_of("sigreturn_trampoline") + config::VDSO_BASE)
             .set_arg(0, signum.into())
             .set_user_entry(action.handler)
@@ -90,7 +97,7 @@ impl TCB {
         if action.flags.contains(SignalActionFlags::SA_SIGINFO) {
             let siginfo_uaddr = stack_top + core::mem::offset_of!(SigFrame, info);
             let ucontext_uaddr = stack_top + core::mem::offset_of!(SigFrame, ucontext);
-            self.user_context().set_arg(1, siginfo_uaddr).set_arg(2, ucontext_uaddr);
+            user_context.set_arg(1, siginfo_uaddr).set_arg(2, ucontext_uaddr);
         }
     }
 
@@ -117,9 +124,11 @@ impl TCB {
             state.signal_to_wait = SignalSet::empty();
             drop(state);
 
-            scheduler::wakeup_task(self.clone(), Event::WaitSignal { signum });
-
-            return true;
+            match scheduler::wakeup_task(self.clone(), Event::WaitSignal { signum }) {
+                Ok(()) => return true,
+                Err(WakeupFailure::NotBlocked) => return false,
+                Err(WakeupFailure::BlockedUninterruptible) => return false,
+            }
         }
 
         if state.pending_signal.is_some() {
@@ -130,7 +139,10 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
 
-            return scheduler::wakeup_task(self.clone(), Event::Signal);
+            return match scheduler::wakeup_task(self.clone(), Event::Signal) {
+                Ok(()) | Err(WakeupFailure::NotBlocked) => true,
+                Err(WakeupFailure::BlockedUninterruptible) => false,
+            };
         }
 
         let mask = self.get_signal_mask();
@@ -138,7 +150,10 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
 
-            scheduler::wakeup_task(self.clone(), Event::Signal)
+            return match scheduler::wakeup_task(self.clone(), Event::Signal) {
+                Ok(()) | Err(WakeupFailure::NotBlocked) => true,
+                Err(WakeupFailure::BlockedUninterruptible) => false,
+            };
         } else {
             false
         }
@@ -158,6 +173,7 @@ impl TCB {
             .lock()
             .pop_pending(*self.signal_mask.lock(), self.tid())
         {
+            crate::kinfo!("Received pending signal from parent: {:?}", signal);
             state.pending_signal = Some(signal);
         }
     }

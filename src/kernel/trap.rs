@@ -1,5 +1,6 @@
 use crate::arch::UserContextTrait;
 use crate::driver;
+use crate::kernel::errno::Errno;
 use crate::kernel::event::timer;
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::MemAccessType;
@@ -38,6 +39,8 @@ pub fn trap_return() {
         );
     }
 
+    tcb.pop_ucontext_syscall_retreg();
+
     if tcb.state_dead_to_exited() {
         current::schedule();
     }
@@ -51,13 +54,21 @@ pub fn timer_interrupt() {
     }
 }
 
-pub fn syscall(num: usize, args: &syscall::Args) -> usize {
-    let ret = match syscall::syscall(num, args) {
+pub fn syscall(num: usize, args: &syscall::Args, ret_arg_value: usize) -> usize {
+    let tcb = current::tcb();
+
+    let ret = syscall::syscall(num, args);
+
+    if ret == Err(Errno::EINTR) {
+        tcb.push_ucontext_syscall_retreg(Some(ret_arg_value));
+    }
+
+    let ret = match ret {
         Ok(ret) => ret,
         Err(errno) => -(errno as isize) as usize,
     };
 
-    current::tcb().user_context().skip_syscall_instruction();
+    tcb.user_context().skip_syscall_instruction();
 
     current::schedule();
 
@@ -68,7 +79,6 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
     let fixed = current::addrspace().try_to_fix_memory_fault(addr, access_type);
 
     if !fixed {
-        // kwarn!("Failed to fix memory fault at address: {:#x}, access_type={:?}, pc={:#x}, tid={}, KILLED", addr, access_type, crate::arch::get_user_pc(), current::tid());
         // TODO: Implement the sicode and fields for memory fault
         current::pcb()
             .send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, KSiFields::Empty, None)
@@ -91,6 +101,5 @@ pub fn memory_misaligned() {
 }
 
 pub fn external_interrupt(irq: u32) {
-    // kinfo!("External interrupt occurred: irq={}", irq);
     driver::handle_interrupt(irq);
 }

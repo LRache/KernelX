@@ -4,27 +4,19 @@ use crate::arch::riscv::csr::*;
 use crate::arch::riscv::{TRAMPOLINE_BASE, UserContext, plic};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
-use crate::kernel::{syscall, trap};
+use crate::kernel::trap;
 use crate::kinfo;
 
 fn handle_syscall() {
     let tcb = current::tcb();
 
-    tcb.with_user_context_mut(|user_context| {
-        let syscall_args: syscall::Args = [
-            user_context.gpr[10], // a0
-            user_context.gpr[11], // a1
-            user_context.gpr[12], // a2
-            user_context.gpr[13], // a3
-            user_context.gpr[14], // a4
-            user_context.gpr[15], // a5
-            user_context.gpr[16], // a6
-        ];
+    let user_context = tcb.user_context();
 
-        let syscall_num = user_context.gpr[17]; // a7
-
-        user_context.gpr[10] = trap::syscall(syscall_num, &syscall_args) as usize;
-    });
+    user_context.gpr[10] = trap::syscall(
+        user_context.gpr[17],
+        &user_context.gpr[10..17].try_into().unwrap(),
+        user_context.gpr[10],
+    ) as usize;
 }
 
 fn handle_external_interrupt() {
@@ -83,7 +75,9 @@ pub fn usertrap_handler() -> ! {
 
     match scause::cause() {
         scause::Cause::Trap(trap) => match trap {
-            scause::Trap::EcallU => handle_syscall(),
+            scause::Trap::EcallU => {
+                handle_syscall();
+            }
             scause::Trap::InstPageFault => {
                 let addr = stval::read();
                 if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {

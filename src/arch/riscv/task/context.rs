@@ -16,6 +16,7 @@ pub struct UserContext {
     /* 37 */ pub fpregs: [u64; 33], // Floating point registers and fcsr
     pub user_entry: usize, // User program entry point
 
+    /* SHOULD NOT be accessed at ASM */
     pub fpregs_dirty: bool, // Whether the floating point registers have been used/modified
 }
 
@@ -96,8 +97,16 @@ impl UserContextTrait for UserContext {
         self.user_entry += 4; // Skip ecall instruction
     }
 
+    fn move_back_to_syscall_instruction(&mut self) {
+        self.user_entry -= 4; // Move back to ecall instruction
+    }
+
     fn set_tls(&mut self, tls: usize) {
         self.gpr[4] = tls; // tp
+    }
+
+    fn set_syscall_retval(&mut self, retval: usize) {
+        self.gpr[10] = retval; // a0
     }
 }
 

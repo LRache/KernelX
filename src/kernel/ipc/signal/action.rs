@@ -22,7 +22,7 @@ bitflags! {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SignalAction {
     pub handler: usize,
     pub mask: SignalSet,

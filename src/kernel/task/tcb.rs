@@ -14,13 +14,14 @@ use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::{PendingSignal, SignalSet};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::mm::{AddrSpace, elf};
-use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, current};
+use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, WakeupFailure, current};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::task::{PCB, manager};
 use crate::kernel::usync::futex;
 use crate::kernel::{config, scheduler};
 use crate::klib::SpinLock;
+use crate::klib::ksync::TaskLocal;
 use crate::{arch, ktrace};
 
 #[derive(Debug, Clone, Copy)]
@@ -77,6 +78,7 @@ pub struct TCB {
     fdtable: Arc<SpinLock<FDTable>>,
 
     pub signal_mask: SpinLock<SignalSet>,
+    ucontext_syscall_retreg_backup: TaskLocal<Option<usize>>,
 
     state: SpinLock<TaskStateSet>,
     pub wakeup_event: SpinLock<Option<Event>>,
@@ -123,6 +125,7 @@ impl TCB {
             fdtable,
 
             signal_mask: SpinLock::new(SignalSet::empty(), "TCB::signal_mask"),
+            ucontext_syscall_retreg_backup: TaskLocal::new(tid, None),
 
             state: SpinLock::new(TaskStateSet::default(), "TCB::state"),
             wakeup_event: SpinLock::new(None, "TCB::wakeup_event"),
@@ -204,6 +207,7 @@ impl TCB {
                 readable: true,
                 writable: true,
                 blocked: true,
+                append: false,
             },
             &Perm::new(PermFlags::R | PermFlags::W),
         )
@@ -341,14 +345,6 @@ impl TCB {
         &self.parent
     }
 
-    pub fn with_user_context_mut<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut UserContext) -> R,
-    {
-        let user_context = unsafe { self.user_context_ptr.as_mut().unwrap() };
-        f(user_context)
-    }
-
     pub fn user_context(&self) -> &mut UserContext {
         unsafe { self.user_context_ptr.as_mut().unwrap() }
     }
@@ -464,6 +460,14 @@ impl TCB {
             scheduler::wakeup_task_uninterruptible(parent, Event::VFork);
         }
     }
+
+    pub fn push_ucontext_syscall_retreg(&self, retval: Option<usize>) {
+        self.ucontext_syscall_retreg_backup.set(retval);
+    }
+
+    pub fn pop_ucontext_syscall_retreg(&self) -> Option<usize> {
+        self.ucontext_syscall_retreg_backup.get_mut().take()
+    }
 }
 
 impl Task for TCB {
@@ -536,14 +540,17 @@ impl Task for TCB {
         state.state = TaskState::Running;
     }
 
-    fn wakeup(&self, event: Event) -> bool {
+    fn wakeup(&self, event: Event) -> Result<(), WakeupFailure> {
         let mut state = self.state.lock();
-        if state.state != TaskState::Blocked {
-            return false;
+        match state.state {
+            TaskState::Blocked => {
+                state.state = TaskState::Ready;
+                *self.wakeup_event.lock() = Some(event);
+                Ok(())
+            }
+            TaskState::BlockedUninterruptible => Err(WakeupFailure::BlockedUninterruptible),
+            _ => Err(WakeupFailure::NotBlocked),
         }
-        state.state = TaskState::Ready;
-        *self.wakeup_event.lock() = Some(event);
-        true
     }
 
     fn wakeup_uninterruptible(&self, event: Event) -> bool {

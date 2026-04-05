@@ -86,7 +86,10 @@ pub trait UserContextTrait: Clone {
     fn set_user_entry(&mut self, entry: usize) -> &mut Self;
     fn get_user_entry(&self) -> usize;
     fn skip_syscall_instruction(&mut self);
+    fn move_back_to_syscall_instruction(&mut self);
     fn set_tls(&mut self, tls: usize);
+
+    fn set_syscall_retval(&mut self, retval: usize);
 }
 
 pub struct Arch;
