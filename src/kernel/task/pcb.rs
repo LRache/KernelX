@@ -340,16 +340,12 @@ impl PCB {
     }
 
     pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, u8)>> {
-        // if let Some(child) = children.iter().find(|c| c.is_exited()) {
-        //     let pid = child.pid();
-        //     if let Some(exit_code) = child.recycle() {
-        //         children.retain(|c| c.pid() != pid);
-        //         return Ok(Some((pid, exit_code)));
-        //     }
-        // }
-
         if let Some(child) = {
             let mut children = self.children.lock();
+            if children.is_empty() {
+                return Err(Errno::ECHILD);
+            }
+
             if let Some(pos) = children.iter().position(|c| c.is_exited()) {
                 Some(children.swap_remove(pos))
             } else {
