@@ -236,8 +236,26 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         Ok(self.meta.lock().mode)
     }
 
+    fn chmod(&self, mode: Mode) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        let file_type = meta.mode & Mode::S_IFMT;
+        meta.mode = file_type | (mode & !Mode::S_IFMT);
+        Ok(())
+    }
+
     fn owner(&self) -> SysResult<(Uid, Uid)> {
         Ok(self.meta.lock().owner)
+    }
+
+    fn chown(&self, uid: Option<Uid>, gid: Option<Uid>) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if let Some(uid) = uid {
+            meta.owner.0 = uid;
+        }
+        if let Some(gid) = gid {
+            meta.owner.1 = gid;
+        }
+        Ok(())
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
@@ -267,6 +285,29 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
 
         Ok(kstat)
+    }
+
+    fn truncate(&self, new_size: u64) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if let Meta::File(ref mut file_meta) = meta.meta {
+            let new_size = new_size as usize;
+            let new_pages = (new_size + arch::PGSIZE - 1) / arch::PGSIZE;
+
+            if new_size > file_meta.filesize {
+                // Extend: allocate new zero pages as needed
+                while file_meta.pages.len() < new_pages {
+                    file_meta.pages.push(PhysPageFrame::alloc_zeroed());
+                }
+            } else {
+                // Shrink: drop excess pages
+                file_meta.pages.truncate(new_pages);
+            }
+
+            file_meta.filesize = new_size;
+            Ok(())
+        } else {
+            Err(Errno::EISDIR)
+        }
     }
 
     fn update_atime(&self, time: &Duration) -> SysResult<()> {
