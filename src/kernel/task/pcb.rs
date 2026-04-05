@@ -258,7 +258,7 @@ impl PCB {
 
         if let Some(parent) = self.parent.lock().as_ref() {
             parent.waiting_task.lock().drain(..).for_each(|t| {
-                scheduler::wakeup_task(t, Event::Process { child: self.pid });
+                let _ = scheduler::wakeup_task(t, Event::Process { child: self.pid });
             });
 
             let fields = KSiFields::SigChld(SiSigChld {
