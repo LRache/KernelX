@@ -395,18 +395,23 @@ impl Manager {
         }
     }
 
-    pub fn increase_userbrk(&mut self, new_ubrk: usize) -> Result<usize, Errno> {
+    pub fn increase_userbrk(&mut self, new_ubrk: usize, pagetable: &SpinLock<PageTable>) -> Result<usize, Errno> {
         if new_ubrk == 0 {
             return Ok(self.userbrk.ubrk);
         }
 
-        if new_ubrk < self.userbrk.ubrk {
-            return Ok(self.userbrk.ubrk); // Do not support shrinking brk for simplicity
+        if new_ubrk < config::USER_BRK_BASE {
+            return Ok(self.userbrk.ubrk);
         }
 
-        let new_page_count = (new_ubrk - config::USER_BRK_BASE + arch::PGSIZE - 1) / arch::PGSIZE;
+        let new_page_count = if new_ubrk == config::USER_BRK_BASE {
+            0
+        } else {
+            (new_ubrk - config::USER_BRK_BASE + arch::PGSIZE - 1) / arch::PGSIZE
+        };
 
         if new_page_count > self.userbrk.page_count {
+            // Growing: map new pages
             let ubase = config::USER_BRK_BASE + self.userbrk.page_count * arch::PGSIZE;
             let new_area = Box::new(AnonymousArea::new(
                 ubase,
@@ -416,10 +421,14 @@ impl Manager {
             ));
 
             self.map_area(ubase, new_area);
-
-            self.userbrk.page_count = new_page_count;
+        } else if new_page_count < self.userbrk.page_count {
+            // Shrinking: unmap released pages
+            let unmap_base = config::USER_BRK_BASE + new_page_count * arch::PGSIZE;
+            let unmap_count = self.userbrk.page_count - new_page_count;
+            let _ = self.unmap_area(unmap_base, unmap_count, pagetable);
         }
 
+        self.userbrk.page_count = new_page_count;
         self.userbrk.ubrk = new_ubrk;
 
         Ok(self.userbrk.ubrk)

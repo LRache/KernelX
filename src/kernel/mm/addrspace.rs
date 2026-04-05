@@ -136,7 +136,7 @@ impl AddrSpace {
 
     pub fn increase_userbrk(&self, ubrk: usize) -> Result<usize, Errno> {
         let mut map_manager = self.map_manager.lock();
-        map_manager.increase_userbrk(ubrk)
+        map_manager.increase_userbrk(ubrk, &self.pagetable)
     }
 
     pub fn translate_write(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
