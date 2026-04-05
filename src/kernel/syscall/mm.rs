@@ -73,10 +73,6 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
     }
 
     let mut area: Box<dyn Area> = if flags.contains(MMapFlags::ANONYMOUS) {
-        if fd != usize::MAX {
-            return Err(Errno::EINVAL);
-        }
-
         let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
         let shared = flags.contains(MMapFlags::SHARED);
         Box::new(AnonymousArea::new(0, perm, page_count, shared))
