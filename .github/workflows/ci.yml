@@ -60,7 +60,7 @@ jobs:
             CONFIG_LOG_LEVEL=trace \
             CONFIG_NO_SMP=y \
             CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
-            COMPILE_MODE=debug \
+            COMPILE_MODE=release \
             SYSROOT=/usr/riscv64-linux-gnu
 
       - name: Test testsuits-for-oskernel-riscv64
