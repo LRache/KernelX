@@ -925,7 +925,7 @@ pub fn renameat2(
 }
 
 pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
-    if mode > 0o777 {
+    if mode > 0o7777 {
         return Err(Errno::EINVAL);
     }
     let mode = Mode::from_bits(mode as u32).ok_or(Errno::EINVAL)?;
@@ -953,7 +953,7 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
 }
 
 pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
-    if mode > 0o777 {
+    if mode > 0o7777 {
         return Err(Errno::EINVAL);
     }
     let mode = Mode::from_bits(mode as u32).ok_or(Errno::EINVAL)?;
@@ -1022,7 +1022,7 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn fallocate(fd: usize, mode: usize, offset: usize, len: usize) -> SyscallRet {
+pub fn fallocate(fd: usize, mode: usize, _offset: usize, _len: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     if !file.writable() {
