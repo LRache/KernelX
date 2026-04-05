@@ -72,6 +72,7 @@ impl UserStruct for RLimit {}
 #[derive(TryFromPrimitive)]
 enum RLimitResource {
     STACK = 3,
+    CORE = 4,
     NOFILE = 7,
 }
 
@@ -99,6 +100,24 @@ pub fn prlimit64(
                 if new_limit.rlim_cur != new_limit.rlim_max {
                     return Err(Errno::EINVAL);
                 }
+            }
+        }
+
+        // TODO: implement real core dump size limit. For now, just allow unlimited core dump size and ignore any new limit.
+        RLimitResource::CORE => {
+            if !uptr_old_limit.is_null() {
+                let old_limit = RLimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                uptr_old_limit.write(old_limit)?;
+            }
+
+            if !uptr_new_limit.is_null() {
+                // let new_limit = uptr_new_limit.read()?;
+                // if new_limit.rlim_cur != 0 || new_limit.rlim_max != 0 {
+                //     return Err(Errno::EINVAL);
+                // }
             }
         }
 
