@@ -281,19 +281,41 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     let mut total_read = 0;
 
     for i in 0..iovcnt {
-        let iov = uptr_iov.add(i).read()?;
+        let iov = match uptr_iov.add(i).read() {
+            Ok(iov) => iov,
+            Err(e) => {
+                if total_read > 0 {
+                    break;
+                } else {
+                    return Err(e);
+                }
+            }
+        };
 
         let mut read = 0usize;
         let mut remaining = iov.len;
         let mut buffer = [0u8; BUFFER_SIZE];
         while remaining != 0 {
             let to_read = core::cmp::min(remaining, BUFFER_SIZE);
-            let bytes_read = file.read(&mut buffer[..to_read])?;
+            let bytes_read = match file.read(&mut buffer[..to_read]) {
+                Ok(n) => n,
+                Err(e) => {
+                    if total_read + read > 0 {
+                        return Ok(total_read + read);
+                    }
+                    return Err(e);
+                }
+            };
             if bytes_read == 0 {
                 break; // EOF
             }
 
-            copy_to_user::buffer(iov.base + read, &buffer[..bytes_read])?;
+            if copy_to_user::buffer(iov.base + read, &buffer[..bytes_read]).is_err() {
+                if total_read + read > 0 {
+                    return Ok(total_read + read);
+                }
+                return Err(Errno::EFAULT);
+            }
 
             remaining -= bytes_read;
             read += bytes_read;
@@ -368,6 +390,10 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
 }
 
 pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
+    if (iovcnt as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
     let file = current::fdtable().lock().get(fd)?;
 
     if iovcnt == 0 {
@@ -378,23 +404,55 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
 
     let mut total_written = 0;
 
-    for i in 0..iovcnt {
-        let iov = uptr_iov.add(i).read()?;
+    'outer: for i in 0..iovcnt {
+        let iov = match uptr_iov.add(i).read() {
+            Ok(iov) => iov,
+            Err(e) => {
+                if total_written > 0 {
+                    break;
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        if iov.len == 0 {
+            continue;
+        }
+        if (iov.len as isize) < 0 {
+            if total_written > 0 {
+                break;
+            }
+            return Err(Errno::EINVAL);
+        }
 
         let mut written = 0usize;
         let mut remaining = iov.len;
         let mut buffer = [0u8; BUFFER_SIZE];
         while remaining != 0 {
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
-            copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).map_err(|_| Errno::EFAULT)?;
-
-            let bytes_written = file.write(&buffer[..to_write]).map_err(|_| Errno::EIO)?;
-            if bytes_written != to_write {
-                break; // EOF
+            if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
+                if total_written + written > 0 {
+                    break 'outer;
+                }
+                return Err(Errno::EFAULT);
             }
 
-            remaining -= to_write;
-            written += to_write;
+            match file.write(&buffer[..to_write]) {
+                Ok(bytes_written) => {
+                    remaining -= bytes_written;
+                    written += bytes_written;
+                    if bytes_written != to_write {
+                        break; // short write
+                    }
+                }
+                Err(e) => {
+                    if total_written + written > 0 {
+                        break 'outer;
+                    }
+                    return Err(e);
+                }
+            }
         }
 
         total_written += written;
@@ -960,6 +1018,24 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     file.downcast_arc::<File>()
         .map_err(|_| Errno::EINVAL)?
         .ftruncate(length as u64)?;
+
+    Ok(0)
+}
+
+pub fn fallocate(fd: usize, mode: usize, offset: usize, len: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    if !file.writable() {
+        return Err(Errno::EBADF);
+    }
+
+    if mode != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    // file.downcast_arc::<File>()
+    //     .map_err(|_| Errno::EINVAL)?
+    //     .fallocate(offset as u64, len as u64)?;
 
     Ok(0)
 }
