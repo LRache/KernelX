@@ -9,6 +9,7 @@ use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
 
+#[derive(Debug, Clone, Copy)]
 pub enum SeekWhence {
     BEG,
     CUR,
@@ -23,7 +24,7 @@ pub trait FileOps: DowncastSync {
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let mut total_read = 0;
-        for kbuf in ubuf.iter() {
+        for kbuf in ubuf.iter_mut() {
             let kbuf = kbuf?;
             let n = self.read(kbuf)?;
             total_read += n;
