@@ -75,6 +75,7 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 readable: file.readable(),
                 writable: file.writable(),
                 blocked: !flags.contains(OpenFlags::O_NONBLOCK),
+                append: flags.contains(OpenFlags::O_APPEND),
             });
             current::fdtable().lock().set(
                 fd,
@@ -127,6 +128,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         writable,
         readable,
         blocked: !open_flags.contains(OpenFlags::O_NONBLOCK),
+        append: open_flags.contains(OpenFlags::O_APPEND),
     };
     let fd_flags = FDFlags {
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),

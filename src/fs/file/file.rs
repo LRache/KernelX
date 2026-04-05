@@ -14,6 +14,7 @@ pub struct FileFlags {
     pub readable: bool,
     pub writable: bool,
     pub blocked: bool,
+    pub append: bool,
 }
 
 impl FileFlags {
@@ -22,6 +23,7 @@ impl FileFlags {
             readable: true,
             writable: true,
             blocked: true,
+            append: false,
         }
     }
 
@@ -30,6 +32,7 @@ impl FileFlags {
             readable: true,
             writable: false,
             blocked: true,
+            append: false,
         }
     }
 }
@@ -82,7 +85,7 @@ impl File {
 }
 
 impl FileOps for File {
-    fn read(&self, buf: &mut [u8]) -> Result<usize, Errno> {
+    fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
         let mut pos = self.pos.lock();
         let len = self.inode.readat(buf, *pos)?;
         *pos += len;
@@ -95,8 +98,13 @@ impl FileOps for File {
         Ok(len)
     }
 
-    fn write(&self, buf: &[u8]) -> Result<usize, Errno> {
+    fn write(&self, buf: &[u8]) -> SysResult<usize> {
         let mut pos = self.pos.lock();
+        if self.flags.append {
+            let size = self.inode.size()?;
+
+            *pos = size as usize;
+        }
         let len = self.inode.writeat(buf, *pos)?;
         *pos += len;
 
