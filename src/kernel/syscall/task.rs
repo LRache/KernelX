@@ -11,8 +11,8 @@ use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
-use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::ExitStatus;
+use crate::kernel::task::def::TaskCloneFlags;
 
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
