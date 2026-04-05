@@ -29,6 +29,7 @@ impl SuperBlockOps for SuperBlock {
             inode::RootInode::INO => Ok(Arc::new(inode::RootInode)),
             inode::TaskDirSelfInode::INO => Ok(Arc::new(inode::TaskDirSelfInode)),
             inode::MountsInode::INO => Ok(Arc::new(inode::MountsInode)),
+            inode::MemInfoInode::INO => Ok(Arc::new(inode::MemInfoInode)),
             i if i >= inode::TaskDirInode::BASE_INO && i < inode::TaskMapsInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }

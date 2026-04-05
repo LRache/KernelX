@@ -2,7 +2,7 @@ mod root;
 mod task;
 mod taskself;
 
-pub use root::{MountsInode, RootInode};
+pub use root::{MemInfoInode, MountsInode, RootInode};
 pub use task::{TaskDirInode, TaskExeInode, TaskMapsInode};
 pub use taskself::TaskDirSelfInode;
 

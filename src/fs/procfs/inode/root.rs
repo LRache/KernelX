@@ -2,11 +2,13 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use core::fmt::Write;
 
+use crate::arch;
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 use crate::fs::procfs::inode::read_iter_text;
 use crate::fs::vfs::vfs;
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::page;
 use crate::kernel::scheduler::Tid;
 use crate::kernel::scheduler::tid::TID_START;
 use crate::kernel::task::manager;
@@ -54,6 +56,7 @@ impl InodeOps for RootInode {
             ".." => Ok(Self::INO),
             "self" => Ok(TaskDirSelfInode::INO),
             "mounts" => Ok(MountsInode::INO),
+            "meminfo" => Ok(MemInfoInode::INO),
             _ => {
                 let tid = name.parse::<Tid>().map_err(|_| Errno::ENOENT)?;
                 Self::task_dir_ino_from_tid(tid)
@@ -62,7 +65,7 @@ impl InodeOps for RootInode {
     }
 
     fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
-        const SPECIAL_ENTRIES: usize = 4; // ., .., self, mounts
+        const SPECIAL_ENTRIES: usize = 5; // ., .., self, mounts, meminfo
         let d = match index {
             0 => Some(DirResult {
                 ino: Self::INO,
@@ -82,6 +85,11 @@ impl InodeOps for RootInode {
             3 => Some(DirResult {
                 ino: MountsInode::INO,
                 name: "mounts".into(),
+                file_type: FileType::Regular,
+            }),
+            4 => Some(DirResult {
+                ino: MemInfoInode::INO,
+                name: "meminfo".into(),
                 file_type: FileType::Regular,
             }),
             i => manager::tcbs()
@@ -151,6 +159,54 @@ impl InodeOps for MountsInode {
 
             Ok(line)
         })
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+}
+
+pub struct MemInfoInode;
+
+impl MemInfoInode {
+    pub const INO: u32 = 4;
+}
+
+impl InodeOps for MemInfoInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_meminfo"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        let total_kb = page::total_pages() * arch::PGSIZE / 1024;
+        let available_kb = page::free_pages() * arch::PGSIZE / 1024 / 2;
+        let mut content = String::with_capacity(128);
+        let _ = writeln!(content, "MemTotal:       {} kB", total_kb);
+        let _ = writeln!(content, "MemAvailable:   {} kB", available_kb);
+
+        let bytes = content.as_bytes();
+        if offset >= bytes.len() {
+            return Ok(0);
+        }
+        let len = core::cmp::min(buf.len(), bytes.len() - offset);
+        buf[..len].copy_from_slice(&bytes[offset..offset + len]);
+        Ok(len)
     }
 
     fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
