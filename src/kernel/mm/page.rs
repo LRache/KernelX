@@ -54,6 +54,7 @@ impl FrameAllocator {
 }
 
 static FRAME_ALLOCATOR: InitedCell<SpinMutex<FrameAllocator>> = InitedCell::uninit();
+static TOTAL_PAGES: InitedCell<usize> = InitedCell::uninit();
 // static META_PTR_BASE: InitedCell<usize> = InitedCell::uninit();
 // static FRAME_BASE: InitedCell<usize> = InitedCell::uninit();
 
@@ -71,6 +72,7 @@ pub fn init(frame_start: usize, frame_end: usize) {
 
     let mut allocator = buddy_system_allocator::FrameAllocator::new();
     allocator.add_frame(frame_base, frame_end);
+    TOTAL_PAGES.init(total);
     FRAME_ALLOCATOR.init(SpinMutex::new(FrameAllocator::new(allocator, total)));
 }
 
@@ -79,6 +81,14 @@ pub fn init(frame_start: usize, frame_end: usize) {
 //     let meta_ptr_addr = *META_PTR_BASE + index * core::mem::size_of::<*const ()>();
 //     unsafe { &mut *(meta_ptr_addr as *mut *const ()) }
 // }
+
+pub fn total_pages() -> usize {
+    *TOTAL_PAGES
+}
+
+pub fn free_pages() -> usize {
+    *TOTAL_PAGES - FRAME_ALLOCATOR.lock().allocated
+}
 
 #[cfg(feature = "swap-memory")]
 pub fn need_to_shrink() -> bool {
