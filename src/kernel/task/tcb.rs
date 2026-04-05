@@ -456,7 +456,6 @@ impl TCB {
 
     pub fn wake_parent_waiting_vfork(&self) {
         if let Some(parent) = self.parent_waiting_vfork.lock().take() {
-            // kinfo!("Waking up parent task {} waiting for vfork", parent.tid());
             scheduler::wakeup_task_uninterruptible(parent, Event::VFork);
         }
     }
