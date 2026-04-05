@@ -407,7 +407,7 @@ impl TCB {
         }
     }
 
-    pub fn exit(&self, code: u8) {
+    pub fn exit(&self, status: super::pcb::ExitStatus) {
         debug_assert!(
             current::tid() == self.tid,
             "current tid {} != self.tid {}",
@@ -433,7 +433,7 @@ impl TCB {
         }
 
         if self.parent.pid() == self.tid {
-            self.parent.exit(code);
+            self.parent.exit(status);
         }
 
         self.parent.remove_task(self);
