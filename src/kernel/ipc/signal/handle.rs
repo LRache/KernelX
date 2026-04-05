@@ -160,6 +160,7 @@ impl TCB {
     }
 
     pub fn recive_pending_signal_from_parent(&self) {
+        let mask = *self.signal_mask.lock();
         let mut state = self.state().lock();
 
         if state.pending_signal.is_some() {
@@ -167,13 +168,7 @@ impl TCB {
             return;
         }
 
-        if let Some(signal) = self
-            .parent()
-            .pending_signals()
-            .lock()
-            .pop_pending(*self.signal_mask.lock(), self.tid())
-        {
-            crate::kinfo!("Received pending signal from parent: {:?}", signal);
+        if let Some(signal) = self.parent().pending_signals().lock().pop_pending(mask, self.tid()) {
             state.pending_signal = Some(signal);
         }
     }

@@ -278,9 +278,13 @@ pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
     let set = mask.read()?;
 
     let tcb = current::tcb();
-    let mut signal_mask = tcb.signal_mask.lock();
-    let old = *signal_mask;
-    *signal_mask = set;
+
+    let old = {
+        let mut signal_mask = tcb.signal_mask.lock();
+        let old = *signal_mask;
+        *signal_mask = set;
+        old
+    };
 
     let event = current::block("sigsuspend");
 
