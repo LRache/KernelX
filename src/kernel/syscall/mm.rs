@@ -5,7 +5,9 @@ use crate::arch;
 use crate::fs::file::{File, FileOps};
 use crate::kernel::errno::Errno;
 use crate::kernel::mm::MapPerm;
-use crate::kernel::mm::maparea::{AnonymousArea, Area, PrivateFileMapArea, SharedFileMapArea};
+use crate::kernel::mm::maparea::{
+    Area, PrivateAnonymousArea, PrivateFileMapArea, SharedAnonymousArea, SharedFileMapArea,
+};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::SyscallRet;
 
@@ -74,8 +76,11 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
 
     let mut area: Box<dyn Area> = if flags.contains(MMapFlags::ANONYMOUS) {
         let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
-        let shared = flags.contains(MMapFlags::SHARED);
-        Box::new(AnonymousArea::new(0, perm, page_count, shared))
+        if flags.contains(MMapFlags::SHARED) {
+            Box::new(SharedAnonymousArea::new(0, perm, page_count))
+        } else {
+            Box::new(PrivateAnonymousArea::new(0, perm, page_count))
+        }
     } else {
         if offset % arch::PGSIZE != 0 {
             return Err(Errno::EINVAL);

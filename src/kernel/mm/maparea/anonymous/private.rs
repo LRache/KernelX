@@ -5,33 +5,26 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::maparea::area::Area;
+use crate::kernel::mm::maparea::nofilemap::FrameState;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
-
-use super::nofilemap::FrameState;
 
 #[cfg(feature = "swap-memory")]
 use super::nofilemap::SwappableNoFileFrame;
 
-pub struct AnonymousArea {
+pub struct PrivateAnonymousArea {
     ubase: usize,
     perm: MapPerm,
     frames: Vec<FrameState>,
-    shared: bool,
 }
 
-impl AnonymousArea {
-    pub fn new(ubase: usize, perm: MapPerm, page_count: usize, shared: bool) -> Self {
+impl PrivateAnonymousArea {
+    pub fn new(ubase: usize, perm: MapPerm, page_count: usize) -> Self {
         // Anonymous areas should be page-aligned
         debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
 
         let frames = Vec::from_iter((0..page_count).map(|_| FrameState::Unallocated));
-        Self {
-            ubase,
-            perm,
-            frames,
-            shared,
-        }
+        Self { ubase, perm, frames }
     }
 
     fn allocate_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
@@ -81,7 +74,7 @@ impl AnonymousArea {
     }
 }
 
-impl Area for AnonymousArea {
+impl Area for PrivateAnonymousArea {
     fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         debug_assert!(uaddr >= self.ubase);
 
@@ -143,20 +136,13 @@ impl Area for AnonymousArea {
             .map(|(page_index, frame)| match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
                 FrameState::Allocated(frame) => {
-                    if self.shared {
-                        if let Some(kpage) = frame.get_page() {
-                            new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
-                        }
-                        FrameState::Allocated(frame.clone())
-                    } else {
-                        if let Some(kpage) = frame.get_page() {
-                            new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, perm);
-                        }
-                        FrameState::Cow(frame.clone())
+                    if let Some(kpage) = frame.get_page() {
+                        new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, perm);
                     }
+                    FrameState::Cow(frame.clone())
                 }
                 FrameState::Cow(frame) => {
-                    debug_assert!(!self.shared, "Shared frames should not be CoW");
+                    // debug_assert!(!self.shared, "Shared frames should not be CoW");
                     if let Some(kpage) = frame.get_page() {
                         new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, perm);
                     }
@@ -165,29 +151,26 @@ impl Area for AnonymousArea {
             })
             .collect();
 
-        if !self.shared {
-            let mut self_pagetable = self_pagetable.lock();
-            self.frames
-                .iter_mut()
-                .enumerate()
-                .for_each(|(page_index, frame)| match frame {
-                    FrameState::Allocated(allocated) => {
-                        if let Some(_) = allocated.get_page() {
-                            if self.perm.contains(MapPerm::W) {
-                                self_pagetable.mmap_replace_perm(self.ubase + page_index * arch::PGSIZE, perm);
-                            }
+        let mut self_pagetable = self_pagetable.lock();
+        self.frames
+            .iter_mut()
+            .enumerate()
+            .for_each(|(page_index, frame)| match frame {
+                FrameState::Allocated(allocated) => {
+                    if let Some(_) = allocated.get_page() {
+                        if self.perm.contains(MapPerm::W) {
+                            self_pagetable.mmap_replace_perm(self.ubase + page_index * arch::PGSIZE, perm);
                         }
-                        *frame = FrameState::Cow(allocated.clone());
                     }
-                    _ => {}
-                });
-        }
+                    *frame = FrameState::Cow(allocated.clone());
+                }
+                _ => {}
+            });
 
-        let new_area = AnonymousArea {
+        let new_area = Self {
             ubase: self.ubase,
             perm: self.perm,
             frames,
-            shared: self.shared,
         };
 
         Box::new(new_area)
@@ -256,11 +239,10 @@ impl Area for AnonymousArea {
         let new_ubase = self.ubase + split_index * arch::PGSIZE;
 
         let new_frames = self.frames.split_off(split_index);
-        let new_area = AnonymousArea {
+        let new_area = Self {
             ubase: new_ubase,
             perm: self.perm,
             frames: new_frames,
-            shared: self.shared,
         };
 
         (self, Box::new(new_area))
@@ -307,6 +289,6 @@ impl Area for AnonymousArea {
     }
 
     fn type_name(&self) -> &'static str {
-        "anonymous"
+        "private-anonymous"
     }
 }

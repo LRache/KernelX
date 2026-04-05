@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::arch::{self, PageTable};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::anonymous::AnonymousArea;
+use crate::kernel::mm::maparea::anonymous::PrivateAnonymousArea;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 use crate::{ktrace, print};
@@ -413,11 +413,10 @@ impl Manager {
         if new_page_count > self.userbrk.page_count {
             // Growing: map new pages
             let ubase = config::USER_BRK_BASE + self.userbrk.page_count * arch::PGSIZE;
-            let new_area = Box::new(AnonymousArea::new(
+            let new_area = Box::new(PrivateAnonymousArea::new(
                 ubase,
                 MapPerm::R | MapPerm::W | MapPerm::U,
                 new_page_count - self.userbrk.page_count,
-                false,
             ));
 
             self.map_area(ubase, new_area);
