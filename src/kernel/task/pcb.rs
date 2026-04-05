@@ -25,10 +25,38 @@ struct Signal {
     pending: SpinLock<PendingSignalQueue>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ExitStatus {
+    /// Normal exit with exit code (from exit/exit_group syscall)
+    Normal(u8),
+    /// Killed by signal, with optional core dump flag
+    Signal { sig: u8, coredump: bool },
+}
+
+impl ExitStatus {
+    /// Encode as POSIX wait status (wstatus)
+    pub fn as_wstatus(self) -> u32 {
+        match self {
+            ExitStatus::Normal(code) => (code as u32) << 8,
+            ExitStatus::Signal { sig, coredump } => {
+                let status = sig as u32 & 0x7f;
+                if coredump { status | 0x80 } else { status }
+            }
+        }
+    }
+
+    pub fn si_status(self) -> i32 {
+        match self {
+            ExitStatus::Normal(code) => code as i32,
+            ExitStatus::Signal { sig, .. } => sig as i32,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum State {
     Running,
-    Exited(u8),
+    Exited(ExitStatus),
     Recycled,
 }
 
@@ -48,6 +76,10 @@ pub struct PCB {
     children: SleepLock<Vec<Arc<PCB>>>,
 
     pub itimer_ids: SpinLock<[Option<u64>; 3]>,
+    /// Absolute expiry time in microseconds for each itimer (0 = inactive)
+    pub itimer_expiry_us: SpinLock<[u64; 3]>,
+    /// Interval for repeating itimers
+    pub itimer_interval: SpinLock<[Duration; 3]>,
 
     /// CPU time snapshot taken at exit (own threads). Preserved after recycle clears tasks.
     tasks_time_usage_capture: SpinLock<(Duration, Duration)>,
@@ -76,6 +108,8 @@ impl PCB {
             children: SleepLock::new(Vec::new(), "PCB::children"),
 
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
+            itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
+            itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
             waited_children_time_usage: SpinLock::new(
@@ -115,6 +149,8 @@ impl PCB {
             children: SleepLock::new(Vec::new(), "static::initpcb::children"),
 
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
+            itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
+            itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
             waited_children_time_usage: SpinLock::new(
@@ -142,10 +178,10 @@ impl PCB {
         matches!(*self.state.lock(), State::Exited(_))
     }
 
-    fn recycle(&self) -> Option<u8> {
+    fn recycle(&self) -> Option<ExitStatus> {
         let mut state = self.state.lock();
-        let code = match *state {
-            State::Exited(code) => Some(code),
+        let status = match *state {
+            State::Exited(status) => Some(status),
             _ => return None,
         };
         *state = State::Recycled;
@@ -157,7 +193,7 @@ impl PCB {
             }
         });
         tasks.clear(); // Drop all TCBs to release their resources
-        code
+        status
     }
 
     pub fn cwd(&self) -> Arc<Dentry> {
@@ -228,7 +264,7 @@ impl PCB {
         Ok(())
     }
 
-    pub fn exit(self: &Arc<Self>, code: u8) {
+    pub fn exit(self: &Arc<Self>, status: ExitStatus) {
         // If the init process exits, run deinit and halt the system.
         // NOTE: `deinit()` may issue async I/O, so the task state MUST NOT
         // be set to `Exited` before `deinit()` returns — once the task is
@@ -236,7 +272,7 @@ impl PCB {
         // indefinitely and leaving the system hung instead of halting cleanly.
         if self.pid == task::INIT_UTASK_TID {
             deinit();
-            panic!("Init process exited with code {}, system will halt.", code);
+            panic!("Init process exited with status {:?}, system will halt.", status);
         }
 
         // crate::kinfo!("pcb {} exited with code {}", self.pid(), code);
@@ -254,7 +290,7 @@ impl PCB {
         drop(tasks);
 
         *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();
-        *self.state.lock() = State::Exited(code);
+        *self.state.lock() = State::Exited(status);
 
         if let Some(parent) = self.parent.lock().as_ref() {
             parent.waiting_task.lock().drain(..).for_each(|t| {
@@ -264,7 +300,7 @@ impl PCB {
             let fields = KSiFields::SigChld(SiSigChld {
                 si_pid: self.pid,
                 si_uid: current::uid(),
-                si_status: code as i32,
+                si_status: status.si_status(),
                 si_utime: 0,
                 si_stime: 0,
             });
@@ -284,16 +320,16 @@ impl PCB {
         manager::remove(self.pid);
     }
 
-    pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<u8>, Errno> {
+    pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<ExitStatus>, Errno> {
         let child = {
             let children = self.children.lock();
             children.iter().find(|c| c.pid() == pid).cloned()
         };
 
         if let Some(child) = child {
-            if let Some(exit_code) = child.recycle() {
+            if let Some(status) = child.recycle() {
                 self.accumulate_waited_child(&child);
-                return Ok(Some(exit_code));
+                return Ok(Some(status));
             }
 
             if blocked {
@@ -314,8 +350,8 @@ impl PCB {
                     }
                 }
 
-                let exit_code = if let Some(exit_code) = child.recycle() {
-                    exit_code
+                let status = if let Some(status) = child.recycle() {
+                    status
                 } else {
                     return Err(Errno::ECHILD); // The child process was recycled by other waiters
                 };
@@ -325,7 +361,7 @@ impl PCB {
                 let mut children = self.children.lock();
                 children.retain(|c| c.pid() != pid);
 
-                return Ok(Some(exit_code));
+                return Ok(Some(status));
             } else {
                 return Ok(None);
             }
@@ -339,7 +375,7 @@ impl PCB {
         }
     }
 
-    pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, u8)>> {
+    pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, ExitStatus)>> {
         if let Some(child) = {
             let mut children = self.children.lock();
             if children.is_empty() {
@@ -352,9 +388,9 @@ impl PCB {
                 None
             }
         } {
-            if let Some(exit_code) = child.recycle() {
+            if let Some(status) = child.recycle() {
                 self.accumulate_waited_child(&child);
-                return Ok(Some((child.pid(), exit_code)));
+                return Ok(Some((child.pid(), status)));
             }
         };
 
@@ -379,9 +415,9 @@ impl PCB {
                             continue; // The child process was recycled by other waiters
                         }
                     };
-                    if let Some(exit_code) = child.recycle() {
+                    if let Some(status) = child.recycle() {
                         self.accumulate_waited_child(&child);
-                        return Ok(Some((pid, exit_code)));
+                        return Ok(Some((pid, status)));
                     } else {
                         continue; // The child process was recycled by other waiters
                     }

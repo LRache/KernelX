@@ -79,7 +79,7 @@ jobs:
             CONFIG_BOOTARGS="rtc=rtc@101000" \
           | tee qemu_output.log || true
 
-          if grep -q 'Init process exited with code 0, system will halt.' qemu_output.log; then
+          if grep -q 'Init process exited with status Normal(0), system will halt.' qemu_output.log; then
             echo "Tests passed."
           else
             echo "Tests failed: expected init process exit with code 0."

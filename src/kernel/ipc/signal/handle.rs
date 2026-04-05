@@ -7,7 +7,7 @@ use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
 use crate::kernel::mm::vdso;
 use crate::kernel::scheduler::{Tid, WakeupFailure};
-use crate::kernel::task::{PCB, TCB};
+use crate::kernel::task::{ExitStatus, PCB, TCB};
 use crate::kernel::{config, scheduler};
 
 use super::{PendingSignal, SignalActionFlags, SignalDefaultAction, SignalNum};
@@ -27,7 +27,10 @@ impl TCB {
         }
 
         if signum.is_kill() {
-            self.parent().exit(128 + signum.num() as u8);
+            self.parent().exit(crate::kernel::task::ExitStatus::Signal {
+                sig: signum.num() as u8,
+                coredump: false,
+            });
             return;
         }
 
@@ -38,8 +41,18 @@ impl TCB {
 
         if action.is_default() {
             match signum.default_action() {
-                SignalDefaultAction::Term | SignalDefaultAction::Stop | SignalDefaultAction::Core => {
-                    self.parent().exit(128 + signum.num() as u8);
+                SignalDefaultAction::Term | SignalDefaultAction::Stop => {
+                    self.parent().exit(ExitStatus::Signal {
+                        sig: signum.num() as u8,
+                        coredump: false,
+                    });
+                    return;
+                }
+                SignalDefaultAction::Core => {
+                    self.parent().exit(ExitStatus::Signal {
+                        sig: signum.num() as u8,
+                        coredump: true,
+                    });
                     return;
                 }
                 _ => return,

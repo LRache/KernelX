@@ -12,6 +12,7 @@ use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::task::def::TaskCloneFlags;
+use crate::kernel::task::ExitStatus;
 
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
@@ -174,26 +175,26 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
     let pid = pid as isize;
 
     let wait_pid;
-    let exit_code: usize;
+    let exit_status: ExitStatus;
 
     if pid == -1 {
         if let Some(result) = pcb.wait_any_child(!options.contains(WaitOptions::WNOHANG))? {
             wait_pid = result.0;
-            exit_code = result.1 as usize;
+            exit_status = result.1;
         } else {
             return Ok(0);
         }
     } else {
         if let Some(result) = pcb.wait_child(pid as i32, !options.contains(WaitOptions::WNOHANG))? {
             wait_pid = pid as i32;
-            exit_code = result as usize;
+            exit_status = result;
         } else {
             return Ok(0);
         }
     }
 
     if !status.is_null() {
-        status.write((exit_code as u32 & 0xff) << 8)?; // WEXITSTATUS
+        status.write(exit_status.as_wstatus())?;
     }
 
     Ok(wait_pid as usize)
@@ -201,7 +202,7 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
 
 pub fn exit(code: usize) -> SyscallRet {
     let tcb = current::tcb();
-    tcb.exit(code as u8);
+    tcb.exit(ExitStatus::Normal(code as u8));
 
     tcb.wake_parent_waiting_vfork();
 
@@ -210,7 +211,7 @@ pub fn exit(code: usize) -> SyscallRet {
 
 pub fn exit_group(code: usize) -> SyscallRet {
     let pcb = current::pcb();
-    pcb.exit(code as u8);
+    pcb.exit(ExitStatus::Normal(code as u8));
 
     current::tcb().wake_parent_waiting_vfork();
 
