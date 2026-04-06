@@ -140,7 +140,7 @@ impl SharedFileMapArea {
         }
 
         let kpage = self.entry.lock().get_page(page_index)?;
-        Some(kpage + (uaddr & arch::PGSIZE))
+        Some(kpage + uaddr % arch::PGSIZE)
     }
 }
 
