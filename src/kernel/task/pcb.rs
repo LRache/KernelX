@@ -14,6 +14,7 @@ use crate::kernel::scheduler::tid::Tid;
 use crate::kernel::scheduler::{Task, current, tid};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{self, manager, with_initpcb};
+use crate::kernel::uapi::Uid;
 use crate::klib::{SleepLock, SpinLock};
 
 use super::tcb::TCB;
@@ -81,6 +82,11 @@ pub struct PCB {
     /// Interval for repeating itimers
     pub itimer_interval: SpinLock<[Duration; 3]>,
 
+    uid: SpinLock<Uid>,
+    euid: SpinLock<Uid>,
+    gid: SpinLock<Uid>,
+    egid: SpinLock<Uid>,
+
     pgid: SpinLock<Pid>,
     exit_signal: SignalNum,
 
@@ -113,6 +119,11 @@ impl PCB {
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
             itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
             itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
+
+            uid: SpinLock::new(*parent.uid.lock(), "PCB::uid"),
+            euid: SpinLock::new(*parent.euid.lock(), "PCB::euid"),
+            gid: SpinLock::new(*parent.gid.lock(), "PCB::gid"),
+            egid: SpinLock::new(*parent.egid.lock(), "PCB::egid"),
 
             pgid: SpinLock::new(pid, "PCB::pgid"),
             exit_signal,
@@ -154,6 +165,11 @@ impl PCB {
 
             children: SleepLock::new(Vec::new(), "static::initpcb::children"),
 
+            uid: SpinLock::new(0, "PCB::uid"),
+            euid: SpinLock::new(0, "PCB::euid"),
+            gid: SpinLock::new(0, "PCB::gid"),
+            egid: SpinLock::new(0, "PCB::egid"),
+
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
             exit_signal: signum::SIGCHLD,
 
@@ -185,6 +201,38 @@ impl PCB {
 
     pub fn set_pgid(&self, pgid: Pid) {
         *self.pgid.lock() = pgid;
+    }
+
+    pub fn uid(&self) -> Uid {
+        *self.uid.lock()
+    }
+
+    pub fn set_uid(&self, uid: Uid) {
+        *self.uid.lock() = uid;
+    }
+
+    pub fn euid(&self) -> Uid {
+        *self.euid.lock()
+    }
+
+    pub fn set_euid(&self, euid: Uid) {
+        *self.euid.lock() = euid;
+    }
+
+    pub fn gid(&self) -> Uid {
+        *self.gid.lock()
+    }
+
+    pub fn set_gid(&self, gid: Uid) {
+        *self.gid.lock() = gid;
+    }
+
+    pub fn egid(&self) -> Uid {
+        *self.egid.lock()
+    }
+
+    pub fn set_egid(&self, egid: Uid) {
+        *self.egid.lock() = egid;
     }
 
     pub fn exec_path(&self) -> String {

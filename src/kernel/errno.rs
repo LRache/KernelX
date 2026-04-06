@@ -29,6 +29,7 @@ pub enum Errno {
     ESPIPE = 29,          // Illegal seek
     EROFS = 30,           // Read-only file system
     EPIPE = 32,           // Broken pipe
+    ENAMETOOLONG = 36,    // File name too long
     ENOTEMPTY = 39,       // Directory not empty
     ENOSYS = 38,          // Function not implemented
     EAFNOSUPPORT = 97,    // Address family not supported by protocol

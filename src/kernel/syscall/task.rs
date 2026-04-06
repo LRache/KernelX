@@ -260,45 +260,103 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
     })
 }
 
-pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
-    {
-        uptr_path.should_not_null()?;
-
-        let path = uptr_path.read()?;
-
-        let file =
-            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::new(PermFlags::X)))?
-                .downcast_arc::<File>()
-                .map_err(|_| Errno::ENOEXEC)?;
-
-        let helper = |uarray: UArray<UString>| -> SysResult<Vec<String>> {
-            if uarray.is_null() {
-                return Ok(Vec::new());
-            }
-
-            let mut vec = Vec::new();
-            let mut i = 0;
-            loop {
-                let p = uarray.index(i).read()?;
-                if p.is_null() {
-                    break;
-                }
-                vec.push(p.read()?);
-                i += 1;
-            }
-            Ok(vec)
-        };
-
-        let argv = helper(uptr_argv)?;
-        let envp = helper(uptr_envp)?;
-        let argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
-        let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
-
-        current::pcb().exec(current::tcb(), file, &argv_ref, &envp_ref)?;
-        current::tcb().wake_parent_waiting_vfork();
+fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
+    if uarray.is_null() {
+        return Ok(Vec::new());
     }
-    // kinfo!("{:?}", current::task().lockstate().held());
+
+    let mut vec = Vec::new();
+    let mut i = 0;
+    loop {
+        let p = uarray.index(i).read()?;
+        if p.is_null() {
+            break;
+        }
+        vec.push(p.read()?);
+        i += 1;
+    }
+    Ok(vec)
+}
+
+fn do_execve(file: Arc<File>, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
+    let argv = read_ustring_array(uptr_argv)?;
+    let envp = read_ustring_array(uptr_envp)?;
+    let mut argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+    let envp_ref: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
+
+    // See https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=dcd46d897adb
+    if argv_ref.len() == 0 {
+        argv_ref.push("");
+    }
+
+    current::pcb().exec(current::tcb(), file, &argv_ref, &envp_ref)?;
+    current::tcb().wake_parent_waiting_vfork();
     Ok(0)
+}
+
+pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
+    uptr_path.should_not_null()?;
+
+    let path = uptr_path.read()?;
+
+    if path.len() >= 256 {
+        return Err(Errno::ENAMETOOLONG);
+    }
+
+    let file =
+        current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+            .downcast_arc::<File>()
+            .map_err(|_| Errno::ENOEXEC)?;
+
+    do_execve(file, uptr_argv, uptr_envp)
+}
+
+pub fn execveat(
+    dirfd: usize,
+    uptr_path: UString,
+    uptr_argv: UArray<UString>,
+    uptr_envp: UArray<UString>,
+    flags: usize,
+) -> SyscallRet {
+    use super::def::AT_FDCWD;
+
+    const AT_EMPTY_PATH: usize = 0x1000;
+
+    let path = if uptr_path.is_null() {
+        String::new()
+    } else {
+        uptr_path.read()?
+    };
+
+    let file = if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
+        current::fdtable()
+            .lock()
+            .get(dirfd)?
+            .downcast_arc::<File>()
+            .map_err(|_| Errno::ENOEXEC)?
+    } else {
+        if path.is_empty() {
+            return Err(Errno::ENOENT);
+        }
+        if path.len() >= 256 {
+            return Err(Errno::ENAMETOOLONG);
+        }
+
+        // When pathname is absolute, dirfd can be ignored.
+        if path.starts_with('/') {
+            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+        } else if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+        } else {
+            let dir_file = current::fdtable().lock().get(dirfd)?;
+            let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
+            vfs::openat_file(dir, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
+        }
+        .downcast_arc::<File>()
+        .map_err(|_| Errno::ENOEXEC)?
+    };
+
+    do_execve(file, uptr_argv, uptr_envp)
 }
 
 bitflags! {

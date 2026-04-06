@@ -241,6 +241,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         220 => task::clone(5),
         221 => task::execve(3),
         260 => task::wait4(4),
+        281 => task::execveat(5),
         435 => task::clone3(2),
 
         // Memory
@@ -273,6 +274,8 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         283 => misc::membarrier(0),
         293 => misc::rseq(0),
 
+        144 => uid::setgid(1),
+        147 => uid::seteuid(1),
         174 => uid::getuid(0),
         175 => uid::geteuid(0),
         176 => uid::getgid(0),
