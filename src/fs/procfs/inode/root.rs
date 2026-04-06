@@ -13,7 +13,7 @@ use crate::kernel::scheduler::Tid;
 use crate::kernel::scheduler::tid::TID_START;
 use crate::kernel::task::manager;
 
-use super::{TaskDirInode, TaskDirSelfInode};
+use super::{SysDirInode, TaskDirInode, TaskDirSelfInode};
 
 pub struct RootInode;
 
@@ -57,6 +57,7 @@ impl InodeOps for RootInode {
             "self" => Ok(TaskDirSelfInode::INO),
             "mounts" => Ok(MountsInode::INO),
             "meminfo" => Ok(MemInfoInode::INO),
+            "sys" => Ok(SysDirInode::INO),
             _ => {
                 let tid = name.parse::<Tid>().map_err(|_| Errno::ENOENT)?;
                 Self::task_dir_ino_from_tid(tid)
@@ -65,7 +66,7 @@ impl InodeOps for RootInode {
     }
 
     fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
-        const SPECIAL_ENTRIES: usize = 5; // ., .., self, mounts, meminfo
+        const SPECIAL_ENTRIES: usize = 6; // ., .., self, mounts, meminfo, sys
         let d = match index {
             0 => Some(DirResult {
                 ino: Self::INO,
@@ -91,6 +92,11 @@ impl InodeOps for RootInode {
                 ino: MemInfoInode::INO,
                 name: "meminfo".into(),
                 file_type: FileType::Regular,
+            }),
+            5 => Some(DirResult {
+                ino: SysDirInode::INO,
+                name: "sys".into(),
+                file_type: FileType::Directory,
             }),
             i => manager::tcbs()
                 .lock()

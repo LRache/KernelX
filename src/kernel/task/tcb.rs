@@ -34,6 +34,16 @@ pub struct TaskStateSet {
     pub signal_to_wait: SignalSet,
 }
 
+impl TaskStateSet {
+    pub fn state(&self) -> TaskState {
+        self.state
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.dead
+    }
+}
+
 impl Default for TaskStateSet {
     fn default() -> Self {
         Self {

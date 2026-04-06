@@ -8,7 +8,7 @@ use crate::fs::procfs::inode::{fill_kstat_common, read_iter_text};
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::MapPerm;
-use crate::kernel::scheduler::Tid;
+use crate::kernel::scheduler::{TaskState, Tid};
 use crate::kernel::task::manager;
 use crate::kernel::uapi::{FileStat, Uid};
 
@@ -56,6 +56,7 @@ impl InodeOps for TaskDirInode {
             ".." => Ok(RootInode::INO),
             "maps" => Ok(TaskMapsInode::ino_from_tid(self.tid)),
             "exe" => Ok(TaskExeInode::ino_from_tid(self.tid)),
+            "stat" => Ok(TaskStatInode::ino_from_tid(self.tid)),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -81,6 +82,11 @@ impl InodeOps for TaskDirInode {
                 ino: TaskExeInode::ino_from_tid(self.tid),
                 name: "exe".into(),
                 file_type: FileType::Symlink,
+            }),
+            4 => Some(DirResult {
+                ino: TaskStatInode::ino_from_tid(self.tid),
+                name: "stat".into(),
+                file_type: FileType::Regular,
             }),
             _ => None,
         };
@@ -321,5 +327,96 @@ impl InodeOps for TaskExeInode {
 
     fn type_name(&self) -> &'static str {
         "procfs_task_exe"
+    }
+}
+
+pub struct TaskStatInode {
+    tid: Tid,
+}
+
+impl TaskStatInode {
+    pub const INO_BASE: u32 = 0x400000;
+
+    pub fn from_ino(ino: u32) -> Option<Self> {
+        debug_assert!(ino >= Self::INO_BASE);
+        let tid = (ino - Self::INO_BASE) as Tid;
+        manager::get(tid)?;
+        Some(Self { tid })
+    }
+
+    pub fn ino_from_tid(tid: Tid) -> u32 {
+        Self::INO_BASE + tid as u32
+    }
+
+    fn state_char(state: TaskState, dead: bool) -> char {
+        if dead {
+            return 'Z';
+        }
+        match state {
+            TaskState::Running | TaskState::Ready => 'R',
+            TaskState::Blocked => 'S',
+            TaskState::BlockedUninterruptible => 'D',
+            TaskState::Exited => 'Z',
+        }
+    }
+}
+
+impl InodeOps for TaskStatInode {
+    fn get_ino(&self) -> u32 {
+        Self::ino_from_tid(self.tid)
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_task_stat"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let pid = tcb.parent().pid();
+        let exec_path = tcb.parent().exec_path();
+        let comm = exec_path.rsplit('/').next().unwrap_or(&exec_path);
+        let state_set = tcb.state().lock();
+        let state_char = Self::state_char(state_set.state(), state_set.is_dead());
+        drop(state_set);
+
+        let mut content = String::with_capacity(64);
+        let _ = write!(content, "{} ({}) {}\n", pid, comm, state_char);
+
+        let content_bytes = content.as_bytes();
+        if offset >= content_bytes.len() {
+            return Ok(0);
+        }
+        let to_copy = min(buf.len(), content_bytes.len() - offset);
+        buf[..to_copy].copy_from_slice(&content_bytes[offset..offset + to_copy]);
+        Ok(to_copy)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_mode = self.mode()?.bits();
+        kstat.st_nlink = 1;
+
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
+
+        Ok(kstat)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs stat requires associated dentry");
+        Arc::new(File::new(self, dentry, flags))
     }
 }

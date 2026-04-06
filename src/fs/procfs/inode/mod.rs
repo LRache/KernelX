@@ -1,9 +1,11 @@
 mod root;
+mod sys;
 mod task;
 mod taskself;
 
 pub use root::{MemInfoInode, MountsInode, RootInode};
-pub use task::{TaskDirInode, TaskExeInode, TaskMapsInode};
+pub use sys::{PidMaxInode, SysDirInode, SysKernelDirInode, TaintedInode};
+pub use task::{TaskDirInode, TaskExeInode, TaskMapsInode, TaskStatInode};
 pub use taskself::TaskDirSelfInode;
 
 use alloc::string::String;

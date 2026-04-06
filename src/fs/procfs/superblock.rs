@@ -30,14 +30,21 @@ impl SuperBlockOps for SuperBlock {
             inode::TaskDirSelfInode::INO => Ok(Arc::new(inode::TaskDirSelfInode)),
             inode::MountsInode::INO => Ok(Arc::new(inode::MountsInode)),
             inode::MemInfoInode::INO => Ok(Arc::new(inode::MemInfoInode)),
+            inode::SysDirInode::INO => Ok(Arc::new(inode::SysDirInode)),
+            inode::SysKernelDirInode::INO => Ok(Arc::new(inode::SysKernelDirInode)),
+            inode::PidMaxInode::INO => Ok(Arc::new(inode::PidMaxInode)),
+            inode::TaintedInode::INO => Ok(Arc::new(inode::TaintedInode)),
             i if i >= inode::TaskDirInode::BASE_INO && i < inode::TaskMapsInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
             i if i >= inode::TaskMapsInode::INO_BASE && i < inode::TaskExeInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskMapsInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
-            i if i >= inode::TaskExeInode::INO_BASE => {
+            i if i >= inode::TaskExeInode::INO_BASE && i < inode::TaskStatInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskExeInode::from_ino(i).ok_or(Errno::ENOENT)?))
+            }
+            i if i >= inode::TaskStatInode::INO_BASE => {
+                Ok(Arc::new(inode::TaskStatInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
             _ => Err(Errno::ENOENT),
         }
