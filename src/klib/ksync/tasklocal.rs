@@ -1,4 +1,5 @@
 use core::cell::UnsafeCell;
+use core::ops::{Deref, DerefMut};
 
 use crate::kernel::scheduler::{Tid, current};
 
@@ -23,5 +24,21 @@ impl<T> TaskLocal<T> {
     pub fn set(&self, value: T) {
         debug_assert!(self.tid == current::tid());
         unsafe { *self.value.get() = value };
+    }
+}
+
+impl<T> Deref for TaskLocal<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        debug_assert!(self.tid == current::tid());
+        unsafe { &*self.value.get() }
+    }
+}
+
+impl<T> DerefMut for TaskLocal<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        debug_assert!(self.tid == current::tid());
+        unsafe { &mut *self.value.get() }
     }
 }
