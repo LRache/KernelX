@@ -7,7 +7,7 @@ use crate::fs::file::File;
 use crate::fs::{Dentry, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
-use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, signum};
+use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, SignalNum, signum};
 use crate::kernel::main::deinit;
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::tid::Tid;
@@ -81,6 +81,9 @@ pub struct PCB {
     /// Interval for repeating itimers
     pub itimer_interval: SpinLock<[Duration; 3]>,
 
+    pgid: SpinLock<Pid>,
+    exit_signal: SignalNum,
+
     /// CPU time snapshot taken at exit (own threads). Preserved after recycle clears tasks.
     tasks_time_usage_capture: SpinLock<(Duration, Duration)>,
     /// Cumulative CPU time of all waited-for (reaped) children, including their descendants.
@@ -88,7 +91,7 @@ pub struct PCB {
 }
 
 impl PCB {
-    pub fn new(pid: i32, parent: &Arc<PCB>) -> Arc<Self> {
+    pub fn new(pid: i32, parent: &Arc<PCB>, exit_signal: SignalNum) -> Arc<Self> {
         Arc::new(Self {
             pid,
             parent: SpinLock::new(Some(parent.clone()), "PCB::parent"),
@@ -110,6 +113,9 @@ impl PCB {
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
             itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
             itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
+
+            pgid: SpinLock::new(pid, "PCB::pgid"),
+            exit_signal,
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
             waited_children_time_usage: SpinLock::new(
@@ -148,6 +154,9 @@ impl PCB {
 
             children: SleepLock::new(Vec::new(), "static::initpcb::children"),
 
+            pgid: SpinLock::new(new_tid, "PCB::pgid"),
+            exit_signal: signum::SIGCHLD,
+
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
             itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
             itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
@@ -168,6 +177,14 @@ impl PCB {
 
     pub fn pid(&self) -> Tid {
         self.pid
+    }
+
+    pub fn pgid(&self) -> Pid {
+        *self.pgid.lock()
+    }
+
+    pub fn set_pgid(&self, pgid: Pid) {
+        *self.pgid.lock() = pgid;
     }
 
     pub fn exec_path(&self) -> String {
@@ -218,6 +235,7 @@ impl PCB {
         userstack: usize,
         flags: &TaskCloneFlags,
         tls: Option<usize>,
+        exit_signal: SignalNum,
     ) -> Result<Arc<TCB>, Errno> {
         let new_tid = tid::alloc();
         let new_tcb;
@@ -225,11 +243,18 @@ impl PCB {
         if flags.thread {
             new_tcb = tcb.new_clone(new_tid, self, userstack, flags, tls);
             self.tasks.lock().push(new_tcb.clone());
+        } else if flags.parent {
+            // CLONE_PARENT: the new process shares the same parent as the caller
+            let real_parent = self.parent.lock().clone().ok_or(Errno::EINVAL)?;
+            let new_pcb = PCB::new(new_tid, &real_parent, exit_signal);
+            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls);
+            new_pcb.tasks.lock().push(new_tcb.clone());
+            real_parent.children.lock().push(new_pcb);
         } else {
-            let new_parent = PCB::new(new_tid, self);
-            new_tcb = tcb.new_clone(new_tid, &new_parent, userstack, flags, tls);
-            new_parent.tasks.lock().push(new_tcb.clone());
-            self.children.lock().push(new_parent.clone());
+            let new_pcb = PCB::new(new_tid, self, exit_signal);
+            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls);
+            new_pcb.tasks.lock().push(new_tcb.clone());
+            self.children.lock().push(new_pcb);
         }
 
         manager::insert(new_tcb.clone());
@@ -304,9 +329,11 @@ impl PCB {
                 si_utime: 0,
                 si_stime: 0,
             });
-            parent
-                .send_signal(signum::SIGCHLD, SiCode::SI_KERNEL, fields, None)
-                .unwrap_or(());
+            if !self.exit_signal.is_empty() {
+                parent
+                    .send_signal(self.exit_signal, SiCode::SI_KERNEL, fields, None)
+                    .unwrap_or(());
+            }
         }
 
         with_initpcb(|init_process| {
@@ -420,6 +447,59 @@ impl PCB {
                         return Ok(Some((pid, status)));
                     } else {
                         continue; // The child process was recycled by other waiters
+                    }
+                }
+                Event::Signal => return Err(Errno::EINTR),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    pub fn wait_child_by_pgid(&self, pgid: i32, blocked: bool) -> SysResult<Option<(i32, ExitStatus)>> {
+        if let Some(child) = {
+            let mut children = self.children.lock();
+            if !children.iter().any(|c| c.pgid() == pgid) {
+                return Err(Errno::ECHILD);
+            }
+
+            if let Some(pos) = children.iter().position(|c| c.pgid() == pgid && c.is_exited()) {
+                Some(children.swap_remove(pos))
+            } else {
+                None
+            }
+        } {
+            if let Some(status) = child.recycle() {
+                self.accumulate_waited_child(&child);
+                return Ok(Some((child.pid(), status)));
+            }
+        };
+
+        if !blocked {
+            return Ok(None);
+        }
+
+        self.waiting_task.lock().push(current::task().clone());
+
+        loop {
+            let event = current::block("wait_child_by_pgid");
+
+            match event {
+                Event::Process { child } => {
+                    let pid = child;
+                    let child = {
+                        let mut children = self.children.lock();
+
+                        if let Some(pos) = children.iter().position(|c| c.pid() == pid && c.pgid() == pgid) {
+                            children.swap_remove(pos)
+                        } else {
+                            continue;
+                        }
+                    };
+                    if let Some(status) = child.recycle() {
+                        self.accumulate_waited_child(&child);
+                        return Ok(Some((pid, status)));
+                    } else {
+                        continue;
                     }
                 }
                 Event::Signal => return Err(Errno::EINTR),

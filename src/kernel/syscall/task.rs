@@ -1,4 +1,5 @@
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
@@ -6,13 +7,14 @@ use crate::fs::file::{File, FileFlags};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
-use crate::kernel::scheduler;
+use crate::kernel::ipc::SignalNum;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::{Tid, current};
-use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
-use crate::kernel::task::ExitStatus;
+use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::def::TaskCloneFlags;
+use crate::kernel::task::{ExitStatus, PCB};
+use crate::kernel::{scheduler, task};
 
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
@@ -35,9 +37,32 @@ pub fn getppid() -> SyscallRet {
     Ok(ppid as usize)
 }
 
+pub fn getpgid(pid: usize) -> SyscallRet {
+    let pid = pid as i32;
+    if pid == 0 {
+        Ok(current::pcb().pgid() as usize)
+    } else {
+        let tcb = crate::kernel::task::manager::get(pid).ok_or(Errno::ESRCH)?;
+        Ok(tcb.parent().pgid() as usize)
+    }
+}
+
 pub fn setpgid(pid: usize, pgid: usize) -> SyscallRet {
-    let _ = pid;
-    let _ = pgid;
+    let pid = pid as i32;
+    let pgid = pgid as i32;
+
+    let helper = |pcb: &Arc<PCB>| {
+        let pgid = if pgid == 0 { pcb.pid() } else { pgid };
+        pcb.set_pgid(pgid);
+    };
+
+    if pid == 0 {
+        helper(current::pcb())
+    } else {
+        let tcb = task::manager::get(pid).ok_or(Errno::ESRCH)?;
+        helper(tcb.parent())
+    };
+
     Ok(0)
 }
 
@@ -74,37 +99,33 @@ bitflags! {
     }
 }
 
-pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
-    let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
+struct CloneArgs {
+    flags: CloneFlags,
+    task_flags: TaskCloneFlags,
+    stack: usize,
+    tls: Option<usize>,
+    parent_tid_addr: UPtr<Tid>,
+    child_tid_addr: usize,
+    exit_signal: SignalNum,
+}
 
-    let task_flags = TaskCloneFlags {
-        vm: flags.contains(CloneFlags::VM),
-        files: flags.contains(CloneFlags::FILES),
-        thread: flags.contains(CloneFlags::THREAD),
-    };
-
-    let tls = if flags.contains(CloneFlags::SETTLS) {
-        Some(tls)
-    } else {
-        None
-    };
-
-    let child = current::pcb().clone_task(current::tcb(), stack, &task_flags, tls)?;
+fn do_clone(args: CloneArgs) -> SyscallRet {
+    let child = current::pcb().clone_task(current::tcb(), args.stack, &args.task_flags, args.tls, args.exit_signal)?;
     let child_tid = child.tid();
 
-    if flags.contains(CloneFlags::CHILD_SETTID) {
-        let _ = child.get_addrspace().copy_to_user(uptr_child_tid, child_tid);
+    if args.flags.contains(CloneFlags::CHILD_SETTID) {
+        let _ = child.get_addrspace().copy_to_user(args.child_tid_addr, child_tid);
     }
 
-    if flags.contains(CloneFlags::CHILD_CLEARTID) {
-        child.set_tid_address(uptr_child_tid);
+    if args.flags.contains(CloneFlags::CHILD_CLEARTID) {
+        child.set_tid_address(args.child_tid_addr);
     }
 
-    if flags.contains(CloneFlags::PARENT_SETTID) {
-        uptr_parent_tid.write(child_tid)?;
+    if args.flags.contains(CloneFlags::PARENT_SETTID) {
+        args.parent_tid_addr.write(child_tid)?;
     }
 
-    if flags.contains(CloneFlags::VFORK) {
+    if args.flags.contains(CloneFlags::VFORK) {
         child.set_parent_waiting_vfork(Some(current::task().clone()));
         scheduler::push_task(child);
 
@@ -119,6 +140,84 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
     }
 
     Ok(child_tid as usize)
+}
+
+pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
+    let exit_signal = SignalNum::try_from((flags & 0xff) as u32)?;
+    let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
+
+    do_clone(CloneArgs {
+        task_flags: TaskCloneFlags {
+            vm: flags.contains(CloneFlags::VM),
+            files: flags.contains(CloneFlags::FILES),
+            thread: flags.contains(CloneFlags::THREAD),
+            parent: flags.contains(CloneFlags::PARENT),
+        },
+        stack,
+        tls: if flags.contains(CloneFlags::SETTLS) {
+            Some(tls)
+        } else {
+            None
+        },
+        parent_tid_addr: uptr_parent_tid.into(),
+        child_tid_addr: uptr_child_tid,
+        flags,
+        exit_signal,
+    })
+}
+
+/// clone3 `clone_args` struct layout from Linux UAPI
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KernelCloneArgs {
+    flags: u64,
+    pidfd: u64,
+    child_tid: u64,
+    parent_tid: u64,
+    exit_signal: u64,
+    stack: u64,
+    stack_size: u64,
+    tls: u64,
+}
+
+impl UserStruct for KernelCloneArgs {}
+
+const CLONE_ARGS_MIN_SIZE: usize = core::mem::size_of::<KernelCloneArgs>();
+
+pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
+    if size < CLONE_ARGS_MIN_SIZE {
+        return Err(Errno::EINVAL);
+    }
+
+    let kargs = uargs.read()?;
+
+    let exit_signal = SignalNum::try_from(kargs.exit_signal as u32)?;
+    let flags = CloneFlags::from_bits((kargs.flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
+
+    let stack = if kargs.stack != 0 {
+        (kargs.stack + kargs.stack_size) as usize
+    } else {
+        0
+    };
+
+    do_clone(CloneArgs {
+        task_flags: TaskCloneFlags {
+            vm: flags.contains(CloneFlags::VM),
+            files: flags.contains(CloneFlags::FILES),
+            thread: flags.contains(CloneFlags::THREAD),
+            parent: flags.contains(CloneFlags::PARENT),
+        },
+        stack,
+        tls: if flags.contains(CloneFlags::SETTLS) {
+            Some(kargs.tls as usize)
+        } else {
+            None
+        },
+        parent_tid_addr: (kargs.parent_tid as usize).into(),
+        child_tid_addr: kargs.child_tid as usize,
+        exit_signal,
+        flags,
+    })
 }
 
 pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
@@ -178,13 +277,33 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
     let exit_status: ExitStatus;
 
     if pid == -1 {
+        // Wait for any child
         if let Some(result) = pcb.wait_any_child(!options.contains(WaitOptions::WNOHANG))? {
             wait_pid = result.0;
             exit_status = result.1;
         } else {
             return Ok(0);
         }
+    } else if pid == 0 {
+        // Wait for any child whose pgid equals the caller's pgid
+        let caller_pgid = pcb.pgid();
+        if let Some(result) = pcb.wait_child_by_pgid(caller_pgid, !options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = result.0;
+            exit_status = result.1;
+        } else {
+            return Ok(0);
+        }
+    } else if pid < -1 {
+        // Wait for any child whose pgid equals -pid
+        let target_pgid = (-pid) as i32;
+        if let Some(result) = pcb.wait_child_by_pgid(target_pgid, !options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = result.0;
+            exit_status = result.1;
+        } else {
+            return Ok(0);
+        }
     } else {
+        // pid > 0: wait for specific child
         if let Some(result) = pcb.wait_child(pid as i32, !options.contains(WaitOptions::WNOHANG))? {
             wait_pid = pid as i32;
             exit_status = result;

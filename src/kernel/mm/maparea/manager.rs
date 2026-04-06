@@ -356,11 +356,6 @@ impl Manager {
     pub fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
         if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
             if !area.perm().contains(MapPerm::W) {
-                crate::kinfo!(
-                    "Write permission denied for address {:#x}, perm={:?}",
-                    uaddr,
-                    area.perm()
-                );
                 return None;
             }
             area.translate_write(uaddr, addrspace)
