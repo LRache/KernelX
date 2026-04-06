@@ -332,7 +332,8 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     }
 
     fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
-        if let Meta::Directory(ref children) = self.meta.lock().meta {
+        let meta = self.meta.lock();
+        if let Meta::Directory(ref children) = meta.meta {
             if let Some((name, &ino)) = children.iter().nth(index) {
                 if ino == self.ino {
                     // skip "."
@@ -345,6 +346,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                         index + 1,
                     )));
                 }
+
+                let name = name.clone();
+
+                drop(meta);
 
                 let file_type = {
                     let sb = self.superblock.lock();
@@ -361,11 +366,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                     }
                 };
 
-                let result = DirResult {
-                    ino,
-                    name: name.clone(),
-                    file_type,
-                };
+                let result = DirResult { ino, name, file_type };
                 Ok(Some((result, index + 1)))
             } else {
                 Ok(None)
