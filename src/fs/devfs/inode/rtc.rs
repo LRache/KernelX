@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use num_enum::TryFromPrimitive;
 
 use crate::driver::chosen::kclock;
 use crate::fs::Dentry;
@@ -8,10 +9,6 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
-
-/// `_IOR('p', 0x09, struct rtc_time)`
-/// = (2 << 30) | (sizeof(RtcTime) << 16) | ('p' << 8) | 0x09
-const RTC_RD_TIME: usize = 0x80247009;
 
 /// Linux-compatible `struct rtc_time`
 #[repr(C)]
@@ -123,15 +120,22 @@ impl FileOps for RtcFile {
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        #[derive(TryFromPrimitive)]
+        #[allow(non_camel_case_types)]
+        #[repr(u32)]
+        enum Request {
+            RTC_RD_TIME = 0x80247009,
+        }
+
+        let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
         match request {
-            RTC_RD_TIME => {
+            Request::RTC_RD_TIME => {
                 let now = kclock::now()?;
                 let epoch_secs = now.as_secs();
                 let rtc_time = epoch_to_rtc_time(epoch_secs);
                 addrspace.copy_to_user(arg, rtc_time)?;
                 Ok(0)
             }
-            _ => Err(Errno::ENOTTY),
         }
     }
 
