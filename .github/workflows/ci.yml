@@ -20,7 +20,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             curl wget gnupg ca-certificates lsb-release software-properties-common \
-            make cmake ninja-build gcc g++ git python3 xz-utils file \
+            make cmake ninja-build gcc g++ git python3 xz-utils file e2tools \
             gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu \
             qemu-system-misc \
           && rm -rf /var/lib/apt/lists/*
@@ -45,10 +45,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Download test image
+      - name: Build test image
         run: |
-          wget -q https://github.com/LRache/KernelX-testsuit/releases/download/v0.0.1/testsuit-for-oskernel-riscv64.img.xz
-          xz -d testsuit-for-oskernel-riscv64.img.xz
+          git clone --branch main https://github.com/LRache/KernelX-testsuit.git
+          cd KernelX-testsuit/testsuit-for-oskernel
+          bash build-e2tools.sh
 
       - name: Build riscv64 kernel
         run: |
@@ -72,7 +73,7 @@ jobs:
             CONFIG_QEMU_MACHINE=virt \
             CONFIG_QEMU_MEMORY=1G \
             CONFIG_QEMU_CPUS=1 \
-            CONFIG_DISK_IMAGE=testsuit-for-oskernel-riscv64.img \
+            CONFIG_DISK_IMAGE=KernelX-testsuit/testsuit-for-oskernel/sdcard-rv.img \
             CONFIG_INITPATH=/testcode/runtest.sh \
             CONFIG_INITCWD=/ \
             CONFIG_ROOT_DEVICE="virtio_mmio@10001000" \
