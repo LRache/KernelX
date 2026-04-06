@@ -109,6 +109,19 @@ struct CloneArgs {
     exit_signal: SignalNum,
 }
 
+/// Validate clone flag combinations (matching Linux semantics).
+fn check_clone_flags(flags: &CloneFlags) -> SysResult<()> {
+    // CLONE_THREAD requires CLONE_SIGHAND
+    if flags.contains(CloneFlags::THREAD) && !flags.contains(CloneFlags::SIGHAND) {
+        return Err(Errno::EINVAL);
+    }
+    // CLONE_SIGHAND requires CLONE_VM
+    if flags.contains(CloneFlags::SIGHAND) && !flags.contains(CloneFlags::VM) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(())
+}
+
 fn do_clone(args: CloneArgs) -> SyscallRet {
     let child = current::pcb().clone_task(current::tcb(), args.stack, &args.task_flags, args.tls, args.exit_signal)?;
     let child_tid = child.tid();
@@ -145,6 +158,8 @@ fn do_clone(args: CloneArgs) -> SyscallRet {
 pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
     let exit_signal = SignalNum::try_from((flags & 0xff) as u32)?;
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
+
+    check_clone_flags(&flags)?;
 
     do_clone(CloneArgs {
         task_flags: TaskCloneFlags {
@@ -191,8 +206,33 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
 
     let kargs = uargs.read()?;
 
+    // If size is larger than the known struct, verify that the extra bytes are all zero.
+    // This ensures forward compatibility: unknown fields must be zero.
+    if size > CLONE_ARGS_MIN_SIZE {
+        let extra_start = uargs.uaddr() + CLONE_ARGS_MIN_SIZE;
+        let extra_len = size - CLONE_ARGS_MIN_SIZE;
+        let mut extra = alloc::vec![0u8; extra_len];
+        copy_from_user::slice(extra_start, &mut extra)?;
+        if extra.iter().any(|&b| b != 0) {
+            return Err(Errno::E2BIG);
+        }
+    }
+
     let exit_signal = SignalNum::try_from(kargs.exit_signal as u32)?;
     let flags = CloneFlags::from_bits((kargs.flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
+
+    check_clone_flags(&flags)?;
+
+    // Validate pidfd address if CLONE_PIDFD is set
+    if flags.contains(CloneFlags::PIDFD) {
+        let pidfd_uptr: UPtr<i32> = (kargs.pidfd as usize).into();
+        pidfd_uptr.read()?;
+    }
+
+    // stack and stack_size must both be zero or both be non-zero
+    if (kargs.stack == 0) != (kargs.stack_size == 0) {
+        return Err(Errno::EINVAL);
+    }
 
     let stack = if kargs.stack != 0 {
         (kargs.stack + kargs.stack_size) as usize
