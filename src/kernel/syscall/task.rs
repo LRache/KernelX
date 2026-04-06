@@ -368,8 +368,8 @@ bitflags! {
 
 pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
     let pcb = current::pcb();
-    let options = WaitOptions::from_bits(options).unwrap_or(WaitOptions::empty());
-    let pid = pid as isize;
+    let options = WaitOptions::from_bits(options).ok_or(Errno::EINVAL)?;
+    let pid = pid as i32;
 
     let wait_pid;
     let exit_status: ExitStatus;
@@ -392,8 +392,14 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
             return Ok(0);
         }
     } else if pid < -1 {
+        // Why
+        if pid == i32::MIN {
+            return Err(Errno::ESRCH);
+        }
+
         // Wait for any child whose pgid equals -pid
-        let target_pgid = (-pid) as i32;
+        let target_pgid = -pid;
+
         if let Some(result) = pcb.wait_child_by_pgid(target_pgid, !options.contains(WaitOptions::WNOHANG))? {
             wait_pid = result.0;
             exit_status = result.1;
@@ -432,7 +438,6 @@ pub fn exit_group(code: usize) -> SyscallRet {
 
     current::tcb().wake_parent_waiting_vfork();
 
-    // kinfo!("{:?}", current::task().lockstate().held());
     Ok(0)
 }
 
