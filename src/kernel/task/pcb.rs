@@ -97,7 +97,7 @@ pub struct PCB {
 }
 
 impl PCB {
-    pub fn new(pid: i32, parent: &Arc<PCB>, exit_signal: SignalNum) -> Arc<Self> {
+    pub fn new(pid: i32, pgid: Pid, parent: &Arc<PCB>, exit_signal: SignalNum) -> Arc<Self> {
         Arc::new(Self {
             pid,
             parent: SpinLock::new(Some(parent.clone()), "PCB::parent"),
@@ -125,7 +125,7 @@ impl PCB {
             gid: SpinLock::new(*parent.gid.lock(), "PCB::gid"),
             egid: SpinLock::new(*parent.egid.lock(), "PCB::egid"),
 
-            pgid: SpinLock::new(pid, "PCB::pgid"),
+            pgid: SpinLock::new(pgid, "PCB::pgid"),
             exit_signal,
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
@@ -294,12 +294,12 @@ impl PCB {
         } else if flags.parent {
             // CLONE_PARENT: the new process shares the same parent as the caller
             let real_parent = self.parent.lock().clone().ok_or(Errno::EINVAL)?;
-            let new_pcb = PCB::new(new_tid, &real_parent, exit_signal);
+            let new_pcb = PCB::new(new_tid, self.pgid(), &real_parent, exit_signal);
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls);
             new_pcb.tasks.lock().push(new_tcb.clone());
             real_parent.children.lock().push(new_pcb);
         } else {
-            let new_pcb = PCB::new(new_tid, self, exit_signal);
+            let new_pcb = PCB::new(new_tid, self.pgid(), self, exit_signal);
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls);
             new_pcb.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_pcb);
@@ -404,6 +404,11 @@ impl PCB {
         if let Some(child) = child {
             if let Some(status) = child.recycle() {
                 self.accumulate_waited_child(&child);
+
+                let mut children = self.children.lock();
+                let positon = children.iter().position(|c| c.pid() == pid).unwrap();
+                children.swap_remove(positon);
+
                 return Ok(Some(status));
             }
 
@@ -442,11 +447,7 @@ impl PCB {
             }
         } else {
             // No child found
-            if blocked {
-                return Err(Errno::ECHILD);
-            } else {
-                return Ok(None);
-            }
+            return Err(Errno::ECHILD);
         }
     }
 
@@ -456,6 +457,8 @@ impl PCB {
             if children.is_empty() {
                 return Err(Errno::ECHILD);
             }
+
+            // children.iter().for_each(|t| crate::kinfo!("{}", t.pid()));
 
             if let Some(pos) = children.iter().position(|c| c.is_exited()) {
                 Some(children.swap_remove(pos))
