@@ -153,7 +153,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             perm_flags.insert(PermFlags::W);
         }
 
-        match vfs::openat_file(parent, &path, file_flags, &Perm::new(perm_flags)) {
+        match vfs::openat_file(parent, &path, file_flags, &Perm::current(perm_flags)) {
             Ok(file) => {
                 if open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
                     return Err(Errno::EEXIST);

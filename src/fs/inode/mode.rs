@@ -36,6 +36,14 @@ bitflags! {
 
 impl Mode {
     pub fn check_perm(&self, perm: &Perm, uid: Uid, gid: Uid) -> bool {
+        if perm.is_root() {
+            if perm.flags.contains(PermFlags::X) {
+                return self.contains(Mode::S_IXUSR) || self.contains(Mode::S_IXGRP) || self.contains(Mode::S_IXOTH);
+            } else {
+                return true;
+            }
+        }
+
         let (read_bit, write_bit, exec_bit) = if perm.uid == uid {
             (Mode::S_IRUSR, Mode::S_IWUSR, Mode::S_IXUSR)
         } else if perm.gid == gid {

@@ -18,6 +18,7 @@ use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, WakeupFailure,
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::task::{PCB, manager};
+use crate::kernel::uapi::Uid;
 use crate::kernel::usync::futex;
 use crate::kernel::{config, scheduler};
 use crate::klib::SpinLock;
@@ -146,11 +147,15 @@ impl TCB {
         envp: &[&str],
         tty: &str,
     ) -> (Arc<Self>, String) {
-        let file = vfs::open_file(initpath, FileFlags::dontcare(), &Perm::new(PermFlags::R | PermFlags::X))
-            .expect("Failed to open init file")
-            .downcast_arc::<File>()
-            .map_err(|_| Errno::ENOEXEC)
-            .expect("Failed to open init file as File");
+        let file = vfs::open_file(
+            initpath,
+            FileFlags::dontcare(),
+            &Perm::new(0, 0, PermFlags::R | PermFlags::X),
+        )
+        .expect("Failed to open init file")
+        .downcast_arc::<File>()
+        .map_err(|_| Errno::ENOEXEC)
+        .expect("Failed to open init file as File");
 
         // Read the shebang
         let mut first_line = [0u8; 128];
@@ -209,7 +214,7 @@ impl TCB {
                 blocked: true,
                 append: false,
             },
-            &Perm::new(PermFlags::R | PermFlags::W),
+            &Perm::new(0, 0, PermFlags::R | PermFlags::W),
         )
         .expect("Failed to open tty for init task");
 
@@ -292,9 +297,10 @@ impl TCB {
                     new_argv.push(arg);
                 }
 
-                let interpreter_file = vfs::open_file(interpreter, FileFlags::dontcare(), &Perm::new(PermFlags::X))?
-                    .downcast_arc::<File>()
-                    .map_err(|_| Errno::ENOEXEC)?;
+                let interpreter_file =
+                    vfs::open_file(interpreter, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
+                        .downcast_arc::<File>()
+                        .map_err(|_| Errno::ENOEXEC)?;
                 return self.new_exec(interpreter_file, &new_argv, envp);
             }
         }
@@ -492,6 +498,10 @@ impl Task for TCB {
 
     fn tcb(&self) -> &TCB {
         self
+    }
+
+    fn uid(&self) -> Uid {
+        self.parent().uid()
     }
 
     fn run_if_ready(&self) -> bool {

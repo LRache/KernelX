@@ -1,5 +1,6 @@
 use bitflags::bitflags;
 
+use crate::kernel::scheduler::current;
 use crate::kernel::uapi::Uid;
 
 bitflags! {
@@ -19,7 +20,16 @@ pub struct Perm {
 }
 
 impl Perm {
-    pub fn new(flags: PermFlags) -> Self {
-        Self { uid: 0, gid: 0, flags }
+    pub fn new(uid: Uid, gid: Uid, flags: PermFlags) -> Self {
+        Self { uid, gid, flags }
+    }
+
+    pub fn current(flags: PermFlags) -> Self {
+        let pcb = current::pcb();
+        Self::new(pcb.euid(), pcb.egid(), flags)
+    }
+
+    pub fn is_root(&self) -> bool {
+        self.uid == 0
     }
 }

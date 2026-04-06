@@ -4,6 +4,8 @@ use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
 use crate::kernel::task::TCB;
 
+use crate::kernel::uapi::Uid;
+
 use super::Tid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +85,7 @@ pub trait Task: Send + Sync {
     fn take_wakeup_event(&self) -> Option<Event>;
 
     fn tcb(&self) -> &TCB;
+    fn uid(&self) -> Uid;
 
     fn set_exited(&self) {}
 

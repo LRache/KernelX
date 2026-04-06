@@ -55,7 +55,7 @@ pub fn pid() -> Tid {
 }
 
 pub fn uid() -> Uid {
-    0
+    pcb().uid()
 }
 
 pub fn pcb() -> &'static Arc<PCB> {

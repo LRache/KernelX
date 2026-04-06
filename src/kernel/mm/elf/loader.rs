@@ -191,7 +191,7 @@ pub fn load_program_from_file(
 
 fn load_interpreter(path: &str, addrspace: &AddrSpace) -> SysResult<(usize, usize)> {
     let file_flags = FileFlags::readonly();
-    let file = vfs::open_file(path, file_flags, &Perm::new(PermFlags::X))?;
+    let file = vfs::open_file(path, file_flags, &Perm::current(PermFlags::X))?;
     let file = file.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
 
     let ehdr = read_ehdr(&file)?;

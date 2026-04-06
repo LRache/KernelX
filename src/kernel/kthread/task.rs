@@ -6,6 +6,7 @@ use crate::arch::KernelContext;
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::{self, KernelStack, Task, TaskState, Tid, WakeupFailure, current, tid};
 use crate::kernel::task::TCB;
+use crate::kernel::uapi::Uid;
 use crate::klib::SpinLock;
 
 /// All kthreads enter through this trampoline. `ptr` arrives in `a0`
@@ -59,6 +60,10 @@ impl Task for KThread {
 
     fn tcb(&self) -> &TCB {
         unreachable!("KThread is not a TCB")
+    }
+
+    fn uid(&self) -> Uid {
+        0
     }
 
     fn kstack(&self) -> &KernelStack {
