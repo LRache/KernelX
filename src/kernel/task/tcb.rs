@@ -75,7 +75,7 @@ pub struct TCB {
     pub kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
-    fdtable: Arc<SpinLock<FDTable>>,
+    fdtable: TaskLocal<Arc<SpinLock<FDTable>>>,
 
     pub signal_mask: SpinLock<SignalSet>,
     ucontext_syscall_retreg_backup: TaskLocal<Option<usize>>,
@@ -122,7 +122,7 @@ impl TCB {
             kernel_stack,
 
             addrspace,
-            fdtable,
+            fdtable: TaskLocal::new(tid, fdtable),
 
             signal_mask: SpinLock::new(SignalSet::empty(), "TCB::signal_mask"),
             ucontext_syscall_retreg_backup: TaskLocal::new(tid, None),
@@ -263,9 +263,9 @@ impl TCB {
         }
 
         let new_fdtable = if flags.files {
-            self.fdtable.clone()
+            self.fdtable().clone()
         } else {
-            Arc::new(SpinLock::new(self.fdtable.lock().fork(), "TCB::fdtable"))
+            Arc::new(SpinLock::new(self.fdtable().lock().fork(), "TCB::fdtable"))
         };
 
         let new_tcb = Self::new(tid, parent, new_user_context, new_addrspace, new_fdtable);
@@ -357,7 +357,12 @@ impl TCB {
     }
 
     pub fn fdtable(&self) -> &Arc<SpinLock<FDTable>> {
-        &self.fdtable
+        self.fdtable.get_mut()
+    }
+
+    pub fn unshare_fdtable(&self) {
+        let new_fdtable = Arc::new(SpinLock::new(self.fdtable.get_mut().lock().fork(), "TCB::fdtable"));
+        self.fdtable.set(new_fdtable);
     }
 
     pub fn get_signal_mask(&self) -> SignalSet {

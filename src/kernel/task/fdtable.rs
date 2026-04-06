@@ -111,6 +111,32 @@ impl FDTable {
         }
     }
 
+    pub fn dup3(&mut self, oldfd: usize, newfd: usize, flags: FDFlags) -> SysResult<usize> {
+        if oldfd == newfd {
+            return Err(Errno::EINVAL);
+        }
+
+        if newfd >= config::MAX_FD {
+            return Err(Errno::EBADF);
+        }
+        if newfd >= self.table.len() {
+            self.table.resize(newfd + 1, None);
+        }
+        if oldfd >= self.table.len() {
+            return Err(Errno::EBADF);
+        }
+
+        self.table[newfd] = match self.table[oldfd].as_ref() {
+            Some(fd_item) => Some(FDItem {
+                file: fd_item.file.clone(),
+                flags,
+            }),
+            None => return Err(Errno::EBADF),
+        };
+
+        Ok(newfd)
+    }
+
     pub fn take(&mut self, fd: usize) -> SysResult<Arc<dyn FileOps>> {
         if fd < self.table.len() {
             if self.table[fd].is_none() {

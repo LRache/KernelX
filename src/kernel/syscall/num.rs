@@ -182,7 +182,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         // Filesystem
         23  => fs::dup(1),
-        24  => fs::dup2(2),
+        24  => fs::dup3(3),
         25  => fs::fcntl64(3),
         29  => fs::ioctl(3),
         32  => fs::flock(2),
@@ -194,6 +194,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         37  => fs::linkat(4),
         43  => fs::statfs64(2),
         46  => fs::ftruncate64(2),
+        47  => fs::fallocate(4),
         48  => fs::faccessat(3),
         52  => fs::fchmod(2),
         53  => fs::fchmodat(3),
@@ -217,6 +218,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         88  => fs::utimensat(4),
         166 => fs::umask(1),
         276 => fs::renameat2(5),
+        436 => fs::close_range(3),
         439 => fs::faccessat2(4),
 
         // Task
@@ -231,6 +233,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         152 => task::setfsgid(1),
         153 => misc::times(1),
         154 => task::setpgid(2),
+        155 => task::getpgid(1),
         157 => task::setsid(0),
         172 => task::getpid(0),
         173 => task::getppid(0),
@@ -238,6 +241,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         220 => task::clone(5),
         221 => task::execve(3),
         260 => task::wait4(4),
+        435 => task::clone3(2),
 
         // Memory
         214 => mm::brk(1),

@@ -22,18 +22,13 @@ pub fn dup(oldfd: usize) -> SyscallRet {
     fdtable.dup(oldfd, None, FDFlags::empty())
 }
 
-pub fn dup2(oldfd: usize, newfd: usize) -> SyscallRet {
+pub fn dup3(oldfd: usize, newfd: usize, flags: usize) -> SyscallRet {
+    let flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let fd_flags = FDFlags {
+        cloexec: flags.contains(OpenFlags::O_CLOEXEC),
+    };
     let mut fdtable = current::fdtable().lock();
-    if oldfd == newfd {
-        // If oldfd and newfd are the same, just return newfd
-        fdtable.get(oldfd)?; // Check if oldfd is valid
-        return Ok(newfd);
-    }
-
-    let file = fdtable.get(oldfd)?;
-    fdtable.set(newfd, file, FDFlags::empty())?;
-
-    Ok(newfd)
+    fdtable.dup3(oldfd, newfd, fd_flags)
 }
 
 #[allow(non_camel_case_types)]
@@ -478,6 +473,47 @@ pub fn close(fd: usize) -> Result<usize, Errno> {
     // Drop Arc<dyn FileOps> without lock
     let file = current::fdtable().lock().take(fd)?;
     drop(file);
+
+    Ok(0)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CloseRangeFlags: usize {
+        const UNSHARE = 1 << 1;
+        const CLOEXEC = 1 << 2;
+    }
+}
+
+pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
+    if fd > max_fd {
+        return Err(Errno::EINVAL);
+    }
+
+    let flags = CloseRangeFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+
+    if flags.contains(CloseRangeFlags::UNSHARE) {
+        current::tcb().unshare_fdtable();
+    }
+
+    let mut fdtable = current::fdtable().lock();
+    if flags.contains(CloseRangeFlags::CLOEXEC) {
+        for i in fd..=max_fd {
+            if let Ok(fdflags) = fdtable.get_fd_flags(i) {
+                fdtable.set_fd_flags(
+                    i,
+                    FDFlags {
+                        cloexec: true,
+                        ..fdflags
+                    },
+                )?;
+            }
+        }
+    } else {
+        for i in fd..=max_fd {
+            let _ = fdtable.take(i);
+        }
+    }
 
     Ok(0)
 }
