@@ -498,6 +498,14 @@ impl Task for TCB {
         self.tid
     }
 
+    fn egid(&self) -> Uid {
+        self.parent.egid()
+    }
+
+    fn euid(&self) -> Uid {
+        self.parent.euid()
+    }
+
     fn kcontext(&self) -> &mut KernelContext {
         unsafe { (self.kernel_context.get() as *mut KernelContext).as_mut() }.unwrap()
     }
@@ -508,10 +516,6 @@ impl Task for TCB {
 
     fn tcb(&self) -> &TCB {
         self
-    }
-
-    fn uid(&self) -> Uid {
-        self.parent().uid()
     }
 
     fn run_if_ready(&self) -> bool {

@@ -54,6 +54,14 @@ pub fn pid() -> Tid {
     if !has_task() { -1 } else { pcb().pid() }
 }
 
+pub fn euid() -> Uid {
+    task().euid()
+}
+
+pub fn egid() -> Uid {
+    task().egid()
+}
+
 pub fn uid() -> Uid {
     pcb().uid()
 }

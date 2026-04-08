@@ -25,8 +25,7 @@ impl Perm {
     }
 
     pub fn current(flags: PermFlags) -> Self {
-        let pcb = current::pcb();
-        Self::new(pcb.euid(), pcb.egid(), flags)
+        Self::new(current::euid(), current::egid(), flags)
     }
 
     pub fn is_root(&self) -> bool {

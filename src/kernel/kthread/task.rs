@@ -58,12 +58,16 @@ impl Task for KThread {
         self.tid
     }
 
-    fn tcb(&self) -> &TCB {
-        unreachable!("KThread is not a TCB")
+    fn euid(&self) -> Uid {
+        0
     }
 
-    fn uid(&self) -> Uid {
+    fn egid(&self) -> Uid {
         0
+    }
+
+    fn tcb(&self) -> &TCB {
+        unreachable!("KThread is not a TCB")
     }
 
     fn kstack(&self) -> &KernelStack {

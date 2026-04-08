@@ -70,6 +70,9 @@ pub enum WakeupFailure {
 
 pub trait Task: Send + Sync {
     fn tid(&self) -> Tid;
+    fn euid(&self) -> Uid;
+    fn egid(&self) -> Uid;
+    
     fn kcontext(&self) -> &mut arch::KernelContext;
     fn kstack(&self) -> &KernelStack;
 
@@ -85,7 +88,6 @@ pub trait Task: Send + Sync {
     fn take_wakeup_event(&self) -> Option<Event>;
 
     fn tcb(&self) -> &TCB;
-    fn uid(&self) -> Uid;
 
     fn set_exited(&self) {}
 
