@@ -12,10 +12,12 @@ use super::PCB;
 
 pub const INIT_UTASK_TID: Tid = 1;
 
-fn split_with_quotes(input: &str) -> Vec<&str> {
+fn split_argv<'a>(initpath: &'a str, input: &'a str) -> Vec<&'a str> {
     let mut result = Vec::new();
     let mut in_quotes = false;
     let mut start = None;
+
+    result.push(initpath);
 
     for (i, c) in input.char_indices() {
         match c {
@@ -53,7 +55,7 @@ fn split_with_quotes(input: &str) -> Vec<&str> {
 static TCBS: SpinLock<BTreeMap<Tid, Arc<TCB>>> = SpinLock::new(BTreeMap::new(), "static::TCBS");
 
 pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &str) -> Arc<TCB> {
-    let initargv = split_with_quotes(initargs);
+    let initargv = split_argv(initpath, initargs);
     let initenvp: &[&str] = &[];
 
     kinfo!(
