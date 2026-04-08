@@ -52,8 +52,11 @@ menuconfig:
 		KCONFIG_CONFIG=config/.config kconfig-mconf config/Kconfig; \
 	elif command -v menuconfig >/dev/null 2>&1; then \
 		KCONFIG_CONFIG=config/.config menuconfig config/Kconfig; \
+	elif python3 -c "import menuconfig" 2>/dev/null; then \
+		KCONFIG_CONFIG=config/.config python3 -m menuconfig config/Kconfig; \
 	else \
-		echo "Error: menuconfig not found. Please install kconfig-frontends:"; \
-		echo "  Ubuntu/Debian: sudo apt-get install kconfig-frontends"; \
+		echo "Error: menuconfig not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		echo "  kconfiglib:        pip3 install kconfiglib"; \
 		exit 1; \
 	fi
