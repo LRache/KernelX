@@ -37,8 +37,8 @@ pub trait UserPointer<T: UserStruct> {
         self.uaddr() == 0
     }
 
-    fn should_not_null(&self) -> SysResult<()> {
-        if self.is_null() { Err(Errno::EINVAL) } else { Ok(()) }
+    fn should_not_null(&self) -> SysResult<&Self> {
+        if self.is_null() { Err(Errno::EINVAL) } else { Ok(self) }
     }
 
     fn kaddr(&self) -> SysResult<usize> {
@@ -169,8 +169,8 @@ impl UString {
         self.uaddr == 0
     }
 
-    pub fn should_not_null(&self) -> SysResult<()> {
-        if self.is_null() { Err(Errno::EINVAL) } else { Ok(()) }
+    pub fn should_not_null(&self) -> SysResult<&Self> {
+        if self.is_null() { Err(Errno::EINVAL) } else { Ok(self) }
     }
 }
 
