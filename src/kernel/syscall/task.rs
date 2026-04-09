@@ -363,6 +363,7 @@ bitflags! {
     pub struct WaitOptions: usize {
         const WNOHANG   = 1 << 0;
         const WUNTRACED = 1 << 1;
+        const __WALL    = 1 << 30; // TODO: Implement __WALL
     }
 }
 
