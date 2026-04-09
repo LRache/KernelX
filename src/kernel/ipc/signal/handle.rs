@@ -41,6 +41,7 @@ impl TCB {
 
         if action.is_default() {
             match signum.default_action() {
+                // TODO: Implement stop and cont actions
                 SignalDefaultAction::Term | SignalDefaultAction::Stop => {
                     self.parent().exit(ExitStatus::Signal {
                         sig: signum.num() as u8,
