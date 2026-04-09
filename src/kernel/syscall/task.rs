@@ -14,7 +14,7 @@ use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{ExitStatus, PCB};
-use crate::kernel::{scheduler, task};
+use crate::kernel::{config, scheduler, task};
 
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
@@ -453,8 +453,11 @@ pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {
     copy_to_user::string(ubuf, &cwd, size)
 }
 
-pub fn chdir(user_path: usize) -> SysResult<usize> {
-    let path = copy_from_user::string(user_path)?;
+pub fn chdir(uptr_path: UString) -> SysResult<usize> {
+    let path = uptr_path.should_not_null()?.read()?;
+    if path.len() >= config::MAX_FILENAME_LEN {
+        return Err(Errno::ENAMETOOLONG);
+    }
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
     current::pcb().set_cwd(&dentry);
     Ok(0)

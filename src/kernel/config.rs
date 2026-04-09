@@ -32,6 +32,8 @@ pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process
 
+pub const MAX_FILENAME_LEN: usize = 255;
+
 // pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer
 pub const PIPE_BUFFER_PAGES: usize = 32; // Number of pages allocated for pipe buffer
 pub const PIPE_CAPACITY: usize = PIPE_BUFFER_PAGES * arch::PGSIZE;
