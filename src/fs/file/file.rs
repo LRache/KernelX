@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
 
-use crate::fs::{InodeOps, Mode};
 use crate::fs::file::DirResult;
 use crate::fs::vfs::Dentry;
+use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
 use crate::klib::SleepLock;
