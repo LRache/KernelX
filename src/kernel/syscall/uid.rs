@@ -1,5 +1,6 @@
 use crate::kernel::errno::SysResult;
 use crate::kernel::scheduler::current;
+use crate::kernel::uapi::Uid;
 
 pub fn getuid() -> SysResult<usize> {
     Ok(current::pcb().uid() as usize)
@@ -19,19 +20,19 @@ pub fn getegid() -> SysResult<usize> {
 
 pub fn seteuid(euid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
-    pcb.set_euid(euid as u32);
+    pcb.set_euid(euid as Uid);
     Ok(0)
 }
 
 pub fn setegid(egid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
-    pcb.set_egid(egid as u32);
+    pcb.set_egid(egid as Uid);
     Ok(0)
 }
 
 pub fn setgid(gid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
-    let gid = gid as u32;
+    let gid = gid as Uid;
     if pcb.euid() == 0 {
         pcb.set_gid(gid);
         pcb.set_egid(gid);

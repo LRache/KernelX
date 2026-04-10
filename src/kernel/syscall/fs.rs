@@ -1015,8 +1015,11 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, _flags
         )?
     };
 
-    let uid = if uid == usize::MAX { None } else { Some(uid as Uid) };
-    let gid = if gid == usize::MAX { None } else { Some(gid as Uid) };
+    let uid = uid as Uid;
+    let gid = gid as Uid;
+
+    let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
+    let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
     dentry.get_inode().chown(uid, gid)?;
 
     Ok(0)
@@ -1025,9 +1028,12 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, _flags
 pub fn fchown(fd: usize, uid: usize, gid: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
+    let uid = uid as Uid;
+    let gid = gid as Uid;
+
     if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
-        let uid = if uid == usize::MAX { None } else { Some(uid as Uid) };
-        let gid = if gid == usize::MAX { None } else { Some(gid as Uid) };
+        let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
+        let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
         inode.chown(uid, gid)?;
     } else {
         return Err(Errno::EINVAL);

@@ -292,6 +292,8 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         kstat.st_mtime_nsec = meta.mtime.subsec_nanos() as i64;
         kstat.st_ctime_sec = meta.ctime.as_secs() as i64;
         kstat.st_ctime_nsec = meta.ctime.subsec_nanos() as i64;
+        kstat.st_uid = meta.owner.0;
+        kstat.st_gid = meta.owner.1;
 
         match meta.meta {
             Meta::File(ref meta) => {
