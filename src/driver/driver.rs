@@ -2,10 +2,12 @@ use core::time::Duration;
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::mm::AddrSpace;
+use crate::net::protocol::MacAddr;
 
 use super::DeviceType;
 
@@ -162,3 +164,14 @@ pub trait RTCDriverOps: DriverOps + Downcast + Send + Sync {
 }
 
 impl_downcast!(RTCDriverOps);
+
+pub trait NetDriverOps: Send + Sync {
+    fn send_packet(&self, packet: &[u8]) -> SysResult<()>;
+
+    /// Acknowledge interrupt and retrieve all received packets from hardware.
+    fn recv_packets(&self) -> Vec<Vec<u8>>;
+
+    fn mac_address(&self) -> MacAddr;
+
+    fn mtu(&self) -> usize;
+}

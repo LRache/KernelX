@@ -32,10 +32,24 @@ pub enum Errno {
     ENAMETOOLONG = 36,    // File name too long
     ENOTEMPTY = 39,       // Directory not empty
     ENOSYS = 38,          // Function not implemented
-    EAFNOSUPPORT = 97,    // Address family not supported by protocol
-    EOPNOTSUPP = 95,      // Operation not supported on transport endpoint
+    ENOTSOCK = 88,        // Socket operation on non-socket
+    EDESTADDRREQ = 89,    // Destination address required
+    EPROTOTYPE = 91,      // Protocol wrong type for socket
     EPROTONOSUPPORT = 93, // Protocol not supported
+    EOPNOTSUPP = 95,      // Operation not supported on transport endpoint
+    EAFNOSUPPORT = 97,    // Address family not supported by protocol
+    EADDRINUSE = 98,      // Address already in use
+    EADDRNOTAVAIL = 99,   // Cannot assign requested address
+    ENETUNREACH = 101,    // Network is unreachable
+    ECONNABORTED = 103,   // Software caused connection abort
+    ECONNRESET = 104,     // Connection reset by peer
+    ENOTCONN = 107,       // Transport endpoint is not connected
+    ESHUTDOWN = 108,      // Cannot send after transport endpoint shutdown
     ETIMEDOUT = 110,      // Connection timed out
+    ECONNREFUSED = 111,   // Connection refused
+    EISCONN = 106,        // Transport endpoint is already connected
+    EALREADY = 114,       // Operation already in progress
+    EINPROGRESS = 115,    // Operation now in progress
 }
 
 pub type SysResult<T> = Result<T, Errno>;

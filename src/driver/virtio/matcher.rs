@@ -5,8 +5,10 @@ use virtio_drivers::transport::{DeviceType, Transport};
 
 use crate::arch::{self, map_kernel_addr};
 use crate::driver::block::VirtIOBlockDriver;
+use crate::driver::net::VirtioNetDriver;
 use crate::driver::{Device, DriverMatcher, DriverOps};
 use crate::kernel::mm::{MapPerm, page};
+use crate::net::interface::Interface;
 
 pub struct Matcher;
 
@@ -27,6 +29,12 @@ impl DriverMatcher for Matcher {
 
         match transport.device_type() {
             DeviceType::Block => Some(Arc::new(VirtIOBlockDriver::new(device.name().into(), transport))),
+            DeviceType::Network => {
+                let net_driver = Arc::new(VirtioNetDriver::new(transport));
+                let iface = Arc::new(Interface::new(device.name().into(), net_driver));
+                crate::net::manager::register(iface.clone());
+                Some(iface)
+            }
             _ => None,
         }
     }

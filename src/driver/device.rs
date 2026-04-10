@@ -4,6 +4,7 @@ pub enum DeviceType {
     Block,
     Char,
     Rtc,
+    Net,
 }
 
 pub struct Device<'a> {

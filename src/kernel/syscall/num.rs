@@ -298,6 +298,18 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         197 => ipc::shmdt(1),
         199 => ipc::socketpair(4),
 
+        // Network sockets
+        198 => net::socket(3),
+        200 => net::bind(3),
+        201 => net::listen(2),
+        202 => net::accept(3),
+        203 => net::connect(3),
+        206 => net::sendto(6),
+        207 => net::recvfrom(6),
+        208 => net::setsockopt(5),
+        209 => net::getsockopt(5),
+        210 => net::shutdown(2),
+
         // Time
         101 => time::nanosleep(2),
         107 => time::timer_create(3),

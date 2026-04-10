@@ -2,12 +2,13 @@ mod device;
 mod driver;
 mod manager;
 mod matcher;
-mod virtio;
 
 pub mod block;
 pub mod char;
 pub mod chosen;
+pub mod net;
 pub mod rtc;
+pub mod virtio;
 
 use matcher::DriverMatcher;
 

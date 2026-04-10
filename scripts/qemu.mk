@@ -13,6 +13,8 @@ QEMU_FLAGS += -drive file=$(CONFIG_DISK_IMAGE),if=none,id=x0,format=raw
 QEMU_FLAGS += -drive file=$(TMPDISK),if=none,id=x1,format=raw
 QEMU_FLAGS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 QEMU_FLAGS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
+QEMU_FLAGS += -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.2
+QEMU_FLAGS += -netdev user,id=net0
 QEMU_FLAGS += -smp $(CONFIG_QEMU_CPUS)
 
 BOOTARGS += $(CONFIG_BOOTARGS)

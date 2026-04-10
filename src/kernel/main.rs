@@ -6,7 +6,7 @@ use crate::kernel::event::timer;
 use crate::kernel::scheduler::{Processor, Task};
 use crate::kernel::{config, kthread, mm, scheduler, task};
 use crate::klib::{InitedCell, kalloc};
-use crate::{arch, driver, fs, kinfo, print};
+use crate::{arch, driver, fs, kinfo, net, print};
 
 #[allow(dead_code)]
 fn free_init() {
@@ -42,6 +42,8 @@ fn kinit() {
     );
 
     driver::chosen::init(&BOOT_ARGS);
+
+    net::configure();
 
     #[cfg(feature = "swap-memory")]
     mm::swappable::init();
@@ -103,6 +105,7 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
         fs::init();
         driver::init();
         arch::scan_device();
+        net::init();
 
         let inittask = kthread::spawn(kinit);
         debug_assert!(inittask.tid() == 0);

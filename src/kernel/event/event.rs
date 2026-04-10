@@ -1,9 +1,11 @@
+use alloc::vec::Vec;
+
 use crate::kernel::ipc::SignalNum;
 use crate::kernel::scheduler::Tid;
 
 use super::FileEvent;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Poll { event: FileEvent, waker: usize },
     ReadReady,
@@ -16,4 +18,5 @@ pub enum Event {
     VFork,
     IOComplete,
     SleepLock,
+    Net { packet: Vec<u8> },
 }
