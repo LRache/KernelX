@@ -259,6 +259,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         // Misc
         81  => misc::sync(0),
+        92  => misc::personality(1),
         116 => misc::syslog(3),
         119 => misc::sched_setscheduler(3),
         120 => misc::sched_getscheduler(1),
@@ -276,6 +277,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
 
         144 => uid::setgid(1),
         147 => uid::seteuid(1),
+        149 => uid::setegid(1),
         174 => uid::getuid(0),
         175 => uid::geteuid(0),
         176 => uid::getgid(0),

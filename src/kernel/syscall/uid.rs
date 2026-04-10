@@ -23,6 +23,12 @@ pub fn seteuid(euid: usize) -> SysResult<usize> {
     Ok(0)
 }
 
+pub fn setegid(egid: usize) -> SysResult<usize> {
+    let pcb = current::pcb();
+    pcb.set_egid(egid as u32);
+    Ok(0)
+}
+
 pub fn setgid(gid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
     let gid = gid as u32;

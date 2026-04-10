@@ -3,8 +3,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use crate::fs::file::File;
-use crate::fs::{Dentry, vfs};
+use crate::fs::file::{File, FileOps};
+use crate::fs::{Dentry, Mode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, SignalNum, signum};
@@ -318,6 +318,9 @@ impl PCB {
     }
 
     pub fn exec(self: &Arc<Self>, tcb: &TCB, file: Arc<File>, argv: &[&str], envp: &[&str]) -> SysResult<()> {
+        let filemode = file.mode()?;
+        let fileowner = file.owner()?;
+        
         let (first_task, exec_path) = tcb.new_exec(file, argv, envp)?;
 
         {
@@ -327,6 +330,13 @@ impl PCB {
                 manager::remove(tcb.tid());
             });
             tasks.push(first_task.clone());
+        }
+
+        if filemode.contains(Mode::S_ISUID) {
+            self.set_euid(fileowner.0);
+        }
+        if filemode.contains(Mode::S_ISGID) {
+            self.set_egid(fileowner.1);
         }
 
         *self.exec_path.lock() = exec_path;
@@ -476,11 +486,10 @@ impl PCB {
             return Ok(None);
         }
 
-        self.waiting_task.lock().push(current::task().clone());
-
         loop {
-            let event = current::block("wait_any_child");
+            self.waiting_task.lock().push(current::task().clone());
 
+            let event = current::block("wait_any_child");
             match event {
                 Event::Process { child } => {
                     let pid = child;
@@ -506,7 +515,8 @@ impl PCB {
         }
     }
 
-    pub fn wait_child_by_pgid(&self, pgid: i32, blocked: bool) -> SysResult<Option<(i32, ExitStatus)>> {
+    pub fn wait_child_by_pgid(&self, pgid: Tid, blocked: bool) -> SysResult<Option<(i32, ExitStatus)>> {
+        crate::kinfo!("wait_child_by_pgid: pgid={}, blocked={}", pgid, blocked);
         if let Some(child) = {
             let mut children = self.children.lock();
             if !children.iter().any(|c| c.pgid() == pgid) {
@@ -529,14 +539,14 @@ impl PCB {
             return Ok(None);
         }
 
-        self.waiting_task.lock().push(current::task().clone());
-
         loop {
-            let event = current::block("wait_child_by_pgid");
+            self.waiting_task.lock().push(current::task().clone());
 
+            let event = current::block("wait_child_by_pgid");
             match event {
                 Event::Process { child } => {
                     let pid = child;
+                    crate::kinfo!("wait_child_by_pgid: woke up for child pid={}, pgid={}", pid, pgid);
                     let child = {
                         let mut children = self.children.lock();
 

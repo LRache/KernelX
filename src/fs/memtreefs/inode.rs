@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use crate::arch;
+use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 use crate::fs::inode::Mode;
 use crate::fs::{Dentry, FileType, InodeOps};
@@ -44,9 +45,9 @@ pub struct InodeMeta {
     meta: Meta,
     mode: Mode,
     owner: (Uid, Uid),
-    mtime: Timespec,
-    atime: Timespec,
-    ctime: Timespec,
+    mtime: Duration,
+    atime: Duration,
+    ctime: Duration,
     links: u32,
 }
 
@@ -64,9 +65,9 @@ impl InodeMeta {
             meta,
             mode,
             owner: (0, 0),
-            mtime: Timespec::default(),
-            atime: Timespec::default(),
-            ctime: Timespec::default(),
+            mtime: Duration::ZERO,
+            atime: Duration::ZERO,
+            ctime: Duration::ZERO,
             links: 0,
         }
     }
@@ -249,12 +250,31 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn chown(&self, uid: Option<Uid>, gid: Option<Uid>) -> SysResult<()> {
         let mut meta = self.meta.lock();
+        let mut update_ctime = false;
+        let mut clear_suid_sgid = false;
         if let Some(uid) = uid {
-            meta.owner.0 = uid;
+            if meta.owner.0 != uid {
+                meta.owner.0 = uid;
+                update_ctime = true;
+            }
+            clear_suid_sgid = true;
         }
         if let Some(gid) = gid {
-            meta.owner.1 = gid;
+            if meta.owner.1 != gid {
+                meta.owner.1 = gid;
+                update_ctime = true;
+            }
+            clear_suid_sgid = true;
         }
+
+        if clear_suid_sgid && meta.mode.contains(Mode::S_IXGRP) {
+            meta.mode.remove(Mode::S_ISUID | Mode::S_ISGID);
+        }
+
+        if update_ctime {
+            meta.ctime = kclock::now().unwrap_or_default();
+        }
+
         Ok(())
     }
 
@@ -266,12 +286,12 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         kstat.st_mode = meta.mode.bits() as u32;
         kstat.st_blksize = arch::PGSIZE as i32;
         kstat.st_nlink = 1;
-        kstat.st_atime_sec = meta.atime.tv_sec as i64;
-        kstat.st_atime_nsec = meta.atime.tv_nsec as i64;
-        kstat.st_mtime_sec = meta.mtime.tv_sec as i64;
-        kstat.st_mtime_nsec = meta.mtime.tv_nsec as i64;
-        kstat.st_ctime_sec = meta.ctime.tv_sec as i64;
-        kstat.st_ctime_nsec = meta.ctime.tv_nsec as i64;
+        kstat.st_atime_sec = meta.atime.as_secs() as i64;
+        kstat.st_atime_nsec = meta.atime.subsec_nanos() as i64;
+        kstat.st_mtime_sec = meta.mtime.as_secs() as i64;
+        kstat.st_mtime_nsec = meta.mtime.subsec_nanos() as i64;
+        kstat.st_ctime_sec = meta.ctime.as_secs() as i64;
+        kstat.st_ctime_nsec = meta.ctime.subsec_nanos() as i64;
 
         match meta.meta {
             Meta::File(ref meta) => {
@@ -312,22 +332,19 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn update_atime(&self, time: &Duration) -> SysResult<()> {
         let mut meta = self.meta.lock();
-        meta.atime.tv_sec = time.as_secs();
-        meta.atime.tv_nsec = time.subsec_nanos() as u64;
+        meta.atime = *time;
         Ok(())
     }
 
     fn update_mtime(&self, time: &Duration) -> SysResult<()> {
         let mut meta = self.meta.lock();
-        meta.mtime.tv_sec = time.as_secs();
-        meta.mtime.tv_nsec = time.subsec_nanos() as u64;
+        meta.mtime = *time;
         Ok(())
     }
 
     fn update_ctime(&self, time: &Duration) -> SysResult<()> {
         let mut meta = self.meta.lock();
-        meta.ctime.tv_sec = time.as_secs();
-        meta.ctime.tv_nsec = time.subsec_nanos() as u64;
+        meta.ctime = *time;
         Ok(())
     }
 

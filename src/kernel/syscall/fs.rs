@@ -961,14 +961,9 @@ pub fn renameat2(
 }
 
 pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
-    if mode > 0o7777 {
-        return Err(Errno::EINVAL);
-    }
-    let mode = Mode::from_bits(mode as u32).ok_or(Errno::EINVAL)?;
+    let mode = Mode::from_bits(mode as u32 & 0o7777).unwrap();
 
-    uptr_path.should_not_null()?;
-
-    let path = uptr_path.read()?;
+    let path = uptr_path.should_not_null()?.read()?;
 
     let dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
@@ -989,10 +984,7 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
 }
 
 pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
-    if mode > 0o7777 {
-        return Err(Errno::EINVAL);
-    }
-    let mode = Mode::from_bits(mode as u32).ok_or(Errno::EINVAL)?;
+    let mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
 
     let file = current::fdtable().lock().get(fd)?;
 

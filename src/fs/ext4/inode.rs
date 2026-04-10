@@ -199,6 +199,21 @@ impl InodeOps for Ext4Inode {
         Ok(())
     }
 
+    fn chown(&self, uid: Option<Uid>, gid: Option<Uid>) -> SysResult<()> {
+        self.superblock
+            .lock()
+            .with_inode_ref(self.ino, |inode_ref| {
+                let uid = uid.unwrap_or(inode_ref.uid() as Uid) as u16;
+                let gid = gid.unwrap_or(inode_ref.gid() as Uid) as u16;
+                inode_ref.set_owner(uid, gid);
+                inode_ref.set_mode(inode_ref.mode() & !(Mode::S_ISGID & Mode::S_ISUID).bits()); // Clear setuid/setgid bits
+                inode_ref.set_ctime(&kclock::now().unwrap_or(Duration::ZERO));
+                Ok(())
+            })
+            .map_err(map_error_to_kernel)?;
+        Ok(())
+    }
+
     fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::default();
         let mut superblock = self.superblock.lock();

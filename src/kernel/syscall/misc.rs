@@ -40,7 +40,8 @@ impl Utsname {
             machine: [0; 65],
             domainname: [0; 65],
         };
-        let sysname = b"KernelX";
+        // let sysname = b"KernelX";
+        let sysname = b"Linux";
         ustname.sysname[..sysname.len()].copy_from_slice(sysname);
 
         let release = "5.0.0";
@@ -301,6 +302,23 @@ pub fn sysinfo(uptr_sysinfo: UPtr<Sysinfo>) -> SyscallRet {
 
 pub fn sync() -> SyscallRet {
     vfs::sync_all().map(|_| 0)
+}
+
+const PER_LINUX: usize = 0x0000;
+const UNAME26: usize = 0x0020000;
+
+pub fn personality(persona: usize) -> SyscallRet {
+    // If persona is 0xFFFFFFFF, return the current personality without changing it.
+    if persona == 0xFFFFFFFF {
+        return Ok(PER_LINUX);
+    }
+    // Accept PER_LINUX and UNAME26, ignore other flags.
+    let base = persona & 0xFF;
+    if base != PER_LINUX {
+        return Err(Errno::EINVAL);
+    }
+    // We don't actually store the personality; just return the previous value (PER_LINUX).
+    Ok(PER_LINUX)
 }
 
 // TODO: implement sched_setaffinity syscall

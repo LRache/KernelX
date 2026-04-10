@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::fs::InodeOps;
+use crate::fs::{InodeOps, Mode};
 use crate::fs::file::DirResult;
 use crate::fs::vfs::Dentry;
 use crate::kernel::errno::{Errno, SysResult};
@@ -81,6 +81,14 @@ impl File {
         }
 
         Ok(Some((dent, old_pos)))
+    }
+
+    pub fn mode(&self) -> SysResult<Mode> {
+        self.inode.mode()
+    }
+
+    pub fn owner(&self) -> SysResult<(u32, u32)> {
+        self.inode.owner()
     }
 }
 
