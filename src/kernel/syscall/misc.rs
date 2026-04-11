@@ -134,9 +134,13 @@ pub fn prlimit64(
 
             if !uptr_new_limit.is_null() {
                 let new_limit = uptr_new_limit.read()?;
-                if new_limit.rlim_cur != new_limit.rlim_max || new_limit.rlim_max > config::MAX_FD {
+                if new_limit.rlim_max > config::MAX_FD {
                     return Err(Errno::EINVAL);
                 }
+
+                // if new_limit.rlim_cur > fdtable.get_max_fd() {
+                //     return Err(Errno::EINVAL);
+                // }
 
                 fdtable.set_max_fd(new_limit.rlim_max);
             }
