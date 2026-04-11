@@ -39,6 +39,7 @@ impl InodeOps for SysDirInode {
             "." => Ok(Self::INO),
             ".." => Ok(RootInode::INO),
             "kernel" => Ok(SysKernelDirInode::INO),
+            "fs" => Ok(SysFsDirInode::INO),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -58,6 +59,11 @@ impl InodeOps for SysDirInode {
             2 => Some(DirResult {
                 ino: SysKernelDirInode::INO,
                 name: "kernel".into(),
+                file_type: FileType::Directory,
+            }),
+            3 => Some(DirResult {
+                ino: SysFsDirInode::INO,
+                name: "fs".into(),
                 file_type: FileType::Directory,
             }),
             _ => None,
@@ -229,6 +235,124 @@ impl InodeOps for TaintedInode {
 
     fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
         let content = b"0\n";
+        if offset >= content.len() {
+            return Ok(0);
+        }
+        let len = min(buf.len(), content.len() - offset);
+        buf[..len].copy_from_slice(&content[offset..offset + len]);
+        Ok(len)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
+    }
+}
+
+// /proc/sys/fs/
+pub struct SysFsDirInode;
+
+impl SysFsDirInode {
+    pub const INO: u32 = 9;
+}
+
+impl InodeOps for SysFsDirInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_sys_fs"
+    }
+
+    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EISDIR)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn lookup(&self, name: &str) -> SysResult<u32> {
+        match name {
+            "." => Ok(Self::INO),
+            ".." => Ok(SysDirInode::INO),
+            "pipe-user-pages-soft" => Ok(PipeUserPagesSoftInode::INO),
+            _ => Err(Errno::ENOENT),
+        }
+    }
+
+    fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        let d = match index {
+            0 => Some(DirResult {
+                ino: Self::INO,
+                name: ".".into(),
+                file_type: FileType::Directory,
+            }),
+            1 => Some(DirResult {
+                ino: SysDirInode::INO,
+                name: "..".into(),
+                file_type: FileType::Directory,
+            }),
+            2 => Some(DirResult {
+                ino: PipeUserPagesSoftInode::INO,
+                name: "pipe-user-pages-soft".into(),
+                file_type: FileType::Regular,
+            }),
+            _ => None,
+        };
+        Ok(d.map(|r| (r, index + 1)))
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFDIR
+            | Mode::S_IRUSR
+            | Mode::S_IXUSR
+            | Mode::S_IRGRP
+            | Mode::S_IXGRP
+            | Mode::S_IROTH
+            | Mode::S_IXOTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs sys fs dir requires associated dentry");
+        Arc::new(File::new(self, dentry, flags))
+    }
+}
+
+// /proc/sys/fs/pipe-user-pages-soft
+pub struct PipeUserPagesSoftInode;
+
+impl PipeUserPagesSoftInode {
+    pub const INO: u32 = 10;
+}
+
+impl InodeOps for PipeUserPagesSoftInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_pipe_user_pages_soft"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        let content = b"16384\n";
         if offset >= content.len() {
             return Ok(0);
         }
