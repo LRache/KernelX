@@ -9,6 +9,7 @@ use crate::driver;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
 use crate::fs::{Dentry, Mode, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::ipc::Pipe;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
@@ -42,6 +43,8 @@ pub enum FcntlCmd {
     F_GETFL = 3,
     F_SETFL = 4,
     F_DUPFD_CLOEXEC = 1030,
+    F_SETPIPE_SZ = 1031,
+    F_GETPIPE_SZ = 1032,
 }
 
 bitflags! {
@@ -60,6 +63,9 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 open_flags = OpenFlags::O_RDWR;
             } else if file.writable() {
                 open_flags = OpenFlags::O_WRONLY;
+            }
+            if !file.block() {
+                open_flags |= OpenFlags::O_NONBLOCK;
             }
             Ok(open_flags.bits())
         }
@@ -108,6 +114,18 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         FcntlCmd::F_DUPFD_CLOEXEC => {
             let mut fdtable = current::fdtable().lock();
             fdtable.dup(fd, Some(arg), FDFlags { cloexec: true })
+        }
+
+        FcntlCmd::F_SETPIPE_SZ => {
+            let file = current::fdtable().lock().get(fd)?;
+            let pipe = file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
+            pipe.set_pipe_size(arg)
+        }
+
+        FcntlCmd::F_GETPIPE_SZ => {
+            let file = current::fdtable().lock().get(fd)?;
+            let pipe = file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
+            Ok(pipe.get_pipe_size())
         }
 
         _ => Err(Errno::EINVAL),

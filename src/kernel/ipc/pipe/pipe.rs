@@ -43,6 +43,14 @@ impl Pipe {
         let write_end = Pipe::new(inner, true, blocked);
         (read_end, write_end)
     }
+
+    pub fn get_pipe_size(&self) -> usize {
+        self.inner.get_capacity()
+    }
+
+    pub fn set_pipe_size(&self, size: usize) -> SysResult<usize> {
+        self.inner.set_capacity(size)
+    }
 }
 
 impl FileOps for Pipe {
@@ -79,6 +87,10 @@ impl FileOps for Pipe {
 
     fn writable(&self) -> bool {
         self.writable
+    }
+
+    fn block(&self) -> bool {
+        *self.blocked.lock()
     }
 
     fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {

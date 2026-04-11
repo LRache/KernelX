@@ -405,4 +405,29 @@ impl PipeInner {
             }); // Wake up readers to notify them of EOF
         }
     }
+
+    pub fn get_capacity(&self) -> usize {
+        *self.capacity.lock()
+    }
+
+    pub fn set_capacity(&self, size: usize) -> SysResult<usize> {
+        let aligned = if size == 0 {
+            arch::PGSIZE
+        } else {
+            size.div_ceil(arch::PGSIZE) * arch::PGSIZE
+        };
+        if aligned > PIPE_CAPACITY {
+            return Err(Errno::EINVAL);
+        }
+
+        let used = self.fifo.lock().len();
+        if aligned < used {
+            return Err(Errno::EINVAL);
+        }
+
+        *self.capacity.lock() = aligned;
+        // Capacity changes may unblock writers waiting for room.
+        self.write_waiter.lock().wake_all(|e| e);
+        Ok(aligned)
+    }
 }
