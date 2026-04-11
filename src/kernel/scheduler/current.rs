@@ -122,6 +122,7 @@ pub mod copy_from_user {
     use super::addrspace;
     use crate::kernel::errno::SysResult;
     use alloc::string::String;
+    use fixedstr::str256;
 
     pub fn buffer(uaddr: usize, buf: &mut [u8]) -> SysResult<()> {
         addrspace().copy_from_user_buffer(uaddr, buf)
@@ -133,6 +134,10 @@ pub mod copy_from_user {
 
     pub fn string(uaddr: usize) -> SysResult<String> {
         addrspace().get_user_string(uaddr)
+    }
+
+    pub fn string_fixed(uaddr: usize) -> SysResult<str256> {
+        addrspace().get_user_string_fixed(uaddr)
     }
 
     pub fn slice<T: Copy>(uaddr: usize, slice: &mut [T]) -> SysResult<()> {

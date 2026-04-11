@@ -160,6 +160,11 @@ impl UString {
         copy_from_user::string(self.uaddr)
     }
 
+    pub fn read_fixed(&self) -> SysResult<fixedstr::str256> {
+        debug_assert!(!self.is_null());
+        copy_from_user::string_fixed(self.uaddr)
+    }
+
     pub fn write(&self, s: &str, max_size: usize) -> SysResult<usize> {
         debug_assert!(!self.is_null());
         copy_to_user::string(self.uaddr, s, max_size)

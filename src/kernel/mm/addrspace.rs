@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use fixedstr::str256;
 use spin::Lazy;
 
 use crate::arch::{PageTable, PageTableTrait, TRAMPOLINE_BASE, UserContext};
@@ -232,6 +233,37 @@ impl AddrSpace {
                 if result.len() > MAXSIZE {
                     return Err(Errno::EINVAL);
                 }
+            }
+
+            uaddr += to_read;
+        }
+
+        Ok(result)
+    }
+
+    pub fn get_user_string_fixed(&self, mut uaddr: usize) -> Result<str256, Errno> {
+        let mut map_manager = self.map_manager.lock();
+        let mut result = str256::new();
+
+        loop {
+            let page_offset = uaddr & arch::PGMASK;
+            let to_read = arch::PGSIZE - page_offset;
+            let kaddr = map_manager.translate_read(uaddr, self).ok_or(Errno::EFAULT)?;
+
+            let slice = unsafe { core::slice::from_raw_parts(kaddr as *const u8, to_read) };
+            let bytes = if let Some(pos) = slice.iter().position(|&b| b == 0) {
+                &slice[..pos]
+            } else {
+                slice
+            };
+            let chunk = core::str::from_utf8(bytes).map_err(|_| Errno::EINVAL)?;
+
+            if !result.push(chunk).is_empty() {
+                return Err(Errno::ENAMETOOLONG);
+            }
+
+            if bytes.len() != to_read {
+                break;
             }
 
             uaddr += to_read;
