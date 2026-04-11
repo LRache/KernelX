@@ -25,13 +25,23 @@ pub fn getegid() -> SysResult<usize> {
 
 pub fn seteuid(euid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
-    pcb.set_euid(euid as Uid);
+    let euid = euid as Uid;
+    if pcb.euid() == 0 || euid == pcb.uid() || euid == pcb.euid() || euid == pcb.suid() {
+        pcb.set_euid(euid);
+    } else {
+        return Err(Errno::EPERM);
+    }
     Ok(0)
 }
 
 pub fn setegid(egid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
-    pcb.set_egid(egid as Uid);
+    let egid = egid as Uid;
+    if pcb.euid() == 0 || egid == pcb.gid() || egid == pcb.egid() || egid == pcb.sgid() {
+        pcb.set_egid(egid);
+    } else {
+        return Err(Errno::EPERM);
+    }
     Ok(0)
 }
 
@@ -41,27 +51,88 @@ pub fn setuid(uid: usize) -> SysResult<usize> {
     if pcb.euid() == 0 {
         pcb.set_uid(uid);
         pcb.set_euid(uid);
-    } else {
+        pcb.set_suid(uid);
+    } else if uid == pcb.uid() || uid == pcb.suid() {
         pcb.set_euid(uid);
+    } else {
+        return Err(Errno::EPERM);
     }
     Ok(0)
 }
 
 pub fn setreuid(ruid: usize, euid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
+    let old_ruid = pcb.uid();
+    let old_euid = pcb.euid();
+    let old_suid = pcb.suid();
+    let privileged = old_euid == 0;
+
+    let ruid = ruid as Uid;
+    let new_ruid = if ruid == Uid::MAX {
+        old_ruid
+    } else {
+        if !privileged && ruid != old_ruid && ruid != old_euid {
+            return Err(Errno::EPERM);
+        }
+        ruid
+    };
+
+    let euid = euid as Uid;
+    let new_euid = if euid == Uid::MAX {
+        old_euid
+    } else {
+        if !privileged && euid != old_ruid && euid != old_euid && euid != old_suid {
+            return Err(Errno::EPERM);
+        }
+        euid
+    };
+
+    if ruid != Uid::MAX {
+        pcb.set_uid(new_ruid);
+    }
+    if euid != Uid::MAX {
+        pcb.set_euid(new_euid);
+    }
+
+    if ruid != Uid::MAX || (euid != Uid::MAX && new_euid != old_ruid) {
+        pcb.set_suid(new_euid);
+    }
+
+    Ok(0)
+}
+
+pub fn setresuid(ruid: usize, euid: usize, suid: usize) -> SysResult<usize> {
+    let pcb = current::pcb();
+    let old_ruid = pcb.uid();
+    let old_euid = pcb.euid();
+    let old_suid = pcb.suid();
+    let privileged = old_euid == 0;
+
     let ruid = ruid as Uid;
     let euid = euid as Uid;
+    let suid = suid as Uid;
+
+    if ruid != Uid::MAX && !privileged && ruid != old_ruid && ruid != old_euid && ruid != old_suid {
+        return Err(Errno::EPERM);
+    }
+    if euid != Uid::MAX && !privileged && euid != old_ruid && euid != old_euid && euid != old_suid {
+        return Err(Errno::EPERM);
+    }
+    if suid != Uid::MAX && !privileged && suid != old_ruid && suid != old_euid && suid != old_suid {
+        return Err(Errno::EPERM);
+    }
+
     if ruid != Uid::MAX {
         pcb.set_uid(ruid);
     }
     if euid != Uid::MAX {
         pcb.set_euid(euid);
     }
-    Ok(0)
-}
+    if suid != Uid::MAX {
+        pcb.set_suid(suid);
+    }
 
-pub fn setresuid(ruid: usize, euid: usize, _suid: usize) -> SysResult<usize> {
-    setreuid(ruid, euid)
+    Ok(0)
 }
 
 pub fn setgid(gid: usize) -> SysResult<usize> {
@@ -70,27 +141,88 @@ pub fn setgid(gid: usize) -> SysResult<usize> {
     if pcb.euid() == 0 {
         pcb.set_gid(gid);
         pcb.set_egid(gid);
-    } else {
+        pcb.set_sgid(gid);
+    } else if gid == pcb.gid() || gid == pcb.sgid() {
         pcb.set_egid(gid);
+    } else {
+        return Err(Errno::EPERM);
     }
     Ok(0)
 }
 
 pub fn setregid(rgid: usize, egid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
+    let old_rgid = pcb.gid();
+    let old_egid = pcb.egid();
+    let old_sgid = pcb.sgid();
+    let privileged = pcb.euid() == 0;
+
+    let rgid = rgid as Uid;
+    let new_rgid = if rgid == Uid::MAX {
+        old_rgid
+    } else {
+        if !privileged && rgid != old_rgid && rgid != old_egid {
+            return Err(Errno::EPERM);
+        }
+        rgid
+    };
+
+    let egid = egid as Uid;
+    let new_egid = if egid == Uid::MAX {
+        old_egid
+    } else {
+        if !privileged && egid != old_rgid && egid != old_egid && egid != old_sgid {
+            return Err(Errno::EPERM);
+        }
+        egid
+    };
+
+    if rgid != Uid::MAX {
+        pcb.set_gid(new_rgid);
+    }
+    if egid != Uid::MAX {
+        pcb.set_egid(new_egid);
+    }
+
+    if rgid != Uid::MAX || (egid != Uid::MAX && new_egid != old_rgid) {
+        pcb.set_sgid(new_egid);
+    }
+
+    Ok(0)
+}
+
+pub fn setresgid(rgid: usize, egid: usize, sgid: usize) -> SysResult<usize> {
+    let pcb = current::pcb();
+    let old_rgid = pcb.gid();
+    let old_egid = pcb.egid();
+    let old_sgid = pcb.sgid();
+    let privileged = pcb.euid() == 0;
+
     let rgid = rgid as Uid;
     let egid = egid as Uid;
+    let sgid = sgid as Uid;
+
+    if rgid != Uid::MAX && !privileged && rgid != old_rgid && rgid != old_egid && rgid != old_sgid {
+        return Err(Errno::EPERM);
+    }
+    if egid != Uid::MAX && !privileged && egid != old_rgid && egid != old_egid && egid != old_sgid {
+        return Err(Errno::EPERM);
+    }
+    if sgid != Uid::MAX && !privileged && sgid != old_rgid && sgid != old_egid && sgid != old_sgid {
+        return Err(Errno::EPERM);
+    }
+
     if rgid != Uid::MAX {
         pcb.set_gid(rgid);
     }
     if egid != Uid::MAX {
         pcb.set_egid(egid);
     }
-    Ok(0)
-}
+    if sgid != Uid::MAX {
+        pcb.set_sgid(sgid);
+    }
 
-pub fn setresgid(rgid: usize, egid: usize, _sgid: usize) -> SysResult<usize> {
-    setregid(rgid, egid)
+    Ok(0)
 }
 
 pub fn getgroups(size: usize, groups: UArray<u32>) -> SysResult<usize> {

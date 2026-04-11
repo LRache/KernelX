@@ -57,6 +57,7 @@ impl InodeOps for TaskDirInode {
             "maps" => Ok(TaskMapsInode::ino_from_tid(self.tid)),
             "exe" => Ok(TaskExeInode::ino_from_tid(self.tid)),
             "stat" => Ok(TaskStatInode::ino_from_tid(self.tid)),
+            "status" => Ok(TaskStatusInode::ino_from_tid(self.tid)),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -86,6 +87,11 @@ impl InodeOps for TaskDirInode {
             4 => Some(DirResult {
                 ino: TaskStatInode::ino_from_tid(self.tid),
                 name: "stat".into(),
+                file_type: FileType::Regular,
+            }),
+            5 => Some(DirResult {
+                ino: TaskStatusInode::ino_from_tid(self.tid),
+                name: "status".into(),
                 file_type: FileType::Regular,
             }),
             _ => None,
@@ -372,15 +378,18 @@ impl InodeOps for TaskStatInode {
 
     fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
         let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
-        let pid = tcb.parent().pid();
-        let exec_path = tcb.parent().exec_path();
+        let pcb = tcb.parent();
+        let pid = pcb.pid();
+        let ppid = pcb.parent.lock().as_ref().map_or(0, |p| p.pid());
+        let pgid = pcb.pgid();
+        let exec_path = pcb.exec_path();
         let comm = exec_path.rsplit('/').next().unwrap_or(&exec_path);
         let state_set = tcb.state().lock();
         let state_char = Self::state_char(state_set.state(), state_set.is_dead());
         drop(state_set);
 
-        let mut content = String::with_capacity(64);
-        let _ = write!(content, "{} ({}) {}\n", pid, comm, state_char);
+        let mut content = fixedstr::str96::new();
+        let _ = write!(content, "{} ({}) {} {} {}\n", pid, comm, state_char, ppid, pgid);
 
         let content_bytes = content.as_bytes();
         if offset >= content_bytes.len() {
@@ -417,6 +426,116 @@ impl InodeOps for TaskStatInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs stat requires associated dentry");
+        Arc::new(File::new(self, dentry, flags))
+    }
+}
+
+pub struct TaskStatusInode {
+    tid: Tid,
+}
+
+impl TaskStatusInode {
+    pub const INO_BASE: u32 = 0x500000;
+
+    pub fn from_ino(ino: u32) -> Option<Self> {
+        debug_assert!(ino >= Self::INO_BASE);
+        let tid = (ino - Self::INO_BASE) as Tid;
+        manager::get(tid)?;
+        Some(Self { tid })
+    }
+
+    pub fn ino_from_tid(tid: Tid) -> u32 {
+        Self::INO_BASE + tid as u32
+    }
+
+    fn state_desc(state: TaskState, dead: bool) -> &'static str {
+        if dead {
+            return "zombie";
+        }
+        match state {
+            TaskState::Running | TaskState::Ready => "running",
+            TaskState::Blocked => "sleeping",
+            TaskState::BlockedUninterruptible => "disk sleep",
+            TaskState::Exited => "zombie",
+        }
+    }
+}
+
+impl InodeOps for TaskStatusInode {
+    fn get_ino(&self) -> u32 {
+        Self::ino_from_tid(self.tid)
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_task_status"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let pcb = tcb.parent();
+
+        let pid = pcb.pid();
+        let ppid = pcb.parent.lock().as_ref().map_or(0, |p| p.pid());
+        let uid = pcb.uid();
+        let euid = pcb.euid();
+        let suid = pcb.suid();
+        let gid = pcb.gid();
+        let egid = pcb.egid();
+        let sgid = pcb.sgid();
+        let umask = pcb.umask();
+
+        let exec_path = pcb.exec_path();
+        let name = exec_path.rsplit('/').next().unwrap_or(&exec_path);
+
+        let state_set = tcb.state().lock();
+        let state_char = TaskStatInode::state_char(state_set.state(), state_set.is_dead());
+        let state_desc = Self::state_desc(state_set.state(), state_set.is_dead());
+        drop(state_set);
+
+        let mut content = String::with_capacity(256);
+        let _ = writeln!(content, "Name:\t{}", name);
+        let _ = writeln!(content, "Umask:\t{:04o}", umask);
+        let _ = writeln!(content, "State:\t{} ({})", state_char, state_desc);
+        let _ = writeln!(content, "Pid:\t{}", pid);
+        let _ = writeln!(content, "PPid:\t{}", ppid);
+        let _ = writeln!(content, "Uid:\t{}\t{}\t{}\t{}", uid, euid, suid, euid);
+        let _ = writeln!(content, "Gid:\t{}\t{}\t{}\t{}", gid, egid, sgid, egid);
+
+        let content_bytes = content.as_bytes();
+        if offset >= content_bytes.len() {
+            return Ok(0);
+        }
+        let to_copy = min(buf.len(), content_bytes.len() - offset);
+        buf[..to_copy].copy_from_slice(&content_bytes[offset..offset + to_copy]);
+        Ok(to_copy)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_mode = self.mode()?.bits();
+        kstat.st_nlink = 1;
+
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
+
+        Ok(kstat)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs status requires associated dentry");
         Arc::new(File::new(self, dentry, flags))
     }
 }

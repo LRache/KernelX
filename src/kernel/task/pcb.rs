@@ -84,8 +84,10 @@ pub struct PCB {
 
     uid: SpinLock<Uid>,
     euid: SpinLock<Uid>,
+    suid: SpinLock<Uid>,
     gid: SpinLock<Uid>,
     egid: SpinLock<Uid>,
+    sgid: SpinLock<Uid>,
     supplementary_gids: SpinLock<Vec<Uid>>,
 
     pgid: SpinLock<Pid>,
@@ -123,8 +125,10 @@ impl PCB {
 
             uid: SpinLock::new(*parent.uid.lock(), "PCB::uid"),
             euid: SpinLock::new(*parent.euid.lock(), "PCB::euid"),
+            suid: SpinLock::new(*parent.suid.lock(), "PCB::suid"),
             gid: SpinLock::new(*parent.gid.lock(), "PCB::gid"),
             egid: SpinLock::new(*parent.egid.lock(), "PCB::egid"),
+            sgid: SpinLock::new(*parent.sgid.lock(), "PCB::sgid"),
             supplementary_gids: SpinLock::new(parent.supplementary_gids.lock().clone(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(pgid, "PCB::pgid"),
@@ -169,8 +173,10 @@ impl PCB {
 
             uid: SpinLock::new(0, "PCB::uid"),
             euid: SpinLock::new(0, "PCB::euid"),
+            suid: SpinLock::new(0, "PCB::suid"),
             gid: SpinLock::new(0, "PCB::gid"),
             egid: SpinLock::new(0, "PCB::egid"),
+            sgid: SpinLock::new(0, "PCB::sgid"),
             supplementary_gids: SpinLock::new(Vec::new(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
@@ -222,6 +228,14 @@ impl PCB {
         *self.euid.lock() = euid;
     }
 
+    pub fn suid(&self) -> Uid {
+        *self.suid.lock()
+    }
+
+    pub fn set_suid(&self, suid: Uid) {
+        *self.suid.lock() = suid;
+    }
+
     pub fn gid(&self) -> Uid {
         *self.gid.lock()
     }
@@ -236,6 +250,14 @@ impl PCB {
 
     pub fn set_egid(&self, egid: Uid) {
         *self.egid.lock() = egid;
+    }
+
+    pub fn sgid(&self) -> Uid {
+        *self.sgid.lock()
+    }
+
+    pub fn set_sgid(&self, sgid: Uid) {
+        *self.sgid.lock() = sgid;
     }
 
     pub fn supplementary_gids(&self) -> Vec<Uid> {
@@ -345,9 +367,11 @@ impl PCB {
 
         if filemode.contains(Mode::S_ISUID) {
             self.set_euid(fileowner.0);
+            self.set_suid(fileowner.0);
         }
         if filemode.contains(Mode::S_ISGID) {
             self.set_egid(fileowner.1);
+            self.set_sgid(fileowner.1);
         }
 
         *self.exec_path.lock() = exec_path;
