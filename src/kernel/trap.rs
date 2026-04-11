@@ -76,9 +76,9 @@ pub fn syscall(num: usize, args: &syscall::Args, ret_arg_value: usize) -> usize 
 }
 
 pub fn memory_fault(addr: usize, access_type: MemAccessType) {
-    let fixed = current::addrspace().try_to_fix_memory_fault(addr, access_type);
+    let fixed_kaddr = current::addrspace().try_to_fix_memory_fault(addr, access_type);
 
-    if !fixed {
+    if fixed_kaddr.is_none() {
         // TODO: Implement the sicode and fields for memory fault
         current::pcb()
             .send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, KSiFields::Empty, None)

@@ -130,31 +130,36 @@ impl Area for SharedAnonymousArea {
         &mut self,
         uaddr: usize,
         _access_type: MemAccessType,
-        addrspace: &Arc<AddrSpace>,
-    ) -> bool {
+        addrspace: &AddrSpace,
+    ) -> Option<usize> {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
+        let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
         let frames = self.frames.lock();
 
         if let Some(frame_lock) = frames.get(page_index) {
-            let frame = frame_lock.lock();
-            match &*frame {
-                Frame::Unallocated => {
-                    drop(frame);
-                    Self::allocate_page(self.ubase + page_index * arch::PGSIZE, self.perm, frame_lock, addrspace);
+            let kpage = {
+                let frame = frame_lock.lock();
+                match &*frame {
+                    Frame::Unallocated => {
+                        drop(frame);
+                        Self::allocate_page(self.ubase + page_index * arch::PGSIZE, self.perm, frame_lock, addrspace)
+                    }
+                    Frame::Allocated(f) => {
+                        let kpage = f.get_page();
+                        addrspace
+                            .pagetable()
+                            .lock()
+                            .mmap(uaddr & !(arch::PGSIZE - 1), kpage, self.perm);
+                        kpage
+                    }
+                    Frame::Cow(_) => unreachable!("SharedAnonymousArea should not have CoW frames"),
                 }
-                Frame::Allocated(f) => {
-                    addrspace
-                        .pagetable()
-                        .lock()
-                        .mmap(uaddr & !(arch::PGSIZE - 1), f.get_page(), self.perm);
-                }
-                Frame::Cow(_) => unreachable!("SharedAnonymousArea should not have CoW frames"),
-            }
-            true
+            };
+            Some(kpage + page_offset)
         } else {
-            false
+            None
         }
     }
 

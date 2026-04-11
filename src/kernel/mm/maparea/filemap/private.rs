@@ -215,8 +215,8 @@ impl Area for PrivateFileMapArea {
         &mut self,
         uaddr: usize,
         access_type: MemAccessType,
-        addrspace: &Arc<AddrSpace>,
-    ) -> bool {
+        addrspace: &AddrSpace,
+    ) -> Option<usize> {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -232,7 +232,7 @@ impl Area for PrivateFileMapArea {
                     #[cfg(not(feature = "swap-memory"))]
                     {
                         let _ = allocated;
-                        return false;
+                        return None;
                     }
                     // unreachable!("Memory fault on already allocated file page at address: {:#x}, access={:?}", uaddr, access_type);
                 }
@@ -245,10 +245,13 @@ impl Area for PrivateFileMapArea {
                     self.copy_on_write_page(page_index, addrspace);
                 }
             }
-
-            true
+            if access_type == MemAccessType::Write {
+                self.translate_write(uaddr, addrspace)
+            } else {
+                self.translate_read(uaddr, addrspace)
+            }
         } else {
-            false
+            None
         }
     }
 

@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::arch::{self, PageTable};
@@ -368,25 +367,25 @@ impl Manager {
         &mut self,
         uaddr: usize,
         access_type: MemAccessType,
-        addrspace: &Arc<AddrSpace>,
-    ) -> bool {
+        addrspace: &AddrSpace,
+    ) -> Option<usize> {
         if let Some((_ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
             if !access_type.match_perm(area.perm()) {
-                return false;
+                return None;
             }
-            if !area.try_to_fix_memory_fault(uaddr, access_type, addrspace) {
+            if let Some(kaddr) = area.try_to_fix_memory_fault(uaddr, access_type, addrspace) {
+                Some(kaddr)
+            } else {
                 crate::kinfo!(
                     "Area at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
                     area.ubase(),
                     uaddr,
                     access_type
                 );
-                false
-            } else {
-                true
+                None
             }
         } else {
-            false
+            None
         }
     }
 

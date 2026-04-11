@@ -201,25 +201,23 @@ impl Area for SharedFileMapArea {
         &mut self,
         uaddr: usize,
         _access_type: MemAccessType,
-        addrspace: &Arc<AddrSpace>,
-    ) -> bool {
+        addrspace: &AddrSpace,
+    ) -> Option<usize> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index >= self.states.len() {
-            return false;
+            return None;
         }
 
-        if self.states[page_index] == FrameState::Unallocated {
-            let kpage = self
-                .entry
-                .lock()
-                .get_page(page_index)
-                .expect("Failed to get page in try_to_fix_memory_fault");
-            let mut pagetable = addrspace.pagetable().lock();
-            pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
-            self.states[page_index] = FrameState::Allocated;
-        }
+        let kpage = self
+            .entry
+            .lock()
+            .get_page(page_index)
+            .expect("Failed to get page in try_to_fix_memory_fault");
+        let mut pagetable = addrspace.pagetable().lock();
+        pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
+        self.states[page_index] = FrameState::Allocated;
 
-        return true;
+        Some(kpage + (uaddr - self.ubase) % arch::PGSIZE)
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {

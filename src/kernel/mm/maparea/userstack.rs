@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::arch;
@@ -380,15 +379,20 @@ impl Area for UserStack {
         Box::new(UserStack { frames: new_frames })
     }
 
-    fn try_to_fix_memory_fault(&mut self, addr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool {
+    fn try_to_fix_memory_fault(
+        &mut self,
+        addr: usize,
+        access_type: MemAccessType,
+        addrspace: &AddrSpace,
+    ) -> Option<usize> {
         if addr >= config::USER_STACK_TOP {
-            return false;
+            return None;
         }
 
         let page_index = (config::USER_STACK_TOP - addr - 1) / arch::PGSIZE;
 
         if page_index >= self.get_max_page_count() {
-            return false;
+            return None;
         }
 
         match &self.frames[page_index] {
@@ -426,7 +430,11 @@ impl Area for UserStack {
             }
         }
 
-        true
+        if access_type == MemAccessType::Write {
+            self.translate_write(addr, addrspace)
+        } else {
+            self.translate_read(addr, addrspace)
+        }
     }
 
     fn ubase(&self) -> usize {

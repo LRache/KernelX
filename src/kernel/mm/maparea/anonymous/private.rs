@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::arch;
@@ -181,8 +180,8 @@ impl Area for PrivateAnonymousArea {
         &mut self,
         uaddr: usize,
         access_type: MemAccessType,
-        addrspace: &Arc<AddrSpace>,
-    ) -> bool {
+        addrspace: &AddrSpace,
+    ) -> Option<usize> {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -209,10 +208,13 @@ impl Area for PrivateAnonymousArea {
                     }
                 }
             }
-
-            true
+            if access_type == MemAccessType::Write {
+                self.translate_write(uaddr, addrspace)
+            } else {
+                self.translate_read(uaddr, addrspace)
+            }
         } else {
-            false
+            None
         }
     }
 

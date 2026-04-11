@@ -36,8 +36,12 @@ pub trait Area {
 
     fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, fork_pagetable: &mut PageTable) -> Box<dyn Area>;
 
-    fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>)
-    -> bool;
+    fn try_to_fix_memory_fault(
+        &mut self,
+        uaddr: usize,
+        access_type: MemAccessType,
+        addrspace: &AddrSpace,
+    ) -> Option<usize>;
 
     fn page_count(&self) -> usize;
     fn size(&self) -> usize {

@@ -265,15 +265,9 @@ impl AddrSpace {
         f(&mut self.map_manager.lock())
     }
 
-    pub fn try_to_fix_memory_fault(self: &Arc<Self>, uaddr: usize, access_type: MemAccessType) -> bool {
+    pub fn try_to_fix_memory_fault(self: &Arc<Self>, uaddr: usize, access_type: MemAccessType) -> Option<usize> {
         let map_manager = &mut self.map_manager.lock();
-        if !map_manager.try_to_fix_memory_fault(uaddr, access_type, self) {
-            // map_manager.print_all_areas();
-            // unreachable!("Failed to fix memory fault at address {:#x} with access type {:?}, mapped={:?}", uaddr, access_type, self.pagetable().read().mapped_perm(uaddr));
-            false
-        } else {
-            true
-        }
+        map_manager.try_to_fix_memory_fault(uaddr, access_type, self)
     }
 
     pub fn cleanup(&self) {

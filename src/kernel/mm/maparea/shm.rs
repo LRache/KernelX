@@ -79,20 +79,22 @@ impl Area for ShmArea {
         &mut self,
         uaddr: usize,
         _access_type: MemAccessType,
-        addrspace: &Arc<AddrSpace>,
-    ) -> bool {
+        addrspace: &AddrSpace,
+    ) -> Option<usize> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
+        let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index >= frames.len() {
-            return false;
+            return None;
         }
 
         let frame = &frames[page_index];
+        let kpage = frame.get_page();
         addrspace
             .pagetable()
             .lock()
-            .mmap(uaddr & !arch::PGMASK, frame.get_page(), self.perm);
-        true
+            .mmap(uaddr & !arch::PGMASK, kpage, self.perm);
+        Some(kpage + page_offset)
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {

@@ -187,15 +187,15 @@ impl Area for ELFArea {
         &mut self,
         uaddr: usize,
         access_type: MemAccessType,
-        addrspace: &Arc<AddrSpace>,
-    ) -> bool {
+        addrspace: &AddrSpace,
+    ) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         if access_type == MemAccessType::Execute && !self.perm.contains(MapPerm::X) {
-            return false;
+            return None;
         }
         if access_type == MemAccessType::Write && !self.perm.contains(MapPerm::W) {
-            return false;
+            return None;
         }
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -215,9 +215,13 @@ impl Area for ELFArea {
                     }
                 }
             }
-            true
+            if access_type == MemAccessType::Write {
+                self.translate_write(uaddr, addrspace)
+            } else {
+                self.translate_read(uaddr, addrspace)
+            }
         } else {
-            false
+            None
         }
     }
 
