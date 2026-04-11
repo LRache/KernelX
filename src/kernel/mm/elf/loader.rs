@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::fs::{Perm, PermFlags, vfs};
+use crate::fs::{Perm, vfs};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{AddrSpace, MapPerm, maparea};
@@ -39,7 +39,7 @@ pub fn read_phdr(file: &Arc<File>) -> Result<Elf64Phdr, Errno> {
     Ok(*phdr)
 }
 
-pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace) -> Result<(usize, Option<DynInfo>), Errno> {
+pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace, perm: &Perm) -> Result<(usize, Option<DynInfo>), Errno> {
     let ehdr = read_ehdr(file)?;
 
     if !ehdr.is_valid_elf() {
@@ -113,7 +113,7 @@ pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace) -> Result<(usize, Optio
     let phdr_addr = phdr_addr.unwrap_or(0);
 
     if let Some(interpreter_path) = &interpreter_path {
-        let (interpreter_base, interpreter_entry) = load_interpreter(&interpreter_path, addrspace)?;
+        let (interpreter_base, interpreter_entry) = load_interpreter(&interpreter_path, addrspace, perm)?;
 
         let dyn_info = DynInfo {
             user_entry: ehdr.e_entry as usize + addr_base,
@@ -189,9 +189,9 @@ pub fn load_program_from_file(
     Ok(())
 }
 
-fn load_interpreter(path: &str, addrspace: &AddrSpace) -> SysResult<(usize, usize)> {
+fn load_interpreter(path: &str, addrspace: &AddrSpace, perm: &Perm) -> SysResult<(usize, usize)> {
     let file_flags = FileFlags::readonly();
-    let file = vfs::open_file(path, file_flags, &Perm::current(PermFlags::X))?;
+    let file = vfs::open_file(path, file_flags, perm)?;
     let file = file.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
 
     let ehdr = read_ehdr(&file)?;

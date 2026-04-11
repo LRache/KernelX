@@ -157,15 +157,12 @@ impl TCB {
         envp: &[&str],
         tty: &str,
     ) -> (Arc<Self>, String) {
-        let file = vfs::open_file(
-            initpath,
-            FileFlags::dontcare(),
-            &Perm::new(0, 0, PermFlags::R | PermFlags::X),
-        )
-        .expect("Failed to open init file")
-        .downcast_arc::<File>()
-        .map_err(|_| Errno::ENOEXEC)
-        .expect("Failed to open init file as File");
+        let exec_perm = Perm::new(0, 0, PermFlags::R | PermFlags::X);
+        let file = vfs::open_file(initpath, FileFlags::dontcare(), &exec_perm)
+            .expect("Failed to open init file")
+            .downcast_arc::<File>()
+            .map_err(|_| Errno::ENOEXEC)
+            .expect("Failed to open init file as File");
 
         // Read the shebang
         let mut first_line = [0u8; 128];
@@ -196,7 +193,7 @@ impl TCB {
 
         let mut addrspace = AddrSpace::new();
         let (user_entry, dyn_info) =
-            elf::loader::load_elf(&file, &mut addrspace).expect("Failed to load ELF for init task");
+            elf::loader::load_elf(&file, &mut addrspace, &exec_perm).expect("Failed to load ELF for init task");
 
         let mut auxv = Auxv::new();
         if let Some(dyn_info) = dyn_info {
@@ -319,7 +316,8 @@ impl TCB {
         let exec_path = file.get_dentry().unwrap().get_path();
 
         let mut addrspace = AddrSpace::new();
-        let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace)?;
+        let exec_perm = Perm::current(PermFlags::X);
+        let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace, &exec_perm)?;
 
         let mut auxv = Auxv::new();
         if let Some(dyn_info) = dyn_info {
