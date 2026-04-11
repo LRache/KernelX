@@ -550,8 +550,7 @@ impl PCB {
         }
     }
 
-    pub fn wait_child_by_pgid(&self, pgid: Tid, blocked: bool) -> SysResult<Option<(i32, ExitStatus)>> {
-        crate::kinfo!("wait_child_by_pgid: pgid={}, blocked={}", pgid, blocked);
+    pub fn wait_child_by_pgid(&self, pgid: Tid, blocked: bool) -> SysResult<Option<(Tid, ExitStatus)>> {
         if let Some(child) = {
             let mut children = self.children.lock();
             if !children.iter().any(|c| c.pgid() == pgid) {
@@ -581,7 +580,6 @@ impl PCB {
             match event {
                 Event::Process { child } => {
                     let pid = child;
-                    crate::kinfo!("wait_child_by_pgid: woke up for child pid={}, pgid={}", pid, pgid);
                     let child = {
                         let mut children = self.children.lock();
 
