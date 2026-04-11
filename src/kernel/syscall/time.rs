@@ -9,11 +9,13 @@ use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UPtr, UserPointer};
 use crate::kernel::uapi::{Timespec, Timeval};
 
-pub fn gettimeofday(uptr_timeval: UPtr<Timeval>, _uptr_tz: usize) -> SysResult<usize> {
+pub fn gettimeofday(uptr_timeval: UPtr<Timeval>, uptr_tz: UPtr<u8>) -> SysResult<usize> {
+    if !uptr_tz.is_null() {
+        uptr_tz.read()?;
+    }
     uptr_timeval.should_not_null()?;
 
     let timeval = kclock::now()?.into();
-
     uptr_timeval.write(timeval)?;
 
     Ok(0)
