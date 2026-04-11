@@ -410,6 +410,10 @@ impl PipeInner {
         *self.capacity.lock()
     }
 
+    pub fn read_available(&self) -> usize {
+        self.fifo.lock().len()
+    }
+
     pub fn set_capacity(&self, size: usize) -> SysResult<usize> {
         let aligned = if size == 0 {
             arch::PGSIZE

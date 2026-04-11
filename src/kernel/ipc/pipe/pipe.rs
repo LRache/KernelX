@@ -4,6 +4,7 @@ use crate::fs::file::{FileFlags, FileOps, SeekWhence};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
@@ -95,6 +96,20 @@ impl FileOps for Pipe {
 
     fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
         Err(Errno::ESPIPE)
+    }
+
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        const FIONREAD: usize = 0x541B;
+
+        match request {
+            FIONREAD => {
+                let available = self.inner.read_available();
+                let value = available.min(i32::MAX as usize) as i32;
+                addrspace.copy_to_user(arg, value)?;
+                Ok(0)
+            }
+            _ => Err(Errno::ENOTTY),
+        }
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
