@@ -1,4 +1,5 @@
 use alloc::vec;
+use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
 use crate::arch;
@@ -150,7 +151,20 @@ pub fn prlimit64(
     Ok(0)
 }
 
-pub fn getrandom(ubuf: UBuffer, len: usize, _flags: usize) -> SyscallRet {
+bitflags! {
+    struct GetRandomFlags: usize {
+        const NONBLOCK = 0x0001;
+        const RANDOM = 0x0002;
+        const INSECURE = 0x0004;
+    }
+}
+
+pub fn getrandom(ubuf: UBuffer, len: usize, flags: usize) -> SyscallRet {
+    let flags = GetRandomFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if flags.contains(GetRandomFlags::RANDOM) && flags.contains(GetRandomFlags::INSECURE) {
+        return Err(Errno::EINVAL);
+    }
+
     ubuf.should_not_null()?;
 
     let mut buf = vec![0u8; len];
