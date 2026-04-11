@@ -13,14 +13,15 @@ use crate::kernel::syscall::UserStruct;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::manager;
+use crate::kernel::uapi::OpenFlags;
 use crate::kernel::{config, uapi};
 
 use super::SyscallRet;
 
 bitflags! {
     struct PipeFlags: usize {
-        const O_NONBLOCK = 0x4000;
-        const O_CLOEXEC = 0x80000;
+        const O_NONBLOCK = OpenFlags::O_NONBLOCK.bits();
+        const O_CLOEXEC = OpenFlags::O_CLOEXEC.bits();
     }
 }
 
