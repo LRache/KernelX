@@ -1029,22 +1029,40 @@ pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, _flags: usize) -> SyscallRet {
-    uptr_path.should_not_null()?;
-
-    let path = uptr_path.read_fixed()?;
-
-    let dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
+pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags: usize) -> SyscallRet {
+    let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
+        fixedstr::str256::new()
     } else {
-        vfs::load_dentry_at(
-            current::fdtable()
-                .lock()
-                .get(dirfd)?
-                .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &path,
-        )?
+        uptr_path.should_not_null()?;
+        uptr_path.read_fixed()?
+    };
+
+    let dentry = if path.is_empty() {
+        current::fdtable()
+            .lock()
+            .get(dirfd)?
+            .get_dentry()
+            .cloned()
+            .ok_or(Errno::EINVAL)?
+    } else {
+        let helper = if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+            vfs::load_dentry_at_nofollow
+        } else {
+            vfs::load_dentry_at
+        };
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| helper(&cwd, &path))?
+        } else {
+            helper(
+                current::fdtable()
+                    .lock()
+                    .get(dirfd)?
+                    .get_dentry()
+                    .ok_or(Errno::ENOTDIR)?,
+                &path,
+            )?
+        }
     };
 
     let uid = uid as Uid;
