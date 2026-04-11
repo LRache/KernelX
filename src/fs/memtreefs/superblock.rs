@@ -5,6 +5,7 @@ use crate::arch;
 use crate::fs::filesystem::SuperBlockOps;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::current;
 use crate::kernel::uapi::Statfs;
 use crate::klib::SpinLock;
 
@@ -110,12 +111,10 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
     fn create_temp(&self, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         let mut inner = self.inner.lock();
         let ino = inner.alloc_inode_number();
+        let mut meta = InodeMeta::new(mode, ino, self.get_root_ino());
+        meta.owner = (current::euid(), current::egid());
 
-        let inode: Arc<dyn InodeOps> = Arc::new(MemInode::<T>::new(
-            ino,
-            InodeMeta::new(mode, ino, self.get_root_ino()),
-            self.inner.clone(),
-        ));
+        let inode: Arc<dyn InodeOps> = Arc::new(MemInode::<T>::new(ino, meta, self.inner.clone()));
         inner.insert_inode(ino, inode.clone());
 
         Ok(inode)

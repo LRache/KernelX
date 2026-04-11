@@ -7,7 +7,7 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::fs::inode::Mode;
+use crate::fs::inode::{Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
@@ -44,7 +44,7 @@ enum Meta {
 pub struct InodeMeta {
     meta: Meta,
     mode: Mode,
-    owner: (Uid, Uid),
+    pub(super) owner: (Uid, Uid),
     mtime: Duration,
     atime: Duration,
     ctime: Duration,
@@ -108,7 +108,7 @@ impl<T: StaticFsInfo> Inode<T> {
 }
 
 impl<T: StaticFsInfo> InodeOps for Inode<T> {
-    fn create(&self, name: &str, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(ref mut children) = meta.meta {
             if children.contains_key(name) {
@@ -119,6 +119,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             let ino = sb.alloc_inode_number();
 
             let mut child_meta = InodeMeta::new(mode, ino, self.ino);
+            child_meta.owner = (owner.uid, owner.gid);
             child_meta.links += 1;
 
             let inode = Arc::new(Self::new(ino, child_meta, self.superblock.clone()));

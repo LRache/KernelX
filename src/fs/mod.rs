@@ -13,6 +13,6 @@ mod rootfs;
 mod tmpfs;
 
 pub use init::{fini, init, mount_init_fs};
-pub use inode::{FileType, InodeOps, Mode};
+pub use inode::{FileType, InodeOps, Mode, Owner};
 pub use perm::{Perm, PermFlags};
 pub use vfs::Dentry;

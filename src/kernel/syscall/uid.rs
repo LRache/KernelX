@@ -35,6 +35,35 @@ pub fn setegid(egid: usize) -> SysResult<usize> {
     Ok(0)
 }
 
+pub fn setuid(uid: usize) -> SysResult<usize> {
+    let pcb = current::pcb();
+    let uid = uid as Uid;
+    if pcb.euid() == 0 {
+        pcb.set_uid(uid);
+        pcb.set_euid(uid);
+    } else {
+        pcb.set_euid(uid);
+    }
+    Ok(0)
+}
+
+pub fn setreuid(ruid: usize, euid: usize) -> SysResult<usize> {
+    let pcb = current::pcb();
+    let ruid = ruid as Uid;
+    let euid = euid as Uid;
+    if ruid != Uid::MAX {
+        pcb.set_uid(ruid);
+    }
+    if euid != Uid::MAX {
+        pcb.set_euid(euid);
+    }
+    Ok(0)
+}
+
+pub fn setresuid(ruid: usize, euid: usize, _suid: usize) -> SysResult<usize> {
+    setreuid(ruid, euid)
+}
+
 pub fn setgid(gid: usize) -> SysResult<usize> {
     let pcb = current::pcb();
     let gid = gid as Uid;
@@ -45,6 +74,23 @@ pub fn setgid(gid: usize) -> SysResult<usize> {
         pcb.set_egid(gid);
     }
     Ok(0)
+}
+
+pub fn setregid(rgid: usize, egid: usize) -> SysResult<usize> {
+    let pcb = current::pcb();
+    let rgid = rgid as Uid;
+    let egid = egid as Uid;
+    if rgid != Uid::MAX {
+        pcb.set_gid(rgid);
+    }
+    if egid != Uid::MAX {
+        pcb.set_egid(egid);
+    }
+    Ok(0)
+}
+
+pub fn setresgid(rgid: usize, egid: usize, _sgid: usize) -> SysResult<usize> {
+    setregid(rgid, egid)
 }
 
 pub fn getgroups(size: usize, groups: UArray<u32>) -> SysResult<usize> {

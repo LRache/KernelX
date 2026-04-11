@@ -278,8 +278,10 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         293 => misc::rseq(0),
 
         144 => uid::setgid(1),
-        147 => uid::seteuid(1),
-        149 => uid::setegid(1),
+        145 => uid::setreuid(2),
+        146 => uid::setuid(1),
+        147 => uid::setresuid(3),
+        149 => uid::setresgid(3),
         174 => uid::getuid(0),
         175 => uid::geteuid(0),
         176 => uid::getgid(0),

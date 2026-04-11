@@ -6,7 +6,7 @@ use crate::driver::{DeviceType, DriverOps};
 use crate::fs::devfs::devnode::CharDevInode;
 use crate::fs::filesystem::FileSystemOps;
 use crate::fs::memtreefs::inode::Inode as MemInode;
-use crate::fs::{InodeOps, Mode, memtreefs};
+use crate::fs::{InodeOps, Mode, Owner, memtreefs};
 use crate::klib::InitedCell;
 
 use super::{LoopInode, NullInode, RtcInode, URandomInode, ZeroInode};
@@ -51,7 +51,11 @@ pub fn init() {
 
     // Create /dev/misc/ directory and add rtc
     let misc_dir = root
-        .create("misc", Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap())
+        .create(
+            "misc",
+            Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap(),
+            Owner::root(),
+        )
         .unwrap();
     let misc_dir = misc_dir.downcast_arc::<MemInode<DevfsInfo>>().ok().unwrap();
     misc_dir

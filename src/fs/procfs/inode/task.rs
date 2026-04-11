@@ -5,7 +5,7 @@ use core::fmt::Write;
 
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 use crate::fs::procfs::inode::{fill_kstat_common, read_iter_text};
-use crate::fs::{Dentry, FileType, InodeOps, Mode};
+use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::MapPerm;
 use crate::kernel::scheduler::{TaskState, Tid};
@@ -284,7 +284,7 @@ impl InodeOps for TaskExeInode {
         unreachable!()
     }
 
-    fn create(&self, _name: &str, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+    fn create(&self, _name: &str, _mode: Mode, _owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         Err(Errno::ENOTDIR)
     }
 

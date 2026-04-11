@@ -6,7 +6,7 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::fs::{Dentry, Mode, Perm, PermFlags, vfs};
+use crate::fs::{Dentry, Mode, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
@@ -166,7 +166,13 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                     let mode =
                         Mode::from_bits(mode as u32 & 0o777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
                     let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?.unwrap(); // SAFETY: The root must exist
-                    vfs::create_file(&parent_dentry, &child_name, file_flags, mode)
+                    vfs::create_file(
+                        &parent_dentry,
+                        &child_name,
+                        file_flags,
+                        mode,
+                        Owner::new(current::euid(), current::egid()),
+                    )
                 } else {
                     Err(e)
                 }
@@ -774,7 +780,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         .ok_or(Errno::EEXIST)?
     };
 
-    parent.create(name, mode)?;
+    parent.create(name, mode, Owner::new(current::euid(), current::egid()))?;
 
     Ok(0)
 }
@@ -963,7 +969,10 @@ pub fn renameat2(
 pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
 
-    let path = uptr_path.should_not_null()?.read()?;
+    let path = uptr_path.should_not_null()?.read_fixed()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
 
     let dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?

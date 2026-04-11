@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::fs::file::{File, FileFlags, FileOps};
-use crate::fs::inode::Mode;
+use crate::fs::inode::{Mode, Owner};
 use crate::fs::perm::Perm;
 use crate::fs::vfs::dentry::{self, Dentry};
 use crate::kernel::errno::{Errno, SysResult};
@@ -51,8 +51,14 @@ pub fn openat_file(dir: &Arc<Dentry>, path: &str, flags: FileFlags, perm: &Perm)
     new_file(dentry, flags, perm)
 }
 
-pub fn create_file(dir: &Arc<Dentry>, name: &str, flags: FileFlags, mode: Mode) -> SysResult<Arc<dyn FileOps>> {
-    let inode = dir.create(name, mode)?;
+pub fn create_file(
+    dir: &Arc<Dentry>,
+    name: &str,
+    flags: FileFlags,
+    mode: Mode,
+    owner: Owner,
+) -> SysResult<Arc<dyn FileOps>> {
+    let inode = dir.create(name, mode, owner)?;
     let dentry = Arc::new(dentry::Dentry::new(name, dir, &inode, dir.sno()));
     Ok(inode.wrap_file(Some(dentry), flags))
 }

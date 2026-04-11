@@ -7,14 +7,14 @@ use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
 
-use super::{FileType, Mode};
+use super::{FileType, Mode, Owner};
 
 pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
 
     fn type_name(&self) -> &'static str;
 
-    fn create(&self, _name: &str, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+    fn create(&self, _name: &str, _mode: Mode, _owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         Err(Errno::EOPNOTSUPP)
     }
 

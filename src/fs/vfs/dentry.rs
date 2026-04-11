@@ -4,7 +4,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 
-use crate::fs::inode::{Index, InodeOps, Mode};
+use crate::fs::inode::{Index, InodeOps, Mode, Owner};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::SpinLock;
 
@@ -161,14 +161,14 @@ impl Dentry {
         }
     }
 
-    pub fn create(self: &Arc<Self>, name: &str, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+    pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         if self.lookup(name).is_ok() {
             return Err(Errno::EEXIST);
         }
 
         let inode = self.get_inode();
 
-        inode.create(name, mode)
+        inode.create(name, mode, owner)
     }
 
     pub fn unlink(self: &Arc<Self>, name: &str) -> SysResult<()> {

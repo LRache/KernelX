@@ -6,7 +6,7 @@ use lwext4_rust::{FileAttr, InodeType};
 
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::fs::inode::{InodeOps, Mode};
+use crate::fs::inode::{InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
@@ -39,7 +39,7 @@ impl InodeOps for Ext4Inode {
         "ext4"
     }
 
-    fn create(&self, name: &str, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         if !self.mode()?.contains(Mode::S_IFDIR) {
             return Err(Errno::ENOTDIR);
         }
@@ -69,6 +69,12 @@ impl InodeOps for Ext4Inode {
 
         let ino = superblock
             .create(self.ino, name, ty, mode.bits() as u32)
+            .map_err(map_error_to_kernel)?;
+        superblock
+            .with_inode_ref(ino, |inode_ref| {
+                inode_ref.set_owner(owner.uid as u16, owner.gid as u16);
+                Ok(())
+            })
             .map_err(map_error_to_kernel)?;
 
         Ok(Arc::new(Self::new(ino, self.superblock.clone())))
@@ -206,7 +212,7 @@ impl InodeOps for Ext4Inode {
                 let uid = uid.unwrap_or(inode_ref.uid() as Uid) as u16;
                 let gid = gid.unwrap_or(inode_ref.gid() as Uid) as u16;
                 inode_ref.set_owner(uid, gid);
-                inode_ref.set_mode(inode_ref.mode() & !(Mode::S_ISGID & Mode::S_ISUID).bits()); // Clear setuid/setgid bits
+                inode_ref.set_mode(inode_ref.mode() & !(Mode::S_ISUID | Mode::S_ISGID).bits());
                 inode_ref.set_ctime(&kclock::now().unwrap_or(Duration::ZERO));
                 Ok(())
             })
