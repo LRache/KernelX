@@ -82,4 +82,22 @@ impl SignalActionTable {
     pub fn set_stack(&mut self, stack: Option<(usize, usize)>) {
         self.stack = stack;
     }
+
+    pub fn reset_for_exec(&mut self) {
+        for action in self.actions.iter_mut() {
+            // POSIX: dispositions set to a handler are reset to default on exec;
+            // dispositions set to SIG_IGN remain ignored.
+            if !action.is_default() && !action.is_ignore() {
+                action.handler = SIG_DFL;
+                action.mask = SignalSet::empty();
+                action.flags = SignalActionFlags::empty();
+            } else if action.flags.contains(SignalActionFlags::SA_ONSTACK) {
+                // POSIX: SA_ONSTACK is cleared for all signals after exec.
+                action.flags.remove(SignalActionFlags::SA_ONSTACK);
+            }
+        }
+
+        // POSIX: alternate signal stack is not preserved across exec.
+        self.stack = None;
+    }
 }

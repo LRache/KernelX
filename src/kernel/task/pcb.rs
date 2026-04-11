@@ -374,6 +374,7 @@ impl PCB {
             self.set_sgid(fileowner.1);
         }
 
+        self.signal.actions.lock().reset_for_exec();
         *self.exec_path.lock() = exec_path;
 
         scheduler::push_task(first_task.clone());
