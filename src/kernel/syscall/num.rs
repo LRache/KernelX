@@ -235,6 +235,8 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         154 => task::setpgid(2),
         155 => task::getpgid(1),
         157 => task::setsid(0),
+        158 => uid::getgroups(2),
+        159 => uid::setgroups(2),
         172 => task::getpid(0),
         173 => task::getppid(0),
         178 => task::gettid(0),

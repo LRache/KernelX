@@ -961,7 +961,7 @@ pub fn renameat2(
 }
 
 pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
-    let mode = Mode::from_bits(mode as u32 & 0o7777).unwrap();
+    let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
 
     let path = uptr_path.should_not_null()?.read()?;
 
@@ -978,17 +978,35 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         )?
     };
 
-    dentry.get_inode().chmod(mode)?;
+    let inode = dentry.get_inode();
+    if mode.contains(Mode::S_ISGID) && current::pcb().euid() != 0 {
+        let inode_gid = inode.owner()?.1;
+        let pcb = current::pcb();
+        let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
+        if pcb.egid() != inode_gid && !in_supplementary_group {
+            mode.remove(Mode::S_ISGID);
+        }
+    }
+
+    inode.chmod(mode)?;
 
     Ok(0)
 }
 
 pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
-    let mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
+    let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
 
     let file = current::fdtable().lock().get(fd)?;
 
     if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
+        if mode.contains(Mode::S_ISGID) && current::pcb().euid() != 0 {
+            let inode_gid = inode.owner()?.1;
+            let pcb = current::pcb();
+            let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
+            if pcb.egid() != inode_gid && !in_supplementary_group {
+                mode.remove(Mode::S_ISGID);
+            }
+        }
         inode.chmod(mode)?;
     } else {
         return Err(Errno::EINVAL);

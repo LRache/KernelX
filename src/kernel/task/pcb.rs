@@ -86,6 +86,7 @@ pub struct PCB {
     euid: SpinLock<Uid>,
     gid: SpinLock<Uid>,
     egid: SpinLock<Uid>,
+    supplementary_gids: SpinLock<Vec<Uid>>,
 
     pgid: SpinLock<Pid>,
     exit_signal: SignalNum,
@@ -124,6 +125,7 @@ impl PCB {
             euid: SpinLock::new(*parent.euid.lock(), "PCB::euid"),
             gid: SpinLock::new(*parent.gid.lock(), "PCB::gid"),
             egid: SpinLock::new(*parent.egid.lock(), "PCB::egid"),
+            supplementary_gids: SpinLock::new(parent.supplementary_gids.lock().clone(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(pgid, "PCB::pgid"),
             exit_signal,
@@ -169,6 +171,7 @@ impl PCB {
             euid: SpinLock::new(0, "PCB::euid"),
             gid: SpinLock::new(0, "PCB::gid"),
             egid: SpinLock::new(0, "PCB::egid"),
+            supplementary_gids: SpinLock::new(Vec::new(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
             exit_signal: signum::SIGCHLD,
@@ -233,6 +236,14 @@ impl PCB {
 
     pub fn set_egid(&self, egid: Uid) {
         *self.egid.lock() = egid;
+    }
+
+    pub fn supplementary_gids(&self) -> Vec<Uid> {
+        self.supplementary_gids.lock().clone()
+    }
+
+    pub fn set_supplementary_gids(&self, gids: Vec<Uid>) {
+        *self.supplementary_gids.lock() = gids;
     }
 
     pub fn exec_path(&self) -> String {

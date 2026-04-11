@@ -185,12 +185,12 @@ impl InodeOps for Ext4Inode {
     }
 
     fn chmod(&self, mode: Mode) -> SysResult<()> {
-        debug_assert!(mode.bits() <= 0o777);
+        debug_assert!(mode.bits() <= 0o7777);
         self.superblock
             .lock()
             .with_inode_ref(self.ino, |inode_ref| {
                 let current_mode = inode_ref.mode();
-                let new_mode = (current_mode & !0o777) | (mode.bits() as u32 & 0o777);
+                let new_mode = (current_mode & !0o7777) | (mode.bits() as u32 & 0o7777);
                 inode_ref.set_mode(new_mode);
                 inode_ref.set_ctime(&kclock::now().unwrap_or(Duration::ZERO));
                 Ok(())

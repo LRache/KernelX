@@ -46,7 +46,7 @@ impl Mode {
 
         let (read_bit, write_bit, exec_bit) = if perm.uid == uid {
             (Mode::S_IRUSR, Mode::S_IWUSR, Mode::S_IXUSR)
-        } else if perm.gid == gid {
+        } else if perm.in_group(gid) {
             (Mode::S_IRGRP, Mode::S_IWGRP, Mode::S_IXGRP)
         } else {
             (Mode::S_IROTH, Mode::S_IWOTH, Mode::S_IXOTH)

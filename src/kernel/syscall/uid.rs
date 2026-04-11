@@ -1,6 +1,11 @@
-use crate::kernel::errno::SysResult;
+use alloc::vec::Vec;
+
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
+use crate::kernel::syscall::uptr::UArray;
 use crate::kernel::uapi::Uid;
+
+const NGROUPS_MAX: usize = 65536;
 
 pub fn getuid() -> SysResult<usize> {
     Ok(current::pcb().uid() as usize)
@@ -39,5 +44,38 @@ pub fn setgid(gid: usize) -> SysResult<usize> {
     } else {
         pcb.set_egid(gid);
     }
+    Ok(0)
+}
+
+pub fn getgroups(size: usize, groups: UArray<u32>) -> SysResult<usize> {
+    let pcb = current::pcb();
+    let supplementary_gids = pcb.supplementary_gids();
+    let ngroups = supplementary_gids.len();
+
+    if size == 0 {
+        return Ok(ngroups);
+    }
+    if size < ngroups {
+        return Err(Errno::EINVAL);
+    }
+    groups.write(0, &supplementary_gids)?;
+    Ok(ngroups)
+}
+
+pub fn setgroups(size: usize, groups: UArray<u32>) -> SysResult<usize> {
+    if current::pcb().euid() != 0 {
+        return Err(Errno::EPERM);
+    }
+    if size > NGROUPS_MAX || size > i32::MAX as usize {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut supplementary_gids = Vec::with_capacity(size);
+    supplementary_gids.resize(size, 0);
+    if size > 0 {
+        groups.read(0, &mut supplementary_gids)?;
+    }
+
+    current::pcb().set_supplementary_gids(supplementary_gids);
     Ok(0)
 }
