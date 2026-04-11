@@ -305,6 +305,10 @@ impl UserStack {
 
 impl Area for UserStack {
     fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+        if uaddr >= config::USER_STACK_TOP {
+            return None;
+        }
+
         let page_index = (config::USER_STACK_TOP - uaddr - 1) / arch::PGSIZE;
         if page_index < self.get_max_page_count() {
             let page = match &self.frames[page_index] {
@@ -318,8 +322,12 @@ impl Area for UserStack {
         }
     }
 
-    fn translate_write(&mut self, vaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
-        let page_index = (config::USER_STACK_TOP - vaddr - 1) / arch::PGSIZE;
+    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+        if uaddr >= config::USER_STACK_TOP {
+            return None;
+        }
+
+        let page_index = (config::USER_STACK_TOP - uaddr - 1) / arch::PGSIZE;
         if page_index < self.get_max_page_count() {
             let page = match &self.frames[page_index] {
                 FrameState::Unallocated => {
@@ -330,7 +338,7 @@ impl Area for UserStack {
                 FrameState::Cow(_) => self.copy_on_write_page(page_index, addrspace),
             };
 
-            Some(page + vaddr % arch::PGSIZE)
+            Some(page + uaddr % arch::PGSIZE)
         } else {
             None
         }
