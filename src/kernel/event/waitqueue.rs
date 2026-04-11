@@ -6,16 +6,12 @@ use crate::kernel::scheduler::{Task, current};
 
 use super::Event;
 
-struct WaitQueueItem<T: Copy> {
+struct WaitQueueItem<T> {
     task: Arc<dyn Task>,
     arg: T,
 }
 
-pub struct WaitQueue<T: Copy> {
-    waiters: VecDeque<WaitQueueItem<T>>,
-}
-
-impl<T: Copy> WaitQueueItem<T> {
+impl<T> WaitQueueItem<T> {
     fn new(task: Arc<dyn Task>, arg: T) -> Self {
         Self { task, arg }
     }
@@ -25,7 +21,11 @@ impl<T: Copy> WaitQueueItem<T> {
     }
 }
 
-impl<T: Copy> WaitQueue<T> {
+pub struct WaitQueue<T> {
+    waiters: VecDeque<WaitQueueItem<T>>,
+}
+
+impl<T> WaitQueue<T> {
     pub fn new() -> Self {
         Self {
             waiters: VecDeque::new(),
@@ -44,8 +44,7 @@ impl<T: Copy> WaitQueue<T> {
 
     pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) {
         self.waiters.drain(..).for_each(|item| {
-            let arg = item.arg;
-            item.wakeup(map_arg_to_event(arg));
+            let _ = scheduler::wakeup_task(item.task, map_arg_to_event(item.arg));
         });
     }
 

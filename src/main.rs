@@ -11,4 +11,5 @@ mod driver;
 mod fs;
 mod kernel;
 mod klib;
+mod net;
 // mod platform;
