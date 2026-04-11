@@ -302,6 +302,10 @@ impl FileOps for NetlinkSocket {
         true
     }
 
+    fn block(&self) -> bool {
+        *self.blocked.lock()
+    }
+
     fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
         Err(Errno::ESPIPE)
     }
@@ -335,7 +339,9 @@ impl FileOps for NetlinkSocket {
         Ok(None)
     }
 
-    fn set_flags(&self, _flags: FileFlags) {}
+    fn set_flags(&self, flags: FileFlags) {
+        *self.blocked.lock() = flags.blocked;
+    }
 
     fn type_name(&self) -> &'static str {
         "netlink"

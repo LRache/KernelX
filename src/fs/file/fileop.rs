@@ -51,6 +51,9 @@ pub trait FileOps: DowncastSync {
 
     fn readable(&self) -> bool;
     fn writable(&self) -> bool;
+    fn block(&self) -> bool {
+        true
+    }
 
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize>;
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {

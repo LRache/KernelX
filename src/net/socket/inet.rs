@@ -111,6 +111,10 @@ impl FileOps for InetSocket {
         true
     }
 
+    fn block(&self) -> bool {
+        *self.blocked.lock()
+    }
+
     fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
         Err(Errno::ESPIPE)
     }

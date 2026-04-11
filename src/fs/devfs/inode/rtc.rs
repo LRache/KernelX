@@ -115,6 +115,10 @@ impl FileOps for RtcFile {
         false
     }
 
+    fn block(&self) -> bool {
+        self.flags.blocked
+    }
+
     fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {
         Err(Errno::ESPIPE)
     }

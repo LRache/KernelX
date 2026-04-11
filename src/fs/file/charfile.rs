@@ -62,6 +62,10 @@ impl FileOps for CharFile {
         self.writable
     }
 
+    fn block(&self) -> bool {
+        self.blocked
+    }
+
     fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {
         Err(Errno::ESPIPE)
     }

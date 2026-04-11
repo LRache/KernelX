@@ -132,6 +132,10 @@ impl FileOps for File {
         self.flags.writable
     }
 
+    fn block(&self) -> bool {
+        self.flags.blocked
+    }
+
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
         let mut pos = self.pos.lock();
         let new_pos = match whence {
