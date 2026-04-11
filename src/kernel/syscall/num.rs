@@ -210,6 +210,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         66  => fs::writev(3),
         67  => fs::pread64(4),
         68  => fs::pwrite64(4),
+        69  => fs::preadv(4),
         71  => fs::sendfile(4),
         78  => fs::readlinkat(4),
         79  => fs::fstatat(4),
@@ -218,6 +219,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         88  => fs::utimensat(4),
         166 => fs::umask(1),
         276 => fs::renameat2(5),
+        286 => fs::preadv2(6),
         436 => fs::close_range(3),
         439 => fs::faccessat2(4),
 

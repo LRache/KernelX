@@ -58,13 +58,14 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     match FcntlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)? {
         FcntlCmd::F_GETFL => {
             let file = current::fdtable().lock().get(fd)?;
+            let flags = file.flags();
             let mut open_flags = OpenFlags::O_RDONLY;
-            if file.readable() && file.writable() {
+            if flags.readable && flags.writable {
                 open_flags = OpenFlags::O_RDWR;
-            } else if file.writable() {
+            } else if flags.writable {
                 open_flags = OpenFlags::O_WRONLY;
             }
-            if !file.block() {
+            if !flags.blocked {
                 open_flags |= OpenFlags::O_NONBLOCK;
             }
             Ok(open_flags.bits())
@@ -73,9 +74,10 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         FcntlCmd::F_SETFL => {
             let file = current::fdtable().lock().get(fd)?;
             let flags = OpenFlags::from_bits(arg).ok_or(Errno::EINVAL)?;
+            let old_flags = file.flags();
             file.set_flags(FileFlags {
-                readable: file.readable(),
-                writable: file.writable(),
+                readable: old_flags.readable,
+                writable: old_flags.writable,
                 blocked: !flags.contains(OpenFlags::O_NONBLOCK),
                 append: flags.contains(OpenFlags::O_APPEND),
             });
@@ -136,8 +138,13 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     uptr_filename.should_not_null()?;
 
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-    let readable = open_flags.contains(OpenFlags::O_RDONLY) || open_flags.contains(OpenFlags::O_RDWR);
-    let writable = open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR);
+    let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
+    let (readable, writable) = match acc_mode {
+        0 => (true, false), // O_RDONLY
+        1 => (false, true), // O_WRONLY
+        2 => (true, true),  // O_RDWR
+        _ => return Err(Errno::EINVAL),
+    };
     let file_flags = FileFlags {
         writable,
         readable,
@@ -152,7 +159,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
 
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
-            if !open_flags.contains(OpenFlags::O_WRONLY) || open_flags.contains(OpenFlags::O_RDWR) {
+            if !writable {
                 return Err(Errno::EINVAL);
             }
 
@@ -290,10 +297,21 @@ pub struct IOVec {
 impl UserStruct for IOVec {}
 
 pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
+    if (iovcnt as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
     let file = current::fdtable().lock().get(fd)?;
+    if !file.readable() {
+        return Err(Errno::EBADF);
+    }
 
     if iovcnt == 0 {
         return Ok(0);
+    }
+
+    if (iovcnt as isize) < 0 {
+        return Err(Errno::EINVAL);
     }
 
     uptr_iov.should_not_null()?;
@@ -311,6 +329,12 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
                 }
             }
         };
+        if (iov.len as isize) < 0 {
+            if total_read > 0 {
+                break;
+            }
+            return Err(Errno::EINVAL);
+        }
 
         let mut read = 0usize;
         let mut remaining = iov.len;
@@ -347,11 +371,121 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     Ok(total_read)
 }
 
+pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> SyscallRet {
+    if (iovcnt as isize) < 0 || (pos as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let file = current::fdtable().lock().get(fd)?;
+    if !file.readable() {
+        return Err(Errno::EBADF);
+    }
+
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+
+    uptr_iov.should_not_null()?;
+
+    let mut total_read = 0usize;
+    let mut offset = 0usize;
+
+    for i in 0..iovcnt {
+        let iov = match uptr_iov.add(i).read() {
+            Ok(iov) => iov,
+            Err(e) => {
+                if total_read > 0 {
+                    break;
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+        if (iov.len as isize) < 0 {
+            if total_read > 0 {
+                break;
+            }
+            return Err(Errno::EINVAL);
+        }
+
+        let mut read = 0usize;
+        let mut remaining = iov.len;
+        let mut buffer = [0u8; BUFFER_SIZE];
+        while remaining != 0 {
+            let to_read = core::cmp::min(remaining, BUFFER_SIZE);
+            let read_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
+            let bytes_read = match file.pread(&mut buffer[..to_read], read_pos) {
+                Ok(n) => n,
+                Err(e) => {
+                    if total_read + read > 0 {
+                        return Ok(total_read + read);
+                    }
+                    return Err(e);
+                }
+            };
+            if bytes_read == 0 {
+                break; // EOF
+            }
+
+            if copy_to_user::buffer(iov.base + read, &buffer[..bytes_read]).is_err() {
+                if total_read + read > 0 {
+                    return Ok(total_read + read);
+                }
+                return Err(Errno::EFAULT);
+            }
+
+            remaining -= bytes_read;
+            read += bytes_read;
+            offset = offset.checked_add(bytes_read).ok_or(Errno::EINVAL)?;
+        }
+
+        total_read += read;
+    }
+
+    Ok(total_read)
+}
+
+pub fn preadv2(
+    fd: usize,
+    uptr_iov: UPtr<IOVec>,
+    iovcnt: usize,
+    pos_l: usize,
+    pos_h: usize,
+    flags: usize,
+) -> SyscallRet {
+    if (iovcnt as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    if flags != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
+    let file = current::fdtable().lock().get(fd)?;
+    if !file.readable() {
+        return Err(Errno::EBADF);
+    }
+
+    let pos_u64 = (((pos_h & 0xffff_ffff) as u64) << 32) | ((pos_l & 0xffff_ffff) as u64);
+    let pos = pos_u64 as usize;
+
+    // Linux preadv2 semantics: offset == -1 means use and advance the current file offset.
+    if pos == usize::MAX {
+        return readv(fd, uptr_iov, iovcnt);
+    }
+
+    preadv(fd, uptr_iov, iovcnt, pos)
+}
+
 pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     if count == 0 {
         return Ok(0);
+    }
+
+    if (count as isize) < 0 || (pos as isize) < 0 {
+        return Err(Errno::EINVAL);
     }
 
     let mut written = 0;
