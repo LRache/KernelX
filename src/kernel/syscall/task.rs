@@ -13,7 +13,7 @@ use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::task::{ExitStatus, PCB};
+use crate::kernel::task::ExitStatus;
 use crate::kernel::{config, scheduler, task};
 
 pub fn sched_yield() -> SyscallRet {
@@ -48,27 +48,71 @@ pub fn getpgid(pid: usize) -> SyscallRet {
 }
 
 pub fn setpgid(pid: usize, pgid: usize) -> SyscallRet {
-    let pid = pid as i32;
-    let pgid = pgid as i32;
+    let pid = pid as Tid;
+    let pgid = pgid as Tid;
+    if pid < 0 || pgid < 0 {
+        return Err(Errno::EINVAL);
+    }
 
-    let helper = |pcb: &Arc<PCB>| {
-        let pgid = if pgid == 0 { pcb.pid() } else { pgid };
-        pcb.set_pgid(pgid);
-    };
+    let current_pcb = current::pcb().clone();
+    let current_pid = current_pcb.pid();
+    let target_pid = if pid == 0 { current_pid } else { pid };
 
-    if pid == 0 {
-        helper(current::pcb())
+    let target_pcb = if target_pid == current_pid {
+        current_pcb.clone()
     } else {
-        let tcb = task::manager::get(pid).ok_or(Errno::ESRCH)?;
-        helper(tcb.parent())
+        let target_tcb = task::manager::get(target_pid).ok_or(Errno::ESRCH)?;
+        let target_pcb = target_tcb.parent().clone();
+        let is_child = target_pcb
+            .parent
+            .lock()
+            .as_ref()
+            .is_some_and(|parent| Arc::ptr_eq(parent, &current_pcb));
+        if !is_child {
+            return Err(Errno::ESRCH);
+        }
+        target_pcb
     };
+
+    if target_pid != current_pid && target_pcb.has_execed() {
+        return Err(Errno::EACCES);
+    }
+
+    if target_pcb.is_session_leader() {
+        return Err(Errno::EPERM);
+    }
+
+    if target_pcb.sid() != current_pcb.sid() {
+        return Err(Errno::EPERM);
+    }
+
+    let target_pgid = if pgid == 0 { target_pid } else { pgid };
+
+    // Joining an existing process group requires the group leader to exist
+    // and be in the same session.
+    if target_pgid != target_pid && task::manager::get(target_pgid).is_none() {
+        return Err(Errno::EPERM);
+    }
+    if target_pgid != target_pid {
+        let group_tcb = task::manager::get(target_pgid).ok_or(Errno::EPERM)?;
+        let group_pcb = group_tcb.parent().clone();
+        if group_pcb.sid() != current_pcb.sid() {
+            return Err(Errno::EPERM);
+        }
+    }
+
+    target_pcb.set_pgid(target_pgid);
 
     Ok(0)
 }
 
 pub fn setsid() -> SyscallRet {
     let pcb = current::pcb();
-    // pcb.set_sid();
+    if pcb.pgid() == pcb.pid() {
+        return Err(Errno::EPERM);
+    }
+    pcb.set_sid(pcb.pid());
+    pcb.set_pgid(pcb.pid());
     Ok(pcb.pid() as usize)
 }
 

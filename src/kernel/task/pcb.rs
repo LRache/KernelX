@@ -91,6 +91,8 @@ pub struct PCB {
     supplementary_gids: SpinLock<Vec<Uid>>,
 
     pgid: SpinLock<Pid>,
+    sid: SpinLock<Pid>,
+    execed: SpinLock<bool>,
     exit_signal: SignalNum,
 
     /// CPU time snapshot taken at exit (own threads). Preserved after recycle clears tasks.
@@ -132,6 +134,8 @@ impl PCB {
             supplementary_gids: SpinLock::new(parent.supplementary_gids.lock().clone(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(pgid, "PCB::pgid"),
+            sid: SpinLock::new(parent.sid(), "PCB::sid"),
+            execed: SpinLock::new(false, "PCB::execed"),
             exit_signal,
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
@@ -180,6 +184,8 @@ impl PCB {
             supplementary_gids: SpinLock::new(Vec::new(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
+            sid: SpinLock::new(new_tid, "PCB::sid"),
+            execed: SpinLock::new(false, "PCB::execed"),
             exit_signal: signum::SIGCHLD,
 
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
@@ -210,6 +216,22 @@ impl PCB {
 
     pub fn set_pgid(&self, pgid: Pid) {
         *self.pgid.lock() = pgid;
+    }
+
+    pub fn sid(&self) -> Pid {
+        *self.sid.lock()
+    }
+
+    pub fn set_sid(&self, sid: Pid) {
+        *self.sid.lock() = sid;
+    }
+
+    pub fn is_session_leader(&self) -> bool {
+        self.sid() == self.pid()
+    }
+
+    pub fn has_execed(&self) -> bool {
+        *self.execed.lock()
     }
 
     pub fn uid(&self) -> Uid {
@@ -375,6 +397,7 @@ impl PCB {
         }
 
         self.signal.actions.lock().reset_for_exec();
+        *self.execed.lock() = true;
         *self.exec_path.lock() = exec_path;
 
         scheduler::push_task(first_task.clone());
