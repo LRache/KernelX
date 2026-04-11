@@ -46,8 +46,14 @@ impl SuperBlockOps for SuperBlock {
             i if i >= inode::TaskStatInode::INO_BASE && i < inode::TaskStatusInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskStatInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
-            i if i >= inode::TaskStatusInode::INO_BASE => {
+            i if i >= inode::TaskStatusInode::INO_BASE && i < inode::TaskFdDirInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskStatusInode::from_ino(i).ok_or(Errno::ENOENT)?))
+            }
+            i if i >= inode::TaskFdDirInode::INO_BASE && i < inode::TaskFdEntryInode::INO_BASE => {
+                Ok(Arc::new(inode::TaskFdDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
+            }
+            i if i >= inode::TaskFdEntryInode::INO_BASE => {
+                Ok(Arc::new(inode::TaskFdEntryInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
             _ => Err(Errno::ENOENT),
         }

@@ -179,4 +179,12 @@ impl FDTable {
     pub fn get_max_fd(&self) -> usize {
         self.max_fd
     }
+
+    pub fn open_fds(&self) -> Vec<usize> {
+        self.table
+            .iter()
+            .enumerate()
+            .filter_map(|(fd, item)| item.as_ref().map(|_| fd))
+            .collect()
+    }
 }
