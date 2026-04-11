@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::UArray;
+use crate::kernel::syscall::uptr::{UArray, UPtr};
 use crate::kernel::uapi::Uid;
 
 const NGROUPS_MAX: usize = 65536;
@@ -21,6 +21,22 @@ pub fn getgid() -> SysResult<usize> {
 
 pub fn getegid() -> SysResult<usize> {
     Ok(current::pcb().egid() as usize)
+}
+
+pub fn getresuid(ruid: UPtr<Uid>, euid: UPtr<Uid>, suid: UPtr<Uid>) -> SysResult<usize> {
+    let pcb = current::pcb();
+    ruid.write(pcb.uid())?;
+    euid.write(pcb.euid())?;
+    suid.write(pcb.suid())?;
+    Ok(0)
+}
+
+pub fn getresgid(rgid: UPtr<Uid>, egid: UPtr<Uid>, sgid: UPtr<Uid>) -> SysResult<usize> {
+    let pcb = current::pcb();
+    rgid.write(pcb.gid())?;
+    egid.write(pcb.egid())?;
+    sgid.write(pcb.sgid())?;
+    Ok(0)
 }
 
 pub fn seteuid(euid: usize) -> SysResult<usize> {
