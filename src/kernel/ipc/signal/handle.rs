@@ -164,6 +164,17 @@ impl TCB {
             state.pending_signal = Some(pending);
             drop(state);
 
+            let action = self.parent().signal_actions().lock().get(signum);
+
+            if action.is_default() {
+                match signum.default_action() {
+                    SignalDefaultAction::Ign => return true,
+                    _ => {}
+                }
+            } else if action.is_ignore() {
+                return true;
+            };
+
             return match scheduler::wakeup_task(self.clone(), Event::Signal) {
                 Ok(()) | Err(WakeupFailure::NotBlocked) => true,
                 Err(WakeupFailure::BlockedUninterruptible) => false,
