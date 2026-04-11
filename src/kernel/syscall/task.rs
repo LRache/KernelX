@@ -297,11 +297,7 @@ fn do_execve(file: Arc<File>, uptr_argv: UArray<UString>, uptr_envp: UArray<UStr
 pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read()?;
-
-    if path.len() >= 256 {
-        return Err(Errno::ENAMETOOLONG);
-    }
+    let path = uptr_path.read_fixed()?;
 
     let file =
         current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
@@ -323,10 +319,11 @@ pub fn execveat(
     const AT_EMPTY_PATH: usize = 0x1000;
 
     let path = if uptr_path.is_null() {
-        String::new()
+        None
     } else {
-        uptr_path.read()?
+        Some(uptr_path.read_fixed()?)
     };
+    let path = path.as_deref().unwrap_or("");
 
     let file = if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
         current::fdtable()
@@ -338,10 +335,6 @@ pub fn execveat(
         if path.is_empty() {
             return Err(Errno::ENOENT);
         }
-        if path.len() >= 256 {
-            return Err(Errno::ENAMETOOLONG);
-        }
-
         // When pathname is absolute, dirfd can be ignored.
         if path.starts_with('/') {
             current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
@@ -454,7 +447,7 @@ pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {
 }
 
 pub fn chdir(uptr_path: UString) -> SysResult<usize> {
-    let path = uptr_path.should_not_null()?.read()?;
+    let path = uptr_path.should_not_null()?.read_fixed()?;
     if path.len() >= config::MAX_FILENAME_LEN {
         return Err(Errno::ENAMETOOLONG);
     }

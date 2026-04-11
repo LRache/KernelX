@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 use bitflags::bitflags;
 use core::time::Duration;
 use core::usize;
+use fixedstr::str256;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
@@ -129,7 +130,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
-    let path = uptr_filename.read()?;
+    let path = uptr_filename.read_fixed()?;
 
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
@@ -215,7 +216,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
     uptr_path.should_not_null()?;
     ubuf.should_not_null()?;
 
-    let path = uptr_path.read()?;
+    let path = uptr_path.read_fixed()?;
 
     if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?
@@ -607,7 +608,7 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> SyscallRet {
 pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read()?;
+    let path = uptr_path.read_fixed()?;
 
     if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
@@ -622,7 +623,7 @@ pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
 pub fn faccessat2(dirfd: usize, uptr_path: UString, _mode: usize, _flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read()?;
+    let path = uptr_path.read_fixed()?;
 
     if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
@@ -648,10 +649,10 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
-        "".into()
+        str256::new()
     } else {
         uptr_path.should_not_null()?;
-        uptr_path.read()?
+        uptr_path.read_fixed()?
     };
 
     let fstat = if path.is_empty() {
@@ -687,7 +688,7 @@ pub fn statfs64(uptr_path: UString, uptr_buf: UPtr<Statfs>) -> SyscallRet {
     uptr_path.should_not_null()?;
     uptr_buf.should_not_null()?;
 
-    let path = uptr_path.read()?;
+    let path = uptr_path.read_fixed()?;
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
 
     let statfs = vfs::statfs(dentry.sno())?;
@@ -711,7 +712,11 @@ const UTIME_NOW: u64 = 0x3fffffff;
 const UTIME_OMIT: u64 = 0x3ffffffe;
 
 pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, _flags: usize) -> SyscallRet {
-    let path = if uptr_path.is_null() { "" } else { &uptr_path.read()? };
+    let path = if uptr_path.is_null() {
+        str256::new()
+    } else {
+        uptr_path.read_fixed()?
+    };
     let dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
     } else {
@@ -721,7 +726,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
                 .get(dirfd)?
                 .get_dentry()
                 .ok_or(Errno::ENOTDIR)?,
-            path,
+            &path,
         )?
     };
     let inode = dentry.get_inode();
@@ -764,7 +769,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let mode = Mode::from_bits(mode as u32 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFDIR;
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read()?;
+    let path = uptr_path.read_fixed()?;
 
     let (parent, name) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EEXIST)?
@@ -847,7 +852,7 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
 pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read()?;
+    let path = uptr_path.read_fixed()?;
 
     let parent_dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
@@ -867,8 +872,8 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
     uptr_target.should_not_null()?;
     uptr_newname.should_not_null()?;
 
-    let target = uptr_target.read()?;
-    let new_name = uptr_newname.read()?;
+    let target = uptr_target.read_fixed()?;
+    let new_name = uptr_newname.read_fixed()?;
 
     let new_dentry = if newdirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &new_name))
@@ -885,8 +890,8 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     uptr_oldpath.should_not_null()?;
     uptr_newpath.should_not_null()?;
 
-    let old_path = uptr_oldpath.read()?;
-    let new_path = uptr_newpath.read()?;
+    let old_path = uptr_oldpath.read_fixed()?;
+    let new_path = uptr_newpath.read_fixed()?;
 
     let old_dentry = if olddirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &old_path))
@@ -938,8 +943,8 @@ pub fn renameat2(
     uptr_oldpath.should_not_null()?;
     uptr_newpath.should_not_null()?;
 
-    let old_path = uptr_oldpath.read()?;
-    let new_path = uptr_newpath.read()?;
+    let old_path = uptr_oldpath.read_fixed()?;
+    let new_path = uptr_newpath.read_fixed()?;
 
     let old_parent_dentry = if olddirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &old_path))?.ok_or(Errno::EOPNOTSUPP)
@@ -1027,7 +1032,7 @@ pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
 pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, _flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read()?;
+    let path = uptr_path.read_fixed()?;
 
     let dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
@@ -1138,11 +1143,11 @@ pub fn mount(
     uptr_target.should_not_null()?;
     uptr_fstype.should_not_null()?;
 
-    let target = uptr_target.read()?;
-    let fstype = uptr_fstype.read()?;
+    let target = uptr_target.read_fixed()?;
+    let fstype = uptr_fstype.read_fixed()?;
 
     let device = if !uptr_source.is_null() {
-        let source = uptr_source.read()?;
+        let source = uptr_source.read_fixed()?;
         // Resolve the source path to a block device inode
         let dentry = vfs::load_dentry(&source)?;
         let inode = dentry.get_inode();
