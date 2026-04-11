@@ -107,16 +107,13 @@ impl FileOps for RtcFile {
         Err(Errno::EACCES)
     }
 
-    fn readable(&self) -> bool {
-        self.flags.readable
-    }
-
-    fn writable(&self) -> bool {
-        false
-    }
-
-    fn block(&self) -> bool {
-        self.flags.blocked
+    fn flags(&self) -> FileFlags {
+        FileFlags {
+            readable: self.flags.readable,
+            writable: false,
+            blocked: self.flags.blocked,
+            append: false,
+        }
     }
 
     fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {

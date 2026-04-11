@@ -49,10 +49,18 @@ pub trait FileOps: DowncastSync {
         Ok(total_written)
     }
 
-    fn readable(&self) -> bool;
-    fn writable(&self) -> bool;
+    fn flags(&self) -> FileFlags;
+
+    fn readable(&self) -> bool {
+        self.flags().readable
+    }
+
+    fn writable(&self) -> bool {
+        self.flags().writable
+    }
+
     fn block(&self) -> bool {
-        true
+        self.flags().blocked
     }
 
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize>;

@@ -103,16 +103,13 @@ impl FileOps for InetSocket {
         Err(Errno::ESPIPE)
     }
 
-    fn readable(&self) -> bool {
-        true
-    }
-
-    fn writable(&self) -> bool {
-        true
-    }
-
-    fn block(&self) -> bool {
-        *self.blocked.lock()
+    fn flags(&self) -> FileFlags {
+        FileFlags {
+            readable: true,
+            writable: true,
+            blocked: *self.blocked.lock(),
+            append: false,
+        }
     }
 
     fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {

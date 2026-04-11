@@ -54,16 +54,13 @@ impl FileOps for CharFile {
         Err(Errno::EPIPE)
     }
 
-    fn readable(&self) -> bool {
-        self.readable
-    }
-
-    fn writable(&self) -> bool {
-        self.writable
-    }
-
-    fn block(&self) -> bool {
-        self.blocked
+    fn flags(&self) -> FileFlags {
+        FileFlags {
+            readable: self.readable,
+            writable: self.writable,
+            blocked: self.blocked,
+            append: false,
+        }
     }
 
     fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {

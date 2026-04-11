@@ -124,16 +124,8 @@ impl FileOps for File {
         Ok(len)
     }
 
-    fn readable(&self) -> bool {
-        self.flags.readable
-    }
-
-    fn writable(&self) -> bool {
-        self.flags.writable
-    }
-
-    fn block(&self) -> bool {
-        self.flags.blocked
+    fn flags(&self) -> FileFlags {
+        self.flags
     }
 
     fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {

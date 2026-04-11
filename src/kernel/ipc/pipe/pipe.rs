@@ -82,16 +82,13 @@ impl FileOps for Pipe {
         self.inner.write_from_user(ubuf, blocked)
     }
 
-    fn readable(&self) -> bool {
-        !self.writable
-    }
-
-    fn writable(&self) -> bool {
-        self.writable
-    }
-
-    fn block(&self) -> bool {
-        *self.blocked.lock()
+    fn flags(&self) -> FileFlags {
+        FileFlags {
+            readable: !self.writable,
+            writable: self.writable,
+            blocked: *self.blocked.lock(),
+            append: false,
+        }
     }
 
     fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
