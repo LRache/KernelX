@@ -3,7 +3,7 @@ use crate::net::protocol::ProtocolBuilder;
 
 use super::{ARPBuilder, ARPPacket, IPv4Builder, IPv4Packet};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct MacAddr([u8; 6]);
 
 impl MacAddr {
@@ -148,12 +148,12 @@ impl<'a> EthernetFrame<'a> {
         let data = &self.data[ETHERNET_HEADER_SIZE..];
         match self.ethertype() {
             ETHERTYPE_IPV4 => {
-                if let Some(ip) = super::ipv4::IPv4Packet::parse(data) {
+                if let Some(ip) = IPv4Packet::parse(data) {
                     return EthernetFramePayload::IPv4(ip);
                 }
             }
             ETHERTYPE_ARP => {
-                if let Some(arp) = super::arp::ARPPacket::parse(data) {
+                if let Some(arp) = ARPPacket::parse(data) {
                     return EthernetFramePayload::ARP(arp);
                 }
             }
