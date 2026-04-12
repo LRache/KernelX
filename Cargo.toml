@@ -41,7 +41,6 @@ fdt = { git = "https://github.com/LRache/fdt-rust.git"}
 bitfield-struct = "0.8.0" 
 bitvec = { version = "1.0.1" , default-features = false, features = ["alloc"] }
 visionfive2-sd = { git = "https://github.com/os-module/visionfive2-sd.git", rev = "af75139" }
-lwext4_rust = { path = "./lib/lwext4_rust" }
 
 [build-dependencies]
 cc = "1.0"
