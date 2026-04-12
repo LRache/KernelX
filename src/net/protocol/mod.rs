@@ -16,13 +16,6 @@ pub use ipv4::{IPv4Builder, IPv4Packet, IPv4PacketPayload};
 pub use tcp::{TCPBuilder, TCPPacket, TcpFlags};
 pub use udp::{UDPBuilder, UDPPacket, UDPPacketPayload};
 
-pub enum WaitingProtocol {
-    ARP,
-    ICMP,
-    TCP { ip: core::net::IpAddr, port: u16 },
-    UDP { ip: core::net::IpAddr, port: u16 },
-}
-
 pub trait ProtocolBuilder {
     fn build(&self, data: &mut [u8]) -> SysResult<usize>;
     fn len(&self) -> usize;
