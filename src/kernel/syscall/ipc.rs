@@ -15,6 +15,7 @@ use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::manager;
 use crate::kernel::uapi::OpenFlags;
 use crate::kernel::{config, uapi};
+use crate::net::socket::{AddressFamily, SOCK_CLOEXEC, SOCK_NONBLOCK, SocketKind};
 
 use super::SyscallRet;
 
@@ -48,15 +49,9 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     Ok(0)
 }
 
-const AF_UNIX: usize = 1;
-const SOCK_STREAM: usize = 1;
-const SOCK_DGRAM: usize = 2;
-const SOCK_SEQPACKET: usize = 5;
-const SOCK_NONBLOCK: usize = 0x800;
-const SOCK_CLOEXEC: usize = 0x80000;
-
 pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UArray<i32>) -> SyscallRet {
-    if domain != AF_UNIX {
+    let domain = AddressFamily::try_from(domain).map_err(|_| Errno::EAFNOSUPPORT)?;
+    if domain != AddressFamily::Unix {
         return Err(Errno::EAFNOSUPPORT);
     }
     if protocol != 0 {
@@ -65,11 +60,12 @@ pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UAr
 
     let flags = sock_type & (SOCK_NONBLOCK | SOCK_CLOEXEC);
     let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
+    let sock_kind = SocketKind::try_from(base_type).map_err(|_| Errno::EINVAL)?;
 
-    let socket_type = match base_type {
-        SOCK_STREAM => SocketType::Stream,
-        SOCK_DGRAM => SocketType::Dgram,
-        SOCK_SEQPACKET => SocketType::SeqPacket,
+    let socket_type = match sock_kind {
+        SocketKind::Stream => SocketType::Stream,
+        SocketKind::Dgram => SocketType::Dgram,
+        SocketKind::SeqPacket => SocketType::SeqPacket,
         _ => return Err(Errno::EINVAL),
     };
 

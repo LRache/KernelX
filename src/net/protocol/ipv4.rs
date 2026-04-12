@@ -1,4 +1,5 @@
 use core::net::Ipv4Addr;
+use num_enum::TryFromPrimitive;
 
 use crate::kernel::errno::SysResult;
 use crate::net::protocol::{ProtocolBuilder, RawPayload};
@@ -7,10 +8,18 @@ use super::icmp::ICMPBuilder;
 use super::tcp::TCPBuilder;
 use super::udp::UDPBuilder;
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+pub enum IpProtocol {
+    Icmp = 1,
+    Tcp = 6,
+    Udp = 17,
+}
+
 /// Common IPv4 protocol numbers
-pub const PROTO_ICMP: u8 = 1;
-pub const PROTO_TCP: u8 = 6;
-pub const PROTO_UDP: u8 = 17;
+pub const PROTO_ICMP: u8 = IpProtocol::Icmp as u8;
+pub const PROTO_TCP: u8 = IpProtocol::Tcp as u8;
+pub const PROTO_UDP: u8 = IpProtocol::Udp as u8;
 
 enum IPv4Payload<'a> {
     TCP(TCPBuilder<'a>),
@@ -22,9 +31,9 @@ enum IPv4Payload<'a> {
 impl<'a> IPv4Payload<'a> {
     fn protocol_number(&self) -> u8 {
         match self {
-            IPv4Payload::TCP(_) => PROTO_TCP,
-            IPv4Payload::UDP(_) => PROTO_UDP,
-            IPv4Payload::ICMP(_) => PROTO_ICMP,
+            IPv4Payload::TCP(_) => IpProtocol::Tcp as u8,
+            IPv4Payload::UDP(_) => IpProtocol::Udp as u8,
+            IPv4Payload::ICMP(_) => IpProtocol::Icmp as u8,
             IPv4Payload::Raw { protocol, .. } => *protocol,
         }
     }
@@ -184,23 +193,23 @@ impl<'a> IPv4Packet<'a> {
 
     pub fn payload(&self) -> IPv4PacketPayload<'a> {
         let data = &self.data[self.header_len()..];
-        match self.protocol() {
-            PROTO_TCP => {
+        match IpProtocol::try_from(self.protocol()) {
+            Ok(IpProtocol::Tcp) => {
                 if let Some(tcp) = super::tcp::TCPPacket::parse(data) {
                     return IPv4PacketPayload::TCP(tcp);
                 }
             }
-            PROTO_UDP => {
+            Ok(IpProtocol::Udp) => {
                 if let Some(udp) = super::udp::UDPPacket::parse(data) {
                     return IPv4PacketPayload::UDP(udp);
                 }
             }
-            PROTO_ICMP => {
+            Ok(IpProtocol::Icmp) => {
                 if let Some(icmp) = super::icmp::ICMPPacket::parse(data) {
                     return IPv4PacketPayload::ICMP(icmp);
                 }
             }
-            _ => {}
+            Err(_) => {}
         }
         IPv4PacketPayload::Raw(data)
     }

@@ -6,6 +6,7 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use num_enum::TryFromPrimitive;
 
 use crate::fs::file::{FileFlags, FileOps, SeekWhence};
 use crate::fs::{Dentry, InodeOps, Mode};
@@ -14,36 +15,52 @@ use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 use crate::net::manager;
+use crate::net::socket::AddressFamily;
 
 // ==================== Netlink constants ====================
 
-pub const NETLINK_ROUTE: usize = 0;
+#[repr(usize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+pub enum NetlinkProtocol {
+    Route = 0,
+}
 
-// Netlink message types (generic)
-const NLMSG_NOOP: u16 = 1;
-const NLMSG_ERROR: u16 = 2;
-const NLMSG_DONE: u16 = 3;
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+enum NlMsgType {
+    Error = 2,
+    Done = 3,
+}
 
-// RTNetlink message types
-const RTM_GETLINK: u16 = 18;
-const RTM_GETADDR: u16 = 22;
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+enum RtMsgType {
+    NewLink = 16,
+    GetLink = 18,
+    NewAddr = 20,
+    GetAddr = 22,
+}
+
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+enum IfLinkAttr {
+    Address = 1,
+    IfName = 3,
+    Mtu = 4,
+}
+
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+enum IfAddrAttr {
+    Address = 1,
+    Local = 2,
+    Label = 3,
+}
+
+pub const NETLINK_ROUTE: usize = NetlinkProtocol::Route as usize;
 
 // Netlink flags
-const NLM_F_REQUEST: u16 = 0x01;
 const NLM_F_MULTI: u16 = 0x02;
-const NLM_F_ROOT: u16 = 0x100;
-const NLM_F_MATCH: u16 = 0x200;
-const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
-
-// Interface info attribute types (IFLA_*)
-const IFLA_IFNAME: u16 = 3;
-const IFLA_MTU: u16 = 4;
-const IFLA_ADDRESS: u16 = 1; // hardware address
-
-// Address attribute types (IFA_*)
-const IFA_ADDRESS: u16 = 1;
-const IFA_LOCAL: u16 = 2;
-const IFA_LABEL: u16 = 3;
 
 // Interface flags
 const IFF_UP: u32 = 0x1;
@@ -115,9 +132,9 @@ impl NetlinkSocket {
         let seq = hdr.nlmsg_seq;
         let pid = hdr.nlmsg_pid;
 
-        match hdr.nlmsg_type {
-            RTM_GETLINK => self.handle_getlink(seq, pid),
-            RTM_GETADDR => self.handle_getaddr(seq, pid),
+        match RtMsgType::try_from(hdr.nlmsg_type) {
+            Ok(RtMsgType::GetLink) => self.handle_getlink(seq, pid),
+            Ok(RtMsgType::GetAddr) => self.handle_getaddr(seq, pid),
             _ => self.send_error(seq, pid, -(Errno::EOPNOTSUPP as i32)),
         }
     }
@@ -150,13 +167,13 @@ impl NetlinkSocket {
 
             let mut attrs = Vec::new();
             // IFLA_IFNAME
-            nla_put_string(&mut attrs, IFLA_IFNAME, name);
+            nla_put_string(&mut attrs, IfLinkAttr::IfName as u16, name);
             // IFLA_MTU
-            nla_put_u32(&mut attrs, IFLA_MTU, mtu);
+            nla_put_u32(&mut attrs, IfLinkAttr::Mtu as u16, mtu);
             // IFLA_ADDRESS (MAC)
             let mac_bytes = mac.as_octets();
             if !iface.is_loopback() {
-                nla_put_bytes(&mut attrs, IFLA_ADDRESS, mac_bytes);
+                nla_put_bytes(&mut attrs, IfLinkAttr::Address as u16, mac_bytes);
             }
 
             let payload_len = core::mem::size_of::<IfInfoMsg>() + attrs.len();
@@ -165,7 +182,7 @@ impl NetlinkSocket {
 
             let hdr = NlMsgHdr {
                 nlmsg_len: msg_len as u32,
-                nlmsg_type: RTM_GETLINK - 2, // RTM_NEWLINK = 16
+                nlmsg_type: RtMsgType::NewLink as u16,
                 nlmsg_flags: NLM_F_MULTI,
                 nlmsg_seq: seq,
                 nlmsg_pid: pid,
@@ -198,7 +215,7 @@ impl NetlinkSocket {
             let prefix_len = mask.map_or(0u8, |m| u32::from(m).count_ones() as u8);
 
             let ifaddr = IfAddrMsg {
-                ifa_family: 2, // AF_INET
+                ifa_family: AddressFamily::Inet as u8,
                 ifa_prefixlen: prefix_len,
                 ifa_flags: 0,
                 ifa_scope: if iface.is_loopback() { 254 } else { 0 }, // RT_SCOPE_HOST / RT_SCOPE_UNIVERSE
@@ -208,11 +225,11 @@ impl NetlinkSocket {
             let ip_bytes = ip.octets();
             let mut attrs = Vec::new();
             // IFA_ADDRESS
-            nla_put_bytes(&mut attrs, IFA_ADDRESS, &ip_bytes);
+            nla_put_bytes(&mut attrs, IfAddrAttr::Address as u16, &ip_bytes);
             // IFA_LOCAL
-            nla_put_bytes(&mut attrs, IFA_LOCAL, &ip_bytes);
+            nla_put_bytes(&mut attrs, IfAddrAttr::Local as u16, &ip_bytes);
             // IFA_LABEL
-            nla_put_string(&mut attrs, IFA_LABEL, iface.name());
+            nla_put_string(&mut attrs, IfAddrAttr::Label as u16, iface.name());
 
             let payload_len = core::mem::size_of::<IfAddrMsg>() + attrs.len();
             let msg_len = NLMSG_HDRLEN + payload_len;
@@ -220,7 +237,7 @@ impl NetlinkSocket {
 
             let hdr = NlMsgHdr {
                 nlmsg_len: msg_len as u32,
-                nlmsg_type: RTM_GETADDR - 2, // RTM_NEWADDR = 20
+                nlmsg_type: RtMsgType::NewAddr as u16,
                 nlmsg_flags: NLM_F_MULTI,
                 nlmsg_seq: seq,
                 nlmsg_pid: pid,
@@ -242,7 +259,7 @@ impl NetlinkSocket {
         let msg_len = NLMSG_HDRLEN + 4; // nlmsghdr + error code
         let hdr = NlMsgHdr {
             nlmsg_len: msg_len as u32,
-            nlmsg_type: NLMSG_ERROR,
+            nlmsg_type: NlMsgType::Error as u16,
             nlmsg_flags: 0,
             nlmsg_seq: seq,
             nlmsg_pid: pid,
@@ -256,7 +273,7 @@ impl NetlinkSocket {
         let aligned_len = nlmsg_align(msg_len);
         let hdr = NlMsgHdr {
             nlmsg_len: msg_len as u32,
-            nlmsg_type: NLMSG_DONE,
+            nlmsg_type: NlMsgType::Done as u16,
             nlmsg_flags: NLM_F_MULTI,
             nlmsg_seq: seq,
             nlmsg_pid: pid,
