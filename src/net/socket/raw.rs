@@ -120,6 +120,10 @@ impl SocketInner for RawInner {
     fn type_name(&self) -> &'static str {
         "inet-raw"
     }
+
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.local
+    }
 }
 
 impl Drop for RawInner {

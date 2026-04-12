@@ -315,11 +315,14 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         201 => net::listen(2),
         202 => net::accept(3),
         203 => net::connect(3),
+        204 => net::getsockname(3),
         206 => net::sendto(6),
         207 => net::recvfrom(6),
         208 => net::setsockopt(5),
         209 => net::getsockopt(5),
         210 => net::shutdown(2),
+        211 => net::sendmsg(3),
+        212 => net::recvmsg(3),
 
         // Time
         101 => time::nanosleep(2),

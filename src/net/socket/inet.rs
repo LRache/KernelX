@@ -82,6 +82,10 @@ impl InetSocket {
         self.inner.lock().shutdown(how)
     }
 
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.inner.lock().local_addr()
+    }
+
     pub fn setsockopt(&self, _level: usize, _optname: usize, _optval: usize, _optlen: usize) -> SysResult<()> {
         Ok(())
     }

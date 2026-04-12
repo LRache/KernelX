@@ -120,6 +120,10 @@ impl SocketInner for UdpInner {
     fn type_name(&self) -> &'static str {
         "inet-udp"
     }
+
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.local
+    }
 }
 
 impl Drop for UdpInner {
