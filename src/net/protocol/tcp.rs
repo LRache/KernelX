@@ -1,4 +1,5 @@
 use bitflags::bitflags;
+use core::net::Ipv4Addr;
 
 use crate::kernel::errno::SysResult;
 use crate::net::protocol::ProtocolBuilder;
@@ -28,6 +29,8 @@ pub struct TCPBuilder<'a> {
     checksum: u16,
     urgent_pointer: u16,
     payload: Option<&'a dyn ProtocolBuilder>,
+    pseudo_src_ip: Option<Ipv4Addr>,
+    pseudo_dst_ip: Option<Ipv4Addr>,
 }
 
 impl<'a> TCPBuilder<'a> {
@@ -43,6 +46,8 @@ impl<'a> TCPBuilder<'a> {
             checksum: 0,
             urgent_pointer: 0,
             payload: None,
+            pseudo_src_ip: None,
+            pseudo_dst_ip: None,
         }
     }
 
@@ -89,6 +94,41 @@ impl<'a> TCPBuilder<'a> {
     pub fn payload(mut self, payload: &'a dyn ProtocolBuilder) -> Self {
         self.payload = Some(payload);
         self
+    }
+
+    pub fn ipv4_pseudo_header(mut self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr) -> Self {
+        self.pseudo_src_ip = Some(src_ip);
+        self.pseudo_dst_ip = Some(dst_ip);
+        self
+    }
+
+    fn compute_ipv4_checksum(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, segment: &[u8]) -> u16 {
+        let mut sum: u32 = 0;
+        let src = src_ip.octets();
+        let dst = dst_ip.octets();
+
+        // IPv4 pseudo-header
+        sum += u16::from_be_bytes([src[0], src[1]]) as u32;
+        sum += u16::from_be_bytes([src[2], src[3]]) as u32;
+        sum += u16::from_be_bytes([dst[0], dst[1]]) as u32;
+        sum += u16::from_be_bytes([dst[2], dst[3]]) as u32;
+        sum += 6; // IPPROTO_TCP
+        sum += segment.len() as u32;
+
+        // TCP segment (checksum field should be zero when computing)
+        let mut i = 0usize;
+        while i + 1 < segment.len() {
+            sum += u16::from_be_bytes([segment[i], segment[i + 1]]) as u32;
+            i += 2;
+        }
+        if i < segment.len() {
+            sum += (segment[i] as u32) << 8;
+        }
+
+        while (sum >> 16) != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        !(sum as u16)
     }
 }
 
@@ -155,13 +195,22 @@ impl<'a> ProtocolBuilder for TCPBuilder<'a> {
         data[12] = (self.data_offset << 4) | 0; // No options
         data[13] = self.flags.bits();
         data[14..16].copy_from_slice(&self.window_size.to_be_bytes());
-        data[16..18].copy_from_slice(&self.checksum.to_be_bytes());
+        data[16..18].copy_from_slice(&0u16.to_be_bytes());
         data[18..20].copy_from_slice(&self.urgent_pointer.to_be_bytes());
 
-        self.payload.as_ref().map_or(Ok(20), |p| {
+        let total_len = self.payload.as_ref().map_or(Ok(20), |p| {
             let payload_len = p.build(&mut data[20..])?;
             Ok(20 + payload_len)
-        })
+        })?;
+
+        let checksum = if let (Some(src_ip), Some(dst_ip)) = (self.pseudo_src_ip, self.pseudo_dst_ip) {
+            Self::compute_ipv4_checksum(src_ip, dst_ip, &data[..total_len])
+        } else {
+            self.checksum
+        };
+        data[16..18].copy_from_slice(&checksum.to_be_bytes());
+
+        Ok(total_len)
     }
 
     fn len(&self) -> usize {

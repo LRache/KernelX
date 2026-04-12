@@ -159,19 +159,17 @@ impl Interface {
         payload: &[u8],
     ) -> SysResult<()> {
         let dst_mac = self.resolve_mac(dst.ip)?;
+        let src_ip = self.resolve_src_ip(src.ip);
         let raw = RawPayload(payload);
-        let mut tcp = TCPBuilder::new(src.port, dst.port)
+        let tcp = TCPBuilder::new(src.port, dst.port)
             .seq_num(seq)
             .ack_num(ack)
             .flags(flags)
-            .window_size(window);
-        if !payload.is_empty() {
-            tcp = tcp.payload(&raw);
-        }
-        let ipv4 = IPv4Builder::new()
-            .src_ip(self.resolve_src_ip(src.ip))
-            .dst_ip(dst.ip)
-            .tcp(tcp);
+            .window_size(window)
+            .ipv4_pseudo_header(src_ip, dst.ip);
+        let tcp = if payload.is_empty() { tcp } else { tcp.payload(&raw) };
+
+        let ipv4 = IPv4Builder::new().src_ip(src_ip).dst_ip(dst.ip).tcp(tcp);
         let eth = EthernetBuilder::new()
             .src_mac(self.mac_address())
             .dst_mac(dst_mac)
@@ -195,13 +193,13 @@ impl Interface {
             .dst_mac(dst_mac)
             .ipv4(ipv4);
 
-        crate::kinfo!(
-            "send_raw: src_ip={}, dst_ip={}, protocol={:#04x}, payload_len={}",
-            src_ip,
-            dst_ip,
-            protocol,
-            payload.len()
-        );
+        // crate::kinfo!(
+        //     "send_raw: src_ip={}, dst_ip={}, protocol={:#04x}, payload_len={}",
+        //     src_ip,
+        //     dst_ip,
+        //     protocol,
+        //     payload.len()
+        // );
 
         let len = eth.len();
         let mut buf = vec![0u8; len];
