@@ -166,3 +166,31 @@ impl Interface {
         q.waiters.wait_current(());
     }
 }
+
+// ---- Interface methods for RAW IPv4 protocol dispatch ----
+
+impl Interface {
+    pub fn bind_raw(&self, protocol: u8) {
+        self.raw_rx.lock().bind(protocol as u16);
+    }
+
+    pub fn unbind_raw(&self, protocol: u8) {
+        self.raw_rx.lock().unbind(protocol as u16);
+    }
+
+    pub fn try_recv_raw(&self, protocol: u8) -> Option<(SocketAddr, Vec<u8>)> {
+        let mut map = self.raw_rx.lock();
+        let q = map.ports.get_mut(&(protocol as u16))?;
+        q.packets.pop_front()
+    }
+
+    pub fn has_raw_data(&self, protocol: u8) -> bool {
+        self.raw_rx.lock().has_data(protocol as u16)
+    }
+
+    pub fn wait_raw(&self, protocol: u8) {
+        let mut map = self.raw_rx.lock();
+        let q = map.bind(protocol as u16);
+        q.waiters.wait_current(());
+    }
+}

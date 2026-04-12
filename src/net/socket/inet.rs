@@ -8,6 +8,7 @@ use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
+use super::raw::RawInner;
 use super::tcp::TcpInner;
 use super::udp::UdpInner;
 use super::{SocketAddr, SocketInner};
@@ -28,6 +29,13 @@ impl InetSocket {
     pub fn new_tcp(blocked: bool) -> Self {
         Self {
             inner: SpinLock::new(Box::new(TcpInner::new()), "InetSocket::inner"),
+            blocked: SpinLock::new(blocked, "InetSocket::blocked"),
+        }
+    }
+
+    pub fn new_raw(protocol: u8, blocked: bool) -> Self {
+        Self {
+            inner: SpinLock::new(Box::new(RawInner::new(protocol)), "InetSocket::inner"),
             blocked: SpinLock::new(blocked, "InetSocket::blocked"),
         }
     }

@@ -1,6 +1,7 @@
 pub mod inet;
 pub mod netlink;
 pub mod options;
+pub mod raw;
 pub mod tcp;
 pub mod udp;
 

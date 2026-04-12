@@ -31,6 +31,7 @@ pub struct Interface {
     gateway: SpinLock<Option<Ipv4Addr>>,
     pub udp_rx: SpinLock<PortMap>,
     pub tcp_rx: SpinLock<PortMap>,
+    pub raw_rx: SpinLock<PortMap>,
     arp_table: SpinLock<ArpTable>,
 }
 
@@ -44,6 +45,7 @@ impl Interface {
             gateway: SpinLock::new(None, "Interface::gateway"),
             udp_rx: SpinLock::new(PortMap::new(), "Interface::udp_rx"),
             tcp_rx: SpinLock::new(PortMap::new(), "Interface::tcp_rx"),
+            raw_rx: SpinLock::new(PortMap::new(), "Interface::raw_rx"),
             arp_table: SpinLock::new(ArpTable::new(), "Interface::arp_table"),
         }
     }
@@ -57,6 +59,7 @@ impl Interface {
             gateway: SpinLock::new(None, "Interface::gateway"),
             udp_rx: SpinLock::new(PortMap::new(), "Interface::udp_rx"),
             tcp_rx: SpinLock::new(PortMap::new(), "Interface::tcp_rx"),
+            raw_rx: SpinLock::new(PortMap::new(), "Interface::raw_rx"),
             arp_table: SpinLock::new(ArpTable::new(), "Interface::arp_table"),
         }
     }
@@ -173,6 +176,32 @@ impl Interface {
             .src_mac(self.mac_address())
             .dst_mac(dst_mac)
             .ipv4(ipv4);
+
+        let len = eth.len();
+        let mut buf = vec![0u8; len];
+        eth.build(&mut buf)?;
+        self.send_packet(&buf)
+    }
+
+    /// Build and send an IPv4 raw payload with explicit protocol number.
+    pub fn send_raw(&self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, protocol: u8, payload: &[u8]) -> SysResult<()> {
+        let dst_mac = self.resolve_mac(dst_ip)?;
+        let ipv4 = IPv4Builder::new()
+            .src_ip(self.resolve_src_ip(src_ip))
+            .dst_ip(dst_ip)
+            .raw(protocol, payload);
+        let eth = EthernetBuilder::new()
+            .src_mac(self.mac_address())
+            .dst_mac(dst_mac)
+            .ipv4(ipv4);
+
+        crate::kinfo!(
+            "send_raw: src_ip={}, dst_ip={}, protocol={:#04x}, payload_len={}",
+            src_ip,
+            dst_ip,
+            protocol,
+            payload.len()
+        );
 
         let len = eth.len();
         let mut buf = vec![0u8; len];

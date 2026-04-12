@@ -12,7 +12,7 @@ use crate::net::socket::{
 use super::SyscallRet;
 use super::uptr::{UBuffer, UPtr, UserPointer};
 
-pub fn socket(domain: usize, sock_type: usize, _protocol: usize) -> SyscallRet {
+pub fn socket(domain: usize, sock_type: usize, protocol: usize) -> SyscallRet {
     let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
     let blocked = sock_type & SOCK_NONBLOCK == 0;
     let cloexec = sock_type & SOCK_CLOEXEC != 0;
@@ -21,6 +21,13 @@ pub fn socket(domain: usize, sock_type: usize, _protocol: usize) -> SyscallRet {
         AF_INET => match base_type {
             SOCK_DGRAM => Arc::new(InetSocket::new_udp(blocked)),
             SOCK_STREAM => Arc::new(InetSocket::new_tcp(blocked)),
+            SOCK_RAW => {
+                let proto = u8::try_from(protocol).map_err(|_| Errno::EPROTONOSUPPORT)?;
+                if proto == 0 {
+                    return Err(Errno::EPROTONOSUPPORT);
+                }
+                Arc::new(InetSocket::new_raw(proto, blocked))
+            }
             _ => return Err(Errno::EINVAL),
         },
         AF_NETLINK => match base_type {

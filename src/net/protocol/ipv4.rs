@@ -1,7 +1,7 @@
 use core::net::Ipv4Addr;
 
 use crate::kernel::errno::SysResult;
-use crate::net::protocol::ProtocolBuilder;
+use crate::net::protocol::{ProtocolBuilder, RawPayload};
 
 use super::icmp::ICMPBuilder;
 use super::tcp::TCPBuilder;
@@ -16,6 +16,7 @@ enum IPv4Payload<'a> {
     TCP(TCPBuilder<'a>),
     UDP(UDPBuilder<'a>),
     ICMP(ICMPBuilder),
+    Raw { protocol: u8, payload: RawPayload<'a> },
 }
 
 impl<'a> IPv4Payload<'a> {
@@ -24,6 +25,7 @@ impl<'a> IPv4Payload<'a> {
             IPv4Payload::TCP(_) => PROTO_TCP,
             IPv4Payload::UDP(_) => PROTO_UDP,
             IPv4Payload::ICMP(_) => PROTO_ICMP,
+            IPv4Payload::Raw { protocol, .. } => *protocol,
         }
     }
 }
@@ -34,6 +36,7 @@ impl<'a> ProtocolBuilder for IPv4Payload<'a> {
             IPv4Payload::TCP(b) => b.build(data),
             IPv4Payload::UDP(b) => b.build(data),
             IPv4Payload::ICMP(b) => b.build(data),
+            IPv4Payload::Raw { payload, .. } => payload.build(data),
         }
     }
 
@@ -42,6 +45,7 @@ impl<'a> ProtocolBuilder for IPv4Payload<'a> {
             IPv4Payload::TCP(b) => b.len(),
             IPv4Payload::UDP(b) => b.len(),
             IPv4Payload::ICMP(b) => b.len(),
+            IPv4Payload::Raw { payload, .. } => payload.len(),
         }
     }
 }
@@ -116,6 +120,14 @@ impl<'a> IPv4Builder<'a> {
 
     pub fn icmp(mut self, icmp: ICMPBuilder) -> Self {
         self.payload = Some(IPv4Payload::ICMP(icmp));
+        self
+    }
+
+    pub fn raw(mut self, protocol: u8, payload: &'a [u8]) -> Self {
+        self.payload = Some(IPv4Payload::Raw {
+            protocol,
+            payload: RawPayload(payload),
+        });
         self
     }
 
