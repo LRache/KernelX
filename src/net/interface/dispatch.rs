@@ -33,7 +33,12 @@ impl Interface {
                     }
                     IPv4PacketPayload::TCP(tcp) => {
                         let src = SocketAddr::new(src_ip, tcp.src_port());
-                        // Dispatch full TCP segment (header + payload) for state machine
+                        // crate::kinfo!(
+                        //     "Received TCP segment: src={}, dst_port={}, payload_len={}",
+                        //     src_ip,
+                        //     tcp.dst_port(),
+                        //     tcp.payload().len()
+                        // );
                         self.tcp_rx.lock().dispatch(tcp.dst_port(), src, ip_payload.to_vec());
                     }
                     IPv4PacketPayload::ICMP(_icmp) => {}

@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
@@ -215,8 +216,6 @@ impl TcpInner {
             }
         }
     }
-
-    // ==================== Receive-side helpers ====================
 
     /// Merge any contiguous out-of-order segments into rx_buf.
     fn merge_ooo(&mut self) {
@@ -749,6 +748,10 @@ impl SocketInner for TcpInner {
     fn type_name(&self) -> &'static str {
         "inet-tcp"
     }
+
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.local
+    }
 }
 
 impl Drop for TcpInner {
@@ -770,21 +773,15 @@ impl Drop for TcpInner {
     }
 }
 
-// ==================== Sequence number arithmetic ====================
-
-/// Returns true if a is strictly after b in sequence space (wrapping-aware).
 fn seq_after(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) > 0
 }
 
-/// Returns true if a is at or before b in sequence space.
 fn seq_before_eq(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) <= 0
 }
 
-/// Simple initial sequence number generation.
 fn initial_seq() -> u32 {
-    use core::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(1000);
     COUNTER.fetch_add(64000, Ordering::Relaxed)
 }
