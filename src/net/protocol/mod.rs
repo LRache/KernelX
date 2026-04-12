@@ -8,7 +8,7 @@ pub mod ipv4;
 pub mod tcp;
 pub mod udp;
 
-pub use arp::{ARPBuilder, ARPPacket};
+pub use arp::{ARPBuilder, ARPPacket, ArpOperation};
 pub use dhcp::{DHCPBuilder, DHCPPacket};
 pub use ethernet::{EthernetBuilder, EthernetFrame, EthernetFramePayload, MacAddr};
 pub use icmp::{ICMPBuilder, ICMPPacket};

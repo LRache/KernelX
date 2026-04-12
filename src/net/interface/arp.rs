@@ -5,8 +5,7 @@ use core::net::Ipv4Addr;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, WaitQueue};
 use crate::kernel::scheduler::current;
-use crate::net::protocol::arp::{ARP_REPLY, ARP_REQUEST, ARPBuilder};
-use crate::net::protocol::{EthernetBuilder, MacAddr, ProtocolBuilder};
+use crate::net::protocol::{ARPBuilder, ARPPacket, ArpOperation, EthernetBuilder, MacAddr, ProtocolBuilder};
 
 use super::Interface;
 
@@ -27,12 +26,6 @@ impl ArpTable {
 }
 
 impl Interface {
-    /// Resolve an IPv4 address to a MAC address.
-    ///
-    /// - Broadcast IP → broadcast MAC
-    /// - Loopback → unspecified MAC
-    /// - Cached → return immediately
-    /// - Otherwise → send ARP request and block until reply
     pub fn resolve_mac(&self, dst_ip: Ipv4Addr) -> SysResult<MacAddr> {
         if dst_ip.is_broadcast() {
             return Ok(MacAddr::BROADCAST);
@@ -104,7 +97,7 @@ impl Interface {
         let src_mac = self.mac_address();
         let src_ip = self.ipv4().unwrap_or(Ipv4Addr::UNSPECIFIED);
 
-        let arp = ARPBuilder::new(ARP_REQUEST, src_mac, src_ip, MacAddr::UNSPECIFIED, target_ip);
+        let arp = ARPBuilder::new(ArpOperation::Request, src_mac, src_ip, MacAddr::UNSPECIFIED, target_ip);
         let eth = EthernetBuilder::new()
             .src_mac(src_mac)
             .dst_mac(MacAddr::BROADCAST)
@@ -117,7 +110,7 @@ impl Interface {
     }
 
     /// Handle an incoming ARP packet. Called from dispatch.
-    pub fn handle_arp(&self, arp: &crate::net::protocol::arp::ARPPacket<'_>) {
+    pub fn handle_arp(&self, arp: &ARPPacket<'_>) {
         let sender_ip = Ipv4Addr::from(arp.sender_ip());
         let sender_mac = arp.sender_mac();
 
@@ -129,11 +122,17 @@ impl Interface {
         }
 
         // Reply to requests for our IP
-        if arp.operation() == ARP_REQUEST {
+        if arp.operation() == ArpOperation::Request {
             let target_ip = Ipv4Addr::from(arp.target_ip());
             if Some(target_ip) == self.ipv4() {
                 let my_mac = self.mac_address();
-                let reply = ARPBuilder::new(ARP_REPLY, my_mac, target_ip, arp.sender_mac(), arp.sender_ip());
+                let reply = ARPBuilder::new(
+                    ArpOperation::Reply,
+                    my_mac,
+                    target_ip,
+                    arp.sender_mac(),
+                    arp.sender_ip(),
+                );
                 let eth = EthernetBuilder::new().src_mac(my_mac).dst_mac(sender_mac).arp(reply);
 
                 let len = eth.len();

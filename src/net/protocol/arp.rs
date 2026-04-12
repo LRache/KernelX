@@ -3,14 +3,37 @@ use core::net::Ipv4Addr;
 use crate::kernel::errno::SysResult;
 use crate::net::protocol::{MacAddr, ProtocolBuilder};
 
-/// ARP operation codes
-pub const ARP_REQUEST: u16 = 1;
-pub const ARP_REPLY: u16 = 2;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArpOperation {
+    Request,
+    Reply,
+    Other(u16),
+}
+
+impl From<u16> for ArpOperation {
+    fn from(value: u16) -> Self {
+        match value {
+            1 => ArpOperation::Request,
+            2 => ArpOperation::Reply,
+            other => ArpOperation::Other(other),
+        }
+    }
+}
+
+impl From<ArpOperation> for u16 {
+    fn from(value: ArpOperation) -> Self {
+        match value {
+            ArpOperation::Request => 1,
+            ArpOperation::Reply => 2,
+            ArpOperation::Other(code) => code,
+        }
+    }
+}
 
 pub struct ARPBuilder {
     hlen: u8,
     plen: u8,
-    operation: u16,
+    operation: ArpOperation,
     sender_mac: MacAddr,
     sender_ip: Ipv4Addr,
     target_mac: MacAddr,
@@ -22,7 +45,7 @@ const ARP_SIZE: usize = 28;
 
 impl ARPBuilder {
     pub fn new(
-        operation: u16,
+        operation: ArpOperation,
         sender_mac: MacAddr,
         sender_ip: Ipv4Addr,
         target_mac: MacAddr,
@@ -39,7 +62,7 @@ impl ARPBuilder {
         }
     }
 
-    pub fn operation(mut self, op: u16) -> Self {
+    pub fn operation(mut self, op: ArpOperation) -> Self {
         self.operation = op;
         self
     }
@@ -75,7 +98,7 @@ impl ProtocolBuilder for ARPBuilder {
         data[2..4].copy_from_slice(&0x0800u16.to_be_bytes()); // IPv4
         data[4] = self.hlen;
         data[5] = self.plen;
-        data[6..8].copy_from_slice(&self.operation.to_be_bytes());
+        data[6..8].copy_from_slice(&u16::from(self.operation).to_be_bytes());
         data[8..14].copy_from_slice(self.sender_mac.as_octets());
         data[14..18].copy_from_slice(&self.sender_ip.octets());
         data[18..24].copy_from_slice(self.target_mac.as_octets());
@@ -103,8 +126,8 @@ impl<'a> ARPPacket<'a> {
         Some(Self { data })
     }
 
-    pub fn operation(&self) -> u16 {
-        u16::from_be_bytes([self.data[6], self.data[7]])
+    pub fn operation(&self) -> ArpOperation {
+        u16::from_be_bytes([self.data[6], self.data[7]]).into()
     }
 
     pub fn sender_mac(&self) -> MacAddr {
