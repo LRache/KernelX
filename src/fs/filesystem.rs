@@ -35,4 +35,6 @@ pub trait SuperBlockOps: Send + Sync {
         // Default implementation does nothing, can be overridden by specific filesystems
         Ok(())
     }
+
+    fn type_name(&self) -> &'static str;
 }

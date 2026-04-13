@@ -298,6 +298,20 @@ impl PCB {
         matches!(*self.state.lock(), State::Exited(_))
     }
 
+    pub fn wait_for_all_tasks_exited_and_clear(&self) {
+        loop {
+            let mut tasks = self.tasks.lock();
+            if let Some(task) = tasks.pop() {
+                drop(tasks);
+                while !task.is_exited() {
+                    current::schedule();
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     fn recycle(&self) -> Option<ExitStatus> {
         let mut state = self.state.lock();
         let status = match *state {
@@ -306,13 +320,7 @@ impl PCB {
         };
         *state = State::Recycled;
         drop(state);
-        let mut tasks = self.tasks.lock();
-        tasks.iter().for_each(|tcb| {
-            while !tcb.is_exited() {
-                current::schedule();
-            }
-        });
-        tasks.clear(); // Drop all TCBs to release their resources
+        self.wait_for_all_tasks_exited_and_clear();
         status
     }
 
@@ -413,6 +421,22 @@ impl PCB {
         // marked exited it will never be rescheduled, causing it to block
         // indefinitely and leaving the system hung instead of halting cleanly.
         if self.pid == task::INIT_UTASK_TID {
+            self.children.lock().iter().for_each(|child| {
+                let _ = child.send_signal(signum::SIGKILL, SiCode::EMPTY, KSiFields::Empty, None);
+            });
+            loop {
+                if let Some(child) = self.children.lock().pop() {
+                    loop {
+                        if child.is_exited() {
+                            child.recycle();
+                            break;
+                        }
+                        current::schedule();
+                    }
+                } else {
+                    break;
+                }
+            }
             deinit();
             panic!("Init process exited with status {:?}, system will halt.", status);
         }

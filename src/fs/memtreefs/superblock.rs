@@ -129,4 +129,8 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
         statfs.f_bavail = 0;
         Ok(statfs)
     }
+
+    fn type_name(&self) -> &'static str {
+        T::type_name()
+    }
 }

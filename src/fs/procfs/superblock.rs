@@ -78,4 +78,8 @@ impl SuperBlockOps for SuperBlock {
     fn sync(&self) -> SysResult<()> {
         Ok(())
     }
+
+    fn type_name(&self) -> &'static str {
+        "procfs"
+    }
 }

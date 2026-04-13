@@ -12,7 +12,7 @@ use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::fdtable::FDTable;
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::uapi::Uid;
-use crate::klib::SpinLock;
+use crate::klib::{SpinLock, SleepLock};
 
 use super::Tid;
 
@@ -80,7 +80,7 @@ pub fn addrspace() -> &'static Arc<AddrSpace> {
     tcb.get_addrspace()
 }
 
-pub fn fdtable() -> &'static SpinLock<FDTable> {
+pub fn fdtable() -> &'static SleepLock<FDTable> {
     let tcb = tcb();
     tcb.fdtable()
 }

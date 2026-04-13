@@ -83,7 +83,7 @@ unsafe impl Sync for Ext4SuperBlock {}
 
 impl SuperBlockOps for Ext4SuperBlock {
     fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
-        Ok(Arc::new(Ext4Inode::new(ino, self.superblock.clone())))
+        Ok(Arc::new(Ext4Inode::new(ino, Arc::downgrade(&self.superblock))))
     }
 
     fn get_root_ino(&self) -> u32 {
@@ -115,5 +115,9 @@ impl SuperBlockOps for Ext4SuperBlock {
 
     fn sync(&self) -> SysResult<()> {
         self.superblock.lock().flush().map_err(map_error_to_kernel)
+    }
+
+    fn type_name(&self) -> &'static str {
+        "ext4"
     }
 }

@@ -1,5 +1,5 @@
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::time::Duration;
 use lwext4_rust::{FileAttr, InodeType};
@@ -16,17 +16,21 @@ use super::superblock::{SuperBlockInner, map_error_to_kernel};
 
 pub struct Ext4Inode {
     ino: u32,
-    superblock: Arc<SleepLock<SuperBlockInner>>,
+    superblock: Weak<SleepLock<SuperBlockInner>>,
     dents_cache: SpinLock<Option<Vec<DirResult>>>,
 }
 
 impl Ext4Inode {
-    pub fn new(ino: u32, superblock: Arc<SleepLock<SuperBlockInner>>) -> Self {
+    pub fn new(ino: u32, superblock: Weak<SleepLock<SuperBlockInner>>) -> Self {
         Self {
             ino,
             superblock,
             dents_cache: SpinLock::new(None, "Ext4Inode::dents_cache"),
         }
+    }
+
+    fn superblock(&self) -> SysResult<Arc<SleepLock<SuperBlockInner>>> {
+        self.superblock.upgrade().ok_or(Errno::EIO)
     }
 }
 
@@ -44,12 +48,13 @@ impl InodeOps for Ext4Inode {
             return Err(Errno::ENOTDIR);
         }
 
-        if self.superblock.lock().lookup(self.ino, name).is_ok() {
+        if self.superblock()?.lock().lookup(self.ino, name).is_ok() {
             return Err(Errno::EEXIST);
         }
 
         *self.dents_cache.lock() = None; // Invalidate cache
-        let mut superblock = self.superblock.lock();
+        let superblock = self.superblock()?;
+        let mut superblock = superblock.lock();
 
         let ty = if mode.contains(Mode::S_IFDIR) {
             InodeType::Directory
@@ -81,21 +86,21 @@ impl InodeOps for Ext4Inode {
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .unlink(self.ino, name)
             .map_err(map_error_to_kernel)
     }
 
     fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .link(self.ino, name, target.get_ino())
             .map_err(map_error_to_kernel)
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .set_symlink(self.ino, target.as_bytes())
             .map_err(map_error_to_kernel)
@@ -105,7 +110,8 @@ impl InodeOps for Ext4Inode {
         if self.mode()?.contains(Mode::S_IFDIR) {
             return Err(Errno::EISDIR);
         }
-        let mut sb = self.superblock.lock();
+        let superblock = self.superblock()?;
+        let mut sb = superblock.lock();
         sb.read_at(self.ino, buf, offset as u64).map_err(map_error_to_kernel)
     }
 
@@ -113,14 +119,15 @@ impl InodeOps for Ext4Inode {
         if self.mode()?.contains(Mode::S_IFDIR) {
             return Err(Errno::EISDIR);
         }
-        let mut sb = self.superblock.lock();
+        let superblock = self.superblock()?;
+        let mut sb = superblock.lock();
         sb.write_at(self.ino, buf, offset as u64).map_err(map_error_to_kernel)
     }
 
     fn get_dent(&self, offset: usize) -> SysResult<Option<(DirResult, usize)>> {
         // Directory enumeration not yet migrated to `lwext4_rust`.
         let mut reader = self
-            .superblock
+            .superblock()?
             .lock()
             .read_dir(self.ino, offset as u64)
             .map_err(map_error_to_kernel)?;
@@ -149,7 +156,7 @@ impl InodeOps for Ext4Inode {
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
         let mut result = self
-            .superblock
+            .superblock()?
             .lock()
             .lookup(self.ino, name)
             .map_err(map_error_to_kernel)?;
@@ -157,7 +164,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .rename(self.ino, old_name, new_parent.get_ino(), new_name)
             .map_err(map_error_to_kernel)?;
@@ -165,21 +172,21 @@ impl InodeOps for Ext4Inode {
     }
 
     fn size(&self) -> SysResult<u64> {
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| Ok(inode_ref.size()))
             .map_err(map_error_to_kernel)
     }
 
     fn mode(&self) -> SysResult<Mode> {
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| Ok(Mode::from_bits_truncate(inode_ref.mode())))
             .map_err(map_error_to_kernel)
     }
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| {
                 if inode_ref.inode_type() != InodeType::Symlink {
@@ -192,7 +199,7 @@ impl InodeOps for Ext4Inode {
 
     fn chmod(&self, mode: Mode) -> SysResult<()> {
         debug_assert!(mode.bits() <= 0o7777);
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| {
                 let current_mode = inode_ref.mode();
@@ -206,7 +213,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn chown(&self, uid: Option<Uid>, gid: Option<Uid>) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| {
                 let uid = uid.unwrap_or(inode_ref.uid() as Uid) as u16;
@@ -222,7 +229,8 @@ impl InodeOps for Ext4Inode {
 
     fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::default();
-        let mut superblock = self.superblock.lock();
+        let superblock = self.superblock()?;
+        let mut superblock = superblock.lock();
 
         kstat.st_ino = self.ino as u64;
 
@@ -254,14 +262,14 @@ impl InodeOps for Ext4Inode {
     }
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .set_len(self.ino, new_size)
             .map_err(map_error_to_kernel)
     }
 
     fn owner(&self) -> SysResult<(Uid, Uid)> {
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| {
                 Ok((inode_ref.uid() as Uid, inode_ref.gid() as Uid))
@@ -270,7 +278,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn update_atime(&self, time: &Duration) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| {
                 inode_ref.set_atime(time);
@@ -280,7 +288,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn update_mtime(&self, time: &Duration) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| {
                 inode_ref.set_mtime(time);
@@ -290,7 +298,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn update_ctime(&self, time: &Duration) -> SysResult<()> {
-        self.superblock
+        self.superblock()?
             .lock()
             .with_inode_ref(self.ino, |inode_ref| {
                 inode_ref.set_ctime(time);
@@ -301,7 +309,7 @@ impl InodeOps for Ext4Inode {
 
     fn sync(&self) -> SysResult<()> {
         // sync not implemented in new API yet
-        self.superblock.lock().flush().map_err(map_error_to_kernel)
+        self.superblock()?.lock().flush().map_err(map_error_to_kernel)
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {

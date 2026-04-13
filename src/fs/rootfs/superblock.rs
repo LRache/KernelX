@@ -66,6 +66,10 @@ impl SuperBlockOps for RootFileSystemSuperBlock {
     fn get_inode(&self, _ino: u32) -> Result<Arc<dyn InodeOps>, Errno> {
         Ok(Arc::new(RootInode::new()))
     }
+
+    fn type_name(&self) -> &'static str {
+        "rootfs"
+    }
 }
 
 impl FileSystemOps for RootFileSystem {

@@ -26,11 +26,12 @@ impl SuperBlockTable {
         fs.clone()
     }
 
-    pub fn unmount_all(&self) -> SysResult<()> {
+    pub fn unmount_all(&mut self) -> SysResult<()> {
         for sb in self.table.iter().flatten() {
             sb.sync()?;
             sb.unmount()?;
         }
+        self.table.clear();
         Ok(())
     }
 

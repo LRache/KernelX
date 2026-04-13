@@ -21,7 +21,7 @@ use crate::kernel::task::{PCB, manager};
 use crate::kernel::uapi::Uid;
 use crate::kernel::usync::futex;
 use crate::kernel::{config, scheduler};
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 use crate::klib::ksync::TaskLocal;
 use crate::{arch, ktrace};
 
@@ -86,7 +86,7 @@ pub struct TCB {
     pub kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
-    fdtable: TaskLocal<Arc<SpinLock<FDTable>>>,
+    fdtable: TaskLocal<Arc<SleepLock<FDTable>>>,
 
     pub signal_mask: SpinLock<SignalSet>,
     ucontext_syscall_retreg_backup: TaskLocal<Option<usize>>,
@@ -108,7 +108,7 @@ impl TCB {
         mut user_context: UserContext,
 
         addrspace: Arc<AddrSpace>,
-        fdtable: Arc<SpinLock<FDTable>>,
+        fdtable: Arc<SleepLock<FDTable>>,
     ) -> Arc<Self> {
         let kernel_stack = KernelStack::new(UTASK_KSTACK_PAGE_COUNT);
         user_context.set_kernel_stack_top(kernel_stack.get_top());
@@ -240,7 +240,7 @@ impl TCB {
             parent,
             user_context,
             addrspace,
-            Arc::new(SpinLock::new(fdtable, "TCB::fdtable")),
+            Arc::new(SleepLock::new(fdtable, "TCB::fdtable")),
         );
 
         (tcb, exec_path)
@@ -277,7 +277,7 @@ impl TCB {
         let new_fdtable = if flags.files {
             self.fdtable().clone()
         } else {
-            Arc::new(SpinLock::new(self.fdtable().lock().fork(), "TCB::fdtable"))
+            Arc::new(SleepLock::new(self.fdtable().lock().fork(), "TCB::fdtable"))
         };
 
         let new_tcb = Self::new(tid, parent, new_user_context, new_addrspace, new_fdtable);
@@ -370,12 +370,12 @@ impl TCB {
         &self.addrspace
     }
 
-    pub fn fdtable(&self) -> &Arc<SpinLock<FDTable>> {
+    pub fn fdtable(&self) -> &Arc<SleepLock<FDTable>> {
         self.fdtable.get_mut()
     }
 
     pub fn unshare_fdtable(&self) {
-        let new_fdtable = Arc::new(SpinLock::new(self.fdtable.get_mut().lock().fork(), "TCB::fdtable"));
+        let new_fdtable = Arc::new(SleepLock::new(self.fdtable.get_mut().lock().fork(), "TCB::fdtable"));
         self.fdtable.set(new_fdtable);
     }
 
