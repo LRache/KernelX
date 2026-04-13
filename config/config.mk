@@ -30,6 +30,9 @@ LOG_LEVEL ?= trace
 BIOS_FIRMWARE ?= $(CONFIG_BIOS_FIRMWARE)
 BIOS_FIRMWARE ?= ./lib/opensbi/build/platform/generic/firmware/fw_jump.bin
 
+CONFIG_OBJCOPY ?= objcopy
+CONFIG_READELF ?= readelf
+
 KERNEL_CONFIG = \
 	ARCH=$(ARCH) \
 	ARCH_BITS=$(ARCH_BITS) \
@@ -44,7 +47,9 @@ KERNEL_CONFIG = \
 	CONFIG_NO_SMP=$(CONFIG_NO_SMP) \
 	CONFIG_NOLOCK=$(CONFIG_NOLOCK) \
 	SYSROOT=$(SYSROOT) \
-	COMPILE_MODE=$(COMPILE_MODE)
+	COMPILE_MODE=$(COMPILE_MODE) \
+	READELF=$(CONFIG_READELF) \
+	OBJCOPY=$(CONFIG_OBJCOPY)
 
 # Configuration targets
 menuconfig:

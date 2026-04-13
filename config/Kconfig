@@ -43,6 +43,14 @@ config CROSS_COMPILE
 	help
 	  Prefix for cross-compilation tools (e.g., riscv64-unknown-elf-).
 
+config OBJCOPY
+	string "objcopy util path"
+	default "objcopy"
+
+config READELF
+	string "readelf util path"
+	default "readelf"
+
 config SYSROOT
 	string "Sysroot path"
 	default ""

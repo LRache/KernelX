@@ -3,7 +3,9 @@ import subprocess
 import re
 import argparse
 import sys
+import os
 
+READELF = os.getenv("READELF", "readelf")
 
 def find_symbol_address_streaming(elf_file, symbols_to_found):
     """
@@ -12,7 +14,7 @@ def find_symbol_address_streaming(elf_file, symbols_to_found):
     :param elf_file: ELF 文件的路径
     :param symbol_name: 要查找的符号名称
     """
-    command = ['readelf', '-sW', elf_file]
+    command = [READELF, '-sW', elf_file]
     process = None
     
     to_found = len(symbols_to_found)

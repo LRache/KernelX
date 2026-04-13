@@ -27,7 +27,7 @@ file(
 
 add_library(vdso SHARED ${SRCS})
 target_compile_options(vdso PRIVATE ${COMMON_FLAGS})
-target_link_options(vdso PRIVATE -fuse-ld=lld ${ARCH_COMMON_FLAGS_LIST})
+target_link_options(vdso PRIVATE ${ARCH_COMMON_FLAGS_LIST})
 set_target_properties(vdso PROPERTIES 
     POSITION_INDEPENDENT_CODE ON
     LINKER_LANGUAGE C
