@@ -1002,20 +1002,38 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
 }
 
 pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
+    const AT_REMOVEDIR: usize = 0x200;
+
     uptr_path.should_not_null()?;
+    if _flags & !AT_REMOVEDIR != 0 {
+        return Err(Errno::EINVAL);
+    }
 
     let path = uptr_path.read_fixed()?;
 
+    let remove_dir = (_flags & AT_REMOVEDIR) != 0;
     let parent_dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&path)?.ok_or(Errno::EOPNOTSUPP)
+        vfs::load_parent_dentry_at(
+            current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?,
+            &path,
+        )?
+        .ok_or(Errno::EOPNOTSUPP)
     }?;
 
     let parent = parent_dentry.0;
     let name = &parent_dentry.1;
 
-    parent.unlink(name)?;
+    if remove_dir {
+        parent.rmdir(name)?;
+    } else {
+        parent.unlink(name)?;
+    }
 
     Ok(0)
 }

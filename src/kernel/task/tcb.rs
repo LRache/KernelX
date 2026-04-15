@@ -21,8 +21,8 @@ use crate::kernel::task::{PCB, manager};
 use crate::kernel::uapi::Uid;
 use crate::kernel::usync::futex;
 use crate::kernel::{config, scheduler};
-use crate::klib::{SleepLock, SpinLock};
 use crate::klib::ksync::TaskLocal;
+use crate::klib::{SleepLock, SpinLock};
 use crate::{arch, ktrace};
 
 #[derive(Debug, Clone, Copy)]

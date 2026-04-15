@@ -4,15 +4,16 @@ use crate::fs::ext4::Ext4FileSystem;
 use crate::fs::rootfs::RootFileSystem;
 use crate::fs::vfs::VFS;
 use crate::fs::vfs::vfs::VirtualFileSystem;
-use crate::fs::{Dentry, devfs, procfs, tmpfs};
+use crate::fs::{Dentry, devfs, ext4_native, procfs, tmpfs};
 
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
     let mut vfs = VirtualFileSystem::new();
     vfs.register_filesystem("devfs", &devfs::FileSystem);
-    vfs.register_filesystem("ext4", &Ext4FileSystem);
+    // vfs.register_filesystem("ext4", &Ext4FileSystem);
     vfs.register_filesystem("tmpfs", &tmpfs::FileSystem);
     vfs.register_filesystem("procfs", &procfs::FileSystem);
+    vfs.register_filesystem("ext4", &ext4_native::FileSystem);
 
     vfs.superblock_table.lock().mount(&RootFileSystem, None).unwrap();
     vfs.root.init(Arc::new(Dentry::root(&vfs.load_inode(0, 0).unwrap(), 0)));

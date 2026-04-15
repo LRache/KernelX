@@ -117,7 +117,7 @@ unsafe impl Sync for SleepLocker {}
 pub type SleepLock<T> = Mutex<T, SleepLocker>;
 
 impl<T> SleepLock<T> {
-    pub fn new(data: T, name: &'static str) -> Self {
+    pub const fn new(data: T, name: &'static str) -> Self {
         Self::create(data, name, SleepLocker::new())
     }
 }

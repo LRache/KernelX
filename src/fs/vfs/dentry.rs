@@ -167,12 +167,25 @@ impl Dentry {
         }
 
         let inode = self.get_inode();
+        let inode = inode.create(name, mode, owner)?;
+        let index = Index {
+            sno: self.sno(),
+            ino: inode.get_ino(),
+        };
 
-        inode.create(name, mode, owner)
+        Ok(vfs().cache.get_or_insert(index, inode))
     }
 
     pub fn unlink(self: &Arc<Self>, name: &str) -> SysResult<()> {
         self.get_inode().unlink(name)?;
+
+        self.children.lock().remove(name);
+
+        Ok(())
+    }
+
+    pub fn rmdir(self: &Arc<Self>, name: &str) -> SysResult<()> {
+        self.get_inode().rmdir(name)?;
 
         self.children.lock().remove(name);
 

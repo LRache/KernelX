@@ -77,8 +77,6 @@ pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace, perm: &Perm) -> Result<
     let ph_offset = ehdr.e_phoff as usize;
     let ph_num = ehdr.e_phnum as usize;
 
-    ktrace!("PHDR offset: {:#x}, number of entries: {}", ph_offset, ph_num);
-
     let mut interpreter_path: Option<String> = None;
     let mut phdr_addr: Option<usize> = None;
 
@@ -167,15 +165,6 @@ pub fn load_program_from_file(
     if phdr.is_executable() {
         perm |= MapPerm::X;
     }
-
-    ktrace!(
-        "Loading program from file, phdr.p_vaddr={:#x}, phdr.p_memsz={:#x}, phdr.p_type={:#x}, addr_base={:#x}, perm={:?}",
-        phdr.p_vaddr,
-        phdr.p_memsz,
-        phdr.p_type,
-        addr_base,
-        perm
-    );
 
     let pgoff = phdr.p_vaddr as usize % arch::PGSIZE;
     let ubase = (phdr.p_vaddr as usize + addr_base) & !arch::PGMASK;

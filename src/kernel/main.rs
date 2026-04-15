@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::collections::BTreeMap;
 
+use crate::fs::vfs;
 use crate::kernel::event::timer;
 use crate::kernel::scheduler::{Processor, Task};
 use crate::kernel::{config, kthread, mm, scheduler, task};
@@ -56,6 +57,7 @@ fn kinit() {
     );
 
     kthread::spawn(scheduler::watchdog::kwatchdog);
+    kthread::spawn(vfs::inode_cache_reclaimer);
 
     kinfo!("KernelX initialized successfully!");
 
