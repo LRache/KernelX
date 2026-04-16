@@ -13,7 +13,7 @@ pub use defs::{
     Ext4RoCompatFeatures, Ext4Superblock, ExtentBlock, ExtentHeader, ExtentIdx, ExtentLeaf,
 };
 pub use group_desc::{clear_bit, set_bit, test_bit};
-pub(crate) use inode::lookup_lblk;
+pub(crate) use inode::{lookup_extent_lblk, lookup_lblk};
 pub(crate) use util::{debug_errno, ret_errno};
 
 pub(super) use super::ctx::Context;

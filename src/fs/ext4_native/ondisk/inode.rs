@@ -21,6 +21,12 @@ const INODE_CHECKSUM_LO_OFF: usize = 0x7C;
 const INODE_EXTRA_ISIZE_OFF: usize = 0x80;
 const INODE_CHECKSUM_HI_OFF: usize = 0x82;
 const EXT_INIT_MAX_LEN: u16 = 32768;
+const BLOCK_PTR_SIZE: usize = core::mem::size_of::<u32>();
+const EXT4_INODE_DIRECT_BLOCK_COUNT: usize = 12;
+const EXT4_INODE_INDIRECT_BLOCK: usize = EXT4_INODE_DIRECT_BLOCK_COUNT;
+const EXT4_INODE_DOUBLE_INDIRECT_BLOCK: usize = EXT4_INODE_INDIRECT_BLOCK + 1;
+const EXT4_INODE_TRIPLE_INDIRECT_BLOCK: usize = EXT4_INODE_DOUBLE_INDIRECT_BLOCK + 1;
+const EXT4_INODE_BLOCKS: usize = EXT4_INODE_TRIPLE_INDIRECT_BLOCK + 1;
 
 impl Ext4Inode {
     pub fn parse_inode(ino: u32, raw: &[u8]) -> SysResult<Self> {
@@ -207,7 +213,16 @@ impl Context {
     }
 }
 
-pub(crate) fn lookup_lblk(
+pub(crate) fn lookup_lblk(context: &Context, inode: &Ext4Inode, lblk: u32) -> SysResult<Option<u64>> {
+    if inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
+        let root = context.parse_extent_root(inode)?;
+        return lookup_extent_lblk(context, root, inode.ino, inode.i_generation, lblk);
+    }
+
+    lookup_non_extent_lblk(context, inode, lblk)
+}
+
+pub(crate) fn lookup_extent_lblk(
     context: &Context,
     root: ExtentBlock,
     ino: u32,
@@ -232,6 +247,110 @@ pub(crate) fn lookup_lblk(
             .or_else(|| cur.idx.first().map(|idx| idx.ei_leaf))
             .ok_or_else(|| debug_errno("lookup_lblk: extent index lookup failed", Errno::EIO))?;
         cur = context.read_extent_block(ino, generation, next)?;
+    }
+}
+
+fn lookup_non_extent_lblk(context: &Context, inode: &Ext4Inode, lblk: u32) -> SysResult<Option<u64>> {
+    if lblk < EXT4_INODE_DIRECT_BLOCK_COUNT as u32 {
+        return read_inode_block_ptr(inode, lblk as usize).map(nonzero_block_ptr);
+    }
+
+    let blocks_id = indirect_blocks_per_level(context)?;
+    let mut inode_block_limits = [0u64; 4];
+    let mut inode_blocks_per_level = [0u64; 4];
+    inode_block_limits[0] = EXT4_INODE_DIRECT_BLOCK_COUNT as u64;
+    inode_blocks_per_level[0] = 1;
+
+    for i in 1..4 {
+        inode_blocks_per_level[i] = inode_blocks_per_level[i - 1]
+            .checked_mul(blocks_id)
+            .ok_or_else(|| debug_errno("lookup_lblk: inode blocks per level overflow", Errno::EINVAL))?;
+        inode_block_limits[i] = inode_block_limits[i - 1]
+            .checked_add(inode_blocks_per_level[i])
+            .ok_or_else(|| debug_errno("lookup_lblk: inode block limit overflow", Errno::EINVAL))?;
+    }
+
+    let lblk = lblk as u64;
+    let mut level = 0usize;
+    for i in 1..4 {
+        if lblk < inode_block_limits[i] {
+            level = i;
+            break;
+        }
+    }
+    if level == 0 {
+        return ret_errno(
+            "lookup_lblk: logical block exceeds non-extent addressing limit",
+            Errno::EIO,
+        );
+    }
+
+    let mut blk_off_in_lvl = lblk
+        .checked_sub(inode_block_limits[level - 1])
+        .ok_or_else(|| debug_errno("lookup_lblk: logical block offset underflow", Errno::EINVAL))?;
+    let mut current_block = read_inode_block_ptr(inode, EXT4_INODE_INDIRECT_BLOCK + (level - 1))?;
+    let mut off_in_blk = blk_off_in_lvl / inode_blocks_per_level[level - 1];
+
+    if current_block == 0 {
+        return Ok(None);
+    }
+
+    let mut level = level;
+    while level > 0 {
+        current_block = read_indirect_block_ptr(context, current_block, off_in_blk)?;
+        if current_block == 0 {
+            return Ok(None);
+        }
+
+        level -= 1;
+        if level == 0 {
+            break;
+        }
+
+        blk_off_in_lvl %= inode_blocks_per_level[level];
+        off_in_blk = blk_off_in_lvl / inode_blocks_per_level[level - 1];
+    }
+
+    Ok(Some(current_block as u64))
+}
+
+fn indirect_blocks_per_level(context: &Context) -> SysResult<u64> {
+    let blocks_id = (context.block_size as usize) / BLOCK_PTR_SIZE;
+    if blocks_id == 0 {
+        return ret_errno(
+            "lookup_lblk: block size is too small for indirect pointers",
+            Errno::EINVAL,
+        );
+    }
+    Ok(blocks_id as u64)
+}
+
+fn read_inode_block_ptr(inode: &Ext4Inode, index: usize) -> SysResult<u32> {
+    if index >= EXT4_INODE_BLOCKS {
+        return ret_errno("read_inode_block_ptr: block pointer index out of range", Errno::EINVAL);
+    }
+    get_u32_le(inode.i_block(), index * BLOCK_PTR_SIZE)
+}
+
+fn read_indirect_block_ptr(context: &Context, pblk: u32, index: u64) -> SysResult<u32> {
+    let block = context.read_fs_block(pblk as u64)?;
+    let index = usize::try_from(index).map_err(|_| {
+        debug_errno(
+            "read_indirect_block_ptr: indirect index does not fit usize",
+            Errno::EINVAL,
+        )
+    })?;
+    let off = index
+        .checked_mul(BLOCK_PTR_SIZE)
+        .ok_or_else(|| debug_errno("read_indirect_block_ptr: indirect offset overflow", Errno::EINVAL))?;
+    get_u32_le(&block, off)
+}
+
+fn nonzero_block_ptr(pblk: u32) -> Option<u64> {
+    if pblk == 0 {
+        None
+    } else {
+        Some(pblk as u64)
     }
 }
 

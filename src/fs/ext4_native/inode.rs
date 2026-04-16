@@ -12,7 +12,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::{SleepLock, SpinLock};
 
-use super::ondisk::{DirEntry2, Ext4InodeFlags, debug_errno, lookup_lblk, ret_errno};
+use super::ondisk::{debug_errno, lookup_extent_lblk, lookup_lblk, ret_errno, DirEntry2, Ext4InodeFlags};
 use super::{Context, Ext4Inode, ExtentLeaf};
 
 const S_IFMT: u16 = 0xF000;
@@ -102,8 +102,27 @@ impl InodeOps for Inode {
             return ret_errno("readat: inline_data inode unsupported", Errno::EOPNOTSUPP);
         }
         if !inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-            // TODO: support non-extent file
-            return ret_errno("readat: non-extent inode unsupported", Errno::EOPNOTSUPP);
+            let block_size = context.block_size as usize;
+            let mut copied = 0;
+            while copied < to_read {
+                let file_off = offset + copied;
+                let lblk = u32::try_from(file_off / block_size)
+                    .map_err(|_| debug_errno("readat: logical block number overflow", Errno::EFBIG))?;
+                let in_block = file_off % block_size;
+                let chunk = core::cmp::min(to_read - copied, block_size - in_block);
+                let dst = &mut buf[copied..copied + chunk];
+
+                match lookup_lblk(&context, &inode, lblk)? {
+                    Some(pblk) => {
+                        let data = context.read_fs_block(pblk)?;
+                        dst.copy_from_slice(&data[in_block..in_block + chunk]);
+                    }
+                    None => dst.fill(0),
+                }
+                copied += chunk;
+            }
+
+            return Ok(copied);
         }
 
         let block_size = context.block_size as usize;
@@ -114,7 +133,8 @@ impl InodeOps for Inode {
         let mut extent_idx = 0usize;
         while copied < to_read {
             let file_off = offset + copied;
-            let lblk = (file_off / block_size) as u32;
+            let lblk = u32::try_from(file_off / block_size)
+                .map_err(|_| debug_errno("readat: logical block number overflow", Errno::EFBIG))?;
             let in_block = file_off % block_size;
             let remaining = to_read - copied;
 
@@ -353,7 +373,7 @@ impl InodeOps for Inode {
                 let kept_lblk = u32::try_from(new_size / block_size)
                     .map_err(|_| debug_errno("truncate: kept lblk overflow", Errno::EFBIG))?;
                 let root = context.parse_extent_root(&inode)?;
-                if let Some(pblk) = lookup_lblk(&context, root, ino, generation, kept_lblk)? {
+                if let Some(pblk) = lookup_extent_lblk(&context, root, ino, generation, kept_lblk)? {
                     let mut data = context.read_fs_block(pblk)?;
                     data[tail_off..].fill(0);
                     context.write_fs_block(pblk, &data)?;
@@ -837,20 +857,35 @@ impl Drop for Inode {
 
 fn read_dir_results_from_disk(context: &Context, inode: &Ext4Inode) -> SysResult<Vec<DirResult>> {
     let block_size = context.block_size as u64;
-    let total_blocks = inode.i_size.div_ceil(block_size) as u32;
+    let total_blocks = u32::try_from(inode.i_size.div_ceil(block_size))
+        .map_err(|_| debug_errno("read_dir_results_from_disk: logical block count overflow", Errno::EFBIG))?;
     let ino = inode.ino;
     let generation = inode.i_generation;
-    let root = context.parse_extent_root(inode)?;
     let mut results = Vec::new();
 
-    for lblk in 0..total_blocks {
-        let Some(pblk) = lookup_lblk(context, root.clone(), ino, generation, lblk)? else {
-            continue;
-        };
-        let dir_block = context.read_dir_block(ino, generation, pblk)?;
-        for entry in &dir_block.entries {
-            if entry.inode != 0 {
-                results.push(to_dir_result(entry));
+    if inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
+        let root = context.parse_extent_root(inode)?;
+        for lblk in 0..total_blocks {
+            let Some(pblk) = lookup_extent_lblk(context, root.clone(), ino, generation, lblk)? else {
+                continue;
+            };
+            let dir_block = context.read_dir_block(ino, generation, pblk)?;
+            for entry in &dir_block.entries {
+                if entry.inode != 0 {
+                    results.push(to_dir_result(entry));
+                }
+            }
+        }
+    } else {
+        for lblk in 0..total_blocks {
+            let Some(pblk) = lookup_lblk(context, inode, lblk)? else {
+                continue;
+            };
+            let dir_block = context.read_dir_block(ino, generation, pblk)?;
+            for entry in &dir_block.entries {
+                if entry.inode != 0 {
+                    results.push(to_dir_result(entry));
+                }
             }
         }
     }
@@ -1036,17 +1071,17 @@ fn ensure_dir_readable(inode: &Ext4Inode) -> SysResult<()> {
             Errno::EOPNOTSUPP,
         );
     }
-    if !inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-        return ret_errno(
-            "ensure_dir_readable: non-extent directory unsupported",
-            Errno::EOPNOTSUPP,
-        );
-    }
     Ok(())
 }
 
 fn ensure_dir_writable(inode: &Ext4Inode, op: &str) -> SysResult<()> {
     ensure_dir_readable(inode)?;
+    if !inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
+        return ret_errno(
+            &alloc::format!("{op}: non-extent directory unsupported"),
+            Errno::EOPNOTSUPP,
+        );
+    }
     if inode.i_flags.contains(Ext4InodeFlags::INDEX) {
         return ret_errno(
             &alloc::format!("{op}: htree indexed directory unsupported"),
