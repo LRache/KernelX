@@ -28,6 +28,10 @@ impl<'a> UAddrSpaceBuffer<'a> {
         self.length
     }
 
+    pub fn uaddr(&self) -> usize {
+        self.uaddr
+    }
+
     pub fn iter(&'a self) -> ReaderIter<'a> {
         ReaderIter { ubuf: self, offset: 0 }
     }

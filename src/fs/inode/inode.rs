@@ -5,6 +5,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
 
 use super::{FileType, Mode, Owner};
@@ -33,12 +34,42 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         unimplemented!()
     }
 
     fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
         unimplemented!()
+    }
+
+    fn read_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, direct: bool) -> SysResult<usize> {
+        let mut total_read = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter_mut() {
+            let kbuf = kbuf?;
+            let n = self.readat(kbuf, current_offset, direct)?;
+            total_read += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_read);
+            }
+        }
+        Ok(total_read)
+    }
+
+    fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, _direct: bool) -> SysResult<usize> {
+        let mut total_written = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter() {
+            let kbuf = kbuf?;
+            let n = self.writeat(kbuf, current_offset)?;
+            total_written += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_written);
+            }
+        }
+        Ok(total_written)
     }
 
     fn get_dent(&self, _index: usize) -> SysResult<Option<(DirResult, usize)>> {

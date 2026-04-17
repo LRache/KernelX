@@ -27,7 +27,7 @@ impl InodeOps for RootInode {
         "rootfs"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> Result<usize, Errno> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> Result<usize, Errno> {
         Ok(0)
     }
 

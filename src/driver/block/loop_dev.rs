@@ -37,7 +37,7 @@ impl DriverOps for LoopDevice {
 impl BlockDriverOps for LoopDevice {
     fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()> {
         let offset = block * BLOCK_SIZE as usize;
-        let n = self.inode.readat(buf, offset).map_err(|_| ())?;
+        let n = self.inode.readat(buf, offset, false).map_err(|_| ())?;
         // Zero-fill if we read less than a full block
         if n < buf.len() {
             buf[n..].fill(0);

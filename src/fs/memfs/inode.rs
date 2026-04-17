@@ -29,7 +29,7 @@ impl Inode for MemoryFileSystemInode {
         "memfs"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> Result<usize, Errno>  {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> Result<usize, Errno>  {
         if self.size <= offset {
             return Ok(0);
         }

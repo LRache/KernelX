@@ -482,7 +482,7 @@ impl InodeOps for Ext4Inode {
         })
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         self.with_ref(|_superblock, inode_ref| {
             let mut rcnt = 0usize;
             unsafe {

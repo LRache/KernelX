@@ -25,7 +25,7 @@ impl InodeOps for ZeroInode {
         "devfs"
     }
 
-    fn readat(&self, buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         buf.fill(0);
         Ok(buf.len())
     }

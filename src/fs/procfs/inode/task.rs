@@ -42,7 +42,7 @@ impl InodeOps for TaskDirInode {
         "procfs_task_dir"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EISDIR)
     }
 
@@ -175,7 +175,7 @@ impl InodeOps for TaskMapsInode {
         "procfs_task_maps"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
         let addrspace = tcb.get_addrspace().clone();
         let areas = addrspace.with_map_manager_mut(|manager| manager.snapshot());
@@ -242,7 +242,7 @@ impl InodeOps for TaskExeInode {
         Self::ino_from_tid(self.tid)
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         unreachable!()
     }
 
@@ -336,7 +336,7 @@ impl InodeOps for TaskStatInode {
         "procfs_task_stat"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
         let pcb = tcb.parent();
         let pid = pcb.pid();
@@ -430,7 +430,7 @@ impl InodeOps for TaskStatusInode {
         "procfs_task_status"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
         let pcb = tcb.parent();
 
@@ -530,7 +530,7 @@ impl InodeOps for TaskFdDirInode {
         "procfs_task_fd_dir"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EISDIR)
     }
 
@@ -641,7 +641,7 @@ impl InodeOps for TaskFdEntryInode {
         "procfs_task_fd_entry"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EINVAL)
     }
 

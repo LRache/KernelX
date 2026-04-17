@@ -220,6 +220,7 @@ impl TCB {
                 writable: true,
                 blocked: true,
                 append: false,
+                direct: false,
             },
             &Perm::new(0, 0, PermFlags::R | PermFlags::W),
         )

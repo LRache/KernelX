@@ -1,6 +1,6 @@
 COMPILE_MODE ?= debug
 
-OBJCOPY ?= llvm-objcopy-21
+OBJCOPY ?= objcopy
 
 KERNELX_HOME := $(strip $(patsubst %/, %, $(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 LWEXT4_SUBMODULE := $(KERNELX_HOME)/clib/lib/lwext4/lwext4
@@ -118,7 +118,7 @@ ifeq ($(CONFIG_BACKTRACE),y)
 endif
 
 check: patch-lwext4
-	$(BUILD_ENV) cargo check $(CARGO_FLAGS)
+	@ $(BUILD_ENV) cargo check $(CARGO_FLAGS)
 
 patch-lwext4:
 	@if [ -z "$(LWEXT4_PATCHES)" ]; then \

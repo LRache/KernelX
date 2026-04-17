@@ -317,6 +317,7 @@ impl FileOps for NetlinkSocket {
             writable: true,
             blocked: *self.blocked.lock(),
             append: false,
+            direct: false,
         }
     }
 
