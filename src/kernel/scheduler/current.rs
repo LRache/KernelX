@@ -12,7 +12,7 @@ use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::fdtable::FDTable;
 use crate::kernel::task::{PCB, TCB};
 use crate::kernel::uapi::Uid;
-use crate::klib::{SpinLock, SleepLock};
+use crate::klib::{SleepLock, SpinLock};
 
 use super::Tid;
 

@@ -29,7 +29,9 @@ impl MappedFileEntry {
             // Load from inode
             let offset = page_index * arch::PGSIZE;
             let frame = PhysPageFrame::alloc_zeroed();
-            self.inode.readat(frame.slice(), offset).expect("Failed to read.");
+            self.inode
+                .readat(frame.slice(), offset, false)
+                .expect("Failed to read.");
             let kpage = frame.get_page();
             self.shared.insert(page_index, frame);
             Some(kpage)
