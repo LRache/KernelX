@@ -1,6 +1,6 @@
 COMPILE_MODE ?= debug
 
-OBJCOPY ?= llvm-objcopy-21
+OBJCOPY ?= objcopy
 
 KERNELX_HOME := $(strip $(patsubst %/, %, $(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 
@@ -116,7 +116,7 @@ ifeq ($(CONFIG_BACKTRACE),y)
 endif
 
 check:
-	$(BUILD_ENV) cargo check $(CARGO_FLAGS)
+	@ $(BUILD_ENV) cargo check $(CARGO_FLAGS)
 
 clean:
 	@ $(BUILD_ENV) make -C clib clean
