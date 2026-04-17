@@ -8,16 +8,29 @@
   [string pool: null-terminated UTF-8]
 
 用法：
-  python3 scripts/gen_symbols.py <elf> <output.bin> [--cross-compile <prefix>]
+  python3 scripts/gen_symbols.py <elf> <output.bin>
 """
 
 import os
 import struct
 import subprocess
-import sys
+
+TEXT_SYMBOL_TYPES = {"T", "t"}
 
 
-def run_nm(elf_path: str, cross_compile: str) -> list[tuple[int, str]]:
+def should_keep_symbol(sym_type: str, sym_name: str) -> bool:
+    if sym_type not in TEXT_SYMBOL_TYPES:
+        return False
+    if not sym_name:
+        return False
+    # Keep function-local text symbols emitted by Rust, but still drop
+    # assembler/compiler helper labels such as .L0, .Lpcrel_hi*, $x.
+    if sym_name.startswith(".") or sym_name.startswith("$"):
+        return False
+    return True
+
+
+def run_nm(elf_path: str) -> list[tuple[int, str]]:
     nm = "nm"
     result = subprocess.run(
         [nm, "--demangle", "-n", "--defined-only", elf_path],
@@ -29,14 +42,8 @@ def run_nm(elf_path: str, cross_compile: str) -> list[tuple[int, str]]:
         if len(parts) < 3:
             continue
         addr_str, sym_type, name = parts
-        # T = global text (function), t = local text
-        # Only keep global symbols (T) to avoid compiler-generated local
-        # labels like .L0, .Lpcrel_hi* from polluting the symbol table.
-        if sym_type != "T":
-            continue
         sym_name = name.strip()
-        # Also skip any remaining dot-local labels
-        if sym_name.startswith("."):
+        if not should_keep_symbol(sym_type, sym_name):
             continue
         try:
             addr = int(addr_str, 16)
@@ -70,11 +77,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("elf", help="Input ELF file")
     parser.add_argument("output", help="Output binary file")
-    parser.add_argument("--cross-compile", default=os.environ.get("CROSS_COMPILE", ""),
-                        help="Cross-compiler prefix (e.g. riscv64-unknown-elf-)")
     args = parser.parse_args()
 
-    symbols = run_nm(args.elf, args.cross_compile)
+    symbols = run_nm(args.elf)
     data = build_binary(symbols)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)

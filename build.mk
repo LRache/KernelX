@@ -113,7 +113,7 @@ $(RUST_KERNEL): $(CLIB) $(VDSO)
 	@ test -f build/$(ARCH)$(ARCH_BITS)/symbols.bin || touch build/$(ARCH)$(ARCH_BITS)/symbols.bin
 	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
 ifeq ($(CONFIG_BACKTRACE),y)
-	@ python3 scripts/gen_symbols.py $(RUST_KERNEL) build/$(ARCH)$(ARCH_BITS)/symbols.bin --cross-compile $(CROSS_COMPILE)
+	@ python3 scripts/gen_symbols.py $(RUST_KERNEL) build/$(ARCH)$(ARCH_BITS)/symbols.bin
 	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
 endif
 
