@@ -62,7 +62,8 @@ jobs:
             CONFIG_NO_SMP=y \
             CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
             COMPILE_MODE=release \
-            SYSROOT=/usr/riscv64-linux-gnu
+            SYSROOT=/usr/riscv64-linux-gnu \
+            OBJCOPY=llvm-objcopy-21 \
 
       - name: Test testsuits-for-oskernel-riscv64
         timeout-minutes: 90
