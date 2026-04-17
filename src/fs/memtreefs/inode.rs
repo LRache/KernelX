@@ -11,6 +11,7 @@ use crate::fs::inode::{Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::SpinLock;
 
@@ -151,7 +152,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         if let Meta::File(ref file_meta) = self.meta.lock().meta {
             if offset >= file_meta.filesize {
                 return Ok(0);
@@ -185,6 +186,63 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
     }
 
+    fn read_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, direct: bool) -> SysResult<usize> {
+        if let Meta::File(ref file_meta) = self.meta.lock().meta {
+            if direct {
+                if offset % arch::PGSIZE != 0 {
+                    return Err(Errno::EINVAL);
+                }
+                if ubuf.length() % arch::PGSIZE != 0 {
+                    return Err(Errno::EINVAL);
+                }
+                if ubuf.uaddr() % arch::PGSIZE != 0 {
+                    return Err(Errno::EINVAL);
+                }
+            }
+
+            if offset >= file_meta.filesize {
+                return Ok(0);
+            }
+
+            let mut total_read = 0;
+            let mut current_offset = offset;
+            let mut remaining = file_meta.filesize - offset;
+
+            for kbuf in ubuf.iter_mut() {
+                let kbuf = kbuf?;
+                if remaining == 0 {
+                    break;
+                }
+
+                let mut copied = 0;
+                let target_len = core::cmp::min(kbuf.len(), remaining);
+                while copied < target_len {
+                    let page_index = current_offset / arch::PGSIZE;
+                    let page_offset = current_offset % arch::PGSIZE;
+                    if page_index >= file_meta.pages.len() {
+                        return Ok(total_read);
+                    }
+
+                    let to_read = core::cmp::min(target_len - copied, arch::PGSIZE - page_offset);
+                    file_meta.pages[page_index].copy_to_slice(page_offset, &mut kbuf[copied..copied + to_read]);
+
+                    copied += to_read;
+                    current_offset += to_read;
+                }
+
+                remaining -= copied;
+                total_read += copied;
+                if copied < kbuf.len() {
+                    return Ok(total_read);
+                }
+            }
+
+            Ok(total_read)
+        } else {
+            Err(Errno::EISDIR)
+        }
+    }
+
     fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
         if let Meta::File(ref mut meta) = self.meta.lock().meta {
             let mut written_bytes = 0;
@@ -209,6 +267,38 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             meta.filesize = core::cmp::max(meta.filesize, offset + written_bytes);
 
+            Ok(written_bytes)
+        } else {
+            Err(Errno::EISDIR)
+        }
+    }
+
+    fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, _direct: bool) -> SysResult<usize> {
+        if let Meta::File(ref mut meta) = self.meta.lock().meta {
+            let mut written_bytes = 0;
+            let mut current_offset = offset;
+
+            for kbuf in ubuf.iter() {
+                let kbuf = kbuf?;
+                let mut copied = 0;
+                while copied < kbuf.len() {
+                    let page_index = current_offset / arch::PGSIZE;
+                    let page_offset = current_offset % arch::PGSIZE;
+
+                    while page_index >= meta.pages.len() {
+                        meta.pages.push(PhysPageFrame::alloc());
+                    }
+
+                    let to_write = core::cmp::min(kbuf.len() - copied, arch::PGSIZE - page_offset);
+                    meta.pages[page_index].copy_from_slice(page_offset, &kbuf[copied..copied + to_write]);
+
+                    copied += to_write;
+                    current_offset += to_write;
+                    written_bytes += to_write;
+                }
+            }
+
+            meta.filesize = core::cmp::max(meta.filesize, offset + written_bytes);
             Ok(written_bytes)
         } else {
             Err(Errno::EISDIR)

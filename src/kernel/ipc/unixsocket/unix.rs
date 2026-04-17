@@ -146,6 +146,7 @@ impl FileOps for UnixSocket {
             writable: true,
             blocked: *self.blocked.lock(),
             append: false,
+            direct: false,
         }
     }
 

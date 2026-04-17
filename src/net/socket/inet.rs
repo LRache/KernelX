@@ -121,6 +121,7 @@ impl FileOps for InetSocket {
             writable: true,
             blocked: *self.blocked.lock(),
             append: false,
+            direct: false,
         }
     }
 

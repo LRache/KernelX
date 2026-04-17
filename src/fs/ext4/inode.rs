@@ -106,7 +106,7 @@ impl InodeOps for Ext4Inode {
             .map_err(map_error_to_kernel)
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         if self.mode()?.contains(Mode::S_IFDIR) {
             return Err(Errno::EISDIR);
         }

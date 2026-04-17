@@ -22,7 +22,7 @@ impl InodeOps for TaskDirSelfInode {
         Self::INO
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EISDIR)
     }
 

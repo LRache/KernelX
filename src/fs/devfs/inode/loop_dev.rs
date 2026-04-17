@@ -31,7 +31,7 @@ impl InodeOps for LoopInode {
         "devfs"
     }
 
-    fn readat(&self, buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         buf.fill(0);
         Ok(buf.len())
     }

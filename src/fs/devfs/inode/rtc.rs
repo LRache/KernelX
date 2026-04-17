@@ -44,7 +44,7 @@ impl InodeOps for RtcInode {
         "devfs"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Ok(0)
     }
 
@@ -92,11 +92,11 @@ struct RtcFile {
 
 impl FileOps for RtcFile {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        self.inode.readat(buf, 0)
+        self.inode.readat(buf, 0, self.flags.direct)
     }
 
     fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        self.inode.readat(buf, offset)
+        self.inode.readat(buf, offset, self.flags.direct)
     }
 
     fn write(&self, _buf: &[u8]) -> SysResult<usize> {
@@ -113,6 +113,7 @@ impl FileOps for RtcFile {
             writable: false,
             blocked: self.flags.blocked,
             append: false,
+            direct: self.flags.direct,
         }
     }
 

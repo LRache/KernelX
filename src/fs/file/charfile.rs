@@ -60,6 +60,7 @@ impl FileOps for CharFile {
             writable: self.writable,
             blocked: self.blocked,
             append: false,
+            direct: false,
         }
     }
 

@@ -26,7 +26,7 @@ impl InodeOps for SysDirInode {
         "procfs_sys"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EISDIR)
     }
 
@@ -107,7 +107,7 @@ impl InodeOps for SysKernelDirInode {
         "procfs_sys_kernel"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EISDIR)
     }
 
@@ -188,7 +188,7 @@ impl InodeOps for PidMaxInode {
         "procfs_pid_max"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let mut content = String::with_capacity(16);
         let _ = writeln!(content, "{}", PID_MAX);
         let bytes = content.as_bytes();
@@ -233,7 +233,7 @@ impl InodeOps for TaintedInode {
         "procfs_tainted"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let content = b"0\n";
         if offset >= content.len() {
             return Ok(0);
@@ -276,7 +276,7 @@ impl InodeOps for SysFsDirInode {
         "procfs_sys_fs"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EISDIR)
     }
 
@@ -351,7 +351,7 @@ impl InodeOps for PipeUserPagesSoftInode {
         "procfs_pipe_user_pages_soft"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let content = b"16384\n";
         if offset >= content.len() {
             return Ok(0);

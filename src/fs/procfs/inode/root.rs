@@ -42,7 +42,7 @@ impl InodeOps for RootInode {
         "procfs_root"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EISDIR)
     }
 
@@ -147,7 +147,7 @@ impl InodeOps for MountsInode {
         "procfs_mounts"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let mounts = vfs().mountpoint_list();
         read_iter_text(buf, offset, mounts.iter(), |dentry| {
             let mut line = String::with_capacity(50);
@@ -199,7 +199,7 @@ impl InodeOps for MemInfoInode {
         "procfs_meminfo"
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let total_kb = page::total_pages() * arch::PGSIZE / 1024;
         let available_kb = page::free_pages() * arch::PGSIZE / 1024 / 2;
         let mut content = String::with_capacity(128);

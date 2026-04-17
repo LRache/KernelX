@@ -4,6 +4,7 @@ use crate::fs::file::DirResult;
 use crate::fs::vfs::Dentry;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SleepLock;
 
@@ -15,6 +16,7 @@ pub struct FileFlags {
     pub writable: bool,
     pub blocked: bool,
     pub append: bool,
+    pub direct: bool,
 }
 
 impl FileFlags {
@@ -24,6 +26,7 @@ impl FileFlags {
             writable: true,
             blocked: true,
             append: false,
+            direct: false,
         }
     }
 
@@ -33,6 +36,7 @@ impl FileFlags {
             writable: false,
             blocked: true,
             append: false,
+            direct: false,
         }
     }
 }
@@ -56,7 +60,7 @@ impl File {
     }
 
     pub fn read_at(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        let len = self.inode.readat(buf, offset)?;
+        let len = self.inode.readat(buf, offset, self.flags.direct)?;
         Ok(len)
     }
 
@@ -95,14 +99,21 @@ impl File {
 impl FileOps for File {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
         let mut pos = self.pos.lock();
-        let len = self.inode.readat(buf, *pos)?;
+        let len = self.inode.readat(buf, *pos, self.flags.direct)?;
         *pos += len;
 
         Ok(len)
     }
 
     fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        let len = self.inode.readat(buf, offset)?;
+        let len = self.inode.readat(buf, offset, self.flags.direct)?;
+        Ok(len)
+    }
+
+    fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        let mut pos = self.pos.lock();
+        let len = self.inode.read_to_user(ubuf, *pos, self.flags.direct)?;
+        *pos += len;
         Ok(len)
     }
 
@@ -121,6 +132,16 @@ impl FileOps for File {
 
     fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
         let len = self.inode.writeat(buf, offset)?;
+        Ok(len)
+    }
+
+    fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        let mut pos = self.pos.lock();
+        if self.flags.append {
+            *pos = self.inode.size()? as usize;
+        }
+        let len = self.inode.write_from_user(ubuf, *pos, self.flags.direct)?;
+        *pos += len;
         Ok(len)
     }
 

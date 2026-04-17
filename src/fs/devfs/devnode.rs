@@ -22,7 +22,7 @@ impl InodeOps for CharDevInode {
         self.ino
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         // self.driver.read(buf)
         unreachable!()
     }
@@ -79,7 +79,7 @@ impl InodeOps for BlockDevInode {
         self.ino
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         self.driver
             .read_at(offset, buf)
             .map(|_| buf.len())

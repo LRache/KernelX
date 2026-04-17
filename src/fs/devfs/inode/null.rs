@@ -24,7 +24,7 @@ impl InodeOps for NullInode {
         "devfs"
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         // /dev/null always returns EOF (0 bytes read)
         Ok(0)
     }

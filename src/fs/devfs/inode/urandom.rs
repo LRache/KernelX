@@ -25,7 +25,7 @@ impl InodeOps for URandomInode {
         "devfs"
     }
 
-    fn readat(&self, buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         buf.iter_mut().for_each(|b| {
             *b = (random::random() & 0xFF) as u8;
         });

@@ -88,6 +88,7 @@ impl FileOps for Pipe {
             writable: self.writable,
             blocked: *self.blocked.lock(),
             append: false,
+            direct: false,
         }
     }
 
