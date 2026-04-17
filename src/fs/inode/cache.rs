@@ -1,6 +1,8 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
+use crate::kernel::config;
 use crate::kernel::errno::SysResult;
 use crate::klib::SpinLock;
 
@@ -17,32 +19,65 @@ impl Cache {
         }
     }
 
-    // pub fn find(&self, index: &Index) -> Option<Arc<dyn InodeOps>> {
-    //     self.cache.lock().get(index).cloned()
-    // }
+    fn remove_if(&self, mut predicate: impl FnMut(&Arc<dyn InodeOps>) -> bool) -> usize {
+        let removed = {
+            let mut cache = self.cache.lock();
+            let reclaimable: Vec<Index> = cache
+                .iter()
+                .filter_map(|(index, inode)| predicate(inode).then_some(*index))
+                .collect();
+            reclaimable
+                .into_iter()
+                .filter_map(|index| cache.remove(&index))
+                .collect::<Vec<_>>()
+        };
 
-    // pub fn insert(&self, index: &Index, inode: Arc<dyn InodeOps>) -> SysResult<()> {
-    //     let mut cache = self.cache.lock();
+        let count = removed.len();
+        drop(removed);
+        count
+    }
 
-    //     if cache.len() >= config::INODE_CACHE_SIZE {
-    //         cache.retain(|_, inode| {
-    //             Arc::strong_count(inode) > 1
-    //         });
-    //         let final_size = cache.len();
+    fn reclaim(cache: &mut BTreeMap<Index, Arc<dyn InodeOps>>) {
+        cache.retain(|_, inode| Arc::strong_count(inode) > 1);
 
-    //         if final_size >= config::INODE_CACHE_SIZE {
-    //             return Err(Errno::ENOSPC);
-    //         }
-    //     }
+        while cache.len() >= config::INODE_CACHE_SIZE {
+            let Some(index) = cache.keys().next().copied() else {
+                break;
+            };
+            cache.remove(&index);
+        }
+    }
 
-    //     cache.insert(*index, inode);
+    pub fn find(&self, index: &Index) -> Option<Arc<dyn InodeOps>> {
+        self.cache.lock().get(index).cloned()
+    }
 
-    //     Ok(())
-    // }
+    pub fn insert(&self, index: &Index, inode: Arc<dyn InodeOps>) -> SysResult<()> {
+        let mut cache = self.cache.lock();
+
+        if !cache.contains_key(index) && cache.len() >= config::INODE_CACHE_SIZE {
+            Self::reclaim(&mut cache);
+        }
+
+        cache.insert(*index, inode);
+        Ok(())
+    }
+
+    pub fn remove(&self, index: &Index) {
+        self.cache.lock().remove(index);
+    }
+
+    pub fn clear(&self) {
+        self.cache.lock().clear();
+    }
+
+    pub fn prune_unused(&self) -> usize {
+        self.remove_if(|inode| Arc::strong_count(inode) == 1)
+    }
 
     pub fn sync(&self) -> SysResult<()> {
-        let cache = self.cache.lock();
-        for (_, inode) in cache.iter() {
+        let inodes: Vec<Arc<dyn InodeOps>> = self.cache.lock().values().cloned().collect();
+        for inode in inodes {
             inode.sync()?;
         }
         Ok(())

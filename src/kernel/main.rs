@@ -54,6 +54,7 @@ fn kinit() {
         BOOT_ARGS.get("initargs").unwrap_or(&""),
         BOOT_ARGS.get("tty").unwrap_or(&config::DEFAULT_INITTTY),
     );
+    fs::vfs::spawn_inode_cache_reaper();
 
     kthread::spawn(scheduler::watchdog::kwatchdog);
 

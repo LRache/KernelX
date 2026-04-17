@@ -71,7 +71,10 @@ pub fn sync_all() -> Result<(), Errno> {
 }
 
 pub fn unmount_all() -> SysResult<()> {
-    let mut superblock_table = vfs().superblock_table.lock();
+    let vfs = vfs();
+    let _ = vfs.cache.sync();
+    vfs.cache.clear();
+    let mut superblock_table = vfs.superblock_table.lock();
     superblock_table.unmount_all()?;
 
     Ok(())

@@ -166,15 +166,29 @@ impl Dentry {
             return Err(Errno::EEXIST);
         }
 
-        let inode = self.get_inode();
+        let inode = self.get_inode().create(name, mode, owner)?;
+        vfs().cache.insert(
+            &Index {
+                sno: self.sno(),
+                ino: inode.get_ino(),
+            },
+            inode.clone(),
+        )?;
 
-        inode.create(name, mode, owner)
+        Ok(inode)
     }
 
     pub fn unlink(self: &Arc<Self>, name: &str) -> SysResult<()> {
-        self.get_inode().unlink(name)?;
+        let inode = self.get_inode();
+        let inode_index = Index {
+            sno: self.sno(),
+            ino: inode.lookup(name)?,
+        };
+
+        inode.unlink(name)?;
 
         self.children.lock().remove(name);
+        vfs().cache.remove(&inode_index);
 
         Ok(())
     }
@@ -186,7 +200,15 @@ impl Dentry {
     }
 
     pub fn link(self: &Arc<Self>, name: &str, target: &Arc<Dentry>) -> SysResult<()> {
-        self.get_inode().link(name, &target.get_inode())?;
+        let target_inode = target.get_inode();
+        self.get_inode().link(name, &target_inode)?;
+        vfs().cache.insert(
+            &Index {
+                sno: self.sno(),
+                ino: target_inode.get_ino(),
+            },
+            target_inode,
+        )?;
 
         Ok(())
     }
@@ -195,12 +217,29 @@ impl Dentry {
         debug_assert!(self.sno() == new_parent.sno());
         debug_assert!(old_name != "." && old_name != "..");
         debug_assert!(new_name != "." && new_name != "..");
+        if Arc::ptr_eq(self, new_parent) && old_name == new_name {
+            return Ok(());
+        }
 
         let old_parent_inode = self.get_inode();
+        let old_ino = old_parent_inode.lookup(old_name)?;
         let new_parent_inode = new_parent.get_inode();
+        let overwritten = match new_parent_inode.lookup(new_name) {
+            Ok(ino) if ino != old_ino => Some(Index {
+                sno: new_parent.sno(),
+                ino,
+            }),
+            Ok(_) | Err(Errno::ENOENT) => None,
+            Err(err) => return Err(err),
+        };
+
         old_parent_inode.rename(old_name, &new_parent_inode, new_name)?;
 
         self.children.lock().remove(old_name);
+        new_parent.children.lock().remove(new_name);
+        if let Some(index) = overwritten {
+            vfs().cache.remove(&index);
+        }
 
         Ok(())
     }

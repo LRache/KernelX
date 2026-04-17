@@ -3,6 +3,8 @@ COMPILE_MODE ?= debug
 OBJCOPY ?= llvm-objcopy-21
 
 KERNELX_HOME := $(strip $(patsubst %/, %, $(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
+LWEXT4_SUBMODULE := $(KERNELX_HOME)/clib/lib/lwext4/lwext4
+LWEXT4_PATCHES := $(sort $(abspath $(wildcard $(KERNELX_HOME)/patches/lwext4-*.patch)))
 
 BUILD = $(abspath build/$(ARCH)$(ARCH_BITS))
 KERNEL_VM = $(BUILD)/vmkernelx
@@ -34,12 +36,12 @@ LOG_FEATURES_debug = log-debug
 LOG_FEATURES_info = log-info
 LOG_FEATURES_warn = log-warn
 
-ifeq ($(LOG_LEVEL),)
+ifeq ($(CONFIG_LOG_LEVEL),)
 RUST_FEATURES += log-info
-else ifneq ($(LOG_FEATURES_$(LOG_LEVEL)),)
-RUST_FEATURES += $(LOG_FEATURES_$(LOG_LEVEL))
+else ifneq ($(LOG_FEATURES_$(CONFIG_LOG_LEVEL)),)
+RUST_FEATURES += $(LOG_FEATURES_$(CONFIG_LOG_LEVEL))
 else
-$(warning Invalid LOG_LEVEL: $(LOG_LEVEL). Valid values: trace, debug, info, warn)
+$(warning Invalid LOG_LEVEL: $(CONFIG_LOG_LEVEL). Valid values: trace, debug, info, warn)
 endif
 # ------ Configure log level features using a more elegant lookup ------ #
 
@@ -98,7 +100,7 @@ $(KERNEL_IMAGE): $(RUST_KERNEL)
 
 $(CLIB): clib
 
-clib:
+clib: patch-lwext4
 	@ $(BUILD_ENV) make -C clib all
 
 $(VDSO): vdso
@@ -115,12 +117,26 @@ ifeq ($(CONFIG_BACKTRACE),y)
 	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
 endif
 
-check:
+check: patch-lwext4
 	$(BUILD_ENV) cargo check $(CARGO_FLAGS)
+
+patch-lwext4:
+	@if [ -z "$(LWEXT4_PATCHES)" ]; then \
+		echo "[lwext4] no local patches to apply"; \
+	else \
+		for patch in $(LWEXT4_PATCHES); do \
+			if git -C $(LWEXT4_SUBMODULE) apply --check --reverse "$$patch" >/dev/null 2>&1; then \
+				echo "[lwext4] patch already applied: $$patch"; \
+			else \
+				echo "[lwext4] applying patch: $$patch"; \
+				git -C $(LWEXT4_SUBMODULE) apply "$$patch" || exit $$?; \
+			fi; \
+		done; \
+	fi
 
 clean:
 	@ $(BUILD_ENV) make -C clib clean
 	@ $(BUILD_ENV) make -C vdso clean
 	@ $(BUILD_ENV) cargo clean
 
-.PHONY: all clib vdso image $(RUST_KERNEL)
+.PHONY: all clib vdso image check patch-lwext4 $(RUST_KERNEL)

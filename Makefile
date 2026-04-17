@@ -10,7 +10,7 @@ include config/config.mk
 init:
 	@ git submodule init
 	@ git submodule update --remote
-	# @ make -C ./lib/opensbi CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP=y FW_JUMP_ADDR=0x80200000
+	@ make -f build.mk patch-lwext4
 
 kernel:
 	@ $(MAKE) -f build.mk kernel $(KERNEL_CONFIG)

@@ -69,19 +69,22 @@ macro_rules! kinfo {
 #[macro_export]
 macro_rules! kdebug {
     ($($arg:tt)*) => {
-        $crate::klogln!(
-            "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
-            $crate::klib::klog::COLOR_BOLD,
-            $crate::klib::klog::COLOR_CYAN,
-            "DEBUG",
-            $crate::klib::klog::COLOR_RESET,
-            format_args!($($arg)*),
-            $crate::kernel::scheduler::current::tid(),
-            file!(),
-            line!(),
-            column!(),
-            $crate::klib::klog::COLOR_RESET
-        );
+        {
+            const COLOR_CYAN: &str = "\x1b[36m";
+            $crate::klogln!(
+                "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
+                $crate::klib::klog::COLOR_BOLD,
+                COLOR_CYAN,
+                "DEBUG",
+                $crate::klib::klog::COLOR_RESET,
+                format_args!($($arg)*),
+                $crate::kernel::scheduler::current::tid(),
+                file!(),
+                line!(),
+                column!(),
+                $crate::klib::klog::COLOR_RESET
+            );
+        }
     }
 }
 

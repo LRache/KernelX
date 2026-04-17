@@ -52,18 +52,16 @@ impl PrivateFileMapArea {
 
         // Try to read from file, but only within the specified file_length
         if area_offset < self.file_length {
-            let mut buffer = [0u8; arch::PGSIZE];
             // Calculate how much data we can read from this page:
             // - Don't read beyond the file_length boundary
             // - Don't read beyond one page
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
 
-            match self.file.read_at(&mut buffer[..length], file_offset) {
-                Ok(_) => {
-                    frame.copy_from_slice(0, &buffer[..length]);
-                }
+            match self.file.read_at(&mut frame.slice()[..length], file_offset) {
+                Ok(_) => {}
                 Err(_) => {
                     // Keep the page zeroed if file read fails
+                    frame.slice().fill(0);
                 }
             }
         }

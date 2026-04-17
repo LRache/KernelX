@@ -10,7 +10,7 @@ use superblock_table::SuperBlockTable;
 pub use dentry::Dentry;
 pub use fileop::*;
 pub use fsop::*;
-pub use init::init;
+pub use init::{init, spawn_inode_cache_reaper};
 
 use crate::klib::InitedCell;
 use vfs::VirtualFileSystem;

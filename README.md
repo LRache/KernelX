@@ -134,7 +134,7 @@ KernelX/
 
 ## 参考和引用
 
-- 使用了Ext4文件系统实现库: https://github.com/elliott10/lwext4_rust
+- 使用了Ext4文件系统实现库: https://github.com/gkostka/lwext4
 
 - 使用了tlsf内存分配器：https://github.com/mattconte/tlsf
 

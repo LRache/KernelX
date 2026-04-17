@@ -68,7 +68,7 @@ Arch-specific early boot (assembly + early mapping) → `kernel::main::main(hart
 
 ### Filesystem (`src/fs/`)
 
-VFS layer: `Inode` + `Dentry` (with dentry cache) + `File` + `Superblock` abstractions in `src/fs/vfs/` and `src/fs/inode/`. Concrete filesystems: ext4 (via `lwext4_rust`), devfs, tmpfs, procfs, memfs/memtreefs, rootfs.
+VFS layer: `Inode` + `Dentry` (with dentry cache) + `File` + `Superblock` abstractions in `src/fs/vfs/` and `src/fs/inode/`. Concrete filesystems: ext4 (via `clib`-integrated `lwext4` and local Rust FFI), devfs, tmpfs, procfs, memfs/memtreefs, rootfs.
 
 ### Syscall Dispatch (`src/kernel/syscall/`)
 

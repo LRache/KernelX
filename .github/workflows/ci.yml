@@ -53,6 +53,7 @@ jobs:
 
       - name: Build riscv64 kernel
         run: |
+          make init
           make -f build.mk kernel \
             ARCH=riscv \
             ARCH_BITS=64 \

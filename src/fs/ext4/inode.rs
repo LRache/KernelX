@@ -1,36 +1,330 @@
 use alloc::string::String;
-use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
+use alloc::sync::Arc;
 use core::time::Duration;
-use lwext4_rust::{FileAttr, InodeType};
+use core::{mem, slice};
 
 use crate::driver::chosen::kclock;
+use crate::fs::ext4::ffi::*;
+use crate::fs::ext4::superblock::{SuperBlockInner, map_error_to_kernel};
+use crate::fs::ext4::util::{get_block_size, revision_tuple};
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 use crate::fs::inode::{InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::SleepLock;
 
-use super::superblock::{SuperBlockInner, map_error_to_kernel};
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum InodeType {
+    Unknown,
+    Fifo,
+    CharacterDevice,
+    Directory,
+    BlockDevice,
+    RegularFile,
+    Symlink,
+    Socket,
+}
+
+fn ext4_result(code: i32) -> SysResult<()> {
+    if code == EOK as i32 {
+        Ok(())
+    } else {
+        Err(map_error_to_kernel(code))
+    }
+}
+
+fn now() -> Duration {
+    kclock::now().unwrap_or(Duration::ZERO)
+}
+
+fn encode_time(dur: &Duration) -> (u32, u32) {
+    let sec = dur.as_secs();
+    let nsec = dur.subsec_nanos();
+    let time = u32::to_le(sec as u32);
+    let extra = u32::to_le((nsec << 2) | (sec >> 32) as u32);
+    (time, extra)
+}
+
+fn decode_time(time: u32, extra: u32) -> Duration {
+    let sec = u32::from_le(time);
+    let extra = u32::from_le(extra);
+    let epoch = extra & 3;
+    let nsec = extra >> 2;
+    Duration::new(sec as u64 + ((epoch as u64) << 32), nsec)
+}
+
+fn inode_mode(inode_ref: &mut ext4_inode_ref) -> u32 {
+    unsafe { ext4_inode_get_mode(&mut (*inode_ref.fs).sb, inode_ref.inode) }
+}
+
+fn inode_type(inode_ref: &mut ext4_inode_ref) -> InodeType {
+    match (inode_mode(inode_ref) >> 12) as u8 {
+        1 => InodeType::Fifo,
+        2 => InodeType::CharacterDevice,
+        4 => InodeType::Directory,
+        6 => InodeType::BlockDevice,
+        8 => InodeType::RegularFile,
+        10 => InodeType::Symlink,
+        12 => InodeType::Socket,
+        _ => InodeType::Unknown,
+    }
+}
+
+fn inode_size(inode_ref: &mut ext4_inode_ref) -> u64 {
+    unsafe { ext4_inode_get_size(&mut (*inode_ref.fs).sb, inode_ref.inode) }
+}
+
+fn inode_blocks(inode_ref: &mut ext4_inode_ref) -> u64 {
+    unsafe { ext4_inode_get_blocks_count(&mut (*inode_ref.fs).sb, inode_ref.inode) }
+}
+
+fn inode_nlink(inode_ref: &ext4_inode_ref) -> u16 {
+    unsafe { u16::from_le((*inode_ref.inode).links_count) }
+}
+
+fn inode_uid(inode_ref: &ext4_inode_ref) -> u16 {
+    unsafe { u16::from_le((*inode_ref.inode).uid) }
+}
+
+fn inode_gid(inode_ref: &ext4_inode_ref) -> u16 {
+    unsafe { u16::from_le((*inode_ref.inode).gid) }
+}
+
+fn inode_set_mode(inode_ref: &mut ext4_inode_ref, mode: u32) {
+    unsafe {
+        ext4_inode_set_mode(&mut (*inode_ref.fs).sb, inode_ref.inode, mode);
+    }
+    inode_ref.dirty = true;
+}
+
+fn inode_set_owner(inode_ref: &mut ext4_inode_ref, uid: u16, gid: u16) {
+    unsafe {
+        (*inode_ref.inode).uid = u16::to_le(uid);
+        (*inode_ref.inode).gid = u16::to_le(gid);
+    }
+    inode_ref.dirty = true;
+}
+
+fn inode_set_atime(inode_ref: &mut ext4_inode_ref, dur: &Duration) {
+    let (time, extra) = encode_time(dur);
+    unsafe {
+        (*inode_ref.inode).access_time = time;
+        (*inode_ref.inode).atime_extra = extra;
+    }
+    inode_ref.dirty = true;
+}
+
+fn inode_set_mtime(inode_ref: &mut ext4_inode_ref, dur: &Duration) {
+    let (time, extra) = encode_time(dur);
+    unsafe {
+        (*inode_ref.inode).modification_time = time;
+        (*inode_ref.inode).mtime_extra = extra;
+    }
+    inode_ref.dirty = true;
+}
+
+fn inode_set_ctime(inode_ref: &mut ext4_inode_ref, dur: &Duration) {
+    let (time, extra) = encode_time(dur);
+    unsafe {
+        (*inode_ref.inode).change_inode_time = time;
+        (*inode_ref.inode).ctime_extra = extra;
+    }
+    inode_ref.dirty = true;
+}
+
+fn revision_name_len(entry: &ext4_dir_en, sb: &ext4_sblock) -> u16 {
+    let mut name_len = entry.name_len as u16;
+    if revision_tuple(sb) < (0, 5) {
+        let high = unsafe { entry.in_.name_length_high };
+        name_len |= (high as u16) << 8;
+    }
+    name_len
+}
+
+fn dir_entry_name<'a>(entry: &'a ext4_dir_en, sb: &ext4_sblock) -> &'a [u8] {
+    let name_len = revision_name_len(entry, sb);
+    unsafe { slice::from_raw_parts(entry.name.as_ptr(), name_len as usize) }
+}
+
+fn dir_entry_type(entry: &ext4_dir_en, sb: &ext4_sblock) -> FileType {
+    if revision_tuple(sb) < (0, 5) {
+        return FileType::Unknown;
+    }
+
+    match unsafe { entry.in_.inode_type } as u32 {
+        EXT4_DE_DIR => FileType::Directory,
+        EXT4_DE_REG_FILE => FileType::Regular,
+        EXT4_DE_SYMLINK => FileType::Symlink,
+        EXT4_DE_CHRDEV => FileType::CharDevice,
+        EXT4_DE_BLKDEV => FileType::BlockDevice,
+        EXT4_DE_FIFO => FileType::FIFO,
+        _ => FileType::Unknown,
+    }
+}
+
+fn lookup_child(parent_ref: &mut ext4_inode_ref, name: &str) -> SysResult<u32> {
+    let mut result: ext4_dir_search_result = unsafe { mem::zeroed() };
+    let rc = unsafe { ext4_dir_find_entry(&mut result, parent_ref, name.as_ptr().cast(), name.len() as u32) };
+    if rc != EOK as i32 {
+        return Err(map_error_to_kernel(rc));
+    }
+
+    let ino = unsafe { u32::from_le((*result.dentry).inode) };
+    let rc = unsafe { ext4_dir_destroy_result(parent_ref, &mut result) };
+    ext4_result(rc)?;
+    Ok(ino)
+}
+
+fn has_children(inode_ref: &mut ext4_inode_ref) -> SysResult<bool> {
+    if inode_type(inode_ref) != InodeType::Directory {
+        return Ok(false);
+    }
+
+    let mut iter: ext4_dir_iter = unsafe { mem::zeroed() };
+    let rc = unsafe { ext4_dir_iterator_init(&mut iter, inode_ref, 0) };
+    ext4_result(rc)?;
+
+    loop {
+        if iter.curr.is_null() {
+            break;
+        }
+
+        let entry = unsafe { &*(iter.curr as *const ext4_dir_en) };
+        let name = dir_entry_name(entry, unsafe { &(*inode_ref.fs).sb });
+        if name != b"." && name != b".." {
+            unsafe {
+                ext4_dir_iterator_fini(&mut iter);
+            }
+            return Ok(true);
+        }
+
+        let rc = unsafe { ext4_dir_iterator_next(&mut iter) };
+        ext4_result(rc)?;
+    }
+
+    unsafe {
+        ext4_dir_iterator_fini(&mut iter);
+    }
+    Ok(false)
+}
+
+fn filetype_from_mode(mode: Mode) -> i32 {
+    if mode.contains(Mode::S_IFDIR) {
+        EXT4_DE_DIR as i32
+    } else if mode.contains(Mode::S_IFREG) {
+        EXT4_DE_REG_FILE as i32
+    } else if mode.contains(Mode::S_IFLNK) {
+        EXT4_DE_SYMLINK as i32
+    } else if mode.contains(Mode::S_IFCHR) {
+        EXT4_DE_CHRDEV as i32
+    } else if mode.contains(Mode::S_IFBLK) {
+        EXT4_DE_BLKDEV as i32
+    } else if mode.contains(Mode::S_IFIFO) {
+        EXT4_DE_FIFO as i32
+    } else {
+        EXT4_DE_UNKNOWN as i32
+    }
+}
+
+fn free_unlinked_inode(inode_ref: &mut ext4_inode_ref) -> SysResult<()> {
+    unsafe {
+        ext4_inode_set_del_time(inode_ref.inode, u32::MAX);
+    }
+    inode_ref.dirty = true;
+
+    unsafe {
+        ext4_result(kernelx_ext4_inode_ref_truncate(inode_ref, 0))?;
+        ext4_result(ext4_fs_free_inode(inode_ref))?;
+    }
+    Ok(())
+}
+
+fn unlink_from_parent(superblock: &mut SuperBlockInner, parent_ref: &mut ext4_inode_ref, name: &str) -> SysResult<()> {
+    let child_ino = lookup_child(parent_ref, name)?;
+    let mut child_ref = superblock.read_inode_ref(child_ino)?;
+
+    let result = (|| {
+        if has_children(&mut child_ref)? {
+            return Err(Errno::ENOTEMPTY);
+        }
+
+        let child_is_dir = inode_type(&mut child_ref) == InodeType::Directory;
+
+        unsafe {
+            ext4_result(ext4_dir_remove_entry(
+                parent_ref,
+                name.as_ptr().cast(),
+                name.len() as u32,
+            ))?;
+        }
+
+        if child_is_dir {
+            unsafe {
+                ext4_fs_inode_links_count_dec(parent_ref);
+                ext4_inode_set_links_cnt(child_ref.inode, 0);
+            }
+            parent_ref.dirty = true;
+            child_ref.dirty = true;
+            free_unlinked_inode(&mut child_ref)?;
+        } else {
+            if inode_nlink(&child_ref) > 0 {
+                unsafe {
+                    ext4_fs_inode_links_count_dec(&mut child_ref);
+                }
+                child_ref.dirty = true;
+            }
+
+            if inode_nlink(&child_ref) == 0 {
+                free_unlinked_inode(&mut child_ref)?;
+            }
+        }
+
+        Ok(())
+    })();
+
+    let put_result = superblock.put_inode_ref(&mut child_ref);
+    match result {
+        Err(err) => {
+            let _ = put_result;
+            Err(err)
+        }
+        Ok(()) => put_result,
+    }
+}
 
 pub struct Ext4Inode {
     ino: u32,
-    superblock: Weak<SleepLock<SuperBlockInner>>,
-    dents_cache: SpinLock<Option<Vec<DirResult>>>,
+    superblock: Arc<SleepLock<SuperBlockInner>>,
 }
 
 impl Ext4Inode {
-    pub fn new(ino: u32, superblock: Weak<SleepLock<SuperBlockInner>>) -> Self {
-        Self {
-            ino,
-            superblock,
-            dents_cache: SpinLock::new(None, "Ext4Inode::dents_cache"),
+    pub fn new(ino: u32, superblock: Arc<SleepLock<SuperBlockInner>>) -> SysResult<Self> {
+        {
+            let mut superblock = superblock.lock();
+            let mut inode_ref = superblock.read_inode_ref(ino)?;
+            superblock.put_inode_ref(&mut inode_ref)?;
         }
+
+        Ok(Self { ino, superblock })
     }
 
-    fn superblock(&self) -> SysResult<Arc<SleepLock<SuperBlockInner>>> {
-        self.superblock.upgrade().ok_or(Errno::EIO)
+    fn with_ref<R>(&self, f: impl FnOnce(&mut SuperBlockInner, &mut ext4_inode_ref) -> SysResult<R>) -> SysResult<R> {
+        let mut superblock = self.superblock.lock();
+        let mut inode_ref = superblock.read_inode_ref(self.ino)?;
+        let result = f(&mut superblock, &mut inode_ref);
+        let put_result = superblock.put_inode_ref(&mut inode_ref);
+
+        match result {
+            Err(err) => {
+                let _ = put_result;
+                Err(err)
+            }
+            Ok(value) => {
+                put_result?;
+                Ok(value)
+            }
+        }
     }
 }
 
@@ -44,281 +338,505 @@ impl InodeOps for Ext4Inode {
     }
 
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
-        if !self.mode()?.contains(Mode::S_IFDIR) {
-            return Err(Errno::ENOTDIR);
-        }
+        let child_ino = self.with_ref(|superblock, parent_ref| {
+            if inode_type(parent_ref) != InodeType::Directory {
+                return Err(Errno::ENOTDIR);
+            }
 
-        if self.superblock()?.lock().lookup(self.ino, name).is_ok() {
-            return Err(Errno::EEXIST);
-        }
+            match lookup_child(parent_ref, name) {
+                Ok(_) => return Err(Errno::EEXIST),
+                Err(Errno::ENOENT) => {}
+                Err(err) => return Err(err),
+            }
 
-        *self.dents_cache.lock() = None; // Invalidate cache
-        let superblock = self.superblock()?;
-        let mut superblock = superblock.lock();
+            let filetype = filetype_from_mode(mode);
+            let mut child_ref = superblock.alloc_inode(filetype)?;
+            let child_ino = child_ref.index;
+            let create_result = (|| {
+                unsafe {
+                    ext4_result(ext4_dir_add_entry(
+                        parent_ref,
+                        name.as_ptr().cast(),
+                        name.len() as u32,
+                        &mut child_ref,
+                    ))?;
+                }
 
-        let ty = if mode.contains(Mode::S_IFDIR) {
-            InodeType::Directory
-        } else if mode.contains(Mode::S_IFREG) {
-            InodeType::RegularFile
-        } else if mode.contains(Mode::S_IFLNK) {
-            InodeType::Symlink
-        } else if mode.contains(Mode::S_IFCHR) {
-            InodeType::CharacterDevice
-        } else if mode.contains(Mode::S_IFBLK) {
-            InodeType::BlockDevice
-        } else if mode.contains(Mode::S_IFIFO) {
-            InodeType::Fifo
-        } else {
-            InodeType::Unknown
-        };
+                if filetype == EXT4_DE_DIR as i32 {
+                    let child_ptr: *mut ext4_inode_ref = &mut child_ref;
+                    unsafe {
+                        ext4_result(ext4_dir_add_entry(child_ptr, c".".as_ptr(), 1, child_ptr))?;
+                        if let Err(err) = ext4_result(ext4_dir_add_entry(child_ptr, c"..".as_ptr(), 2, parent_ref)) {
+                            let _ = ext4_dir_remove_entry(parent_ref, name.as_ptr().cast(), name.len() as u32);
+                            let _ = ext4_dir_remove_entry(child_ptr, c".".as_ptr(), 1);
+                            return Err(err);
+                        }
 
-        let ino = superblock
-            .create(self.ino, name, ty, mode.bits() as u32)
-            .map_err(map_error_to_kernel)?;
-        superblock
-            .with_inode_ref(ino, |inode_ref| {
-                inode_ref.set_owner(owner.uid as u16, owner.gid as u16);
-                Ok(())
-            })
-            .map_err(map_error_to_kernel)?;
+                        ext4_inode_set_links_cnt(child_ref.inode, 2);
+                        ext4_fs_inode_links_count_inc(parent_ref);
+                    }
+                    child_ref.dirty = true;
+                    parent_ref.dirty = true;
+                } else {
+                    unsafe {
+                        ext4_fs_inode_links_count_inc(&mut child_ref);
+                    }
+                    child_ref.dirty = true;
+                }
 
-        Ok(Arc::new(Self::new(ino, self.superblock.clone())))
+                let current_mode = inode_mode(&mut child_ref);
+                inode_set_mode(&mut child_ref, (current_mode & !0o777) | (mode.bits() as u32 & 0o777));
+                inode_set_owner(&mut child_ref, owner.uid as u16, owner.gid as u16);
+
+                let time = now();
+                inode_set_atime(&mut child_ref, &time);
+                inode_set_mtime(&mut child_ref, &time);
+                inode_set_ctime(&mut child_ref, &time);
+                inode_set_mtime(parent_ref, &time);
+                inode_set_ctime(parent_ref, &time);
+
+                Ok(child_ino)
+            })();
+
+            let put_result = superblock.put_inode_ref(&mut child_ref);
+            match create_result {
+                Err(err) => {
+                    unsafe {
+                        let _ = ext4_fs_free_inode(&mut child_ref);
+                    }
+                    let _ = put_result;
+                    Err(err)
+                }
+                Ok(child_ino) => {
+                    put_result?;
+                    Ok(child_ino)
+                }
+            }
+        })?;
+
+        Ok(Arc::new(Self::new(child_ino, self.superblock.clone())?))
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .unlink(self.ino, name)
-            .map_err(map_error_to_kernel)
+        self.with_ref(|superblock, parent_ref| {
+            if inode_type(parent_ref) != InodeType::Directory {
+                return Err(Errno::ENOTDIR);
+            }
+
+            unlink_from_parent(superblock, parent_ref, name)?;
+            let time = now();
+            inode_set_mtime(parent_ref, &time);
+            inode_set_ctime(parent_ref, &time);
+            Ok(())
+        })
     }
 
     fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .link(self.ino, name, target.get_ino())
-            .map_err(map_error_to_kernel)
+        let target = target.downcast_ref::<Ext4Inode>().ok_or(Errno::EXDEV)?;
+        self.with_ref(|superblock, parent_ref| {
+            let mut child_ref = superblock.read_inode_ref(target.ino)?;
+            let result = (|| {
+                unsafe {
+                    ext4_result(kernelx_ext4_link(
+                        parent_ref,
+                        name.as_ptr().cast(),
+                        name.len(),
+                        &mut child_ref,
+                    ))?;
+                }
+
+                let time = now();
+                inode_set_mtime(parent_ref, &time);
+                inode_set_ctime(parent_ref, &time);
+                inode_set_ctime(&mut child_ref, &time);
+                Ok(())
+            })();
+
+            let put_result = superblock.put_inode_ref(&mut child_ref);
+            match result {
+                Err(err) => {
+                    let _ = put_result;
+                    Err(err)
+                }
+                Ok(()) => {
+                    put_result?;
+                    Ok(())
+                }
+            }
+        })
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .set_symlink(self.ino, target.as_bytes())
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| {
+            unsafe {
+                ext4_result(kernelx_ext4_inode_ref_set_symlink(
+                    inode_ref,
+                    target.as_ptr().cast(),
+                    target.len(),
+                ))?;
+            }
+            let time = now();
+            inode_set_mtime(inode_ref, &time);
+            inode_set_ctime(inode_ref, &time);
+            Ok(())
+        })
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        if self.mode()?.contains(Mode::S_IFDIR) {
-            return Err(Errno::EISDIR);
-        }
-        let superblock = self.superblock()?;
-        let mut sb = superblock.lock();
-        sb.read_at(self.ino, buf, offset as u64).map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| {
+            let mut rcnt = 0usize;
+            unsafe {
+                ext4_result(kernelx_ext4_inode_ref_read_at(
+                    inode_ref,
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    offset as u64,
+                    &mut rcnt,
+                ))?;
+            }
+            inode_set_atime(inode_ref, &now());
+            Ok(rcnt)
+        })
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
-        if self.mode()?.contains(Mode::S_IFDIR) {
-            return Err(Errno::EISDIR);
-        }
-        let superblock = self.superblock()?;
-        let mut sb = superblock.lock();
-        sb.write_at(self.ino, buf, offset as u64).map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| {
+            let mut wcnt = 0usize;
+            let rc = unsafe {
+                kernelx_ext4_inode_ref_write_at(inode_ref, buf.as_ptr().cast(), buf.len(), offset as u64, &mut wcnt)
+            };
+            ext4_result(rc)?;
+            let time = now();
+            inode_set_mtime(inode_ref, &time);
+            inode_set_ctime(inode_ref, &time);
+            Ok(wcnt)
+        })
     }
 
     fn get_dent(&self, offset: usize) -> SysResult<Option<(DirResult, usize)>> {
-        // Directory enumeration not yet migrated to `lwext4_rust`.
-        let mut reader = self
-            .superblock()?
-            .lock()
-            .read_dir(self.ino, offset as u64)
-            .map_err(map_error_to_kernel)?;
-        let result = reader.current().map(|entry| DirResult {
-            ino: entry.ino(),
-            name: String::from_utf8_lossy(entry.name()).into_owned(),
-            file_type: match entry.inode_type() {
-                InodeType::Directory => FileType::Directory,
-                InodeType::RegularFile => FileType::Regular,
-                InodeType::Symlink => FileType::Symlink,
-                InodeType::CharacterDevice => FileType::CharDevice,
-                InodeType::BlockDevice => FileType::BlockDevice,
-                InodeType::Fifo => FileType::FIFO,
-                _ => FileType::Unknown,
-            },
-        });
+        self.with_ref(|_superblock, inode_ref| {
+            if inode_type(inode_ref) != InodeType::Directory {
+                return Err(Errno::ENOTDIR);
+            }
 
-        if let Some(r) = &result {
-            reader.step().map_err(map_error_to_kernel)?;
-            let next_offset = reader.offset() as usize;
-            Ok(Some((r.clone(), next_offset)))
-        } else {
-            Ok(None)
-        }
+            let mut iter: ext4_dir_iter = unsafe { mem::zeroed() };
+            unsafe {
+                ext4_result(ext4_dir_iterator_init(&mut iter, inode_ref, offset as u64))?;
+            }
+
+            let current = if iter.curr.is_null() {
+                None
+            } else {
+                let entry = unsafe { &*(iter.curr as *const ext4_dir_en) };
+                let sb = unsafe { &(*inode_ref.fs).sb };
+                let dent = DirResult {
+                    ino: u32::from_le(entry.inode),
+                    name: String::from_utf8_lossy(dir_entry_name(entry, sb)).into_owned(),
+                    file_type: dir_entry_type(entry, sb),
+                };
+
+                unsafe {
+                    ext4_result(ext4_dir_iterator_next(&mut iter))?;
+                }
+
+                Some((dent, iter.curr_off as usize))
+            };
+
+            unsafe {
+                ext4_dir_iterator_fini(&mut iter);
+            }
+            Ok(current)
+        })
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
-        let mut result = self
-            .superblock()?
-            .lock()
-            .lookup(self.ino, name)
-            .map_err(map_error_to_kernel)?;
-        Ok(result.entry().ino())
+        self.with_ref(|_superblock, inode_ref| {
+            if inode_type(inode_ref) != InodeType::Directory {
+                return Err(Errno::ENOTDIR);
+            }
+
+            let ino = lookup_child(inode_ref, name)?;
+            inode_set_atime(inode_ref, &now());
+            Ok(ino)
+        })
     }
 
     fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .rename(self.ino, old_name, new_parent.get_ino(), new_name)
-            .map_err(map_error_to_kernel)?;
-        Ok(())
+        let new_parent = new_parent.downcast_ref::<Ext4Inode>().ok_or(Errno::EXDEV)?;
+        if !Arc::ptr_eq(&self.superblock, &new_parent.superblock) {
+            return Err(Errno::EXDEV);
+        }
+        if self.ino == new_parent.ino && old_name == new_name {
+            return Ok(());
+        }
+
+        let mut superblock = self.superblock.lock();
+        let mut src_dir_ref = superblock.read_inode_ref(self.ino)?;
+
+        let result = if self.ino == new_parent.ino {
+            (|| {
+                if let Err(err) = unlink_from_parent(&mut superblock, &mut src_dir_ref, new_name) {
+                    if err != Errno::ENOENT {
+                        return Err(err);
+                    }
+                }
+
+                let src_ino = lookup_child(&mut src_dir_ref, old_name)?;
+                let mut src_ref = superblock.read_inode_ref(src_ino)?;
+                let rename_result = (|| {
+                    unsafe {
+                        ext4_result(ext4_dir_remove_entry(
+                            &mut src_dir_ref,
+                            old_name.as_ptr().cast(),
+                            old_name.len() as u32,
+                        ))?;
+                        ext4_result(ext4_dir_add_entry(
+                            &mut src_dir_ref,
+                            new_name.as_ptr().cast(),
+                            new_name.len() as u32,
+                            &mut src_ref,
+                        ))?;
+                    }
+
+                    let time = now();
+                    inode_set_mtime(&mut src_dir_ref, &time);
+                    inode_set_ctime(&mut src_dir_ref, &time);
+                    inode_set_ctime(&mut src_ref, &time);
+                    Ok(())
+                })();
+                let put_result = superblock.put_inode_ref(&mut src_ref);
+                match rename_result {
+                    Err(err) => {
+                        let _ = put_result;
+                        Err(err)
+                    }
+                    Ok(()) => {
+                        put_result?;
+                        Ok(())
+                    }
+                }
+            })()
+        } else {
+            (|| {
+                let mut dst_dir_ref = superblock.read_inode_ref(new_parent.ino)?;
+                let outer_result = (|| {
+                    if let Err(err) = unlink_from_parent(&mut superblock, &mut dst_dir_ref, new_name) {
+                        if err != Errno::ENOENT {
+                            return Err(err);
+                        }
+                    }
+
+                    let src_ino = lookup_child(&mut src_dir_ref, old_name)?;
+                    let mut src_ref = superblock.read_inode_ref(src_ino)?;
+                    let rename_result = (|| {
+                        if inode_type(&mut src_ref) == InodeType::Directory {
+                            let mut result: ext4_dir_search_result = unsafe { mem::zeroed() };
+                            unsafe {
+                                ext4_result(ext4_dir_find_entry(&mut result, &mut src_ref, c"..".as_ptr(), 2))?;
+                                (*result.dentry).inode = u32::to_le(new_parent.ino);
+                                ext4_trans_set_block_dirty(result.block.buf);
+                                ext4_result(ext4_dir_destroy_result(&mut src_ref, &mut result))?;
+                                ext4_fs_inode_links_count_dec(&mut src_dir_ref);
+                                ext4_fs_inode_links_count_inc(&mut dst_dir_ref);
+                            }
+                            src_dir_ref.dirty = true;
+                            dst_dir_ref.dirty = true;
+                        }
+
+                        unsafe {
+                            ext4_result(ext4_dir_remove_entry(
+                                &mut src_dir_ref,
+                                old_name.as_ptr().cast(),
+                                old_name.len() as u32,
+                            ))?;
+                            ext4_result(ext4_dir_add_entry(
+                                &mut dst_dir_ref,
+                                new_name.as_ptr().cast(),
+                                new_name.len() as u32,
+                                &mut src_ref,
+                            ))?;
+                        }
+
+                        let time = now();
+                        inode_set_mtime(&mut src_dir_ref, &time);
+                        inode_set_ctime(&mut src_dir_ref, &time);
+                        inode_set_mtime(&mut dst_dir_ref, &time);
+                        inode_set_ctime(&mut dst_dir_ref, &time);
+                        inode_set_ctime(&mut src_ref, &time);
+                        Ok(())
+                    })();
+
+                    let put_src = superblock.put_inode_ref(&mut src_ref);
+                    match rename_result {
+                        Err(err) => {
+                            let _ = put_src;
+                            Err(err)
+                        }
+                        Ok(()) => {
+                            put_src?;
+                            Ok(())
+                        }
+                    }
+                })();
+
+                let put_dst = superblock.put_inode_ref(&mut dst_dir_ref);
+                match outer_result {
+                    Err(err) => {
+                        let _ = put_dst;
+                        Err(err)
+                    }
+                    Ok(()) => {
+                        put_dst?;
+                        Ok(())
+                    }
+                }
+            })()
+        };
+
+        let put_result = superblock.put_inode_ref(&mut src_dir_ref);
+        match result {
+            Err(err) => {
+                let _ = put_result;
+                Err(err)
+            }
+            Ok(()) => {
+                put_result?;
+                Ok(())
+            }
+        }
     }
 
     fn size(&self) -> SysResult<u64> {
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| Ok(inode_ref.size()))
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| Ok(inode_size(inode_ref)))
     }
 
     fn mode(&self) -> SysResult<Mode> {
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| Ok(Mode::from_bits_truncate(inode_ref.mode())))
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| Ok(Mode::from_bits_truncate(inode_mode(inode_ref))))
     }
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| {
-                if inode_ref.inode_type() != InodeType::Symlink {
-                    return Ok(None);
-                }
-                Ok(Some(inode_ref.read_at(buf, 0)?))
-            })
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| {
+            if inode_type(inode_ref) != InodeType::Symlink {
+                return Ok(None);
+            }
+
+            let mut rcnt = 0usize;
+            unsafe {
+                ext4_result(kernelx_ext4_inode_ref_readlink(
+                    inode_ref,
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    &mut rcnt,
+                ))?;
+            }
+            inode_set_atime(inode_ref, &now());
+            Ok(Some(rcnt))
+        })
     }
 
     fn chmod(&self, mode: Mode) -> SysResult<()> {
         debug_assert!(mode.bits() <= 0o7777);
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| {
-                let current_mode = inode_ref.mode();
-                let new_mode = (current_mode & !0o7777) | (mode.bits() as u32 & 0o7777);
-                inode_ref.set_mode(new_mode);
-                inode_ref.set_ctime(&kclock::now().unwrap_or(Duration::ZERO));
-                Ok(())
-            })
-            .map_err(map_error_to_kernel)?;
-        Ok(())
+        self.with_ref(|_superblock, inode_ref| {
+            let current_mode = inode_mode(inode_ref);
+            inode_set_mode(inode_ref, (current_mode & !0o7777) | (mode.bits() as u32 & 0o7777));
+            inode_set_ctime(inode_ref, &now());
+            Ok(())
+        })
     }
 
     fn chown(&self, uid: Option<Uid>, gid: Option<Uid>) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| {
-                let uid = uid.unwrap_or(inode_ref.uid() as Uid) as u16;
-                let gid = gid.unwrap_or(inode_ref.gid() as Uid) as u16;
-                inode_ref.set_owner(uid, gid);
-                inode_ref.set_mode(inode_ref.mode() & !(Mode::S_ISUID | Mode::S_ISGID).bits());
-                inode_ref.set_ctime(&kclock::now().unwrap_or(Duration::ZERO));
-                Ok(())
-            })
-            .map_err(map_error_to_kernel)?;
-        Ok(())
+        self.with_ref(|_superblock, inode_ref| {
+            let uid = uid.unwrap_or(inode_uid(inode_ref) as Uid) as u16;
+            let gid = gid.unwrap_or(inode_gid(inode_ref) as Uid) as u16;
+            inode_set_owner(inode_ref, uid, gid);
+            let cleared_mode = inode_mode(inode_ref) & !(Mode::S_ISUID | Mode::S_ISGID).bits();
+            inode_set_mode(inode_ref, cleared_mode);
+            inode_set_ctime(inode_ref, &now());
+            Ok(())
+        })
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
-        let mut kstat = FileStat::default();
-        let superblock = self.superblock()?;
-        let mut superblock = superblock.lock();
-
-        kstat.st_ino = self.ino as u64;
-
-        superblock
-            .with_inode_ref(self.ino, |inode_ref| {
-                let mut attr = FileAttr::default();
-                inode_ref.get_attr(&mut attr);
-
-                kstat.st_size = attr.size as i64;
-                kstat.st_nlink = attr.nlink as u32;
-                kstat.st_mode = attr.mode as u32;
-                kstat.st_uid = attr.uid as u32;
-                kstat.st_gid = attr.gid as u32;
-                kstat.st_blksize = attr.block_size as i32;
-                kstat.st_blocks = attr.blocks as u64;
-
-                kstat.st_atime_sec = attr.atime.as_secs() as i64;
-                kstat.st_atime_nsec = attr.atime.subsec_nanos() as i64;
-                kstat.st_mtime_sec = attr.mtime.as_secs() as i64;
-                kstat.st_mtime_nsec = attr.mtime.subsec_nanos() as i64;
-                kstat.st_ctime_sec = attr.ctime.as_secs() as i64;
-                kstat.st_ctime_nsec = attr.ctime.subsec_nanos() as i64;
-
-                Ok(())
-            })
-            .map_err(map_error_to_kernel)?;
-
-        Ok(kstat)
+        self.with_ref(|_superblock, inode_ref| {
+            let inode = unsafe { &*inode_ref.inode };
+            let sb = unsafe { &(*inode_ref.fs).sb };
+            let mut stat = FileStat::default();
+            stat.st_ino = self.ino as u64;
+            stat.st_mode = inode_mode(inode_ref);
+            stat.st_nlink = inode_nlink(inode_ref) as u32;
+            stat.st_uid = inode_uid(inode_ref) as u32;
+            stat.st_gid = inode_gid(inode_ref) as u32;
+            stat.st_rdev = 0;
+            stat.st_size = inode_size(inode_ref) as i64;
+            stat.st_blksize = get_block_size(sb) as i32;
+            stat.st_blocks = inode_blocks(inode_ref);
+            stat.st_atime_sec = decode_time(inode.access_time, inode.atime_extra).as_secs() as i64;
+            stat.st_atime_nsec = decode_time(inode.access_time, inode.atime_extra).subsec_nanos() as i64;
+            stat.st_mtime_sec = decode_time(inode.modification_time, inode.mtime_extra).as_secs() as i64;
+            stat.st_mtime_nsec = decode_time(inode.modification_time, inode.mtime_extra).subsec_nanos() as i64;
+            stat.st_ctime_sec = decode_time(inode.change_inode_time, inode.ctime_extra).as_secs() as i64;
+            stat.st_ctime_nsec = decode_time(inode.change_inode_time, inode.ctime_extra).subsec_nanos() as i64;
+            Ok(stat)
+        })
     }
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .set_len(self.ino, new_size)
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| {
+            if inode_type(inode_ref) == InodeType::Directory {
+                return Err(Errno::EISDIR);
+            }
+
+            let old_size = inode_size(inode_ref);
+            if new_size < old_size {
+                unsafe {
+                    ext4_result(kernelx_ext4_inode_ref_truncate(inode_ref, new_size))?;
+                }
+            } else if new_size > old_size {
+                unsafe {
+                    ext4_inode_set_size(inode_ref.inode, new_size);
+                }
+                inode_ref.dirty = true;
+            }
+
+            if new_size != old_size {
+                let time = now();
+                inode_set_mtime(inode_ref, &time);
+                inode_set_ctime(inode_ref, &time);
+            }
+            Ok(())
+        })
     }
 
     fn owner(&self) -> SysResult<(Uid, Uid)> {
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| {
-                Ok((inode_ref.uid() as Uid, inode_ref.gid() as Uid))
-            })
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| Ok((inode_uid(inode_ref) as Uid, inode_gid(inode_ref) as Uid)))
     }
 
     fn update_atime(&self, time: &Duration) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| {
-                inode_ref.set_atime(time);
-                Ok(())
-            })
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| {
+            inode_set_atime(inode_ref, time);
+            Ok(())
+        })
     }
 
     fn update_mtime(&self, time: &Duration) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| {
-                inode_ref.set_mtime(time);
-                Ok(())
-            })
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| {
+            inode_set_mtime(inode_ref, time);
+            Ok(())
+        })
     }
 
     fn update_ctime(&self, time: &Duration) -> SysResult<()> {
-        self.superblock()?
-            .lock()
-            .with_inode_ref(self.ino, |inode_ref| {
-                inode_ref.set_ctime(time);
-                Ok(())
-            })
-            .map_err(map_error_to_kernel)
+        self.with_ref(|_superblock, inode_ref| {
+            inode_set_ctime(inode_ref, time);
+            Ok(())
+        })
     }
 
     fn sync(&self) -> SysResult<()> {
-        // sync not implemented in new API yet
-        self.superblock()?.lock().flush().map_err(map_error_to_kernel)
+        self.superblock.lock().flush()
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(File::new(self, dentry.unwrap(), flags))
-    }
-}
-
-impl Drop for Ext4Inode {
-    fn drop(&mut self) {
-        // No-op drop until inode lifecycle is migrated to lwext4_rust.
     }
 }
