@@ -14,7 +14,7 @@ fn main() {
     }
     println!("cargo:rustc-env=KERNELX_SYMBOLS_PATH={}", symbols_path);
     println!("cargo:rerun-if-changed={}", symbols_path);
-    
+
     match platform.as_str() {
         "qemu-virt-riscv64" => {
             println!("cargo:rustc-cfg=platform_riscv_common");
@@ -28,7 +28,10 @@ fn main() {
     // Link C library
     println!("cargo:rustc-link-search=native=clib/build/{}{}", arch, arch_bits);
     println!("cargo:rustc-link-lib=static=kernelx_clib");
-    println!("cargo:rerun-if-changed=clib/build/{}{}/libkernelx_clib.a", arch, arch_bits);
+    println!(
+        "cargo:rerun-if-changed=clib/build/{}{}/libkernelx_clib.a",
+        arch, arch_bits
+    );
 
     // vDSO symbols
     let symbols_src = format!("vdso/build/{}{}/symbols.inc", arch, arch_bits);
