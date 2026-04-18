@@ -308,7 +308,19 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn unlink(&self, name: &str) -> SysResult<()> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(children) = &mut meta.meta {
-            let ino = children.remove(name).ok_or(Errno::ENOENT)?;
+            let ino = *children.get(name).ok_or(Errno::ENOENT)?;
+            let child = self.superblock.lock().get_inode(ino)?;
+            if child.inode_type()? == FileType::Directory {
+                let child_inode = child.downcast_arc::<Self>().map_err(|_| Errno::EIO)?;
+                let child_meta = child_inode.meta.lock();
+                if let Meta::Directory(grandchildren) = &child_meta.meta
+                    && grandchildren.len() > 2
+                {
+                    return Err(Errno::ENOTEMPTY);
+                }
+            }
+
+            children.remove(name);
             self.superblock.lock().remove_inode(ino);
             Ok(())
         } else {

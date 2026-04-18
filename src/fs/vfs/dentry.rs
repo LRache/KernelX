@@ -179,8 +179,12 @@ impl Dentry {
         Ok(inode)
     }
 
-    pub fn unlink(self: &Arc<Self>, name: &str) -> SysResult<()> {
+    fn remove_child(self: &Arc<Self>, name: &str, remove_dir: bool) -> SysResult<()> {
         let inode = self.get_inode();
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+
         let mode = inode.mode()?;
         let (uid, gid) = inode.owner()?;
         if !mode.check_perm(&Perm::current(PermFlags::W | PermFlags::X), uid, gid) {
@@ -189,7 +193,11 @@ impl Dentry {
 
         let child_ino = inode.lookup(name)?;
         let child_inode = vfs().load_inode(self.sno(), child_ino)?;
-        if child_inode.inode_type()? == FileType::Directory {
+        let child_is_dir = child_inode.inode_type()? == FileType::Directory;
+        if remove_dir && !child_is_dir {
+            return Err(Errno::ENOTDIR);
+        }
+        if !remove_dir && child_is_dir {
             return Err(Errno::EISDIR);
         }
 
@@ -204,6 +212,14 @@ impl Dentry {
         vfs().cache.remove(&inode_index);
 
         Ok(())
+    }
+
+    pub fn unlink(self: &Arc<Self>, name: &str) -> SysResult<()> {
+        self.remove_child(name, false)
+    }
+
+    pub fn rmdir(self: &Arc<Self>, name: &str) -> SysResult<()> {
+        self.remove_child(name, true)
     }
 
     pub fn symlink(self: &Arc<Self>, target: &str) -> SysResult<()> {

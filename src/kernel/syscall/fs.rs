@@ -1005,8 +1005,15 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
     let path = uptr_path.read_fixed()?;
+    const AT_REMOVEDIR: usize = 0x200;
 
-    let parent_dentry = if dirfd as isize == AT_FDCWD {
+    if _flags & !AT_REMOVEDIR != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let parent_dentry = if path.starts_with('/') {
+        vfs::load_parent_dentry(&path)?.ok_or(Errno::EOPNOTSUPP)
+    } else if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
         vfs::load_parent_dentry_at(
@@ -1023,7 +1030,11 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
     let parent = parent_dentry.0;
     let name = &parent_dentry.1;
 
-    parent.unlink(name)?;
+    if _flags == AT_REMOVEDIR {
+        parent.rmdir(name)?;
+    } else {
+        parent.unlink(name)?;
+    }
 
     Ok(0)
 }
