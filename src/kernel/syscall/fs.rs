@@ -1009,7 +1009,15 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
     let parent_dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&path)?.ok_or(Errno::EOPNOTSUPP)
+        vfs::load_parent_dentry_at(
+            current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?,
+            &path,
+        )?
+        .ok_or(Errno::EOPNOTSUPP)
     }?;
 
     let parent = parent_dentry.0;

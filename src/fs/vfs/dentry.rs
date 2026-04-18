@@ -4,7 +4,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 
-use crate::fs::inode::{Index, InodeOps, Mode, Owner};
+use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
+use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::SpinLock;
 
@@ -180,9 +181,21 @@ impl Dentry {
 
     pub fn unlink(self: &Arc<Self>, name: &str) -> SysResult<()> {
         let inode = self.get_inode();
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(&Perm::current(PermFlags::W | PermFlags::X), uid, gid) {
+            return Err(Errno::EACCES);
+        }
+
+        let child_ino = inode.lookup(name)?;
+        let child_inode = vfs().load_inode(self.sno(), child_ino)?;
+        if child_inode.inode_type()? == FileType::Directory {
+            return Err(Errno::EISDIR);
+        }
+
         let inode_index = Index {
             sno: self.sno(),
-            ino: inode.lookup(name)?,
+            ino: child_ino,
         };
 
         inode.unlink(name)?;
