@@ -70,6 +70,7 @@ pub struct PCB {
     pub tasks: SleepLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
+    file_size_limit: SpinLock<(usize, usize)>,
     waiting_task: SpinLock<Vec<Arc<dyn Task>>>,
 
     signal: Signal,
@@ -112,6 +113,7 @@ impl PCB {
             tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
             cwd: SpinLock::new(parent.cwd.lock().clone(), "PCB::cwd"),
             umask: SpinLock::new(*parent.umask.lock(), "PCB::umask"),
+            file_size_limit: SpinLock::new(*parent.file_size_limit.lock(), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
 
             signal: Signal {
@@ -166,6 +168,7 @@ impl PCB {
             tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
             cwd: SpinLock::new(cwd.clone(), "PCB::cwd"),
             umask: SpinLock::new(0o022, "PCB::umask"),
+            file_size_limit: SpinLock::new((usize::MAX, usize::MAX), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
 
             signal: Signal {
@@ -338,6 +341,14 @@ impl PCB {
 
     pub fn set_umask(&self, mask: u16) {
         *self.umask.lock() = mask & 0o777;
+    }
+
+    pub fn file_size_limit(&self) -> (usize, usize) {
+        *self.file_size_limit.lock()
+    }
+
+    pub fn set_file_size_limit(&self, cur: usize, max: usize) {
+        *self.file_size_limit.lock() = (cur, max);
     }
 
     pub fn clone_task(

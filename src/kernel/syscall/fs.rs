@@ -9,7 +9,7 @@ use crate::driver;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
 use crate::fs::{Dentry, Mode, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::ipc::Pipe;
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
@@ -1285,6 +1285,16 @@ fn truncate_length(length: usize) -> SysResult<u64> {
     Ok(length as u64)
 }
 
+fn check_file_size_limit(length: u64) -> SysResult<()> {
+    let (rlim_cur, _) = current::pcb().file_size_limit();
+    if rlim_cur != usize::MAX && length > rlim_cur as u64 {
+        let _ = current::pcb().send_signal(signum::SIGXFSZ, SiCode::SI_KERNEL, KSiFields::Empty, None);
+        return Err(Errno::EFBIG);
+    }
+
+    Ok(())
+}
+
 pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
     let path = uptr_path.should_not_null()?.read_fixed()?;
     if path.is_empty() {
@@ -1295,6 +1305,11 @@ pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
     let inode = dentry.get_inode();
     let mode = inode.mode()?;
+    if mode.contains(Mode::S_IFDIR) {
+        return Err(Errno::EISDIR);
+    }
+
+    check_file_size_limit(length)?;
     let (uid, gid) = inode.owner()?;
     if !mode.check_perm(&Perm::current(PermFlags::W), uid, gid) {
         return Err(Errno::EACCES);
@@ -1313,6 +1328,7 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     }
 
     let length = truncate_length(length)?;
+    check_file_size_limit(length)?;
     file.downcast_arc::<File>()
         .map_err(|_| Errno::EINVAL)?
         .ftruncate(length)?;
