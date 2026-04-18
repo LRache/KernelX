@@ -1263,6 +1263,35 @@ pub fn fchown(fd: usize, uid: usize, gid: usize) -> SyscallRet {
     Ok(0)
 }
 
+fn truncate_length(length: usize) -> SysResult<u64> {
+    let length = length as i64;
+    if length < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    Ok(length as u64)
+}
+
+pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
+    let path = uptr_path.should_not_null()?.read_fixed()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
+    let length = truncate_length(length)?;
+    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+    let inode = dentry.get_inode();
+    let mode = inode.mode()?;
+    let (uid, gid) = inode.owner()?;
+    if !mode.check_perm(&Perm::current(PermFlags::W), uid, gid) {
+        return Err(Errno::EACCES);
+    }
+
+    inode.truncate(length)?;
+
+    Ok(0)
+}
+
 pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
@@ -1270,9 +1299,10 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
         return Err(Errno::EBADF);
     }
 
+    let length = truncate_length(length)?;
     file.downcast_arc::<File>()
         .map_err(|_| Errno::EINVAL)?
-        .ftruncate(length as u64)?;
+        .ftruncate(length)?;
 
     Ok(0)
 }

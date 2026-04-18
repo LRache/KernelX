@@ -189,6 +189,7 @@ pub fn syscall(num: usize, args: &Args) -> Result<usize, Errno> {
         34  => fs::mkdirat(3),
         39  => fs::umount2(2),
         40  => fs::mount(5),
+        45  => fs::truncate64(2),
         35  => fs::unlinkat(3),
         36  => fs::symlinkat(3),
         37  => fs::linkat(4),

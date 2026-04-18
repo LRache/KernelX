@@ -106,6 +106,26 @@ impl<T: StaticFsInfo> Inode<T> {
             Err(Errno::ENOTDIR)
         }
     }
+
+    fn zero_file_range(file_meta: &mut FileMeta, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+
+        let mut current = start;
+        while current < end {
+            let page_index = current / arch::PGSIZE;
+            let page_offset = current % arch::PGSIZE;
+            let chunk_end = core::cmp::min(end, (page_index + 1) * arch::PGSIZE);
+
+            while page_index >= file_meta.pages.len() {
+                file_meta.pages.push(PhysPageFrame::alloc_zeroed());
+            }
+
+            file_meta.pages[page_index].slice()[page_offset..page_offset + (chunk_end - current)].fill(0);
+            current = chunk_end;
+        }
+    }
 }
 
 impl<T: StaticFsInfo> InodeOps for Inode<T> {
@@ -245,6 +265,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
         if let Meta::File(ref mut meta) = self.meta.lock().meta {
+            if offset > meta.filesize {
+                Self::zero_file_range(meta, meta.filesize, offset);
+            }
+
             let mut written_bytes = 0;
             let mut current_offset = offset;
 
@@ -253,7 +277,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 let page_offset = current_offset % arch::PGSIZE;
 
                 while page_index >= meta.pages.len() {
-                    meta.pages.push(PhysPageFrame::alloc());
+                    meta.pages.push(PhysPageFrame::alloc_zeroed());
                 }
 
                 let page = &meta.pages[page_index];
@@ -275,6 +299,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, _direct: bool) -> SysResult<usize> {
         if let Meta::File(ref mut meta) = self.meta.lock().meta {
+            if offset > meta.filesize {
+                Self::zero_file_range(meta, meta.filesize, offset);
+            }
+
             let mut written_bytes = 0;
             let mut current_offset = offset;
 
@@ -286,7 +314,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                     let page_offset = current_offset % arch::PGSIZE;
 
                     while page_index >= meta.pages.len() {
-                        meta.pages.push(PhysPageFrame::alloc());
+                        meta.pages.push(PhysPageFrame::alloc_zeroed());
                     }
 
                     let to_write = core::cmp::min(kbuf.len() - copied, arch::PGSIZE - page_offset);
@@ -415,15 +443,15 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn truncate(&self, new_size: u64) -> SysResult<()> {
         let mut meta = self.meta.lock();
         if let Meta::File(ref mut file_meta) = meta.meta {
+            let old_size = file_meta.filesize;
             let new_size = new_size as usize;
             let new_pages = (new_size + arch::PGSIZE - 1) / arch::PGSIZE;
 
             if new_size > file_meta.filesize {
-                // Extend: allocate new zero pages as needed
-                while file_meta.pages.len() < new_pages {
-                    file_meta.pages.push(PhysPageFrame::alloc_zeroed());
-                }
+                Self::zero_file_range(file_meta, old_size, new_size);
             } else {
+                Self::zero_file_range(file_meta, new_size, old_size);
+
                 // Shrink: drop excess pages
                 file_meta.pages.truncate(new_pages);
             }
