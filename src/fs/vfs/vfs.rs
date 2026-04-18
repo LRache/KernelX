@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use crate::fs::filesystem::FileSystemOps;
 use crate::fs::inode;
 use crate::fs::inode::InodeOps;
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::{InitedCell, SleepLock, SpinLock};
 
@@ -35,19 +36,32 @@ impl VirtualFileSystem {
     }
 
     pub fn lookup_dentry(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
+        self.lookup_dentry_with_depth(dir, path, 0)
+    }
+
+    pub(crate) fn lookup_dentry_with_depth(
+        &self,
+        dir: &Arc<Dentry>,
+        path: &str,
+        depth: usize,
+    ) -> SysResult<Arc<Dentry>> {
+        if depth > config::MAX_SYMLINK_DEPTH {
+            return Err(Errno::ELOOP);
+        }
+
         let mut current = match path.chars().next() {
             Some('/') => self.get_root().clone(),
             _ => dir.clone(),
         };
 
         current = current.get_mount_to();
-        current = current.walk_link()?;
+        current = current.walk_link(depth)?;
 
         path.split('/')
             .filter(|s| !(s.is_empty() || *s == "."))
             .try_for_each(|part| {
                 let next = current.lookup(part)?;
-                current = next.get_mount_to().walk_link()?;
+                current = next.get_mount_to().walk_link(depth)?;
 
                 Ok(())
             })?;
@@ -77,7 +91,7 @@ impl VirtualFileSystem {
             Some('/') => self.get_root().clone(),
             _ => dir.clone(),
         };
-        current = current.get_mount_to().walk_link()?;
+        current = current.get_mount_to().walk_link(0)?;
 
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -91,7 +105,7 @@ impl VirtualFileSystem {
                 continue;
             }
             let next = current.lookup(part)?;
-            current = next.get_mount_to().walk_link()?;
+            current = next.get_mount_to().walk_link(0)?;
         }
 
         Ok(Some((current, parts[parts.len() - 1])))

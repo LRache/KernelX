@@ -31,6 +31,7 @@ pub enum Errno {
     EPIPE = 32,           // Broken pipe
     ENAMETOOLONG = 36,    // File name too long
     ENOTEMPTY = 39,       // Directory not empty
+    ELOOP = 40,           // Too many symbolic links encountered
     ENOSYS = 38,          // Function not implemented
     ENOTSOCK = 88,        // Socket operation on non-socket
     EDESTADDRREQ = 89,    // Destination address required

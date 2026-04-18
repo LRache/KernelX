@@ -1045,14 +1045,27 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
 
     let target = uptr_target.read_fixed()?;
     let new_name = uptr_newname.read_fixed()?;
+    if new_name.is_empty() {
+        return Err(Errno::ENOENT);
+    }
 
-    let new_dentry = if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &new_name))
+    let (parent, name) = if new_name.starts_with('/') {
+        vfs::load_parent_dentry(&new_name)?.ok_or(Errno::EOPNOTSUPP)?
+    } else if newdirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_name))?.ok_or(Errno::EOPNOTSUPP)?
     } else {
-        vfs::load_dentry(&new_name)
-    }?;
+        vfs::load_parent_dentry_at(
+            current::fdtable()
+                .lock()
+                .get(newdirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?,
+            &new_name,
+        )?
+        .ok_or(Errno::EOPNOTSUPP)?
+    };
 
-    new_dentry.symlink(&target)?;
+    parent.create_symlink(name, &target, Owner::new(current::euid(), current::egid()))?;
 
     Ok(0)
 }

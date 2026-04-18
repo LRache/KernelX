@@ -40,6 +40,7 @@ impl FileMeta {
 enum Meta {
     File(FileMeta),
     Directory(BTreeMap<String, u32>),
+    Symlink(String),
 }
 
 pub struct InodeMeta {
@@ -59,6 +60,8 @@ impl InodeMeta {
             children.insert(".".into(), ino);
             children.insert("..".into(), parent_ino);
             Meta::Directory(children)
+        } else if mode.contains(Mode::S_IFLNK) {
+            Meta::Symlink(String::new())
         } else {
             Meta::File(FileMeta::new())
         };
@@ -202,7 +205,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(total_read)
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
         }
     }
 
@@ -259,7 +262,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(total_read)
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
         }
     }
 
@@ -293,7 +296,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(written_bytes)
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
         }
     }
 
@@ -329,7 +332,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             meta.filesize = core::cmp::max(meta.filesize, offset + written_bytes);
             Ok(written_bytes)
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
         }
     }
 
@@ -360,6 +363,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         let size = match self.meta.lock().meta {
             Meta::File(ref meta) => meta.filesize,
             Meta::Directory(_) => arch::PGSIZE,
+            Meta::Symlink(ref target) => target.len(),
         };
         Ok(size as u64)
     }
@@ -435,6 +439,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 kstat.st_size = arch::PGSIZE as i64;
                 kstat.st_blocks = 1;
             }
+            Meta::Symlink(ref target) => {
+                kstat.st_size = target.len() as i64;
+                kstat.st_blocks = 0;
+            }
         }
 
         Ok(kstat)
@@ -459,7 +467,33 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             file_meta.filesize = new_size;
             Ok(())
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
+        }
+    }
+
+    fn symlink(&self, target: &str) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if let Meta::Symlink(ref mut link) = meta.meta {
+            link.clear();
+            link.push_str(target);
+            let now = kclock::now().unwrap_or_default();
+            meta.mtime = now;
+            meta.ctime = now;
+            Ok(())
+        } else {
+            Err(Errno::EINVAL)
+        }
+    }
+
+    fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        let mut meta = self.meta.lock();
+        if let Meta::Symlink(ref link) = meta.meta {
+            let len = core::cmp::min(link.len(), buf.len());
+            buf[..len].copy_from_slice(&link.as_bytes()[..len]);
+            meta.atime = kclock::now().unwrap_or_default();
+            Ok(Some(len))
+        } else {
+            Ok(None)
         }
     }
 

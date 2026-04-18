@@ -120,13 +120,16 @@ impl Dentry {
         }
     }
 
-    pub fn walk_link(self: Arc<Self>) -> SysResult<Arc<Dentry>> {
+    pub fn walk_link(self: Arc<Self>, depth: usize) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
             let mut buffer = [0u8; 255];
             if let Some(length) = inode.readlink(&mut buffer)? {
+                if depth >= 40 {
+                    return Err(Errno::ELOOP);
+                }
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
-                let link_dentry = vfs().lookup_dentry(p, link_name)?;
+                let link_dentry = vfs().lookup_dentry_with_depth(p, link_name, depth + 1)?;
                 return Ok(link_dentry);
             }
         }
@@ -220,6 +223,11 @@ impl Dentry {
 
     pub fn rmdir(self: &Arc<Self>, name: &str) -> SysResult<()> {
         self.remove_child(name, true)
+    }
+
+    pub fn create_symlink(self: &Arc<Self>, name: &str, target: &str, owner: Owner) -> SysResult<()> {
+        let inode = self.create(name, Mode::S_IFLNK | Mode::from_bits_truncate(0o777), owner)?;
+        inode.symlink(target)
     }
 
     pub fn symlink(self: &Arc<Self>, target: &str) -> SysResult<()> {
