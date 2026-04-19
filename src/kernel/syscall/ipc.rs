@@ -9,7 +9,7 @@ use crate::arch;
 use crate::kernel::errno::Errno;
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
-use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalNum, SignalSet, SocketType, UnixSocket, shm, signum};
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SocketType, UnixSocket, shm, signum};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
@@ -181,7 +181,7 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
 
 pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
     let tid = tid as Tid;
-    let signum = (signum as u32).try_into()?;
+    let signum: SignalNum = (signum as u32).try_into()?;
     let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
     if !can_send_signal(tcb.parent(), signum) {
         return Err(Errno::EPERM);
@@ -239,7 +239,7 @@ pub fn rt_sigprocmask(how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<S
     let new_set = if uptr_set.is_null() {
         None
     } else {
-        Some(uptr_set.read()?)
+        Some(uptr_set.read()?.without_unblockable())
     };
 
     // let mut signal_mask = current::tcb().signal_mask.lock();
@@ -284,7 +284,10 @@ pub fn rt_sigaction(
 ) -> SyscallRet {
     assert!(sigsetsize == core::mem::size_of::<SignalSet>());
 
-    let signum = (signum as u32).try_into()?;
+    let signum: SignalNum = (signum as u32).try_into()?;
+    if signum.is_empty() || signum.is_unignorable() {
+        return Err(Errno::EINVAL);
+    }
 
     let mut signal_actions = current::signal_actions().lock();
     if !uptr_oldact.is_null() {
@@ -294,7 +297,8 @@ pub fn rt_sigaction(
 
     if !uptr_act.is_null() {
         let new_action = uptr_act.read()?;
-        let new_action = new_action.try_into()?;
+        let mut new_action: SignalAction = new_action.try_into()?;
+        new_action.mask = new_action.mask.without_unblockable();
 
         signal_actions.set(signum, &new_action)?;
     }

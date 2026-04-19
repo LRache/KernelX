@@ -386,13 +386,13 @@ impl TCB {
     }
 
     pub fn set_signal_mask(&self, mask: SignalSet) {
-        *self.signal_mask.lock() = mask;
+        *self.signal_mask.lock() = mask.without_unblockable();
     }
 
     pub fn swap_signal_mask(&self, mask: SignalSet) -> SignalSet {
         let mut signal_mask = self.signal_mask.lock();
         let old_mask = *signal_mask;
-        *signal_mask = mask;
+        *signal_mask = mask.without_unblockable();
         old_mask
     }
 

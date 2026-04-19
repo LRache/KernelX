@@ -135,6 +135,10 @@ impl SignalSet {
         SignalSet(0)
     }
 
+    pub fn without_unblockable(self) -> Self {
+        SignalSet(self.0 & !(SIGKILL.to_mask() | SIGSTOP.to_mask()))
+    }
+
     pub fn contains(&self, num: SignalNum) -> bool {
         num.is_masked(*self)
     }
