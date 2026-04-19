@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::convert::TryInto;
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
@@ -251,7 +252,10 @@ pub fn pselect6_time32(
         return Err(Errno::EINVAL);
     }
 
-    let timeout: Option<Duration> = uptr_timeout.read_optional()?.map(|ts| ts.into());
+    let timeout: Option<Duration> = match uptr_timeout.read_optional()? {
+        Some(ts) => Some(ts.try_into()?),
+        None => None,
+    };
 
     select(nfds, uptr_readfds, uptr_writefds, uptr_exceptfds, timeout, uptr_sigmask)
 }
@@ -390,11 +394,7 @@ pub fn ppoll_time32(
     uptr_ufds.read(0, &mut pollfds)?;
 
     let timeout = if !uptr_timeout.is_null() {
-        let ts = uptr_timeout.read()?;
-        if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
-            return Err(Errno::EINVAL);
-        }
-        Some(ts.into())
+        Some(uptr_timeout.read()?.try_into()?)
     } else {
         None
     };

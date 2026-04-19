@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
+use core::convert::TryInto;
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
@@ -405,7 +406,7 @@ pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeou
     }
 
     if let Some(ts) = timeout {
-        let timeout_duration = Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32);
+        let timeout_duration: Duration = ts.try_into()?;
         timer::add_timer(current::task().clone(), timeout_duration);
     }
 

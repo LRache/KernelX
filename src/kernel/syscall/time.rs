@@ -1,4 +1,5 @@
 use bitflags::bitflags;
+use core::convert::{TryFrom, TryInto};
 use core::time::Duration;
 
 use crate::driver;
@@ -30,7 +31,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
         return Ok(0);
     }
 
-    let to_sleep = req.into();
+    let to_sleep = Duration::try_from(req)?;
 
     let start_sleep = kclock::now()?;
     timer::add_timer(current::task().clone(), to_sleep);
@@ -66,7 +67,7 @@ pub fn clock_nanosleep(
 
     let flags = ClockNanosleepFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
-    let req: Duration = uptr_req.read()?.into();
+    let req: Duration = uptr_req.read()?.try_into()?;
 
     let to_sleep = if flags.contains(ClockNanosleepFlags::TIMER_ABSTIME) {
         let now = kclock::now()?;

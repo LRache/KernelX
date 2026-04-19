@@ -1,3 +1,4 @@
+use core::convert::TryInto;
 use num_enum::TryFromPrimitive;
 
 use crate::kernel::errno::Errno;
@@ -58,7 +59,7 @@ pub fn futex(
 
             futex::wait_current(kaddr, val as i32, bitset)?;
             if let Some(timeout) = timeout.read_optional()? {
-                timer::add_timer(current::task().clone(), timeout.into());
+                timer::add_timer(current::task().clone(), timeout.try_into()?);
             }
 
             let event = current::block("futex");
