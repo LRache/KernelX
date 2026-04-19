@@ -20,6 +20,8 @@ nolock = ["no-smp"]
 swap-memory = []
 backtrace = []
 
+kvm=[]
+
 [profile.dev]
 panic = "abort"
 

@@ -63,15 +63,25 @@ pub trait FileOps: DowncastSync {
         self.flags().blocked
     }
 
-    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize>;
+    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
+        let _ = (offset, whence);
+        Err(Errno::EOPNOTSUPP)
+    }
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
         Err(Errno::ENOSYS)
     }
     fn fstat(&self) -> SysResult<FileStat>;
-    fn fsync(&self) -> SysResult<()>;
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>>;
-    fn get_dentry(&self) -> Option<&Arc<Dentry>>;
+    fn fsync(&self) -> SysResult<()> {
+        Ok(())
+    }
+
+    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+        None
+    }
+    fn get_dentry(&self) -> Option<&Arc<Dentry>> {
+        None
+    }
 
     fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
         Ok(None)

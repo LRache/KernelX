@@ -11,5 +11,7 @@ mod driver;
 mod fs;
 mod kernel;
 mod klib;
+#[cfg(feature = "kvm")]
+mod kvm;
 mod net;
 // mod platform;

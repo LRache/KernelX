@@ -198,6 +198,14 @@ config ENABLE_SWAP_MEMORY
 	  Enable swap memory support in the kernel.
 	  This feature allows the kernel to swap memory pages to disk when physical memory is low.
 
+config KVM
+	bool "Enable KVM"
+	depends on RISCV64
+	default n
+	help
+	  Enable experimental KVM support.
+	  This option is only available when targeting the RISC-V architecture.
+
 endmenu
 
 menu "QEMU Configuration"

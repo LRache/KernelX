@@ -53,6 +53,10 @@ ifeq ($(CONFIG_ENABLE_SWAP_MEMORY),y)
 RUST_FEATURES += swap-memory
 endif
 
+ifeq ($(CONFIG_KVM),y)
+RUST_FEATURES += kvm
+endif
+
 ifeq ($(CONFIG_WARN_UNIMPLEMENTED_SYSCALL),y)
 RUST_FEATURES += warn-unimplemented-syscall
 endif

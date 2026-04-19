@@ -22,7 +22,7 @@ impl Frame {
     }
 }
 
-pub trait Area {
+pub trait Area: Send {
     fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize>;
     fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize>;
 

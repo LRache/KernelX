@@ -7,6 +7,12 @@ use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall;
 
+pub fn handle_signal() -> bool {
+    let tcb = current::tcb();
+    tcb.recive_pending_signal_from_parent();
+    tcb.handle_signal()
+}
+
 pub fn trap_enter() {
     let tcb = current::tcb();
     let counter = &mut tcb.time_counter.lock();
@@ -16,10 +22,9 @@ pub fn trap_enter() {
 }
 
 pub fn trap_return() {
-    let tcb = current::tcb();
-    tcb.recive_pending_signal_from_parent();
-    tcb.handle_signal();
+    handle_signal();
 
+    let tcb = current::tcb();
     let mut counter = tcb.time_counter.lock();
     counter.user_start = Some(timer::now());
     let system_start = counter.system_start.take().unwrap();

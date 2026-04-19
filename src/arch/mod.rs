@@ -16,6 +16,12 @@ pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
 // pub type MappedPage<'a> = arch_impl::MappedPage<'a>;
 
+cfg_if::cfg_if! {
+    if #[cfg(feature = "kvm")] {
+        pub use arch_impl::{KvmRegs, VCpu};
+    }
+}
+
 pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;
 pub const TRAMPOLINE_BASE: usize = arch_impl::TRAMPOLINE_BASE;

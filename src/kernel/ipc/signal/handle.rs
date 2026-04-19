@@ -13,17 +13,18 @@ use crate::kernel::{config, scheduler};
 use super::{PendingSignal, SignalActionFlags, SignalDefaultAction, SignalNum};
 
 impl TCB {
-    pub fn handle_signal(&self) {
+    /// Handle a pending signal if there is one. Returns true if a signal was handled and the task's execution context was modified to handle the signal, false otherwise.
+    pub fn handle_signal(&self) -> bool {
         let mut state = self.state().lock();
         let signal = match state.pending_signal.take() {
             Some(sig) => sig,
-            None => return,
+            None => return false,
         };
         drop(state);
 
         let signum = signal.signum;
         if signum.is_empty() {
-            return;
+            return false;
         }
 
         if signum.is_kill() {
@@ -31,7 +32,7 @@ impl TCB {
                 sig: signum.num() as u8,
                 coredump: false,
             });
-            return;
+            return true;
         }
 
         let (action, stack) = {
@@ -47,19 +48,19 @@ impl TCB {
                         sig: signum.num() as u8,
                         coredump: false,
                     });
-                    return;
+                    return true;
                 }
                 SignalDefaultAction::Core => {
                     self.parent().exit(ExitStatus::Signal {
                         sig: signum.num() as u8,
                         coredump: true,
                     });
-                    return;
+                    return true;
                 }
-                _ => return,
+                _ => return false,
             }
         } else if action.is_ignore() {
-            return;
+            return false;
         }
 
         let old_mask = self.get_signal_mask();
@@ -113,6 +114,8 @@ impl TCB {
             let ucontext_uaddr = stack_top + core::mem::offset_of!(SigFrame, ucontext);
             user_context.set_arg(1, siginfo_uaddr).set_arg(2, ucontext_uaddr);
         }
+
+        true
     }
 
     pub fn return_from_signal(&self) {

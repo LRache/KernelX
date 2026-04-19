@@ -56,9 +56,13 @@ pub struct AddrSpace {
 
 impl AddrSpace {
     pub fn new() -> Arc<Self> {
+        Self::new_with_pagetable(create_pagetable())
+    }
+
+    pub fn new_with_pagetable(pagetable: PageTable) -> Arc<Self> {
         let addrspace = Arc::new(AddrSpace {
             map_manager: SleepLock::new(maparea::Manager::new(), "AddrSpace::map_manager"),
-            pagetable: SpinLock::new(create_pagetable(), "AddrSpace::pagetable"),
+            pagetable: SpinLock::new(pagetable, "AddrSpace::pagetable"),
             usercontext_frames: SpinLock::new(Vec::new(), "AddrSpace::usercontext_frames"),
 
             #[cfg(feature = "swap-memory")]
@@ -329,3 +333,5 @@ impl Drop for AddrSpace {
         }
     }
 }
+
+unsafe impl Send for AddrSpace {}

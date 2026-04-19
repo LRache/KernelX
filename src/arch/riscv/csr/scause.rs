@@ -13,6 +13,7 @@ pub enum Trap {
     StoreAccessFault = 7,
     EcallU = 8,
     EcallS = 9,
+    EcallVS = 10,
     EcallM = 11,
     InstPageFault = 12,
     LoadPageFault = 13,
@@ -20,6 +21,10 @@ pub enum Trap {
     DoubleTrap = 16,
     SoftwareCheck = 18,
     HardwareError = 19,
+    InstGuestPageFault = 20,
+    LoadGuestPageFault = 21,
+    VirtualInstruction = 22,
+    StoreGuestPageFault = 23,
 }
 
 #[derive(Debug, TryFromPrimitive)]

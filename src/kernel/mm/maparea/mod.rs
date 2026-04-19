@@ -15,3 +15,6 @@ pub use filemap::{PrivateFileMapArea, SharedFileMapArea};
 pub use manager::Manager;
 pub use shm::ShmArea;
 pub use userstack::{AuxKey, Auxv};
+
+#[cfg(feature = "kvm")]
+pub use nofilemap::SwappableNoFileFrame;

@@ -1,5 +1,6 @@
 use crate::arch::UserContextTrait;
 use crate::arch::riscv::cpu::get_cpu_info;
+use crate::arch::riscv::csr::scause::Interrupt;
 use crate::arch::riscv::csr::*;
 use crate::arch::riscv::{TRAMPOLINE_BASE, UserContext, plic};
 use crate::kernel::mm::MemAccessType;
@@ -26,6 +27,66 @@ fn handle_external_interrupt() {
     }
 }
 
+pub fn handle_interrupt(interrupt: Interrupt) {
+    match interrupt {
+        Interrupt::Software => {
+            kinfo!("Software interrupt occurred");
+        }
+        Interrupt::Timer => {
+            trap::timer_interrupt();
+        }
+        Interrupt::External => {
+            handle_external_interrupt();
+        }
+        Interrupt::Counter => {
+            kinfo!("Counter interrupt occurred");
+        }
+    }
+}
+
+pub fn save_float_registers(fpregs: &mut [u64; 33]) {
+    unsafe extern "C" {
+        fn asm_save_float(fpregs: *mut u64);
+        fn asm_save_double(fpregs: *mut u64);
+    }
+
+    let cpu_info = get_cpu_info(current::hart_id());
+    if cpu_info.double_supported() {
+        unsafe {
+            asm_save_double(fpregs.as_mut_ptr());
+        }
+    } else if cpu_info.float_supported() {
+        unsafe {
+            asm_save_float(fpregs.as_mut_ptr());
+        }
+    }
+}
+
+pub fn restore_float_registers(fpregs: &[u64; 33]) {
+    unsafe extern "C" {
+        fn asm_restore_float(fpregs: *const u64);
+        fn asm_restore_double(fpregs: *const u64);
+    }
+
+    let cpu_info = get_cpu_info(current::hart_id());
+    if cpu_info.double_supported() {
+        unsafe {
+            asm_restore_double(fpregs.as_ptr());
+        }
+    } else if cpu_info.float_supported() {
+        unsafe {
+            asm_restore_float(fpregs.as_ptr());
+        }
+    }
+}
+
+pub fn set_stvec_to_kerneltrap_handler() {
+    unsafe extern "C" {
+        fn asm_kerneltrap_entry() -> !;
+    }
+    stvec::write(asm_kerneltrap_entry as usize);
+}
+
 fn svadu_mark_page_accessed(uaddr: usize) -> bool {
     let mut pagetable = current::addrspace().pagetable().lock();
     pagetable.mark_page_accessed(uaddr)
@@ -36,14 +97,6 @@ fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
     pagetable.mark_page_accessed_and_dirty(uaddr)
 }
 
-unsafe extern "C" {
-    fn asm_save_float(fregs: *mut u64);
-    fn asm_save_double(fregs: *mut u64);
-    fn asm_restore_float(fregs: *const u64);
-    fn asm_restore_double(fregs: *const u64);
-    fn asm_kerneltrap_entry() -> !;
-}
-
 pub fn usertrap_handler() -> ! {
     debug_assert!(
         Sstatus::read().sie() == false,
@@ -51,7 +104,8 @@ pub fn usertrap_handler() -> ! {
     );
     debug_assert!(Sstatus::read().spp() == true, "User trap should come from user mode");
 
-    stvec::write(asm_kerneltrap_entry as *const () as usize);
+    set_stvec_to_kerneltrap_handler();
+
     let user_context = current::tcb().user_context();
     user_context.set_user_entry(sepc::read());
 
@@ -59,15 +113,7 @@ pub fn usertrap_handler() -> ! {
     let sstatus = Sstatus::read();
 
     if sstatus.fs() == SstatusFs::Dirty {
-        if cpu_info.double_supported() {
-            unsafe {
-                asm_save_double(user_context.fpregs.as_mut_ptr());
-            }
-        } else if cpu_info.float_supported() {
-            unsafe {
-                asm_save_float(user_context.fpregs.as_mut_ptr());
-            }
-        }
+        save_float_registers(&mut user_context.fpregs);
         user_context.fpregs_dirty = true;
     }
 
@@ -115,20 +161,7 @@ pub fn usertrap_handler() -> ! {
             }
         },
 
-        scause::Cause::Interrupt(interrupt) => match interrupt {
-            scause::Interrupt::Software => {
-                kinfo!("Software interrupt occurred");
-            }
-            scause::Interrupt::Timer => {
-                trap::timer_interrupt();
-            }
-            scause::Interrupt::External => {
-                handle_external_interrupt();
-            }
-            scause::Interrupt::Counter => {
-                kinfo!("Counter interrupt occurred");
-            }
-        },
+        scause::Cause::Interrupt(interrupt) => handle_interrupt(interrupt),
     }
 
     if current::tcb().is_exited() {
@@ -168,22 +201,9 @@ pub fn return_to_user() -> ! {
     stvec::write(TRAMPOLINE_BASE);
     sscratch::write(tcb.get_user_context_uaddr());
 
-    let cpu_info = get_cpu_info(current::hart_id());
-    if cpu_info.double_supported() {
-        unsafe {
-            asm_restore_double(tcb.user_context().fpregs.as_ptr());
-        }
-    } else if cpu_info.float_supported() {
-        unsafe {
-            asm_restore_float(tcb.user_context().fpregs.as_ptr());
-        }
-    }
-
     let user_context = tcb.user_context();
     if user_context.fpregs_dirty {
-        unsafe {
-            asm_restore_double(user_context.fpregs.as_mut_ptr());
-        }
+        restore_float_registers(&user_context.fpregs);
         user_context.fpregs_dirty = false;
     }
 
@@ -244,20 +264,7 @@ pub fn kerneltrap_handler() {
             }
         },
 
-        scause::Cause::Interrupt(interrupt) => match interrupt {
-            scause::Interrupt::Software => {
-                kinfo!("Kernel software interrupt occurred");
-            }
-            scause::Interrupt::Timer => {
-                trap::timer_interrupt();
-            }
-            scause::Interrupt::External => {
-                handle_external_interrupt();
-            }
-            scause::Interrupt::Counter => {
-                kinfo!("Kernel counter interrupt occurred");
-            }
-        },
+        scause::Cause::Interrupt(interrupt) => handle_interrupt(interrupt),
     }
 
     Sstatus::read().set_spp(false).write(); // Set previous mode to supervisor

@@ -9,6 +9,8 @@ use crate::fs::memtreefs::inode::Inode as MemInode;
 use crate::fs::{InodeOps, Mode, Owner, memtreefs};
 use crate::klib::InitedCell;
 
+#[cfg(feature = "kvm")]
+use super::inode::KvmInode;
 use super::{LoopInode, NullInode, RtcInode, URandomInode, ZeroInode};
 
 struct DevfsInfo;
@@ -48,6 +50,9 @@ pub fn init() {
         Arc::new(URandomInode::new(superblock.alloc_inode_number())),
     )
     .unwrap();
+    #[cfg(feature = "kvm")]
+    root.add_child("kvm".into(), Arc::new(KvmInode::new(superblock.alloc_inode_number())))
+        .unwrap();
 
     // Create /dev/misc/ directory and add rtc
     let misc_dir = root

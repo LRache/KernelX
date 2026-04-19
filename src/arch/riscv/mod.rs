@@ -13,6 +13,13 @@ pub use pagetable::*;
 pub use switch::kernel_switch;
 pub use task::*;
 
+cfg_if::cfg_if! {
+    if #[cfg(feature = "kvm")] {
+        mod kvm;
+        pub use kvm::{KvmRegs, VCpu};
+    }
+}
+
 use cpu::{core_count, time_frequency};
 
 pub const PGBITS: usize = 12; // 4KB page size
