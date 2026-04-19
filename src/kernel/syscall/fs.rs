@@ -296,6 +296,10 @@ pub struct IOVec {
 
 impl UserStruct for IOVec {}
 
+fn check_positional_io(file: &Arc<dyn FileOps>) -> SysResult<()> {
+    file.seek(0, SeekWhence::CUR).map(|_| ())
+}
+
 pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     if (iovcnt as isize) < 0 {
         return Err(Errno::EINVAL);
@@ -377,6 +381,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
     }
 
     let file = current::fdtable().lock().get(fd)?;
+    check_positional_io(&file)?;
     if !file.readable() {
         return Err(Errno::EBADF);
     }
@@ -461,11 +466,6 @@ pub fn preadv2(
         return Err(Errno::EOPNOTSUPP);
     }
 
-    let file = current::fdtable().lock().get(fd)?;
-    if !file.readable() {
-        return Err(Errno::EBADF);
-    }
-
     let pos_u64 = (((pos_h & 0xffff_ffff) as u64) << 32) | ((pos_l & 0xffff_ffff) as u64);
     let pos = pos_u64 as usize;
 
@@ -486,6 +486,11 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
 
     if (count as isize) < 0 || (pos as isize) < 0 {
         return Err(Errno::EINVAL);
+    }
+
+    check_positional_io(&file)?;
+    if !file.readable() {
+        return Err(Errno::EBADF);
     }
 
     let mut written = 0;
@@ -525,6 +530,7 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
     }
 
     let file = current::fdtable().lock().get(fd)?;
+    check_positional_io(&file)?;
     if !file.writable() {
         return Err(Errno::EBADF);
     }
@@ -553,12 +559,16 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
     Ok(written)
 }
 
-pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
-    if (iovcnt as isize) < 0 {
+pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> SyscallRet {
+    if (iovcnt as isize) < 0 || (pos as isize) < 0 {
         return Err(Errno::EINVAL);
     }
 
     let file = current::fdtable().lock().get(fd)?;
+    check_positional_io(&file)?;
+    if !file.writable() {
+        return Err(Errno::EBADF);
+    }
 
     if iovcnt == 0 {
         return Ok(0);
@@ -566,9 +576,10 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
 
     uptr_iov.should_not_null()?;
 
-    let mut total_written = 0;
+    let mut total_written = 0usize;
+    let mut offset = 0usize;
 
-    'outer: for i in 0..iovcnt {
+    for i in 0..iovcnt {
         let iov = match uptr_iov.add(i).read() {
             Ok(iov) => iov,
             Err(e) => {
@@ -597,22 +608,24 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
             if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
                 if total_written + written > 0 {
-                    break 'outer;
+                    return Ok(total_written + written);
                 }
                 return Err(Errno::EFAULT);
             }
 
-            match file.write(&buffer[..to_write]) {
+            let write_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
+            match file.pwrite(&buffer[..to_write], write_pos) {
                 Ok(bytes_written) => {
                     remaining -= bytes_written;
                     written += bytes_written;
+                    offset = offset.checked_add(bytes_written).ok_or(Errno::EINVAL)?;
                     if bytes_written != to_write {
-                        break; // short write
+                        return Ok(total_written + written);
                     }
                 }
                 Err(e) => {
                     if total_written + written > 0 {
-                        break 'outer;
+                        return Ok(total_written + written);
                     }
                     return Err(e);
                 }
@@ -623,6 +636,108 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     }
 
     Ok(total_written)
+}
+
+pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
+    if (iovcnt as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let file = current::fdtable().lock().get(fd)?;
+    if !file.writable() {
+        return Err(Errno::EBADF);
+    }
+
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+
+    uptr_iov.should_not_null()?;
+
+    let mut total_written = 0;
+
+    for i in 0..iovcnt {
+        let iov = match uptr_iov.add(i).read() {
+            Ok(iov) => iov,
+            Err(e) => {
+                if total_written > 0 {
+                    break;
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        if iov.len == 0 {
+            continue;
+        }
+        if (iov.len as isize) < 0 {
+            if total_written > 0 {
+                break;
+            }
+            return Err(Errno::EINVAL);
+        }
+
+        let mut written = 0usize;
+        let mut remaining = iov.len;
+        let mut buffer = [0u8; BUFFER_SIZE];
+        while remaining != 0 {
+            let to_write = core::cmp::min(remaining, BUFFER_SIZE);
+            if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
+                if total_written + written > 0 {
+                    return Ok(total_written + written);
+                }
+                return Err(Errno::EFAULT);
+            }
+
+            match file.write(&buffer[..to_write]) {
+                Ok(bytes_written) => {
+                    remaining -= bytes_written;
+                    written += bytes_written;
+                    if bytes_written != to_write {
+                        return Ok(total_written + written);
+                    }
+                }
+                Err(e) => {
+                    if total_written + written > 0 {
+                        return Ok(total_written + written);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        total_written += written;
+    }
+
+    Ok(total_written)
+}
+
+pub fn pwritev2(
+    fd: usize,
+    uptr_iov: UPtr<IOVec>,
+    iovcnt: usize,
+    pos_l: usize,
+    pos_h: usize,
+    flags: usize,
+) -> SyscallRet {
+    if (iovcnt as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    if flags != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
+    let pos_u64 = (((pos_h & 0xffff_ffff) as u64) << 32) | ((pos_l & 0xffff_ffff) as u64);
+    let pos = pos_u64 as usize;
+
+    // Linux pwritev2 semantics: offset == -1 means use and advance the current file offset.
+    if pos == usize::MAX {
+        return writev(fd, uptr_iov, iovcnt);
+    }
+
+    pwritev(fd, uptr_iov, iovcnt, pos)
 }
 
 pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {

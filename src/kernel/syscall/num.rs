@@ -38,6 +38,7 @@ macro_rules! syscall_entries {
             67  => fs::pread64(4),
             68  => fs::pwrite64(4),
             69  => fs::preadv(4),
+            70  => fs::pwritev(4),
             71  => fs::sendfile(4),
             78  => fs::readlinkat(4),
             79  => fs::fstatat(4),
@@ -47,6 +48,7 @@ macro_rules! syscall_entries {
             166 => fs::umask(1),
             276 => fs::renameat2(5),
             286 => fs::preadv2(6),
+            287 => fs::pwritev2(6),
             436 => fs::close_range(3),
             439 => fs::faccessat2(4),
 
