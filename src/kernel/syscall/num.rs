@@ -40,6 +40,7 @@ macro_rules! syscall_entries {
             69  => fs::preadv(4),
             70  => fs::pwritev(4),
             71  => fs::sendfile(4),
+            76  => fs::splice(6),
             78  => fs::readlinkat(4),
             79  => fs::fstatat(4),
             80  => fs::newfstat(2),

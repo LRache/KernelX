@@ -7,9 +7,9 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::fs::{Dentry, Mode, Owner, Perm, PermFlags, vfs};
+use crate::fs::{vfs, Dentry, Mode, Owner, Perm, PermFlags};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
+use crate::kernel::ipc::{signum, KSiFields, Pipe, SiCode};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
@@ -859,6 +859,176 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     }
 
     Ok(total_sent)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SpliceFlags: usize {
+        const MOVE = 1;
+        const NONBLOCK = 1 << 1;
+        const MORE = 1 << 2;
+        const GIFT = 1 << 3;
+    }
+}
+
+fn splice_offsets(file: &Arc<dyn FileOps>, uptr_offset: UPtr<usize>, is_pipe: bool) -> SysResult<Option<usize>> {
+    if uptr_offset.is_null() {
+        return Ok(None);
+    }
+
+    if is_pipe {
+        return Err(Errno::ESPIPE);
+    }
+
+    let offset = uptr_offset.read()?;
+    if (offset as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    check_positional_io(file)?;
+    Ok(Some(offset))
+}
+
+fn splice_advance_offset(offset: &mut Option<usize>, delta: usize) -> SysResult<()> {
+    if let Some(pos) = offset {
+        *pos = pos.checked_add(delta).ok_or(Errno::EINVAL)?;
+    }
+    Ok(())
+}
+
+fn splice_pipe_blocked(file: &Arc<dyn FileOps>, flags: SpliceFlags) -> Option<bool> {
+    file.downcast_ref::<Pipe>()
+        .map(|_| !flags.contains(SpliceFlags::NONBLOCK))
+}
+
+fn splice_read_chunk(
+    file: &Arc<dyn FileOps>,
+    offset: Option<usize>,
+    flags: SpliceFlags,
+    buf: &mut [u8],
+) -> SysResult<usize> {
+    match offset {
+        Some(pos) => file.pread(buf, pos),
+        None => match (file.downcast_ref::<Pipe>(), splice_pipe_blocked(file, flags)) {
+            (Some(pipe), Some(blocked)) => pipe.read_with_blocked(buf, blocked),
+            _ => file.read(buf),
+        },
+    }
+}
+
+fn splice_write_chunk(
+    file: &Arc<dyn FileOps>,
+    offset: Option<usize>,
+    flags: SpliceFlags,
+    buf: &[u8],
+) -> SysResult<usize> {
+    match offset {
+        Some(pos) => file.pwrite(buf, pos),
+        None => match (file.downcast_ref::<Pipe>(), splice_pipe_blocked(file, flags)) {
+            (Some(pipe), Some(blocked)) => pipe.write_with_blocked(buf, blocked),
+            _ => file.write(buf),
+        },
+    }
+}
+
+pub fn splice(
+    in_fd: usize,
+    uptr_off_in: UPtr<usize>,
+    out_fd: usize,
+    uptr_off_out: UPtr<usize>,
+    len: usize,
+    flags: usize,
+) -> SyscallRet {
+    let flags = SpliceFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+
+    let mut fdtable = current::fdtable().lock();
+    let in_file = fdtable.get(in_fd)?;
+    let out_file = fdtable.get(out_fd)?;
+    drop(fdtable);
+
+    if !in_file.readable() || !out_file.writable() {
+        return Err(Errno::EBADF);
+    }
+    if out_file.flags().append {
+        return Err(Errno::EINVAL);
+    }
+
+    let in_is_pipe = in_file.downcast_ref::<Pipe>().is_some();
+    let out_is_pipe = out_file.downcast_ref::<Pipe>().is_some();
+    if !in_is_pipe && !out_is_pipe {
+        return Err(Errno::EINVAL);
+    }
+
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let mut in_offset = splice_offsets(&in_file, uptr_off_in, in_is_pipe)?;
+    let mut out_offset = splice_offsets(&out_file, uptr_off_out, out_is_pipe)?;
+
+    let mut total_moved = 0usize;
+    let mut left = len;
+    let mut buffer = [0u8; BUFFER_SIZE];
+
+    while left > 0 {
+        let to_read = core::cmp::min(left, BUFFER_SIZE);
+        let bytes_read = match splice_read_chunk(&in_file, in_offset, flags, &mut buffer[..to_read]) {
+            Ok(n) => n,
+            Err(e) => {
+                if total_moved > 0 {
+                    break;
+                }
+                return Err(e);
+            }
+        };
+        if bytes_read == 0 {
+            break;
+        }
+
+        let mut moved_from_chunk = 0usize;
+        while moved_from_chunk < bytes_read {
+            let write_buf = &buffer[moved_from_chunk..bytes_read];
+            let bytes_written = match splice_write_chunk(&out_file, out_offset, flags, write_buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    if total_moved + moved_from_chunk > 0 {
+                        break;
+                    }
+                    return Err(e);
+                }
+            };
+
+            if bytes_written == 0 {
+                break;
+            }
+
+            moved_from_chunk += bytes_written;
+            splice_advance_offset(&mut out_offset, bytes_written)?;
+        }
+
+        splice_advance_offset(&mut in_offset, moved_from_chunk)?;
+        total_moved += moved_from_chunk;
+        left -= moved_from_chunk;
+
+        if moved_from_chunk < bytes_read {
+            if in_offset.is_none() {
+                let unread = bytes_read - moved_from_chunk;
+                if unread > 0 {
+                    let _ = in_file.seek(-(unread as isize), SeekWhence::CUR);
+                }
+            }
+            break;
+        }
+    }
+
+    if !uptr_off_in.is_null() {
+        uptr_off_in.write(in_offset.unwrap())?;
+    }
+    if !uptr_off_out.is_null() {
+        uptr_off_out.write(out_offset.unwrap())?;
+    }
+
+    Ok(total_moved)
 }
 
 #[repr(usize)]

@@ -4,8 +4,8 @@ use crate::fs::file::{FileFlags, FileOps, SeekWhence};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
-use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
@@ -52,11 +52,27 @@ impl Pipe {
     pub fn set_pipe_size(&self, size: usize) -> SysResult<usize> {
         self.inner.set_capacity(size)
     }
+
+    pub fn read_with_blocked(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize> {
+        self.inner.read(buf, blocked)
+    }
+
+    pub fn read_to_user_with_blocked(&self, ubuf: &UAddrSpaceBuffer, blocked: bool) -> SysResult<usize> {
+        self.inner.read_to_user(ubuf, blocked)
+    }
+
+    pub fn write_with_blocked(&self, buf: &[u8], blocked: bool) -> SysResult<usize> {
+        self.inner.write(buf, blocked)
+    }
+
+    pub fn write_from_user_with_blocked(&self, ubuf: &UAddrSpaceBuffer, blocked: bool) -> SysResult<usize> {
+        self.inner.write_from_user(ubuf, blocked)
+    }
 }
 
 impl FileOps for Pipe {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        self.inner.read(buf, *self.blocked.lock())
+        self.read_with_blocked(buf, *self.blocked.lock())
     }
 
     fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
@@ -64,13 +80,11 @@ impl FileOps for Pipe {
     }
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        let blocked = *self.blocked.lock();
-        self.inner.read_to_user(ubuf, blocked)
+        self.read_to_user_with_blocked(ubuf, *self.blocked.lock())
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
-        let blocked = *self.blocked.lock();
-        self.inner.write(buf, blocked)
+        self.write_with_blocked(buf, *self.blocked.lock())
     }
 
     fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
@@ -78,8 +92,7 @@ impl FileOps for Pipe {
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        let blocked = *self.blocked.lock();
-        self.inner.write_from_user(ubuf, blocked)
+        self.write_from_user_with_blocked(ubuf, *self.blocked.lock())
     }
 
     fn flags(&self) -> FileFlags {
