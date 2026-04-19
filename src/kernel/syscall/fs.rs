@@ -513,10 +513,20 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
 }
 
 pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet {
-    let file = current::fdtable().lock().get(fd)?;
-
     if count == 0 {
         return Ok(0);
+    }
+
+    if (pos as isize) < 0 || (count as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    if ubuf.is_null() {
+        return Err(Errno::EFAULT);
+    }
+
+    let file = current::fdtable().lock().get(fd)?;
+    if !file.writable() {
+        return Err(Errno::EBADF);
     }
 
     let mut written = 0;
