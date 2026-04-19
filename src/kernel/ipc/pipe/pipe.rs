@@ -74,7 +74,7 @@ impl FileOps for Pipe {
     }
 
     fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
-        Err(Errno::EPIPE)
+        Err(Errno::ESPIPE)
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
