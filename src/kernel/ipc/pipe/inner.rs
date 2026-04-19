@@ -1,8 +1,11 @@
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::arch;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
-use crate::kernel::ipc::{KSiFields, SiCode, signum};
+use crate::kernel::ipc::{signum, KSiFields, SiCode};
 use crate::kernel::mm::page;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
@@ -36,6 +39,10 @@ impl FIFO {
         unsafe { &mut *self.data }
     }
 
+    fn data(&self) -> &[u8; PIPE_CAPACITY] {
+        unsafe { &*self.data }
+    }
+
     fn pop_front(&mut self) -> Option<u8> {
         if self.length == 0 {
             return None;
@@ -67,6 +74,24 @@ impl FIFO {
         // crate::kinfo!("after pop front, len={}", self.length);
 
         Ok(n)
+    }
+
+    fn peek_front(&self, buf: &mut [u8]) -> usize {
+        let n = core::cmp::min(buf.len(), self.length);
+        if n == 0 {
+            return 0;
+        }
+
+        let head = self.head;
+        if head + n <= PIPE_CAPACITY {
+            buf[..n].copy_from_slice(&self.data()[head..head + n]);
+        } else {
+            let first_part = PIPE_CAPACITY - head;
+            buf[..first_part].copy_from_slice(&self.data()[head..PIPE_CAPACITY]);
+            buf[first_part..n].copy_from_slice(&self.data()[0..n - first_part]);
+        }
+
+        n
     }
 
     fn push_back(&mut self, byte: u8) -> bool {
@@ -267,6 +292,42 @@ impl PipeInner {
             drop(fifo);
             self.read_waiter.lock().wake_all(|e| e);
             Ok(buf.len())
+        }
+    }
+
+    pub fn peek(&self, len: usize, blocked: bool) -> SysResult<Vec<u8>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
+        loop {
+            let fifo = self.fifo.lock();
+
+            if fifo.len() > 0 {
+                let n = core::cmp::min(len, fifo.len());
+                let mut buf = vec![0u8; n];
+                fifo.peek_front(&mut buf);
+                return Ok(buf);
+            }
+
+            if *self.writer_count.lock() == 0 {
+                return Ok(Vec::new());
+            }
+
+            drop(fifo);
+
+            if !blocked {
+                return Err(Errno::EAGAIN);
+            }
+
+            self.read_waiter.lock().wait_current(Event::ReadReady);
+            current::schedule();
+
+            match current::task().take_wakeup_event().unwrap() {
+                Event::ReadReady => {}
+                Event::Signal => return Err(Errno::EINTR),
+                _ => unreachable!(),
+            }
         }
     }
 

@@ -1031,6 +1031,63 @@ pub fn splice(
     Ok(total_moved)
 }
 
+pub fn tee(in_fd: usize, out_fd: usize, len: usize, flags: usize) -> SyscallRet {
+    let flags = SpliceFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+
+    let mut fdtable = current::fdtable().lock();
+    let in_file = fdtable.get(in_fd)?;
+    let out_file = fdtable.get(out_fd)?;
+    drop(fdtable);
+
+    if !in_file.readable() || !out_file.writable() {
+        return Err(Errno::EBADF);
+    }
+
+    let in_pipe = in_file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
+    let out_pipe = out_file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
+
+    if in_pipe.is_same_pipe(out_pipe) {
+        return Err(Errno::EINVAL);
+    }
+
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let blocked = !flags.contains(SpliceFlags::NONBLOCK);
+    let buffer = in_pipe.peek_with_blocked(len, blocked)?;
+    if buffer.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total_moved = 0usize;
+    while total_moved < buffer.len() {
+        let end = core::cmp::min(total_moved + BUFFER_SIZE, buffer.len());
+        let chunk_len = end - total_moved;
+        let bytes_written = match out_pipe.write_with_blocked(&buffer[total_moved..end], blocked) {
+            Ok(n) => n,
+            Err(e) => {
+                if total_moved > 0 {
+                    break;
+                }
+                return Err(e);
+            }
+        };
+
+        if bytes_written == 0 {
+            break;
+        }
+
+        total_moved += bytes_written;
+
+        if bytes_written < chunk_len {
+            break;
+        }
+    }
+
+    Ok(total_moved)
+}
+
 #[repr(usize)]
 #[derive(TryFromPrimitive)]
 enum IOCTLReq {

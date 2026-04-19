@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::fs::file::{FileFlags, FileOps, SeekWhence};
 use crate::fs::{Dentry, InodeOps, Mode};
@@ -67,6 +68,14 @@ impl Pipe {
 
     pub fn write_from_user_with_blocked(&self, ubuf: &UAddrSpaceBuffer, blocked: bool) -> SysResult<usize> {
         self.inner.write_from_user(ubuf, blocked)
+    }
+
+    pub fn peek_with_blocked(&self, len: usize, blocked: bool) -> SysResult<Vec<u8>> {
+        self.inner.peek(len, blocked)
+    }
+
+    pub fn is_same_pipe(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
