@@ -1063,7 +1063,6 @@ pub fn tee(in_fd: usize, out_fd: usize, len: usize, flags: usize) -> SyscallRet 
     let mut total_moved = 0usize;
     while total_moved < buffer.len() {
         let end = core::cmp::min(total_moved + BUFFER_SIZE, buffer.len());
-        let chunk_len = end - total_moved;
         let bytes_written = match out_pipe.write_with_blocked(&buffer[total_moved..end], blocked) {
             Ok(n) => n,
             Err(e) => {
@@ -1080,7 +1079,7 @@ pub fn tee(in_fd: usize, out_fd: usize, len: usize, flags: usize) -> SyscallRet 
 
         total_moved += bytes_written;
 
-        if bytes_written < chunk_len {
+        if bytes_written < end - total_moved + bytes_written {
             break;
         }
     }
