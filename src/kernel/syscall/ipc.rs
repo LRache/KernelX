@@ -322,6 +322,8 @@ bitflags! {
     }
 }
 
+const MINSIGSTKSZ: usize = 2048;
+
 pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) -> SyscallRet {
     uptr_ss.should_not_null()?;
 
@@ -347,6 +349,9 @@ pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) ->
         let flags = SignalStackFlags::from_bits(stack.ss_flags).ok_or(Errno::EINVAL)?;
         if flags.contains(SignalStackFlags::SS_ONSTACK) {
             return Err(Errno::EINVAL);
+        }
+        if !flags.contains(SignalStackFlags::SS_DISABLE) && stack.ss_size < MINSIGSTKSZ {
+            return Err(Errno::ENOMEM);
         }
 
         let s = if flags.contains(SignalStackFlags::SS_DISABLE) {
