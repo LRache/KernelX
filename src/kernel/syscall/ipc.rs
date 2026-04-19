@@ -9,7 +9,9 @@ use crate::arch;
 use crate::kernel::errno::Errno;
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
-use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SocketType, UnixSocket, shm, signum};
+use crate::kernel::ipc::{
+    KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SocketType, UnixSocket, shm, signum,
+};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};

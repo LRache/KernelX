@@ -5,7 +5,7 @@ use crate::arch;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
-use crate::kernel::ipc::{signum, KSiFields, SiCode};
+use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::page;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;

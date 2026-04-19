@@ -5,8 +5,8 @@ use crate::fs::file::{FileFlags, FileOps, SeekWhence};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
-use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::AddrSpace;
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
