@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
@@ -7,12 +8,12 @@ use crate::arch;
 use crate::kernel::errno::Errno;
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
-use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalSet, SocketType, UnixSocket, shm};
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalNum, SignalSet, SocketType, UnixSocket, shm, signum};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
 use crate::kernel::task::fdtable::FDFlags;
-use crate::kernel::task::manager;
+use crate::kernel::task::{PCB, manager};
 use crate::kernel::uapi::OpenFlags;
 use crate::kernel::{config, uapi};
 use crate::net::socket::{AddressFamily, SOCK_CLOEXEC, SOCK_NONBLOCK, SocketKind};
@@ -89,33 +90,109 @@ pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UAr
     Ok(0)
 }
 
-pub fn kill(pid: usize, signum: usize) -> SyscallRet {
-    let pid = pid as i32;
-    let signum = signum as u32;
+fn collect_target_pcbs<F>(mut predicate: F) -> Vec<Arc<PCB>>
+where
+    F: FnMut(&PCB) -> bool,
+{
+    let mut targets = Vec::new();
+    let tcbs = manager::tcbs().lock();
+    for tcb in tcbs.values() {
+        let pcb = tcb.parent().clone();
+        if !predicate(&pcb) {
+            continue;
+        }
+        if targets.iter().any(|target| Arc::ptr_eq(target, &pcb)) {
+            continue;
+        }
+        targets.push(pcb);
+    }
+    targets
+}
 
-    if pid > 0 {
-        let tcb = manager::get(pid).ok_or(Errno::ESRCH)?;
-        tcb.parent().send_signal(
-            signum.try_into()?,
-            SiCode::SI_USER,
-            KSiFields::kill(current::pid(), current::uid()),
-            None,
-        )?;
+fn can_send_signal(target: &PCB, signum: SignalNum) -> bool {
+    let caller = current::pcb();
+    if caller.euid() == 0 {
+        return true;
     }
 
-    Ok(0)
+    let caller_ruid = caller.uid();
+    let caller_euid = caller.euid();
+    if caller_ruid == target.uid()
+        || caller_ruid == target.suid()
+        || caller_euid == target.uid()
+        || caller_euid == target.suid()
+    {
+        return true;
+    }
+
+    signum == signum::SIGCONT && caller.sid() == target.sid()
+}
+
+pub fn kill(pid: usize, signum: usize) -> SyscallRet {
+    let pid = pid as i32;
+    let signum: SignalNum = (signum as u32).try_into()?;
+    let fields = KSiFields::kill(current::pid(), current::uid());
+    let targets = match pid {
+        1.. => {
+            let tcb = manager::get(pid).ok_or(Errno::ESRCH)?;
+            let mut targets = Vec::new();
+            targets.push(Arc::clone(tcb.parent()));
+            targets
+        }
+        0 => {
+            let caller_pgid = current::pcb().pgid();
+            crate::kinfo!("kill: sending signal to process group {}", caller_pgid);
+            collect_target_pcbs(|pcb| pcb.pgid() == caller_pgid)
+        }
+        -1 => {
+            let caller_pid = current::pid();
+            collect_target_pcbs(|pcb| pcb.pid() != manager::INIT_UTASK_TID && pcb.pid() != caller_pid)
+        }
+        _ => {
+            let target_pgid = pid.checked_neg().ok_or(Errno::ESRCH)?;
+            collect_target_pcbs(|pcb| pcb.pgid() == target_pgid)
+        }
+    };
+
+    if targets.is_empty() {
+        return Err(Errno::ESRCH);
+    }
+
+    if signum.is_empty() {
+        return if targets.iter().any(|pcb| can_send_signal(pcb, signum)) {
+            Ok(0)
+        } else {
+            Err(Errno::EPERM)
+        };
+    }
+
+    let mut sent = false;
+    for pcb in targets {
+        if !can_send_signal(&pcb, signum) {
+            continue;
+        }
+        pcb.send_signal(signum, SiCode::SI_USER, fields, None)?;
+        sent = true;
+    }
+
+    if sent { Ok(0) } else { Err(Errno::EPERM) }
 }
 
 pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
     let tid = tid as Tid;
     let signum = (signum as u32).try_into()?;
     let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
-    tcb.parent().send_signal(
-        signum,
-        SiCode::SI_TKILL,
-        KSiFields::kill(current::pid(), current::uid()),
-        Some(tid),
-    )?;
+    if !can_send_signal(tcb.parent(), signum) {
+        return Err(Errno::EPERM);
+    }
+    if !signum.is_empty() {
+        tcb.parent().send_signal(
+            signum,
+            SiCode::SI_TKILL,
+            KSiFields::kill(current::pid(), current::uid()),
+            Some(tid),
+        )?;
+    }
 
     Ok(0)
 }
@@ -123,12 +200,21 @@ pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
 pub fn tgkill(tgid: usize, tid: usize, signum: usize) -> SyscallRet {
     let tgid = tgid as i32;
     let tid = tid as i32;
-    let signum = signum as u32;
+    let signum: SignalNum = (signum as u32).try_into()?;
+    if tgid <= 0 || tid <= 0 {
+        return Err(Errno::EINVAL);
+    }
 
-    if tgid >= 0 {
-        let tcb = manager::get(tgid).ok_or(Errno::ESRCH)?;
+    let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
+    if tcb.parent().pid() != tgid {
+        return Err(Errno::ESRCH);
+    }
+    if !can_send_signal(tcb.parent(), signum) {
+        return Err(Errno::EPERM);
+    }
+    if !signum.is_empty() {
         tcb.parent().send_signal(
-            signum.try_into()?,
+            signum,
             SiCode::SI_TKILL,
             KSiFields::kill(current::pid(), current::uid()),
             Some(tid),
@@ -282,6 +368,12 @@ pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
         *signal_mask = set;
         old
     };
+
+    tcb.recive_pending_signal_from_parent();
+    if tcb.state().lock().pending_signal.is_some() {
+        *tcb.signal_mask.lock() = old;
+        return Err(Errno::EINTR);
+    }
 
     let event = current::block("sigsuspend");
 

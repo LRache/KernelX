@@ -117,7 +117,7 @@ impl PCB {
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
 
             signal: Signal {
-                actions: SpinLock::new(SignalActionTable::new(), "PCB::signal.actions"),
+                actions: SpinLock::new(parent.signal.actions.lock().clone(), "PCB::signal.actions"),
                 pending: SpinLock::new(PendingSignalQueue::new(), "PCB::signal.pending"),
             },
 
@@ -530,7 +530,9 @@ impl PCB {
                         Event::Signal => {
                             return Err(Errno::EINTR);
                         }
-                        _ => unreachable!("Unexpected event in wait_child: {:?}", event),
+                        _ => {
+                            unreachable!("Unexpected event in wait_child: {:?}", event);
+                        }
                     }
                 }
 

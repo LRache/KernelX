@@ -282,6 +282,7 @@ impl TCB {
         };
 
         let new_tcb = Self::new(tid, parent, new_user_context, new_addrspace, new_fdtable);
+        new_tcb.set_signal_mask(self.get_signal_mask());
 
         new_tcb
     }

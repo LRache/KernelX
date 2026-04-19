@@ -47,6 +47,7 @@ impl SignalAction {
     }
 }
 
+#[derive(Clone)]
 pub struct SignalActionTable {
     actions: [SignalAction; 63],
     stack: Option<(usize, usize)>, // (ss_sp, ss_size)
