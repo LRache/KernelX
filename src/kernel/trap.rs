@@ -59,7 +59,7 @@ pub fn syscall(num: usize, args: &syscall::Args, ret_arg_value: usize) -> usize 
 
     let ret = syscall::syscall(num, args);
 
-    if ret == Err(Errno::EINTR) {
+    if ret == Err(Errno::EINTR) && syscall::should_restart_on_eintr(num) {
         tcb.push_ucontext_syscall_retreg(Some(ret_arg_value));
     }
 
