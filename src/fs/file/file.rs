@@ -130,7 +130,10 @@ impl FileOps for File {
         Ok(len)
     }
 
-    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+    fn pwrite(&self, buf: &[u8], mut offset: usize) -> SysResult<usize> {
+        if self.flags.append {
+            offset = self.inode.size()? as usize;
+        }
         let len = self.inode.writeat(buf, offset)?;
         Ok(len)
     }
