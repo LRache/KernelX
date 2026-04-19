@@ -440,9 +440,11 @@ impl InodeOps for TaskStatusInode {
         let uid = pcb.uid();
         let euid = pcb.euid();
         let suid = pcb.suid();
+        let fsuid = pcb.fsuid();
         let gid = pcb.gid();
         let egid = pcb.egid();
         let sgid = pcb.sgid();
+        let fsgid = pcb.fsgid();
         let umask = pcb.umask();
 
         let exec_path = pcb.exec_path();
@@ -460,8 +462,8 @@ impl InodeOps for TaskStatusInode {
         let _ = writeln!(content, "Tgid:\t{}", tgid);
         let _ = writeln!(content, "Pid:\t{}", pid);
         let _ = writeln!(content, "PPid:\t{}", ppid);
-        let _ = writeln!(content, "Uid:\t{}\t{}\t{}\t{}", uid, euid, suid, euid);
-        let _ = writeln!(content, "Gid:\t{}\t{}\t{}\t{}", gid, egid, sgid, egid);
+        let _ = writeln!(content, "Uid:\t{}\t{}\t{}\t{}", uid, euid, suid, fsuid);
+        let _ = writeln!(content, "Gid:\t{}\t{}\t{}\t{}", gid, egid, sgid, fsgid);
 
         let content_bytes = content.as_bytes();
         if offset >= content_bytes.len() {

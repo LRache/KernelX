@@ -86,9 +86,11 @@ pub struct PCB {
     uid: SpinLock<Uid>,
     euid: SpinLock<Uid>,
     suid: SpinLock<Uid>,
+    fsuid: SpinLock<Uid>,
     gid: SpinLock<Uid>,
     egid: SpinLock<Uid>,
     sgid: SpinLock<Uid>,
+    fsgid: SpinLock<Uid>,
     supplementary_gids: SpinLock<Vec<Uid>>,
 
     pgid: SpinLock<Pid>,
@@ -130,9 +132,11 @@ impl PCB {
             uid: SpinLock::new(*parent.uid.lock(), "PCB::uid"),
             euid: SpinLock::new(*parent.euid.lock(), "PCB::euid"),
             suid: SpinLock::new(*parent.suid.lock(), "PCB::suid"),
+            fsuid: SpinLock::new(*parent.fsuid.lock(), "PCB::fsuid"),
             gid: SpinLock::new(*parent.gid.lock(), "PCB::gid"),
             egid: SpinLock::new(*parent.egid.lock(), "PCB::egid"),
             sgid: SpinLock::new(*parent.sgid.lock(), "PCB::sgid"),
+            fsgid: SpinLock::new(*parent.fsgid.lock(), "PCB::fsgid"),
             supplementary_gids: SpinLock::new(parent.supplementary_gids.lock().clone(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(pgid, "PCB::pgid"),
@@ -181,9 +185,11 @@ impl PCB {
             uid: SpinLock::new(0, "PCB::uid"),
             euid: SpinLock::new(0, "PCB::euid"),
             suid: SpinLock::new(0, "PCB::suid"),
+            fsuid: SpinLock::new(0, "PCB::fsuid"),
             gid: SpinLock::new(0, "PCB::gid"),
             egid: SpinLock::new(0, "PCB::egid"),
             sgid: SpinLock::new(0, "PCB::sgid"),
+            fsgid: SpinLock::new(0, "PCB::fsgid"),
             supplementary_gids: SpinLock::new(Vec::new(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
@@ -251,6 +257,7 @@ impl PCB {
 
     pub fn set_euid(&self, euid: Uid) {
         *self.euid.lock() = euid;
+        self.set_fsuid(euid);
     }
 
     pub fn suid(&self) -> Uid {
@@ -259,6 +266,14 @@ impl PCB {
 
     pub fn set_suid(&self, suid: Uid) {
         *self.suid.lock() = suid;
+    }
+
+    pub fn fsuid(&self) -> Uid {
+        *self.fsuid.lock()
+    }
+
+    pub fn set_fsuid(&self, fsuid: Uid) {
+        *self.fsuid.lock() = fsuid;
     }
 
     pub fn gid(&self) -> Uid {
@@ -275,6 +290,7 @@ impl PCB {
 
     pub fn set_egid(&self, egid: Uid) {
         *self.egid.lock() = egid;
+        self.set_fsgid(egid);
     }
 
     pub fn sgid(&self) -> Uid {
@@ -283,6 +299,14 @@ impl PCB {
 
     pub fn set_sgid(&self, sgid: Uid) {
         *self.sgid.lock() = sgid;
+    }
+
+    pub fn fsgid(&self) -> Uid {
+        *self.fsgid.lock()
+    }
+
+    pub fn set_fsgid(&self, fsgid: Uid) {
+        *self.fsgid.lock() = fsgid;
     }
 
     pub fn supplementary_gids(&self) -> Vec<Uid> {

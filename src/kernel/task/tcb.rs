@@ -506,6 +506,14 @@ impl Task for TCB {
         self.parent.euid()
     }
 
+    fn fsuid(&self) -> Uid {
+        self.parent.fsuid()
+    }
+
+    fn fsgid(&self) -> Uid {
+        self.parent.fsgid()
+    }
+
     fn kcontext(&self) -> &mut KernelContext {
         unsafe { (self.kernel_context.get() as *mut KernelContext).as_mut() }.unwrap()
     }

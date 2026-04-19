@@ -112,7 +112,7 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
         let mut inner = self.inner.lock();
         let ino = inner.alloc_inode_number();
         let mut meta = InodeMeta::new(mode, ino, self.get_root_ino());
-        meta.owner = (current::euid(), current::egid());
+        meta.owner = (current::fsuid(), current::fsgid());
 
         let inode: Arc<dyn InodeOps> = Arc::new(MemInode::<T>::new(ino, meta, self.inner.clone()));
         inner.insert_inode(ino, inode.clone());

@@ -62,6 +62,14 @@ pub fn egid() -> Uid {
     task().egid()
 }
 
+pub fn fsuid() -> Uid {
+    task().fsuid()
+}
+
+pub fn fsgid() -> Uid {
+    task().fsgid()
+}
+
 pub fn uid() -> Uid {
     pcb().uid()
 }

@@ -72,6 +72,8 @@ pub trait Task: Send + Sync {
     fn tid(&self) -> Tid;
     fn euid(&self) -> Uid;
     fn egid(&self) -> Uid;
+    fn fsuid(&self) -> Uid;
+    fn fsgid(&self) -> Uid;
 
     fn kcontext(&self) -> &mut arch::KernelContext;
     fn kstack(&self) -> &KernelStack;

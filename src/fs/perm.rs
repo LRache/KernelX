@@ -34,8 +34,8 @@ impl Perm {
     pub fn current(flags: PermFlags) -> Self {
         let pcb = current::pcb();
         Self {
-            uid: pcb.euid(),
-            gid: pcb.egid(),
+            uid: pcb.fsuid(),
+            gid: pcb.fsgid(),
             supplementary_gids: pcb.supplementary_gids(),
             flags,
         }

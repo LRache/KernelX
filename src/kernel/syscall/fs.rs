@@ -7,9 +7,9 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::fs::{vfs, Dentry, Mode, Owner, Perm, PermFlags};
+use crate::fs::{Dentry, Mode, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::ipc::{signum, KSiFields, Pipe, SiCode};
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
@@ -197,7 +197,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                         &child_name,
                         file_flags,
                         mode,
-                        Owner::new(current::euid(), current::egid()),
+                        Owner::new(current::fsuid(), current::fsgid()),
                     )
                 } else {
                     Err(e)
@@ -1289,7 +1289,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         .ok_or(Errno::EEXIST)?
     };
 
-    parent.create(name, mode, Owner::new(current::euid(), current::egid()))?;
+    parent.create(name, mode, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
 }
@@ -1417,7 +1417,7 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
         .ok_or(Errno::EOPNOTSUPP)?
     };
 
-    parent.create_symlink(name, &target, Owner::new(current::euid(), current::egid()))?;
+    parent.create_symlink(name, &target, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
 }
@@ -1529,11 +1529,11 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     };
 
     let inode = dentry.get_inode();
-    if mode.contains(Mode::S_ISGID) && current::pcb().euid() != 0 {
+    if mode.contains(Mode::S_ISGID) && current::pcb().fsuid() != 0 {
         let inode_gid = inode.owner()?.1;
         let pcb = current::pcb();
         let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
-        if pcb.egid() != inode_gid && !in_supplementary_group {
+        if pcb.fsgid() != inode_gid && !in_supplementary_group {
             mode.remove(Mode::S_ISGID);
         }
     }
@@ -1549,11 +1549,11 @@ pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
-        if mode.contains(Mode::S_ISGID) && current::pcb().euid() != 0 {
+        if mode.contains(Mode::S_ISGID) && current::pcb().fsuid() != 0 {
             let inode_gid = inode.owner()?.1;
             let pcb = current::pcb();
             let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
-            if pcb.egid() != inode_gid && !in_supplementary_group {
+            if pcb.fsgid() != inode_gid && !in_supplementary_group {
                 mode.remove(Mode::S_ISGID);
             }
         }

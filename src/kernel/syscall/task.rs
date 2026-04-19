@@ -14,6 +14,7 @@ use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::ExitStatus;
 use crate::kernel::task::def::TaskCloneFlags;
+use crate::kernel::uapi::Uid;
 use crate::kernel::{config, scheduler, task};
 
 pub fn sched_yield() -> SyscallRet {
@@ -507,10 +508,26 @@ pub fn fchdir(fd: usize) -> SysResult<usize> {
     Ok(0)
 }
 
-pub fn setfsuid(_fsuid: usize) -> SyscallRet {
-    Ok(0)
+pub fn setfsuid(fsuid: usize) -> SyscallRet {
+    let pcb = current::pcb();
+    let old_fsuid = pcb.fsuid();
+    let fsuid = fsuid as Uid;
+
+    if pcb.euid() == 0 || fsuid == pcb.uid() || fsuid == pcb.euid() || fsuid == pcb.suid() || fsuid == old_fsuid {
+        pcb.set_fsuid(fsuid);
+    }
+
+    Ok(old_fsuid as usize)
 }
 
-pub fn setfsgid(_fsgid: usize) -> SyscallRet {
-    Ok(0)
+pub fn setfsgid(fsgid: usize) -> SyscallRet {
+    let pcb = current::pcb();
+    let old_fsgid = pcb.fsgid();
+    let fsgid = fsgid as Uid;
+
+    if pcb.euid() == 0 || fsgid == pcb.gid() || fsgid == pcb.egid() || fsgid == pcb.sgid() || fsgid == old_fsgid {
+        pcb.set_fsgid(fsgid);
+    }
+
+    Ok(old_fsgid as usize)
 }
