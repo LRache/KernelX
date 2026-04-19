@@ -78,9 +78,15 @@ fn write_back_fdsets(
     writefds: &Option<FdSet>,
     exceptfds: &Option<FdSet>,
 ) -> SysResult<()> {
-    readfds.map(|t| read_ptr.write(t));
-    writefds.map(|t| write_ptr.write(t));
-    exceptfds.map(|t| except_ptr.write(t));
+    if let Some(t) = readfds {
+        read_ptr.write(*t)?;
+    }
+    if let Some(t) = writefds {
+        write_ptr.write(*t)?;
+    }
+    if let Some(t) = exceptfds {
+        except_ptr.write(*t)?;
+    }
     Ok(())
 }
 
@@ -191,9 +197,6 @@ fn select(
             return Ok(0);
         }
     } else {
-        if waiting_files.is_empty() {
-            return Ok(0);
-        }
         None
     };
 
@@ -209,31 +212,66 @@ fn select(
 
     let event = tcb.take_wakeup_event().unwrap();
 
-    write_back_fdsets(
-        &uptr_readfds,
-        &uptr_writefds,
-        &uptr_exceptfds,
-        &readfds,
-        &writefds,
-        &exceptfds,
-    )?;
-
     match event {
         Event::Poll { event, waker } => {
+            debug_assert!(waker < files_to_select.len());
             waiting_files.iter().enumerate().for_each(|(i, file)| {
                 if i != waker {
                     file.wait_event_cancel();
                 }
             });
 
-            set_select_fd_by_event(event, waker, &mut readfds, &mut writefds, &mut exceptfds);
+            set_select_fd_by_event(
+                event,
+                files_to_select[waker].0,
+                &mut readfds,
+                &mut writefds,
+                &mut exceptfds,
+            );
             timer_id.map(|id| timer::remove_timer(id));
+
+            write_back_fdsets(
+                &uptr_readfds,
+                &uptr_writefds,
+                &uptr_exceptfds,
+                &readfds,
+                &writefds,
+                &exceptfds,
+            )?;
 
             Ok(1)
         }
-        Event::Timeout => Err(Errno::ETIMEDOUT),
+        Event::Timeout => {
+            waiting_files.iter().for_each(|file| {
+                file.wait_event_cancel();
+            });
+
+            write_back_fdsets(
+                &uptr_readfds,
+                &uptr_writefds,
+                &uptr_exceptfds,
+                &readfds,
+                &writefds,
+                &exceptfds,
+            )?;
+
+            Ok(0)
+        }
         Event::Signal => {
+            waiting_files.iter().for_each(|file| {
+                file.wait_event_cancel();
+            });
             timer_id.map(|id| timer::remove_timer(id));
+
+            write_back_fdsets(
+                &uptr_readfds,
+                &uptr_writefds,
+                &uptr_exceptfds,
+                &readfds,
+                &writefds,
+                &exceptfds,
+            )?;
+
             Err(Errno::EINTR)
         }
         _ => unreachable!("Invalid event type in select: {:?}", event),
@@ -326,12 +364,22 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     drop(fdtable);
 
     if count != 0 {
+        poll_files.iter_mut().for_each(|(file, _)| {
+            file.wait_event_cancel();
+        });
         return Ok(count as usize);
     }
 
-    if let Some(timeout) = timeout {
-        timer::add_timer(current::task().clone(), timeout);
-    }
+    let timer_id = match timeout {
+        Some(timeout) if timeout.is_zero() => {
+            poll_files.iter_mut().for_each(|(file, _)| {
+                file.wait_event_cancel();
+            });
+            return Ok(0);
+        }
+        Some(timeout) => Some(timer::add_timer(current::task().clone(), timeout)),
+        None => None,
+    };
 
     defer::cancel(defer);
     current::schedule();
@@ -348,10 +396,12 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     let (poll_event, waker) = match event {
         Event::Poll { event, waker } => (event, waker),
         Event::Timeout => {
+            timer_id.map(|id| timer::remove_timer(id));
             cancel_all();
             return Ok(0);
         }
         Event::Signal => {
+            timer_id.map(|id| timer::remove_timer(id));
             cancel_all();
             return Err(Errno::EINTR);
         }
@@ -374,6 +424,8 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
         FileEvent::HangUp => PollEventSet::POLLHUP.bits(),
     };
 
+    timer_id.map(|id| timer::remove_timer(id));
+
     Ok(1)
 }
 
@@ -384,14 +436,14 @@ pub fn ppoll_time32(
     _uptr_sigmask: usize,
     _sigmask_size: usize,
 ) -> SysResult<usize> {
-    if nfds == 0 {
-        return Ok(0);
+    if nfds > 0 {
+        uptr_ufds.should_not_null()?;
     }
 
-    uptr_ufds.should_not_null()?;
-
     let mut pollfds = vec![Pollfd::default(); nfds];
-    uptr_ufds.read(0, &mut pollfds)?;
+    if nfds > 0 {
+        uptr_ufds.read(0, &mut pollfds)?;
+    }
 
     let timeout = if !uptr_timeout.is_null() {
         Some(uptr_timeout.read()?.try_into()?)
@@ -401,7 +453,9 @@ pub fn ppoll_time32(
 
     let r = poll(&mut pollfds, timeout)?;
 
-    uptr_ufds.write(0, &pollfds)?;
+    if nfds > 0 {
+        uptr_ufds.write(0, &pollfds)?;
+    }
 
     Ok(r)
 }
