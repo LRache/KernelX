@@ -217,6 +217,10 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
 
 pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
     let tid = tid as Tid;
+    if tid <= 0 {
+        return Err(Errno::EINVAL);
+    }
+
     let signum: SignalNum = (signum as u32).try_into()?;
     let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
     if !can_send_signal(tcb.parent(), signum) {
