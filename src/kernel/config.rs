@@ -4,8 +4,9 @@ pub const USER_STACK_TOP: usize = 1 << 38; // Example user stack top address
 pub const USER_STACK_PAGE_COUNT_MAX: usize = 2048; // Example user stack page count
 
 pub const USER_BRK_BASE: usize = 0x1_0000_0000; // Base address for user brk
+pub const USER_BRK_MAX: usize = 0x2_0000_0000; // Maximum reachable brk, exclusive heap end boundary
 
-pub const USER_MAP_BASE: usize = 0x2_0000_0000; // Base address for user mappings
+pub const USER_MAP_BASE: usize = USER_BRK_MAX; // Base address for user mappings
 
 pub const USER_EXEC_ADDR_BASE: usize = 0x1_0000;
 pub const USER_LINKER_ADDR_BASE: usize = 0x4000_0000; // Base address for the dynamic linker

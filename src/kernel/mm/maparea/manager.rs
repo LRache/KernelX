@@ -398,6 +398,10 @@ impl Manager {
             return Ok(self.userbrk.ubrk);
         }
 
+        if new_ubrk > config::USER_BRK_MAX {
+            return Err(Errno::ENOMEM);
+        }
+
         let new_page_count = if new_ubrk == config::USER_BRK_BASE {
             0
         } else {
