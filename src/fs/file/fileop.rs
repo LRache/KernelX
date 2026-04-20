@@ -85,6 +85,14 @@ pub trait FileOps: DowncastSync {
     fn type_name(&self) -> &'static str {
         "unknown"
     }
+
+    fn flock_owner_id(&self) -> usize {
+        self as *const Self as *const () as usize
+    }
+
+    fn on_fd_install(&self) {}
+
+    fn on_fd_remove(&self) {}
 }
 
 impl_downcast!(sync FileOps);

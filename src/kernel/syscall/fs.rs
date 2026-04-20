@@ -7,7 +7,7 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::fs::inode::{PosixFlock, PosixFlockType};
+use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
@@ -68,6 +68,10 @@ const F_UNLCK: i16 = 2;
 const SEEK_SET: i16 = 0;
 const SEEK_CUR: i16 = 1;
 const SEEK_END: i16 = 2;
+const LOCK_SH: usize = 1;
+const LOCK_EX: usize = 2;
+const LOCK_NB: usize = 4;
+const LOCK_UN: usize = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -1986,9 +1990,54 @@ pub fn fsync(fd: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn flock(fd: usize, _operation: usize) -> SyscallRet {
-    let _file = current::fdtable().lock().get(fd)?;
-    Ok(0)
+pub fn flock(fd: usize, operation: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+    let inode = file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+    let lock_state = inode.lock_state().ok_or(Errno::EINVAL)?;
+
+    let request_type = match operation & (LOCK_SH | LOCK_EX | LOCK_UN) {
+        LOCK_SH => Some(BsdFlockType::Shared),
+        LOCK_EX => Some(BsdFlockType::Exclusive),
+        LOCK_UN => None,
+        _ => return Err(Errno::EINVAL),
+    };
+    if operation & !(LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN) != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let owner = file.flock_owner_id();
+    if request_type.is_none() {
+        let mut state = lock_state.lock();
+        if state.bsd.remove_owner(owner) {
+            state.bsd.wake_all();
+        }
+        return Ok(0);
+    }
+
+    let request_type = request_type.unwrap();
+    let blocking = operation & LOCK_NB == 0;
+    loop {
+        let mut state = lock_state.lock();
+        if state.bsd.get_conflict(owner, request_type).is_none() {
+            state.bsd.apply(owner, Some(request_type));
+            state.bsd.wake_all();
+            return Ok(0);
+        }
+
+        if !blocking {
+            return Err(Errno::EAGAIN);
+        }
+
+        state.bsd.wait_current();
+        drop(state);
+
+        current::schedule();
+        match current::task().take_wakeup_event().unwrap() {
+            Event::IOComplete => {}
+            Event::Signal => return Err(Errno::EINTR),
+            event => unreachable!("unexpected event while waiting on flock lock: {:?}", event),
+        }
+    }
 }
 
 pub fn mount(

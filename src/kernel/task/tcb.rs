@@ -229,7 +229,7 @@ impl TCB {
         )
         .expect("Failed to open tty for init task");
 
-        let mut fdtable = FDTable::new();
+        let mut fdtable = FDTable::new(parent.pid());
         for _ in 0..3 {
             fdtable.push(tty.clone(), FDFlags::empty()).unwrap();
         }
@@ -281,7 +281,7 @@ impl TCB {
         let new_fdtable = if flags.files {
             self.fdtable().clone()
         } else {
-            Arc::new(SleepLock::new(self.fdtable().lock().fork(), "TCB::fdtable"))
+            Arc::new(SleepLock::new(self.fdtable().lock().fork(parent.pid()), "TCB::fdtable"))
         };
 
         let new_tcb = Self::new(tid, parent, new_user_context, new_addrspace, new_fdtable);
@@ -393,7 +393,10 @@ impl TCB {
     }
 
     pub fn unshare_fdtable(&self) {
-        let new_fdtable = Arc::new(SleepLock::new(self.fdtable.get_mut().lock().fork(), "TCB::fdtable"));
+        let new_fdtable = Arc::new(SleepLock::new(
+            self.fdtable.get_mut().lock().fork(self.parent.pid()),
+            "TCB::fdtable",
+        ));
         self.fdtable.set(new_fdtable);
     }
 

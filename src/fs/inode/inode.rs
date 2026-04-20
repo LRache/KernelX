@@ -9,22 +9,32 @@ use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::SpinLock;
 
+use super::bsd_flock::BsdFlockState;
 use super::posix_flock::PosixFlockState;
 use super::{FileType, Mode, Owner};
 
 pub struct InodeLockState {
-    pub shared_holders: usize,
-    pub exclusive_holder: bool,
+    pub(crate) bsd: BsdFlockState,
     pub(crate) posix: PosixFlockState,
 }
 
 impl InodeLockState {
     pub fn new() -> Self {
         Self {
-            shared_holders: 0,
-            exclusive_holder: false,
+            bsd: BsdFlockState::new(),
             posix: PosixFlockState::new(),
         }
+    }
+}
+
+pub fn release_bsd_flock(inode: &Arc<dyn InodeOps>, owner: usize) {
+    let Some(lock_state) = inode.lock_state() else {
+        return;
+    };
+
+    let mut lock_state = lock_state.lock();
+    if lock_state.bsd.remove_owner(owner) {
+        lock_state.bsd.wake_all();
     }
 }
 

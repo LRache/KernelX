@@ -1,6 +1,8 @@
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fs::file::DirResult;
+use crate::fs::inode::release_bsd_flock;
 use crate::fs::vfs::Dentry;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
@@ -45,6 +47,7 @@ pub struct File {
     inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
     pos: SleepLock<usize>,
+    fd_refs: AtomicUsize,
 
     pub flags: FileFlags,
 }
@@ -55,6 +58,7 @@ impl File {
             inode,
             dentry,
             pos: SleepLock::new(0, "File::pos"),
+            fd_refs: AtomicUsize::new(0),
             flags,
         }
     }
@@ -93,6 +97,14 @@ impl File {
 
     pub fn owner(&self) -> SysResult<(u32, u32)> {
         self.inode.owner()
+    }
+
+    fn release_bsd_flock_if_last_fd(&self) {
+        let previous = self.fd_refs.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "File::fd_refs underflow");
+        if previous == 1 {
+            release_bsd_flock(&self.inode, self.flock_owner_id());
+        }
     }
 }
 
@@ -198,5 +210,13 @@ impl FileOps for File {
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {
         Some(&self.dentry)
+    }
+
+    fn on_fd_install(&self) {
+        self.fd_refs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn on_fd_remove(&self) {
+        self.release_bsd_flock_if_last_fd();
     }
 }
