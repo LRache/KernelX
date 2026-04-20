@@ -7,7 +7,7 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::fs::{Dentry, Mode, Owner, Perm, PermFlags, vfs};
+use crate::fs::{Dentry, FileType, Mode, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
@@ -211,6 +211,14 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     } else {
         helper(vfs::get_root_dentry())?
     };
+
+    if writable && open_flags.contains(OpenFlags::O_TRUNC) {
+        if let Some(inode) = file.get_inode() {
+            if inode.inode_type()? == FileType::Regular {
+                inode.truncate(0)?;
+            }
+        }
+    }
 
     let fd = current::fdtable().lock().push(file, fd_flags)?;
 
