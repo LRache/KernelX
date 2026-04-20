@@ -88,27 +88,34 @@ impl FDTable {
         }
     }
 
-    pub fn dup(&mut self, fd: usize, min_fd: Option<usize>, flags: FDFlags) -> SysResult<usize> {
-        if let Some(min_fd) = min_fd {
-            if let Some(new_fd) = self
-                .table
-                .iter()
-                .skip(min_fd)
-                .position(|f| f.is_none())
-                .map(|p| p + min_fd)
-            {
-                self.table[new_fd] = Some(FDItem {
-                    file: self.get(fd)?,
-                    flags,
-                });
-                Ok(new_fd)
-            } else {
-                Err(Errno::EINVAL)
-            }
+    pub fn dup_min(&mut self, fd: usize, min_fd: usize, flags: FDFlags) -> SysResult<usize> {
+        let file = self.get(fd)?;
+        if let Some(new_fd) = self
+            .table
+            .iter()
+            .skip(min_fd)
+            .position(|f| f.is_none())
+            .map(|p| p + min_fd)
+        {
+            self.table[new_fd] = Some(FDItem { file, flags });
+            Ok(new_fd)
         } else {
-            let file = self.get(fd)?;
-            self.push(file, flags)
+            if min_fd >= self.table.len() {
+                if self.table.len() >= self.max_fd {
+                    return Err(Errno::EMFILE);
+                }
+                self.table.resize(min_fd + 1, None);
+                self.table[min_fd] = Some(FDItem { file, flags });
+                Ok(min_fd)
+            } else {
+                self.push(file, flags)  
+            }
         }
+    }
+
+    pub fn dup2(&mut self, oldfd: usize, flags: FDFlags) -> SysResult<usize> {
+        let file = self.get(oldfd)?;
+        self.push(file, flags)
     }
 
     pub fn dup3(&mut self, oldfd: usize, newfd: usize, flags: FDFlags) -> SysResult<usize> {

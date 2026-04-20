@@ -21,7 +21,7 @@ use super::def::*;
 
 pub fn dup(oldfd: usize) -> SyscallRet {
     let mut fdtable = current::fdtable().lock();
-    fdtable.dup(oldfd, None, FDFlags::empty())
+    fdtable.dup2(oldfd, FDFlags::empty())
 }
 
 pub fn dup3(oldfd: usize, newfd: usize, flags: usize) -> SyscallRet {
@@ -56,6 +56,11 @@ bitflags! {
 
 pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     match FcntlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)? {
+        FcntlCmd::F_DUPFD => {
+            let mut fdtable = current::fdtable().lock();
+            fdtable.dup_min(fd, arg, FDFlags::empty())
+        }
+
         FcntlCmd::F_GETFL => {
             let file = current::fdtable().lock().get(fd)?;
             let flags = file.flags();
@@ -114,7 +119,7 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 
         FcntlCmd::F_DUPFD_CLOEXEC => {
             let mut fdtable = current::fdtable().lock();
-            fdtable.dup(fd, Some(arg), FDFlags { cloexec: true })
+            fdtable.dup_min(fd, arg, FDFlags { cloexec: true })
         }
 
         FcntlCmd::F_SETPIPE_SZ => {
@@ -128,8 +133,6 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             let pipe = file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
             Ok(pipe.get_pipe_size())
         }
-
-        _ => Err(Errno::EINVAL),
     }
 }
 
