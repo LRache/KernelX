@@ -35,6 +35,7 @@ impl SuperBlockOps for SuperBlock {
             inode::PidMaxInode::INO => Ok(Arc::new(inode::PidMaxInode)),
             inode::TaintedInode::INO => Ok(Arc::new(inode::TaintedInode)),
             inode::SysFsDirInode::INO => Ok(Arc::new(inode::SysFsDirInode)),
+            inode::PipeMaxSizeInode::INO => Ok(Arc::new(inode::PipeMaxSizeInode)),
             inode::PipeUserPagesSoftInode::INO => Ok(Arc::new(inode::PipeUserPagesSoftInode)),
             i if i >= inode::TaskDirInode::BASE_INO && i < inode::TaskMapsInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
