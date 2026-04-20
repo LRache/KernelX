@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::arch;
 use crate::kernel::event::Event;
 use crate::kernel::mm;
@@ -74,6 +76,9 @@ pub trait Task: Send + Sync {
     fn egid(&self) -> Uid;
     fn fsuid(&self) -> Uid;
     fn fsgid(&self) -> Uid;
+    fn supplementary_gids(&self) -> Vec<Uid> {
+        Vec::new()
+    }
 
     fn kcontext(&self) -> &mut arch::KernelContext;
     fn kstack(&self) -> &KernelStack;

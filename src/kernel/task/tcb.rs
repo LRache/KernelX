@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::time::Duration;
 
@@ -512,6 +513,10 @@ impl Task for TCB {
 
     fn fsgid(&self) -> Uid {
         self.parent.fsgid()
+    }
+
+    fn supplementary_gids(&self) -> Vec<Uid> {
+        self.parent.supplementary_gids()
     }
 
     fn kcontext(&self) -> &mut KernelContext {

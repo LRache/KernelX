@@ -32,11 +32,11 @@ impl Perm {
     }
 
     pub fn current(flags: PermFlags) -> Self {
-        let pcb = current::pcb();
+        let task = current::task();
         Self {
-            uid: pcb.fsuid(),
-            gid: pcb.fsgid(),
-            supplementary_gids: pcb.supplementary_gids(),
+            uid: task.fsuid(),
+            gid: task.fsgid(),
+            supplementary_gids: task.supplementary_gids(),
             flags,
         }
     }

@@ -22,6 +22,36 @@ pub struct Dentry {
 }
 
 impl Dentry {
+    fn check_search_perm(&self) -> SysResult<()> {
+        let inode = self.get_inode();
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(&Perm::current(PermFlags::X), uid, gid) {
+            return Err(Errno::EACCES);
+        }
+
+        Ok(())
+    }
+
+    fn check_child_mutation_perm(&self) -> SysResult<()> {
+        let inode = self.get_inode();
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(&Perm::current(PermFlags::W | PermFlags::X), uid, gid) {
+            return Err(Errno::EACCES);
+        }
+
+        Ok(())
+    }
+
     pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
         Self {
             inode_index: Index {
@@ -80,6 +110,8 @@ impl Dentry {
     }
 
     pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
+        self.check_search_perm()?;
+
         if let Some(child) = self.children.lock().get(name)
             && let Some(child) = child.upgrade()
         {
@@ -104,6 +136,8 @@ impl Dentry {
     }
 
     pub fn lookup_nocached(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
+        self.check_search_perm()?;
+
         let lookup_ino = self.get_inode().lookup(name)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
@@ -167,6 +201,8 @@ impl Dentry {
     }
 
     pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+        self.check_child_mutation_perm()?;
+
         match self.lookup(name) {
             Ok(_) => return Err(Errno::EEXIST),
             Err(Errno::ENOENT) => {}
@@ -174,11 +210,12 @@ impl Dentry {
         }
 
         let parent_inode = self.get_inode();
+        let parent_mode = parent_inode.mode()?;
         let parent_gid = parent_inode.owner()?.1;
         let mut mode = mode;
         let mut owner = owner;
 
-        if parent_inode.mode()?.contains(Mode::S_ISGID) {
+        if parent_mode.contains(Mode::S_ISGID) {
             owner.gid = parent_gid;
             if mode.contains(Mode::S_IFDIR) {
                 mode.insert(Mode::S_ISGID);
@@ -206,15 +243,11 @@ impl Dentry {
     }
 
     fn remove_child(self: &Arc<Self>, name: &str, remove_dir: bool) -> SysResult<()> {
+        self.check_child_mutation_perm()?;
+
         let inode = self.get_inode();
         if inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
-        }
-
-        let mode = inode.mode()?;
-        let (uid, gid) = inode.owner()?;
-        if !mode.check_perm(&Perm::current(PermFlags::W | PermFlags::X), uid, gid) {
-            return Err(Errno::EACCES);
         }
 
         let child_ino = inode.lookup(name)?;
