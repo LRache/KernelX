@@ -227,11 +227,6 @@ impl Area for PrivateFileMapArea {
                     // Page is already allocated, this shouldn't happen
                     #[cfg(feature = "swap-memory")]
                     self.handle_memory_fault_on_swapped_allocated(&allocated, addrspace);
-                    #[cfg(not(feature = "swap-memory"))]
-                    {
-                        let _ = allocated;
-                        return None;
-                    }
                     // unreachable!("Memory fault on already allocated file page at address: {:#x}, access={:?}", uaddr, access_type);
                 }
                 FrameState::Cow(_) => {
