@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 use core::convert::{TryFrom, TryInto};
 use core::time::Duration;
+use num_enum::TryFromPrimitive;
 
 use crate::driver;
 use crate::driver::chosen::kclock;
@@ -57,13 +58,28 @@ bitflags! {
     }
 }
 
+#[derive(TryFromPrimitive, Debug, PartialEq, Eq)]
+#[repr(usize)]
+#[allow(non_camel_case_types)]
+enum ClockId {
+    CLOCK_REALTIME = 0,
+    CLOCK_MONOTONIC = 1,
+    CLOCK_PROCESS_CPUTIME_ID = 2,
+    CLOCK_THREAD_CPUTIME_ID = 3,
+}
+
 pub fn clock_nanosleep(
-    _clockid: usize,
+    clockid: usize,
     flags: usize,
     uptr_req: UPtr<Timespec>,
     uptr_rem: UPtr<Timespec>,
 ) -> SysResult<usize> {
     uptr_req.should_not_null()?;
+
+    let clockid = ClockId::try_from(clockid).map_err(|_| Errno::EINVAL)?;
+    if clockid == ClockId::CLOCK_PROCESS_CPUTIME_ID || clockid == ClockId::CLOCK_THREAD_CPUTIME_ID {
+        return Err(Errno::EOPNOTSUPP);
+    }
 
     let flags = ClockNanosleepFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
