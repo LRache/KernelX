@@ -7,7 +7,7 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::fs::inode::{Mode, Owner};
+use crate::fs::inode::{InodeLockState, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
@@ -80,6 +80,7 @@ impl InodeMeta {
 pub struct Inode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
+    lock_state: SpinLock<InodeLockState>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
 }
@@ -89,6 +90,7 @@ impl<T: StaticFsInfo> Inode<T> {
         Self {
             ino,
             meta: SpinLock::new(meta, "Inode::meta"),
+            lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
             superblock,
             _marker: core::marker::PhantomData,
         }
@@ -161,6 +163,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {

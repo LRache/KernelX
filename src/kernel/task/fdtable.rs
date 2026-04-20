@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use crate::fs::file::FileOps;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::{Tid, current};
 
 #[derive(Clone, Copy)]
 pub struct FDFlags {
@@ -26,6 +27,19 @@ struct FDItem {
 pub struct FDTable {
     table: Vec<Option<FDItem>>,
     max_fd: usize,
+}
+
+fn release_posix_locks_from_file(file: &Arc<dyn FileOps>, owner: Tid) {
+    let Some(inode) = file.get_inode() else {
+        return;
+    };
+
+    if let Some(lock_state) = inode.lock_state() {
+        let mut lock_state = lock_state.lock();
+        if lock_state.posix.remove_owner(owner) {
+            lock_state.posix.wake_all();
+        }
+    }
 }
 
 impl FDTable {
@@ -51,6 +65,12 @@ impl FDTable {
         }
         if fd >= self.table.len() {
             self.table.resize(fd + 1, None);
+        }
+        if let Some(old_item) = self.table[fd].as_ref()
+            && !Arc::ptr_eq(&old_item.file, &file)
+            && current::has_task()
+        {
+            release_posix_locks_from_file(&old_item.file, current::pid());
         }
         self.table[fd] = Some(FDItem { file, flags });
         Ok(())
@@ -108,7 +128,7 @@ impl FDTable {
                 self.table[min_fd] = Some(FDItem { file, flags });
                 Ok(min_fd)
             } else {
-                self.push(file, flags)  
+                self.push(file, flags)
             }
         }
     }
@@ -133,13 +153,13 @@ impl FDTable {
             return Err(Errno::EBADF);
         }
 
-        self.table[newfd] = match self.table[oldfd].as_ref() {
-            Some(fd_item) => Some(FDItem {
-                file: fd_item.file.clone(),
-                flags,
-            }),
-            None => return Err(Errno::EBADF),
-        };
+        let file = self.table[oldfd].as_ref().ok_or(Errno::EBADF)?.file.clone();
+
+        if let Some(old_item) = self.table[newfd].as_ref() {
+            release_posix_locks_from_file(&old_item.file, current::pid());
+        }
+
+        self.table[newfd] = Some(FDItem { file, flags });
 
         Ok(newfd)
     }
@@ -150,6 +170,9 @@ impl FDTable {
                 return Err(Errno::EBADF);
             }
             let file = self.table[fd].take().unwrap().file;
+            if current::has_task() {
+                release_posix_locks_from_file(&file, current::pid());
+            }
             Ok(file)
         } else {
             Err(Errno::EBADF)
@@ -173,9 +196,16 @@ impl FDTable {
         self.table.iter_mut().for_each(|item| {
             if let Some(fd_item) = item {
                 if fd_item.flags.cloexec {
+                    release_posix_locks_from_file(&fd_item.file, current::pid());
                     *item = None;
                 }
             }
+        });
+    }
+
+    pub fn release_posix_locks_for_owner(&self, owner: Tid) {
+        self.table.iter().flatten().for_each(|item| {
+            release_posix_locks_from_file(&item.file, owner);
         });
     }
 

@@ -7,13 +7,35 @@ use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
+use crate::klib::SpinLock;
 
+use super::posix_flock::PosixFlockState;
 use super::{FileType, Mode, Owner};
+
+pub struct InodeLockState {
+    pub shared_holders: usize,
+    pub exclusive_holder: bool,
+    pub(crate) posix: PosixFlockState,
+}
+
+impl InodeLockState {
+    pub fn new() -> Self {
+        Self {
+            shared_holders: 0,
+            exclusive_holder: false,
+            posix: PosixFlockState::new(),
+        }
+    }
+}
 
 pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
 
     fn type_name(&self) -> &'static str;
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        None
+    }
 
     fn create(&self, _name: &str, _mode: Mode, _owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         Err(Errno::EOPNOTSUPP)

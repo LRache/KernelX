@@ -7,8 +7,10 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver;
 use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::fs::{Dentry, FileType, Mode, Owner, Perm, PermFlags, vfs};
+use crate::fs::inode::{PosixFlock, PosixFlockType};
+use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
@@ -42,6 +44,12 @@ pub enum FcntlCmd {
     F_SETFD = 2,
     F_GETFL = 3,
     F_SETFL = 4,
+    F_GETLK = 5,
+    F_SETLK = 6,
+    F_SETLKW = 7,
+    F_GETLK64 = 12,
+    F_SETLK64 = 13,
+    F_SETLKW64 = 14,
     F_DUPFD_CLOEXEC = 1030,
     F_SETPIPE_SZ = 1031,
     F_GETPIPE_SZ = 1032,
@@ -51,6 +59,163 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct FDArgs: usize {
         const FD_CLOEXEC = 1;
+    }
+}
+
+const F_RDLCK: i16 = 0;
+const F_WRLCK: i16 = 1;
+const F_UNLCK: i16 = 2;
+const SEEK_SET: i16 = 0;
+const SEEK_CUR: i16 = 1;
+const SEEK_END: i16 = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Flock {
+    l_type: i16,
+    l_whence: i16,
+    __pad0: i32,
+    l_start: i64,
+    l_len: i64,
+    l_pid: i32,
+    __pad1: i32,
+}
+
+impl UserStruct for Flock {}
+
+fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<Arc<dyn crate::fs::InodeOps>> {
+    let inode = file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+    if inode.lock_state().is_none() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(inode)
+}
+
+fn normalize_posix_flock(
+    file: &Arc<dyn FileOps>,
+    inode: &Arc<dyn InodeOps>,
+    flock: &Flock,
+) -> SysResult<(Option<PosixFlockType>, i64, i64)> {
+    let lock_type = match flock.l_type {
+        F_RDLCK => {
+            if !file.readable() {
+                return Err(Errno::EBADF);
+            }
+            Some(PosixFlockType::Read)
+        }
+        F_WRLCK => {
+            if !file.writable() {
+                return Err(Errno::EBADF);
+            }
+            Some(PosixFlockType::Write)
+        }
+        F_UNLCK => None,
+        _ => return Err(Errno::EINVAL),
+    };
+
+    let base = match flock.l_whence {
+        SEEK_SET => 0,
+        SEEK_CUR => i64::try_from(file.seek(0, SeekWhence::CUR)?).map_err(|_| Errno::EINVAL)?,
+        SEEK_END => i64::try_from(inode.size()?).map_err(|_| Errno::EINVAL)?,
+        _ => return Err(Errno::EINVAL),
+    };
+
+    let mut start = base.checked_add(flock.l_start).ok_or(Errno::EINVAL)?;
+    if start < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let len = if flock.l_len < 0 {
+        let end = start;
+        start = start.checked_add(flock.l_len).ok_or(Errno::EINVAL)?;
+        if start < 0 {
+            return Err(Errno::EINVAL);
+        }
+        end - start
+    } else if flock.l_len == 0 {
+        0
+    } else {
+        start.checked_add(flock.l_len).ok_or(Errno::EINVAL)?;
+        flock.l_len
+    };
+
+    Ok((lock_type, start, len))
+}
+
+fn flock_from_conflict(conflict: PosixFlock) -> Flock {
+    Flock {
+        l_type: match conflict.lock_type {
+            PosixFlockType::Read => F_RDLCK,
+            PosixFlockType::Write => F_WRLCK,
+        },
+        l_whence: SEEK_SET,
+        __pad0: 0,
+        l_start: conflict.start,
+        l_len: conflict.len,
+        l_pid: conflict.owner,
+        __pad1: 0,
+    }
+}
+
+fn fcntl_getlk(file: &Arc<dyn FileOps>, arg: usize) -> SyscallRet {
+    let uptr_lock: UPtr<Flock> = arg.into();
+    let mut user_lock = uptr_lock.should_not_null()?.read()?;
+    let inode = fcntl_lock_inode(file)?;
+    let (lock_type, start, len) = normalize_posix_flock(file, &inode, &user_lock)?;
+    let lock_type = lock_type.ok_or(Errno::EINVAL)?;
+
+    let conflict = {
+        let state = inode.lock_state().unwrap().lock();
+        state.posix.get_conflict(current::pid(), lock_type, start, len)
+    };
+
+    if let Some(conflict) = conflict {
+        user_lock = flock_from_conflict(conflict);
+    } else {
+        user_lock.l_type = F_UNLCK;
+    }
+
+    uptr_lock.write(user_lock)?;
+    Ok(0)
+}
+
+fn fcntl_setlk(file: &Arc<dyn FileOps>, arg: usize, blocking: bool) -> SyscallRet {
+    let uptr_lock: UPtr<Flock> = arg.into();
+    let user_lock = uptr_lock.should_not_null()?.read()?;
+    let inode = fcntl_lock_inode(file)?;
+    let (lock_type, start, len) = normalize_posix_flock(file, &inode, &user_lock)?;
+    let owner = current::pid();
+    let lock_state = inode.lock_state().unwrap();
+
+    if lock_type.is_none() {
+        let mut state = lock_state.lock();
+        state.posix.apply(owner, None, start, len);
+        state.posix.wake_all();
+        return Ok(0);
+    }
+
+    let request_type = lock_type.unwrap();
+    loop {
+        let mut state = lock_state.lock();
+        if state.posix.get_conflict(owner, request_type, start, len).is_none() {
+            state.posix.apply(owner, Some(request_type), start, len);
+            state.posix.wake_all();
+            return Ok(0);
+        }
+
+        if !blocking {
+            return Err(Errno::EAGAIN);
+        }
+
+        state.posix.wait_current();
+        drop(state);
+
+        current::schedule();
+        match current::task().take_wakeup_event().unwrap() {
+            Event::IOComplete => {}
+            Event::Signal => return Err(Errno::EINTR),
+            event => unreachable!("unexpected event while waiting on fcntl lock: {:?}", event),
+        }
     }
 }
 
@@ -120,6 +285,21 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         FcntlCmd::F_DUPFD_CLOEXEC => {
             let mut fdtable = current::fdtable().lock();
             fdtable.dup_min(fd, arg, FDFlags { cloexec: true })
+        }
+
+        FcntlCmd::F_GETLK | FcntlCmd::F_GETLK64 => {
+            let file = current::fdtable().lock().get(fd)?;
+            fcntl_getlk(&file, arg)
+        }
+
+        FcntlCmd::F_SETLK | FcntlCmd::F_SETLK64 => {
+            let file = current::fdtable().lock().get(fd)?;
+            fcntl_setlk(&file, arg, false)
+        }
+
+        FcntlCmd::F_SETLKW | FcntlCmd::F_SETLKW64 => {
+            let file = current::fdtable().lock().get(fd)?;
+            fcntl_setlk(&file, arg, true)
         }
 
         FcntlCmd::F_SETPIPE_SZ => {

@@ -2,18 +2,24 @@ use alloc::sync::Arc;
 
 use crate::fs::Dentry;
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::fs::inode::{InodeOps, Mode};
+use crate::fs::inode::{InodeLockState, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
+use crate::klib::SpinLock;
 
 pub struct LoopInode {
     ino: u32,
     minor: u32,
+    lock_state: SpinLock<InodeLockState>,
 }
 
 impl LoopInode {
     pub fn new(ino: u32, minor: u32) -> Self {
-        Self { ino, minor }
+        Self {
+            ino,
+            minor,
+            lock_state: SpinLock::new(InodeLockState::new(), "LoopInode::lock_state"),
+        }
     }
 
     fn rdev(&self) -> u64 {
@@ -25,6 +31,10 @@ impl LoopInode {
 impl InodeOps for LoopInode {
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn type_name(&self) -> &'static str {

@@ -486,6 +486,10 @@ impl PCB {
 
         // crate::kinfo!("pcb {} exited with code {}", self.pid(), code);
 
+        self.tasks.lock().iter().for_each(|tcb| {
+            tcb.fdtable().lock().release_posix_locks_for_owner(self.pid);
+        });
+
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|tcb| {
             tcb.set_dead();

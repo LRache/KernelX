@@ -4,11 +4,12 @@ use num_enum::TryFromPrimitive;
 use crate::driver::chosen::kclock;
 use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps, SeekWhence};
-use crate::fs::inode::{InodeOps, Mode};
+use crate::fs::inode::{InodeLockState, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
+use crate::klib::SpinLock;
 
 /// Linux-compatible `struct rtc_time`
 #[repr(C)]
@@ -27,17 +28,25 @@ struct RtcTime {
 
 pub struct RtcInode {
     ino: u32,
+    lock_state: SpinLock<InodeLockState>,
 }
 
 impl RtcInode {
     pub fn new(ino: u32) -> Self {
-        Self { ino }
+        Self {
+            ino,
+            lock_state: SpinLock::new(InodeLockState::new(), "RtcInode::lock_state"),
+        }
     }
 }
 
 impl InodeOps for RtcInode {
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn type_name(&self) -> &'static str {

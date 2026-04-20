@@ -1,23 +1,33 @@
 use alloc::sync::Arc;
 
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::inode::InodeLockState;
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
+use crate::klib::SpinLock;
 
 pub struct NullInode {
     ino: u32,
+    lock_state: SpinLock<InodeLockState>,
 }
 
 impl NullInode {
     pub fn new(ino: u32) -> Self {
-        Self { ino }
+        Self {
+            ino,
+            lock_state: SpinLock::new(InodeLockState::new(), "NullInode::lock_state"),
+        }
     }
 }
 
 impl InodeOps for NullInode {
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn type_name(&self) -> &'static str {

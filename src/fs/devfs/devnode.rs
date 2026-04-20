@@ -2,24 +2,35 @@ use alloc::sync::Arc;
 
 use crate::driver::{BlockDriverOps, CharDriverOps};
 use crate::fs::file::{CharFile, File, FileFlags, FileOps};
+use crate::fs::inode::InodeLockState;
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
+use crate::klib::SpinLock;
 
 pub struct CharDevInode {
     ino: u32,
     driver: Arc<dyn CharDriverOps>,
+    lock_state: SpinLock<InodeLockState>,
 }
 
 impl CharDevInode {
     pub fn new(ino: u32, driver: Arc<dyn CharDriverOps>) -> Self {
-        Self { ino, driver }
+        Self {
+            ino,
+            driver,
+            lock_state: SpinLock::new(InodeLockState::new(), "CharDevInode::lock_state"),
+        }
     }
 }
 
 impl InodeOps for CharDevInode {
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
@@ -62,11 +73,16 @@ impl InodeOps for CharDevInode {
 pub struct BlockDevInode {
     ino: u32,
     driver: Arc<dyn BlockDriverOps>,
+    lock_state: SpinLock<InodeLockState>,
 }
 
 impl BlockDevInode {
     pub fn new(ino: u32, driver: Arc<dyn BlockDriverOps>) -> Self {
-        Self { ino, driver }
+        Self {
+            ino,
+            driver,
+            lock_state: SpinLock::new(InodeLockState::new(), "BlockDevInode::lock_state"),
+        }
     }
 
     pub fn driver(&self) -> &Arc<dyn BlockDriverOps> {
@@ -77,6 +93,10 @@ impl BlockDevInode {
 impl InodeOps for BlockDevInode {
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
