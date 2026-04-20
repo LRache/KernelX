@@ -45,11 +45,11 @@ impl Futex {
             if (item.bitset & mask) != 0 {
                 let item = cursor.remove_current().unwrap();
 
-                let _ = scheduler::wakeup_task(item.tcb.clone(), Event::Futex);
-
-                woken += 1;
-                if woken >= num {
-                    break;
+                if scheduler::wakeup_task(item.tcb.clone(), Event::Futex).is_ok() {
+                    woken += 1;
+                    if woken >= num {
+                        break;
+                    }
                 }
             } else {
                 cursor.move_next();
@@ -57,6 +57,20 @@ impl Futex {
         }
 
         Ok(woken)
+    }
+
+    pub fn remove_waiter(&mut self, task: &Arc<dyn Task>) -> usize {
+        let mut removed = 0;
+        let mut cursor = self.wait_list.cursor_front_mut();
+        while let Some(item) = cursor.current() {
+            if Arc::ptr_eq(&item.tcb, task) {
+                cursor.remove_current();
+                removed += 1;
+            } else {
+                cursor.move_next();
+            }
+        }
+        removed
     }
 }
 
@@ -115,4 +129,13 @@ pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> Sys
     futex2.wait_list.append(&mut pending);
 
     Ok(moved)
+}
+
+pub fn cancel_wait(kaddr: usize, task: &Arc<dyn Task>) -> usize {
+    let futexes = FUTEXES.lock();
+    if let Some(futex) = futexes.get(&kaddr) {
+        futex.lock().remove_waiter(task)
+    } else {
+        0
+    }
 }

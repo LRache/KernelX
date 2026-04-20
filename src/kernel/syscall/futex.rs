@@ -63,6 +63,10 @@ pub fn futex(
             }
 
             let event = current::block("futex");
+            if !matches!(event, Event::Futex) {
+                let task = current::task().clone();
+                futex::cancel_wait(kaddr, &task);
+            }
 
             match event {
                 Event::Futex => Ok(0),
