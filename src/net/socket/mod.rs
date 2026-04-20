@@ -1,6 +1,5 @@
 pub mod inet;
 pub mod netlink;
-pub mod options;
 pub mod raw;
 pub mod tcp;
 pub mod udp;
@@ -44,14 +43,6 @@ pub enum ShutdownHow {
     Write = 1,
     ReadWrite = 2,
 }
-
-pub const AF_UNIX: usize = AddressFamily::Unix as usize;
-pub const AF_INET: usize = AddressFamily::Inet as usize;
-pub const AF_NETLINK: usize = AddressFamily::Netlink as usize;
-
-pub const SOCK_STREAM: usize = SocketKind::Stream as usize;
-pub const SOCK_DGRAM: usize = SocketKind::Dgram as usize;
-pub const SOCK_RAW: usize = SocketKind::Raw as usize;
 
 /// SHUT_* constants for shutdown()
 pub const SHUT_RD: usize = ShutdownHow::Read as usize;
