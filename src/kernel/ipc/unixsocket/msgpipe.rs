@@ -11,6 +11,7 @@ struct MessageQueue {
     messages: VecDeque<Vec<u8>>,
     total_bytes: usize,
     capacity: usize,
+    max_messages: usize,
 }
 
 impl MessageQueue {
@@ -19,6 +20,7 @@ impl MessageQueue {
             messages: VecDeque::new(),
             total_bytes: 0,
             capacity,
+            max_messages: capacity / 2,
         }
     }
 
@@ -28,6 +30,14 @@ impl MessageQueue {
 
     fn available_space(&self) -> usize {
         self.capacity.saturating_sub(self.total_bytes)
+    }
+
+    fn available_messages(&self) -> usize {
+        self.max_messages.saturating_sub(self.messages.len())
+    }
+
+    fn can_push(&self, msg_len: usize) -> bool {
+        self.available_space() >= msg_len && self.available_messages() > 0
     }
 
     fn push(&mut self, msg: Vec<u8>) {
@@ -145,7 +155,7 @@ impl MessagePipeInner {
 
         loop {
             let mut queue = self.queue.lock();
-            if queue.available_space() >= buf.len() {
+            if queue.can_push(buf.len()) {
                 let msg = Vec::from(buf);
                 queue.push(msg);
                 drop(queue);
@@ -186,7 +196,7 @@ impl MessagePipeInner {
 
         loop {
             let mut queue = self.queue.lock();
-            if queue.available_space() >= msg.len() {
+            if queue.can_push(msg.len()) {
                 let len = msg.len();
                 queue.push(msg);
                 drop(queue);
@@ -243,7 +253,7 @@ impl MessagePipeInner {
             if *self.reader_count.lock() == 0 {
                 return Ok(Some(FileEvent::HangUp));
             }
-            if queue.available_space() > 0 {
+            if queue.available_space() > 0 && queue.available_messages() > 0 {
                 return Ok(Some(FileEvent::WriteReady));
             }
             self.write_waiter.lock().wait(
