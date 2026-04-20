@@ -144,6 +144,7 @@ bitflags! {
     }
 }
 
+#[derive(Debug)]
 struct CloneArgs {
     flags: CloneFlags,
     task_flags: TaskCloneFlags,
@@ -212,6 +213,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
             files: flags.contains(CloneFlags::FILES),
             thread: flags.contains(CloneFlags::THREAD),
             parent: flags.contains(CloneFlags::PARENT),
+            vfork: flags.contains(CloneFlags::VFORK),
         },
         stack,
         tls: if flags.contains(CloneFlags::SETTLS) {
@@ -291,6 +293,7 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
             files: flags.contains(CloneFlags::FILES),
             thread: flags.contains(CloneFlags::THREAD),
             parent: flags.contains(CloneFlags::PARENT),
+            vfork: flags.contains(CloneFlags::VFORK),
         },
         stack,
         tls: if flags.contains(CloneFlags::SETTLS) {

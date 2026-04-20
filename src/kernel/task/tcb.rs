@@ -12,7 +12,7 @@ use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
-use crate::kernel::ipc::{PendingSignal, SignalSet};
+use crate::kernel::ipc::{PendingSignal, SignalSet, SignalStackState};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::mm::{AddrSpace, elf};
 use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, WakeupFailure, current};
@@ -90,6 +90,7 @@ pub struct TCB {
     fdtable: TaskLocal<Arc<SleepLock<FDTable>>>,
 
     pub signal_mask: SpinLock<SignalSet>,
+    signal_stack: SpinLock<SignalStackState>,
     ucontext_syscall_retreg_backup: TaskLocal<Option<usize>>,
 
     state: SpinLock<TaskStateSet>,
@@ -137,6 +138,7 @@ impl TCB {
             fdtable: TaskLocal::new(tid, fdtable),
 
             signal_mask: SpinLock::new(SignalSet::empty(), "TCB::signal_mask"),
+            signal_stack: SpinLock::new(SignalStackState::default(), "TCB::signal_stack"),
             ucontext_syscall_retreg_backup: TaskLocal::new(tid, None),
 
             state: SpinLock::new(TaskStateSet::default(), "TCB::state"),
@@ -284,6 +286,11 @@ impl TCB {
 
         let new_tcb = Self::new(tid, parent, new_user_context, new_addrspace, new_fdtable);
         new_tcb.set_signal_mask(self.get_signal_mask());
+        if flags.vm && !flags.vfork {
+            new_tcb.set_signal_stack_state(SignalStackState::default());
+        } else {
+            new_tcb.set_signal_stack_state(self.get_signal_stack_state());
+        }
 
         new_tcb
     }
@@ -349,6 +356,7 @@ impl TCB {
             addrspace,
             self.fdtable().clone(),
         );
+        new_tcb.set_signal_mask(self.get_signal_mask());
 
         Ok((new_tcb, exec_path))
     }
@@ -395,6 +403,22 @@ impl TCB {
         let old_mask = *signal_mask;
         *signal_mask = mask.without_unblockable();
         old_mask
+    }
+
+    pub fn get_signal_stack_state(&self) -> SignalStackState {
+        *self.signal_stack.lock()
+    }
+
+    pub fn set_signal_stack(&self, stack: Option<(usize, usize)>) {
+        let mut signal_stack = self.signal_stack.lock();
+        signal_stack.stack = stack;
+        if stack.is_none() {
+            signal_stack.on_stack = false;
+        }
+    }
+
+    pub fn set_signal_stack_state(&self, state: SignalStackState) {
+        *self.signal_stack.lock() = state;
     }
 
     pub fn set_tid_address(&self, addr: usize) {

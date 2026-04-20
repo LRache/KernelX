@@ -10,7 +10,7 @@ use crate::kernel::errno::Errno;
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
 use crate::kernel::ipc::{
-    KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SocketType, UnixSocket, shm, signum,
+    KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SignalStackFlags, SocketType, UnixSocket, shm, signum,
 };
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
@@ -353,24 +353,21 @@ pub struct USignalStack {
 }
 impl UserStruct for USignalStack {}
 
-bitflags! {
-    struct SignalStackFlags: usize {
-        const SS_ONSTACK = 1 << 0;
-        const SS_DISABLE = 1 << 1;
-    }
-}
-
 const MINSIGSTKSZ: usize = 2048;
 
 pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) -> SyscallRet {
-    uptr_ss.should_not_null()?;
+    let current_tcb = current::tcb();
+    let current_stack = current_tcb.get_signal_stack_state();
 
-    let mut signal_actions = current::signal_actions().lock();
     if !uptr_oss.is_null() {
-        let stack = if let Some((sp, size)) = signal_actions.get_stack() {
+        let stack = if let Some((sp, size)) = current_stack.stack {
+            let mut flags = SignalStackFlags::empty();
+            if current_stack.on_stack {
+                flags |= SignalStackFlags::SS_ONSTACK;
+            }
             USignalStack {
                 ss_sp: sp,
-                ss_flags: SignalStackFlags::SS_ONSTACK.bits(),
+                ss_flags: flags.bits(),
                 ss_size: size,
             }
         } else {
@@ -384,6 +381,10 @@ pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) ->
     }
 
     if let Some(stack) = uptr_ss.read_optional()? {
+        if current_stack.on_stack {
+            return Err(Errno::EPERM);
+        }
+
         let flags = SignalStackFlags::from_bits(stack.ss_flags).ok_or(Errno::EINVAL)?;
         if flags.contains(SignalStackFlags::SS_ONSTACK) {
             return Err(Errno::EINVAL);
@@ -397,7 +398,7 @@ pub fn sigaltstack(uptr_ss: UPtr<USignalStack>, uptr_oss: UPtr<USignalStack>) ->
         } else {
             Some((stack.ss_sp, stack.ss_size))
         };
-        signal_actions.set_stack(s);
+        current_tcb.set_signal_stack(s);
     }
 
     Ok(0)

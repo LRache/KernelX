@@ -10,6 +10,7 @@ use crate::kernel::scheduler::{Tid, WakeupFailure};
 use crate::kernel::task::{ExitStatus, PCB, TCB};
 use crate::kernel::{config, scheduler};
 
+use super::frame::SignalStack;
 use super::{PendingSignal, SignalActionFlags, SignalDefaultAction, SignalNum};
 
 impl TCB {
@@ -34,10 +35,7 @@ impl TCB {
             return;
         }
 
-        let (action, stack) = {
-            let signal_actions = self.parent().signal_actions().lock();
-            (signal_actions.get(signal.signum), signal_actions.get_stack_top())
-        };
+        let action = self.parent().signal_actions().lock().get(signal.signum);
 
         if action.is_default() {
             match signum.default_action() {
@@ -84,17 +82,21 @@ impl TCB {
         sigframe.info.si_code = signal.si_code;
         sigframe.info.fields = signal.fields.into();
         sigframe.info.si_errno = 0;
+        sigframe.ucontext._uc_stack = SignalStack::from_state(self.get_signal_stack_state());
         sigframe.ucontext.uc_sigmask = old_mask;
         sigframe.ucontext.uc_mcontext = (*user_context).into();
 
-        let mut stack_top = if action.flags.contains(SignalActionFlags::SA_ONSTACK) {
-            match stack {
-                Some(stack_top) => stack_top,
-                None => self.user_context().get_user_stack_top(),
+        let mut stack_top = self.user_context().get_user_stack_top();
+        if action.flags.contains(SignalActionFlags::SA_ONSTACK) {
+            let mut signal_stack = self.get_signal_stack_state();
+            if !signal_stack.on_stack {
+                if let Some(altstack_top) = signal_stack.get_stack_top() {
+                    signal_stack.on_stack = true;
+                    self.set_signal_stack_state(signal_stack);
+                    stack_top = altstack_top;
+                }
             }
-        } else {
-            self.user_context().get_user_stack_top()
-        };
+        }
         stack_top -= core::mem::size_of::<SigFrame>();
         stack_top &= !0xf; // Align to 16 bytes
         self.get_addrspace()
@@ -120,6 +122,7 @@ impl TCB {
             .get_addrspace()
             .copy_from_user::<SigFrame>(self.user_context().get_user_stack_top())
             .expect("Failed to copy sigframe from user stack");
+        self.set_signal_stack_state(sigframe.ucontext._uc_stack.into_state());
         self.set_signal_mask(sigframe.ucontext.uc_sigmask);
         self.user_context().restore_from_signal(&sigframe.ucontext.uc_mcontext);
     }
