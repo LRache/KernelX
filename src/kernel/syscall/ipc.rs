@@ -284,7 +284,9 @@ pub fn rt_sigaction(
     uptr_oldact: UPtr<uapi::Sigaction>,
     sigsetsize: usize,
 ) -> SyscallRet {
-    assert!(sigsetsize == core::mem::size_of::<SignalSet>());
+    if sigsetsize != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
 
     let signum: SignalNum = (signum as u32).try_into()?;
     if signum.is_empty() || signum.is_unignorable() {

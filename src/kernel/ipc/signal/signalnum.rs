@@ -112,7 +112,7 @@ impl Into<u32> for SignalNum {
 impl TryFrom<u32> for SignalNum {
     type Error = Errno;
     fn try_from(value: u32) -> SysResult<Self> {
-        if value > 63 {
+        if value > 64 {
             Err(Errno::EINVAL)
         } else {
             Ok(SignalNum(value))

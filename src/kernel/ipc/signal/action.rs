@@ -49,14 +49,14 @@ impl SignalAction {
 
 #[derive(Clone)]
 pub struct SignalActionTable {
-    actions: [SignalAction; 63],
+    actions: [SignalAction; 64],
     stack: Option<(usize, usize)>, // (ss_sp, ss_size)
 }
 
 impl SignalActionTable {
     pub fn new() -> Self {
         SignalActionTable {
-            actions: [SignalAction::empty(); 63],
+            actions: [SignalAction::empty(); 64],
             stack: None,
         }
     }
