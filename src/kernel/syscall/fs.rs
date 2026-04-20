@@ -13,7 +13,7 @@ use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
-use crate::kernel::syscall::{SyscallRet, UserStruct};
+use crate::kernel::syscall::{SyscallRet, UserStruct, utils};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec, Uid};
 
@@ -837,7 +837,7 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     let mut local_offset = if uptr_offset.is_null() {
         in_file_offset
     } else {
-        uptr_offset.read()?
+        utils::should_not_be_negative(uptr_offset.read()?)?
     };
 
     let mut total_sent = 0;

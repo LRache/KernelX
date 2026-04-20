@@ -9,6 +9,7 @@ mod net;
 mod task;
 mod time;
 mod uid;
+mod utils;
 
 mod num;
 mod uptr;
