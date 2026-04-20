@@ -30,6 +30,9 @@ bitflags! {
     }
 }
 
+const IPPROTO_TCP: usize = 6;
+const IPPROTO_UDP: usize = 17;
+
 pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     let flags = PipeFlags::from_bits_truncate(flags);
     let fd_flags = FDFlags {
@@ -53,24 +56,44 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UArray<i32>) -> SyscallRet {
-    let domain = AddressFamily::try_from(domain).map_err(|_| Errno::EAFNOSUPPORT)?;
-    if domain != AddressFamily::Unix {
-        return Err(Errno::EAFNOSUPPORT);
-    }
+fn unix_socketpair_type(sock_kind: SocketKind, protocol: usize) -> Result<SocketType, Errno> {
     if protocol != 0 {
         return Err(Errno::EPROTONOSUPPORT);
     }
 
+    match sock_kind {
+        SocketKind::Stream => Ok(SocketType::Stream),
+        SocketKind::Dgram => Ok(SocketType::Dgram),
+        SocketKind::SeqPacket => Ok(SocketType::SeqPacket),
+        SocketKind::Raw => Err(Errno::EPROTONOSUPPORT),
+    }
+}
+
+fn inet_socketpair_error(sock_kind: SocketKind, protocol: usize) -> Errno {
+    match sock_kind {
+        SocketKind::Dgram => match protocol {
+            0 | IPPROTO_UDP => Errno::EOPNOTSUPP,
+            _ => Errno::EPROTONOSUPPORT,
+        },
+        SocketKind::Stream => match protocol {
+            0 | IPPROTO_TCP => Errno::EOPNOTSUPP,
+            _ => Errno::EPROTONOSUPPORT,
+        },
+        SocketKind::Raw => Errno::EPROTONOSUPPORT,
+        SocketKind::SeqPacket => Errno::EINVAL,
+    }
+}
+
+pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UArray<i32>) -> SyscallRet {
     let flags = sock_type & (SOCK_NONBLOCK | SOCK_CLOEXEC);
     let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
+    let domain = AddressFamily::try_from(domain).map_err(|_| Errno::EAFNOSUPPORT)?;
     let sock_kind = SocketKind::try_from(base_type).map_err(|_| Errno::EINVAL)?;
 
-    let socket_type = match sock_kind {
-        SocketKind::Stream => SocketType::Stream,
-        SocketKind::Dgram => SocketType::Dgram,
-        SocketKind::SeqPacket => SocketType::SeqPacket,
-        _ => return Err(Errno::EINVAL),
+    let socket_type = match domain {
+        AddressFamily::Unix => unix_socketpair_type(sock_kind, protocol)?,
+        AddressFamily::Inet => return Err(inet_socketpair_error(sock_kind, protocol)),
+        _ => return Err(Errno::EAFNOSUPPORT),
     };
 
     let blocked = flags & SOCK_NONBLOCK == 0;
@@ -85,10 +108,21 @@ pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UAr
     {
         let mut fdtable = current::fdtable().lock();
         fd_a = fdtable.push(sock_a, fd_flags)?;
-        fd_b = fdtable.push(sock_b, fd_flags)?;
+        fd_b = match fdtable.push(sock_b, fd_flags) {
+            Ok(fd) => fd,
+            Err(err) => {
+                let _ = fdtable.take(fd_a);
+                return Err(err);
+            }
+        };
     }
 
-    uptr_sv.write(0, &[fd_a as i32, fd_b as i32])?;
+    if let Err(err) = uptr_sv.write(0, &[fd_a as i32, fd_b as i32]) {
+        let mut fdtable = current::fdtable().lock();
+        let _ = fdtable.take(fd_a);
+        let _ = fdtable.take(fd_b);
+        return Err(err);
+    }
 
     Ok(0)
 }
