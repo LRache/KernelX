@@ -137,6 +137,9 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     uptr_filename.should_not_null()?;
 
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if open_flags.contains(OpenFlags::O_DIRECTORY) && open_flags.contains(OpenFlags::O_CREATE) {
+        return Err(Errno::EINVAL);
+    }
     let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
     let (readable, writable) = match acc_mode {
         0 => (true, false), // O_RDONLY
@@ -167,7 +170,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             return vfs::create_temp(
                 &dentry,
                 file_flags,
-                Mode::from_bits(mode as u32 & 0o777).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
+                Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
             );
         }
 
@@ -190,7 +193,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                 if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
                     // Create the file
                     let mode =
-                        Mode::from_bits(mode as u32 & 0o777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
+                        Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
                     let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?.unwrap(); // SAFETY: The root must exist
                     vfs::create_file(
                         &parent_dentry,
@@ -211,6 +214,13 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     } else {
         helper(vfs::get_root_dentry())?
     };
+
+    if open_flags.contains(OpenFlags::O_DIRECTORY) {
+        let inode = file.get_inode().ok_or(Errno::ENOTDIR)?;
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+    }
 
     if writable && open_flags.contains(OpenFlags::O_TRUNC) {
         if let Some(inode) = file.get_inode() {

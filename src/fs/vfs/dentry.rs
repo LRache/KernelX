@@ -7,6 +7,7 @@ use alloc::sync::{Arc, Weak};
 use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
 use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::current;
 use crate::klib::SpinLock;
 
 use super::vfs;
@@ -166,11 +167,33 @@ impl Dentry {
     }
 
     pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
-        if self.lookup(name).is_ok() {
-            return Err(Errno::EEXIST);
+        match self.lookup(name) {
+            Ok(_) => return Err(Errno::EEXIST),
+            Err(Errno::ENOENT) => {}
+            Err(err) => return Err(err),
         }
 
-        let inode = self.get_inode().create(name, mode, owner)?;
+        let parent_inode = self.get_inode();
+        let parent_gid = parent_inode.owner()?.1;
+        let mut mode = mode;
+        let mut owner = owner;
+
+        if parent_inode.mode()?.contains(Mode::S_ISGID) {
+            owner.gid = parent_gid;
+            if mode.contains(Mode::S_IFDIR) {
+                mode.insert(Mode::S_ISGID);
+            }
+        }
+
+        if mode.contains(Mode::S_ISGID) && current::fsuid() != 0 {
+            let pcb = current::pcb();
+            let in_supplementary_group = pcb.supplementary_gids().contains(&owner.gid);
+            if pcb.fsgid() != owner.gid && !in_supplementary_group {
+                mode.remove(Mode::S_ISGID);
+            }
+        }
+
+        let inode = parent_inode.create(name, mode, owner)?;
         vfs().cache.insert(
             &Index {
                 sno: self.sno(),

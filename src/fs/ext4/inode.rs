@@ -385,7 +385,7 @@ impl InodeOps for Ext4Inode {
                 }
 
                 let current_mode = inode_mode(&mut child_ref);
-                inode_set_mode(&mut child_ref, (current_mode & !0o777) | (mode.bits() as u32 & 0o777));
+                inode_set_mode(&mut child_ref, (current_mode & !0o7777) | (mode.bits() as u32 & 0o7777));
                 inode_set_owner(&mut child_ref, owner.uid as u16, owner.gid as u16);
 
                 let time = now();
