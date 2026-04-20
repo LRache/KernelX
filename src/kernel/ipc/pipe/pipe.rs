@@ -146,7 +146,7 @@ impl FileOps for Pipe {
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
         // self.meta.as_ref().map(|m| &m.inode)
-        unimplemented!()
+        None
     }
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {
