@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use crate::fs::file::{File, FileFlags};
+use crate::fs::file::{File, FileFlags, FileOps};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
@@ -326,7 +326,12 @@ fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
     Ok(vec)
 }
 
-fn do_execve(file: Arc<File>, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
+fn do_execve(
+    file: Arc<File>,
+    invoked_path: &str,
+    uptr_argv: UArray<UString>,
+    uptr_envp: UArray<UString>,
+) -> SyscallRet {
     let argv = read_ustring_array(uptr_argv)?;
     let envp = read_ustring_array(uptr_envp)?;
     let mut argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
@@ -337,7 +342,7 @@ fn do_execve(file: Arc<File>, uptr_argv: UArray<UString>, uptr_envp: UArray<UStr
         argv_ref.push("");
     }
 
-    current::pcb().exec(current::tcb(), file, &argv_ref, &envp_ref)?;
+    current::pcb().exec(current::tcb(), file, invoked_path, &argv_ref, &envp_ref)?;
     current::tcb().wake_parent_waiting_vfork();
     Ok(0)
 }
@@ -352,7 +357,7 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
             .downcast_arc::<File>()
             .map_err(|_| Errno::ENOEXEC)?;
 
-    do_execve(file, uptr_argv, uptr_envp)
+    do_execve(file, &path, uptr_argv, uptr_envp)
 }
 
 pub fn execveat(
@@ -373,18 +378,22 @@ pub fn execveat(
     };
     let path = path.as_deref().unwrap_or("");
 
-    let file = if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
+    let (file, invoked_path) = if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
         current::fdtable()
             .lock()
             .get(dirfd)?
             .downcast_arc::<File>()
-            .map_err(|_| Errno::ENOEXEC)?
+            .map_err(|_| Errno::ENOEXEC)
+            .map(|file| {
+                let invoked_path = file.get_dentry().map(|dentry| dentry.get_path()).unwrap_or_default();
+                (file, invoked_path)
+            })?
     } else {
         if path.is_empty() {
             return Err(Errno::ENOENT);
         }
         // When pathname is absolute, dirfd can be ignored.
-        if path.starts_with('/') {
+        let file = if path.starts_with('/') {
             current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
         } else if dirfd as isize == AT_FDCWD {
             current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
@@ -394,10 +403,11 @@ pub fn execveat(
             vfs::openat_file(dir, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
         }
         .downcast_arc::<File>()
-        .map_err(|_| Errno::ENOEXEC)?
+        .map_err(|_| Errno::ENOEXEC)?;
+        (file, path.into())
     };
 
-    do_execve(file, uptr_argv, uptr_envp)
+    do_execve(file, &invoked_path, uptr_argv, uptr_envp)
 }
 
 bitflags! {

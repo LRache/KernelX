@@ -37,8 +37,17 @@ pub fn load_dentry_at(dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
     vfs().lookup_dentry(dir, path)
 }
 
+pub fn load_dentry_at_with_perm(dir: &Arc<Dentry>, path: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
+    vfs().lookup_dentry_with_perm(dir, path, perm)
+}
+
 pub fn load_dentry_at_nofollow(dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
     let dentry = vfs().lookup_dentry_nofollow(dir, path)?;
+    Ok(dentry)
+}
+
+pub fn load_dentry_at_nofollow_with_perm(dir: &Arc<Dentry>, path: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
+    let dentry = vfs().lookup_dentry_nofollow_with_perm(dir, path, perm)?;
     Ok(dentry)
 }
 

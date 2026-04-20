@@ -1126,34 +1126,94 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> SyscallRet {
     }
 }
 
-pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
-    uptr_path.should_not_null()?;
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AccessMode: usize {
+        const X_OK = 0x1;
+        const W_OK = 0x2;
+        const R_OK = 0x4;
+    }
+}
 
-    let path = uptr_path.read_fixed()?;
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AccessAtFlags: usize {
+        const AT_SYMLINK_NOFOLLOW = 0x100;
+        const AT_EACCESS = 0x200;
+        const AT_EMPTY_PATH = 0x1000;
+    }
+}
 
-    if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+fn access_perm_flags(mode: AccessMode) -> PermFlags {
+    let mut perm = PermFlags::empty();
+    if mode.contains(AccessMode::R_OK) {
+        perm.insert(PermFlags::R);
+    }
+    if mode.contains(AccessMode::W_OK) {
+        perm.insert(PermFlags::W);
+    }
+    if mode.contains(AccessMode::X_OK) {
+        perm.insert(PermFlags::X);
+    }
+    perm
+}
+
+fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_perm: &Perm) -> SysResult<Arc<Dentry>> {
+    if path.is_empty() {
+        if !flags.contains(AccessAtFlags::AT_EMPTY_PATH) {
+            return Err(Errno::ENOENT);
+        }
+
+        if dirfd as isize == AT_FDCWD {
+            return current::with_cwd(|cwd| Ok(cwd));
+        }
+
+        let file = current::fdtable().lock().get(dirfd)?;
+        return Ok(file.get_dentry().ok_or(Errno::ENOTDIR)?.clone());
+    }
+
+    let helper = if flags.contains(AccessAtFlags::AT_SYMLINK_NOFOLLOW) {
+        vfs::load_dentry_at_nofollow_with_perm
+    } else {
+        vfs::load_dentry_at_with_perm
+    };
+
+    if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| helper(&cwd, path, search_perm))
     } else {
         let file = current::fdtable().lock().get(dirfd)?;
-        vfs::load_dentry_at(file.get_dentry().ok_or(Errno::ENOTDIR)?, &path)?;
+        helper(file.get_dentry().ok_or(Errno::ENOTDIR)?, path, search_perm)
+    }
+}
+
+fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFlags) -> SyscallRet {
+    uptr_path.should_not_null()?;
+
+    let mode = AccessMode::from_bits(mode).ok_or(Errno::EINVAL)?;
+    let path = uptr_path.read_fixed()?;
+    let search_perm = Perm::access(PermFlags::X, flags.contains(AccessAtFlags::AT_EACCESS));
+    let perm = Perm::access(access_perm_flags(mode), flags.contains(AccessAtFlags::AT_EACCESS));
+    let dentry = lookup_access_dentry(dirfd, &path, flags, &search_perm)?;
+
+    if !mode.is_empty() {
+        let inode = dentry.get_inode();
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(&perm, uid, gid) {
+            return Err(Errno::EACCES);
+        }
     }
 
     Ok(0)
 }
 
-pub fn faccessat2(dirfd: usize, uptr_path: UString, _mode: usize, _flags: usize) -> SyscallRet {
-    uptr_path.should_not_null()?;
+pub fn faccessat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
+    do_faccessat(dirfd, uptr_path, mode, AccessAtFlags::empty())
+}
 
-    let path = uptr_path.read_fixed()?;
-
-    if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
-    } else {
-        let file = current::fdtable().lock().get(dirfd)?;
-        vfs::load_dentry_at(file.get_dentry().ok_or(Errno::ENOTDIR)?, &path)?;
-    }
-
-    Ok(0)
+pub fn faccessat2(dirfd: usize, uptr_path: UString, mode: usize, flags: usize) -> SyscallRet {
+    let flags = AccessAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    do_faccessat(dirfd, uptr_path, mode, flags)
 }
 
 bitflags! {

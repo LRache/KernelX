@@ -22,7 +22,7 @@ pub struct Dentry {
 }
 
 impl Dentry {
-    fn check_search_perm(&self) -> SysResult<()> {
+    fn check_search_perm_with(&self, perm: &Perm) -> SysResult<()> {
         let inode = self.get_inode();
         if inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
@@ -30,7 +30,7 @@ impl Dentry {
 
         let mode = inode.mode()?;
         let (uid, gid) = inode.owner()?;
-        if !mode.check_perm(&Perm::current(PermFlags::X), uid, gid) {
+        if !mode.check_perm(perm, uid, gid) {
             return Err(Errno::EACCES);
         }
 
@@ -137,8 +137,8 @@ impl Dentry {
         self.parent.clone()
     }
 
-    pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
-        self.check_search_perm()?;
+    pub fn lookup_with_perm(self: &Arc<Self>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
+        self.check_search_perm_with(perm)?;
 
         if let Some(child) = self.children.lock().get(name)
             && let Some(child) = child.upgrade()
@@ -163,8 +163,12 @@ impl Dentry {
         }
     }
 
-    pub fn lookup_nocached(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
-        self.check_search_perm()?;
+    pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
+        self.lookup_with_perm(name, &Perm::current(PermFlags::X))
+    }
+
+    pub fn lookup_nocached_with_perm(self: &Arc<Self>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
+        self.check_search_perm_with(perm)?;
 
         let lookup_ino = self.get_inode().lookup(name)?;
         let lookup_sno = self.sno();
@@ -183,7 +187,7 @@ impl Dentry {
         }
     }
 
-    pub fn walk_link(self: Arc<Self>, depth: usize) -> SysResult<Arc<Dentry>> {
+    pub fn walk_link_with_perm(self: Arc<Self>, depth: usize, perm: &Perm) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
             let mut buffer = [0u8; 255];
@@ -192,7 +196,7 @@ impl Dentry {
                     return Err(Errno::ELOOP);
                 }
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
-                let link_dentry = vfs().lookup_dentry_with_depth(p, link_name, depth + 1)?;
+                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(p, link_name, depth + 1, perm)?;
                 return Ok(link_dentry);
             }
         }

@@ -183,10 +183,10 @@ impl TCB {
                 for part in parts {
                     new_argv.push(part);
                 }
-                for arg in argv {
+                new_argv.push(initpath);
+                for arg in argv.iter().skip(1) {
                     new_argv.push(arg);
                 }
-                new_argv.push(initpath);
 
                 return Self::new_inittask(tid, parent, interpreter, &new_argv, envp, tty);
             }
@@ -295,7 +295,13 @@ impl TCB {
         new_tcb
     }
 
-    pub fn new_exec(&self, file: Arc<File>, argv: &[&str], envp: &[&str]) -> SysResult<(Arc<Self>, String)> {
+    pub fn new_exec(
+        &self,
+        file: Arc<File>,
+        invoked_path: &str,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> SysResult<(Arc<Self>, String)> {
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file.read_at(&mut first_line, 0)?;
@@ -310,7 +316,8 @@ impl TCB {
                 for part in parts {
                     new_argv.push(part);
                 }
-                for arg in argv {
+                new_argv.push(invoked_path);
+                for arg in argv.iter().skip(1) {
                     new_argv.push(arg);
                 }
 
@@ -318,7 +325,7 @@ impl TCB {
                     vfs::open_file(interpreter, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
                         .downcast_arc::<File>()
                         .map_err(|_| Errno::ENOEXEC)?;
-                return self.new_exec(interpreter_file, &new_argv, envp);
+                return self.new_exec(interpreter_file, interpreter, &new_argv, envp);
             }
         }
 

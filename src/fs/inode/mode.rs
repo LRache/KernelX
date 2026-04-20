@@ -37,7 +37,9 @@ bitflags! {
 impl Mode {
     pub fn check_perm(&self, perm: &Perm, uid: Uid, gid: Uid) -> bool {
         if perm.is_root() {
-            if perm.flags.contains(PermFlags::X) {
+            // Root bypasses DAC checks except that executing a regular file still
+            // requires at least one execute bit, matching Linux access/open semantics.
+            if perm.flags.contains(PermFlags::X) && (*self & Mode::S_IFMT) == Mode::S_IFREG {
                 return self.contains(Mode::S_IXUSR) || self.contains(Mode::S_IXGRP) || self.contains(Mode::S_IXOTH);
             } else {
                 return true;

@@ -416,11 +416,18 @@ impl PCB {
         }
     }
 
-    pub fn exec(self: &Arc<Self>, tcb: &TCB, file: Arc<File>, argv: &[&str], envp: &[&str]) -> SysResult<()> {
+    pub fn exec(
+        self: &Arc<Self>,
+        tcb: &TCB,
+        file: Arc<File>,
+        invoked_path: &str,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> SysResult<()> {
         let filemode = file.mode()?;
         let fileowner = file.owner()?;
 
-        let (first_task, exec_path) = tcb.new_exec(file, argv, envp)?;
+        let (first_task, exec_path) = tcb.new_exec(file, invoked_path, argv, envp)?;
 
         {
             let mut tasks = self.tasks.lock();

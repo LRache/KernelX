@@ -41,6 +41,23 @@ impl Perm {
         }
     }
 
+    pub fn access(flags: PermFlags, use_effective_ids: bool) -> Self {
+        let pcb = current::pcb();
+        let (uid, gid) = if use_effective_ids {
+            (pcb.euid(), pcb.egid())
+        } else {
+            (pcb.uid(), pcb.gid())
+        };
+
+        let task = current::task();
+        Self {
+            uid,
+            gid,
+            supplementary_gids: task.supplementary_gids(),
+            flags,
+        }
+    }
+
     pub fn in_group(&self, gid: Uid) -> bool {
         self.gid == gid || self.supplementary_gids.contains(&gid)
     }
