@@ -39,7 +39,7 @@ impl InodeOps for TaskDirSelfInode {
     }
 
     fn readlink(&self, buffer: &mut [u8]) -> SysResult<Option<usize>> {
-        let link_name = current::tid().to_string();
+        let link_name = current::pid().to_string();
         let bytes = link_name.as_bytes();
         let len = min(buffer.len(), bytes.len());
         buffer[..len].copy_from_slice(&bytes[..len]);

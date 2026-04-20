@@ -9,8 +9,8 @@ use crate::fs::vfs::vfs;
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::page;
-use crate::kernel::scheduler::Tid;
 use crate::kernel::scheduler::tid::TID_START;
+use crate::kernel::scheduler::Tid;
 use crate::kernel::task::manager;
 
 use super::{SysDirInode, TaskDirInode, TaskDirSelfInode};
