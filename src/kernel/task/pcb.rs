@@ -83,6 +83,7 @@ pub struct PCB {
     /// Interval for repeating itimers
     pub itimer_interval: SpinLock<[Duration; 3]>,
 
+    // TODO: 减少鉴权时候的数据拷贝。
     uid: SpinLock<Uid>,
     euid: SpinLock<Uid>,
     suid: SpinLock<Uid>,
