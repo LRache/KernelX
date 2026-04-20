@@ -52,6 +52,34 @@ impl Dentry {
         Ok(())
     }
 
+    fn check_sticky_remove_perm(
+        &self,
+        parent_inode: &Arc<dyn InodeOps>,
+        child_inode: &Arc<dyn InodeOps>,
+    ) -> SysResult<()> {
+        let parent_mode = parent_inode.mode()?;
+        if !parent_mode.contains(Mode::S_ISVTX) {
+            return Ok(());
+        }
+
+        let fsuid = current::fsuid();
+        if fsuid == 0 {
+            return Ok(());
+        }
+
+        let (parent_uid, _) = parent_inode.owner()?;
+        if fsuid == parent_uid {
+            return Ok(());
+        }
+
+        let (child_uid, _) = child_inode.owner()?;
+        if fsuid == child_uid {
+            return Ok(());
+        }
+
+        Err(Errno::EPERM)
+    }
+
     pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
         Self {
             inode_index: Index {
@@ -245,12 +273,12 @@ impl Dentry {
     fn remove_child(self: &Arc<Self>, name: &str, remove_dir: bool) -> SysResult<()> {
         self.check_child_mutation_perm()?;
 
-        let inode = self.get_inode();
-        if inode.inode_type()? != FileType::Directory {
+        let parent_inode = self.get_inode();
+        if parent_inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
         }
 
-        let child_ino = inode.lookup(name)?;
+        let child_ino = parent_inode.lookup(name)?;
         let child_inode = vfs().load_inode(self.sno(), child_ino)?;
         let child_is_dir = child_inode.inode_type()? == FileType::Directory;
         if remove_dir && !child_is_dir {
@@ -260,12 +288,14 @@ impl Dentry {
             return Err(Errno::EISDIR);
         }
 
+        self.check_sticky_remove_perm(&parent_inode, &child_inode)?;
+
         let inode_index = Index {
             sno: self.sno(),
             ino: child_ino,
         };
 
-        inode.unlink(name)?;
+        parent_inode.unlink(name)?;
 
         self.children.lock().remove(name);
         vfs().cache.remove(&inode_index);
