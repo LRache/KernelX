@@ -85,6 +85,7 @@ macro_rules! syscall_entries {
             222 => mm::mmap(6),
             226 => mm::mprotect(3),
             227 => mm::msync(3),
+            228 => mm::mlock(2),
             233 => mm::madvise(0),
 
             // Futex

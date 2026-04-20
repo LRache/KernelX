@@ -167,3 +167,8 @@ pub fn madvise() -> SyscallRet {
     // Currently no-op
     Ok(0)
 }
+
+pub fn mlock(_start: usize, _length: usize) -> SyscallRet {
+    // Currently no-op
+    Ok(0)
+}
