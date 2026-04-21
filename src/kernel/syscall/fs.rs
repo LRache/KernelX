@@ -1790,9 +1790,27 @@ pub fn renameat2(
     Ok(0)
 }
 
-pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
+fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
     let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
+    if dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
 
+    let inode = dentry.get_inode();
+    if mode.contains(Mode::S_ISGID) && current::pcb().fsuid() != 0 {
+        let inode_gid = inode.owner()?.1;
+        let pcb = current::pcb();
+        let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
+        if pcb.fsgid() != inode_gid && !in_supplementary_group {
+            mode.remove(Mode::S_ISGID);
+        }
+    }
+
+    inode.chmod(mode)?;
+    Ok(0)
+}
+
+pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let path = uptr_path.should_not_null()?.read_fixed()?;
     if path.is_empty() {
         return Err(Errno::ENOENT);
@@ -1811,41 +1829,13 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         )?
     };
 
-    let inode = dentry.get_inode();
-    if mode.contains(Mode::S_ISGID) && current::pcb().fsuid() != 0 {
-        let inode_gid = inode.owner()?.1;
-        let pcb = current::pcb();
-        let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
-        if pcb.fsgid() != inode_gid && !in_supplementary_group {
-            mode.remove(Mode::S_ISGID);
-        }
-    }
-
-    inode.chmod(mode)?;
-
-    Ok(0)
+    do_chmod(&dentry, mode)
 }
 
 pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
-    let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
-
     let file = current::fdtable().lock().get(fd)?;
-
-    if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
-        if mode.contains(Mode::S_ISGID) && current::pcb().fsuid() != 0 {
-            let inode_gid = inode.owner()?.1;
-            let pcb = current::pcb();
-            let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
-            if pcb.fsgid() != inode_gid && !in_supplementary_group {
-                mode.remove(Mode::S_ISGID);
-            }
-        }
-        inode.chmod(mode)?;
-    } else {
-        return Err(Errno::EINVAL);
-    }
-
-    Ok(0)
+    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
+    do_chmod(dentry, mode)
 }
 
 pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags: usize) -> SyscallRet {
