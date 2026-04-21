@@ -66,6 +66,7 @@ int kernelx_ext4_link(struct ext4_inode_ref *parent,
                       struct ext4_inode_ref *child)
 {
     int rc;
+    struct ext4_dir_search_result result = {0};
 
     if (!parent || !child || !name) {
         return EINVAL;
@@ -91,6 +92,22 @@ int kernelx_ext4_link(struct ext4_inode_ref *parent,
 
     if (name_len > EXT4_DIRECTORY_FILENAME_LEN) {
         return EINVAL;
+    }
+
+    rc = ext4_dir_find_entry(&result, parent, name, (uint32_t)name_len);
+    if (rc == EOK) {
+        rc = ext4_dir_destroy_result(parent, &result);
+        if (rc != EOK) {
+            return rc;
+        }
+        return EEXIST;
+    }
+    if (rc != ENOENT) {
+        int destroy_rc = ext4_dir_destroy_result(parent, &result);
+        if (destroy_rc != EOK) {
+            return destroy_rc;
+        }
+        return rc;
     }
 
     rc = ext4_dir_add_entry(parent, name, (uint32_t)name_len, child);
