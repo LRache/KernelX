@@ -377,7 +377,8 @@ impl Manager {
                 Some(kaddr)
             } else {
                 crate::kinfo!(
-                    "Area at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
+                    "Area {} at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
+                    area.type_name(),
                     area.ubase(),
                     uaddr,
                     access_type
