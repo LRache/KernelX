@@ -77,6 +77,7 @@ enum RLimitResource {
     STACK = 3,
     CORE = 4,
     NOFILE = 7,
+    MEMLOCK = 8,
 }
 
 pub fn prlimit64(
@@ -163,6 +164,10 @@ pub fn prlimit64(
 
                 fdtable.set_max_fd(new_limit.rlim_max);
             }
+        }
+
+        RLimitResource::MEMLOCK => {
+            // TODO
         }
     }
 
