@@ -134,6 +134,10 @@ impl<T: StaticFsInfo> Inode<T> {
 }
 
 impl<T: StaticFsInfo> InodeOps for Inode<T> {
+    fn filesystem_refcount_bias(&self) -> usize {
+        1
+    }
+
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(ref mut children) = meta.meta {

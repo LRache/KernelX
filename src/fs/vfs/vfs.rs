@@ -88,10 +88,13 @@ impl VirtualFileSystem {
         let current = match path.chars().next() {
             Some('/') => self.get_root().clone(),
             _ => dir.clone(),
-        };
+        }
+        .get_mount_to()
+        .walk_link_with_perm(0, perm)?;
 
         if let Some((parent, name)) = self.lookup_parent_dentry_with_perm(dir, path, perm)? {
-            Ok(parent.lookup_nocached_with_perm(name, perm)?)
+            let dentry = parent.lookup_nocached_with_perm(name, perm)?;
+            Ok(dentry.get_mount_to())
         } else {
             Ok(current)
         }

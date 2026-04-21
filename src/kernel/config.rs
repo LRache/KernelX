@@ -15,7 +15,7 @@ pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
 
 #[cfg(debug_assertions)]
-pub const UTASK_KSTACK_PAGE_COUNT: usize = 32; // Kernel stack page count for user tasks
+pub const UTASK_KSTACK_PAGE_COUNT: usize = 64; // Kernel stack page count for user tasks
 #[cfg(not(debug_assertions))]
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Kernel stack page count for user tasks
 pub const KTASK_KSTACK_PAGE_COUNT: usize = 16; // Kernel stack page count for kernel tasks

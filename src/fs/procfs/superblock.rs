@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::arch;
 use crate::driver::BlockDriverOps;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
@@ -12,7 +12,12 @@ use super::inode;
 pub struct FileSystem;
 
 impl FileSystemOps for FileSystem {
-    fn create(&self, _fsno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
+    fn create(
+        &self,
+        _fsno: u32,
+        _driver: Option<Arc<dyn BlockDriverOps>>,
+        _options: MountOptions,
+    ) -> SysResult<Arc<dyn SuperBlockOps>> {
         Ok(Arc::new(SuperBlock))
     }
 }
@@ -79,11 +84,16 @@ impl SuperBlockOps for SuperBlock {
         statfs.f_blocks = 0;
         statfs.f_bfree = 0;
         statfs.f_bavail = 0;
+        statfs.f_flag = self.statfs_flags().bits();
         Ok(statfs)
     }
 
     fn sync(&self) -> SysResult<()> {
         Ok(())
+    }
+
+    fn is_readonly(&self) -> bool {
+        true
     }
 
     fn type_name(&self) -> &'static str {

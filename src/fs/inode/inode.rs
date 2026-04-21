@@ -79,6 +79,13 @@ pub trait InodeOps: DowncastSync {
 
     fn type_name(&self) -> &'static str;
 
+    /// Number of extra `Arc<Self>` references that the filesystem keeps
+    /// even when the inode is otherwise idle. The inode cache itself is
+    /// accounted for separately.
+    fn filesystem_refcount_bias(&self) -> usize {
+        0
+    }
+
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         None
     }

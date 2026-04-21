@@ -120,6 +120,10 @@ impl Dentry {
         self.inode_index
     }
 
+    pub fn is_superblock_readonly(&self) -> SysResult<bool> {
+        vfs().is_superblock_readonly(self.sno())
+    }
+
     pub fn get_inode(&self) -> Arc<dyn InodeOps> {
         let inode = self.inode.lock();
         match inode.upgrade() {
@@ -215,6 +219,14 @@ impl Dentry {
             inode: SpinLock::new(Arc::downgrade(mount_to), "Dentry::inode"),
             mount_to: SpinLock::new(None, "Dentry::mount_to"),
         }));
+    }
+
+    pub fn mounted_root(self: &Arc<Self>) -> Option<Arc<Dentry>> {
+        self.mount_to.lock().clone()
+    }
+
+    pub fn unmount(self: &Arc<Self>) -> Option<Arc<Dentry>> {
+        self.mount_to.lock().take()
     }
 
     pub fn get_path(&self) -> String {

@@ -10,7 +10,7 @@ use crate::fs::ext4::inode::Ext4Inode;
 use crate::fs::ext4::util::get_block_size;
 use crate::fs::filesystem::SuperBlockOps;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::uapi::Statfs;
+use crate::kernel::uapi::{Statfs, StatfsFlags};
 use crate::klib::SleepLock;
 use crate::kwarn;
 
@@ -32,12 +32,12 @@ pub(super) struct SuperBlockInner {
 }
 
 impl SuperBlockInner {
-    fn new(driver: Arc<dyn BlockDriverOps>) -> SysResult<Self> {
+    fn new(driver: Arc<dyn BlockDriverOps>, read_only: bool) -> SysResult<Self> {
         let mut bdev = Ext4BlockDevice::new(driver).map_err(map_error_to_kernel)?;
         let mut fs: Box<ext4_fs> = Box::new(unsafe { mem::zeroed() });
 
         unsafe {
-            let init_rc = ext4_fs_init(fs.as_mut(), bdev.inner.as_mut(), false);
+            let init_rc = ext4_fs_init(fs.as_mut(), bdev.inner.as_mut(), read_only);
             if init_rc != EOK as i32 {
                 kwarn!(
                     "ext4_fs_init failed rc={} magic={:#x} rev={} compat={:#x} incompat={:#x} ro_compat={:#x} log_block_size={} inode_size={} desc_size={}",
@@ -142,10 +142,10 @@ pub struct Ext4SuperBlock {
 }
 
 impl Ext4SuperBlock {
-    pub fn new(driver: Arc<dyn BlockDriverOps>) -> SysResult<Arc<Self>> {
+    pub fn new(driver: Arc<dyn BlockDriverOps>, read_only: bool) -> SysResult<Arc<Self>> {
         Ok(Arc::new(Self {
             superblock: Arc::new(SleepLock::new(
-                SuperBlockInner::new(driver)?,
+                SuperBlockInner::new(driver, read_only)?,
                 "Ext4SuperBlock::superblock",
             )),
         }))
@@ -187,13 +187,22 @@ impl SuperBlockOps for Ext4SuperBlock {
             f_fsid: 0,
             f_namelen: 255,
             f_frsize: get_block_size(sb) as u64,
-            f_flag: 0,
+            f_flag: if superblock.fs.read_only {
+                StatfsFlags::ST_RDONLY
+            } else {
+                StatfsFlags::empty()
+            }
+            .bits(),
             f_spare: [0; 4],
         })
     }
 
     fn sync(&self) -> SysResult<()> {
         self.superblock.lock().flush()
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.superblock.lock().fs.read_only
     }
 
     fn type_name(&self) -> &'static str {

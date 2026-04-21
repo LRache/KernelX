@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::driver::BlockDriverOps;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::memtreefs;
 use crate::kernel::errno::SysResult;
 
@@ -19,7 +19,12 @@ impl memtreefs::StaticFsInfo for TmpfsInfo {
 pub struct FileSystem;
 
 impl FileSystemOps for FileSystem {
-    fn create(&self, _sno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
-        Ok(Arc::new(memtreefs::SuperBlock::<TmpfsInfo>::new()))
+    fn create(
+        &self,
+        _sno: u32,
+        _driver: Option<Arc<dyn BlockDriverOps>>,
+        options: MountOptions,
+    ) -> SysResult<Arc<dyn SuperBlockOps>> {
+        Ok(Arc::new(memtreefs::SuperBlock::<TmpfsInfo>::new(options.read_only)))
     }
 }

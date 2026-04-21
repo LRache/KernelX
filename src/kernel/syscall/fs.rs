@@ -8,7 +8,7 @@ use num_enum::TryFromPrimitive;
 use crate::driver;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
-use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner, Perm, PermFlags, vfs};
+use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
@@ -1363,12 +1363,13 @@ fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_p
             return Err(Errno::ENOENT);
         }
 
-        if dirfd as isize == AT_FDCWD {
-            return current::with_cwd(|cwd| Ok(cwd));
-        }
-
-        let file = current::fdtable().lock().get(dirfd)?;
-        return Ok(file.get_dentry().ok_or(Errno::ENOTDIR)?.clone());
+        let dentry = if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| Ok(cwd))?
+        } else {
+            let file = current::fdtable().lock().get(dirfd)?;
+            file.get_dentry().ok_or(Errno::ENOTDIR)?.clone()
+        };
+        return Ok(dentry.get_mount_to());
     }
 
     let helper = if flags.contains(AccessAtFlags::AT_SYMLINK_NOFOLLOW) {
@@ -1377,12 +1378,14 @@ fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_p
         vfs::load_dentry_at_with_perm
     };
 
-    if path.starts_with('/') || dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| helper(&cwd, path, search_perm))
+    let dentry = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| helper(&cwd, path, search_perm))?
     } else {
         let file = current::fdtable().lock().get(dirfd)?;
-        helper(file.get_dentry().ok_or(Errno::ENOTDIR)?, path, search_perm)
-    }
+        helper(file.get_dentry().ok_or(Errno::ENOTDIR)?, path, search_perm)?
+    };
+
+    Ok(dentry.get_mount_to())
 }
 
 fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFlags) -> SyscallRet {
@@ -1395,6 +1398,10 @@ fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFl
     let dentry = lookup_access_dentry(dirfd, &path, flags, &search_perm)?;
 
     if !mode.is_empty() {
+        if mode.contains(AccessMode::W_OK) && dentry.is_superblock_readonly()? {
+            return Err(Errno::EROFS);
+        }
+
         let inode = dentry.get_inode();
         let mode = inode.mode()?;
         let (uid, gid) = inode.owner()?;
@@ -2056,10 +2063,11 @@ pub fn mount(
     uptr_source: UString,
     uptr_target: UString,
     uptr_fstype: UString,
-    _flags: usize,
+    flags: usize,
     _data: usize,
 ) -> SyscallRet {
     use crate::fs::devfs::devnode::BlockDevInode;
+    const MS_RDONLY: usize = 0x1;
 
     uptr_target.should_not_null()?;
     uptr_fstype.should_not_null()?;
@@ -2081,12 +2089,22 @@ pub fn mount(
         None
     };
 
-    vfs::mount(&target, &fstype, device)?;
+    // crate::kinfo!("mount: target = {:?}, fstype = {:?}, source = {:?}", target, fstype, device.is_none());
+
+    let options = MountOptions::new(flags & MS_RDONLY != 0);
+    current::with_cwd(|cwd| vfs::mount(&cwd, &target, &fstype, device, options))?;
 
     Ok(0)
 }
 
-// TODO: Implement umount2 syscall
-pub fn umount2(_uptr_target: UString, _flags: usize) -> SyscallRet {
-    Err(Errno::ENOSYS)
+pub fn umount2(uptr_target: UString, flags: usize) -> SyscallRet {
+    uptr_target.should_not_null()?;
+
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let target = uptr_target.read_fixed()?;
+    current::with_cwd(|cwd| vfs::unmount(&cwd, &target))?;
+    Ok(0)
 }
