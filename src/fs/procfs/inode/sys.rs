@@ -2,14 +2,25 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::cmp::min;
 use core::fmt::Write;
+use core::str;
 
 use crate::fs::file::{DirResult, File, FileFlags, FileOps};
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::ipc::shm;
 use crate::kernel::scheduler::tid::PID_MAX;
 
 use super::RootInode;
+
+fn parse_procfs_usize(buf: &[u8]) -> SysResult<usize> {
+    let input = str::from_utf8(buf).map_err(|_| Errno::EINVAL)?;
+    let value = input.trim().parse::<usize>().map_err(|_| Errno::EINVAL)?;
+    if value == 0 {
+        return Err(Errno::EINVAL);
+    }
+    Ok(value)
+}
 
 // /proc/sys/
 pub struct SysDirInode;
@@ -121,6 +132,7 @@ impl InodeOps for SysKernelDirInode {
             "." => Ok(Self::INO),
             ".." => Ok(SysDirInode::INO),
             "pid_max" => Ok(PidMaxInode::INO),
+            "shmmax" => Ok(ShmMaxInode::INO),
             "tainted" => Ok(TaintedInode::INO),
             _ => Err(Errno::ENOENT),
         }
@@ -144,6 +156,11 @@ impl InodeOps for SysKernelDirInode {
                 file_type: FileType::Regular,
             }),
             3 => Some(DirResult {
+                ino: ShmMaxInode::INO,
+                name: "shmmax".into(),
+                file_type: FileType::Regular,
+            }),
+            4 => Some(DirResult {
                 ino: TaintedInode::INO,
                 name: "tainted".into(),
                 file_type: FileType::Regular,
@@ -207,6 +224,60 @@ impl InodeOps for PidMaxInode {
 
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(File::new(self, dentry.unwrap(), flags))
+    }
+}
+
+// /proc/sys/kernel/shmmax
+pub struct ShmMaxInode;
+
+impl ShmMaxInode {
+    pub const INO: u32 = 12;
+}
+
+impl InodeOps for ShmMaxInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_shmmax"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
+        let mut content = String::with_capacity(16);
+        let _ = writeln!(content, "{}", shm::shmmax());
+        let bytes = content.as_bytes();
+        if offset >= bytes.len() {
+            return Ok(0);
+        }
+        let len = min(buf.len(), bytes.len() - offset);
+        buf[..len].copy_from_slice(&bytes[offset..offset + len]);
+        Ok(len)
+    }
+
+    fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        if offset != 0 {
+            return Err(Errno::EINVAL);
+        }
+        let value = parse_procfs_usize(buf)?;
+        shm::set_shmmax(value)?;
+        Ok(buf.len())
+    }
+
+    fn truncate(&self, _: u64) -> SysResult<()> {
+        Ok(())
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IRGRP | Mode::S_IROTH)
     }
 
     fn size(&self) -> SysResult<u64> {

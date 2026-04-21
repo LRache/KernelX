@@ -35,6 +35,7 @@ pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per proces
 
 pub const MAX_FILENAME_LEN: usize = 255;
 pub const MAX_SYMLINK_DEPTH: usize = 40;
+pub const SHM_MAX: usize = 32 * 1024; // Maximum size of a single SysV shared memory segment
 
 // pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer
 pub const PIPE_BUFFER_PAGES: usize = 32; // Number of pages allocated for pipe buffer

@@ -2,8 +2,10 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use bitflags::bitflags;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::arch::PGSIZE;
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::ShmArea;
 use crate::kernel::mm::{AddrSpace, MapPerm};
@@ -13,6 +15,8 @@ use crate::klib::SpinLock;
 use super::frame::ShmFrames;
 
 pub const IPC_PRIVATE: usize = 0;
+
+static SHM_MAX: AtomicUsize = AtomicUsize::new(config::SHM_MAX);
 
 bitflags! {
     pub struct IpcGetFlag: usize {
@@ -97,7 +101,7 @@ impl ShmManager {
         }
 
         // Create new
-        if size == 0 {
+        if size == 0 || size > shmmax() {
             return Err(Errno::EINVAL);
         }
 
@@ -243,6 +247,18 @@ impl ShmManager {
 }
 
 static SHM_MANAGER: SpinLock<ShmManager> = SpinLock::new(ShmManager::new(), "static::SHM_MANAGER");
+
+pub fn shmmax() -> usize {
+    SHM_MAX.load(Ordering::Acquire)
+}
+
+pub fn set_shmmax(size: usize) -> SysResult<()> {
+    if size == 0 {
+        return Err(Errno::EINVAL);
+    }
+    SHM_MAX.store(size, Ordering::Release);
+    Ok(())
+}
 
 pub fn get_or_create_shm(key: usize, size: usize, flags: IpcGetFlag) -> SysResult<usize> {
     SHM_MANAGER.lock().get_or_create(key, size, flags)
