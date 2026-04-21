@@ -8,6 +8,7 @@ pub enum Errno {
     ESRCH = 3,            // No such process
     EINTR = 4,            // Interrupted system call
     EIO = 5,              // Input/output error
+    ENXIO = 6,            // No such device or address
     E2BIG = 7,            // Argument list too long
     ENOEXEC = 8,          // Exec format error
     EBADF = 9,            // Bad file descriptor

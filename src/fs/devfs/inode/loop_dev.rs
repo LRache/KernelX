@@ -15,6 +15,43 @@ struct LoopState {
     backing_file: Option<Arc<dyn FileOps>>,
 }
 
+/// Linux-compatible `struct loop_info`
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct LoopInfo {
+    lo_number: i32,
+    lo_device: u32,
+    lo_inode: usize,
+    lo_rdevice: u32,
+    lo_offset: i32,
+    lo_encrypt_type: i32,
+    lo_encrypt_key_size: i32,
+    lo_flags: i32,
+    lo_name: [u8; 64],
+    lo_encrypt_key: [u8; 32],
+    lo_init: [usize; 2],
+    reserved: [u8; 4],
+}
+
+impl Default for LoopInfo {
+    fn default() -> Self {
+        Self {
+            lo_number: 0,
+            lo_device: 0,
+            lo_inode: 0,
+            lo_rdevice: 0,
+            lo_offset: 0,
+            lo_encrypt_type: 0,
+            lo_encrypt_key_size: 0,
+            lo_flags: 0,
+            lo_name: [0; 64],
+            lo_encrypt_key: [0; 32],
+            lo_init: [0; 2],
+            reserved: [0; 4],
+        }
+    }
+}
+
 pub struct LoopInode {
     ino: u32,
     minor: u32,
@@ -48,6 +85,35 @@ impl LoopInode {
 
     fn clear_backing_file(&self) {
         self.state.lock().backing_file = None;
+    }
+
+    fn is_bound(&self) -> bool {
+        self.state.lock().backing_file.is_some()
+    }
+
+    fn get_status(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        if arg == 0 {
+            return Err(Errno::EINVAL);
+        }
+        // Linux reports ENXIO for an unbound loop device, and user space uses
+        // that to detect a free /dev/loopN.
+        if !self.is_bound() {
+            return Err(Errno::ENXIO);
+        }
+        let info = LoopInfo {
+            lo_number: self.minor as i32,
+            ..Default::default()
+        };
+        addrspace.copy_to_user(arg, info)?;
+        Ok(0)
+    }
+
+    fn set_status(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        if arg == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let _info: LoopInfo = addrspace.copy_from_user(arg)?;
+        Ok(0)
     }
 }
 
@@ -122,13 +188,15 @@ impl FileOps for LoopFile {
         self.inner.flags
     }
 
-    fn ioctl(&self, request: usize, arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         #[derive(TryFromPrimitive)]
         #[allow(non_camel_case_types)]
         #[repr(usize)]
         enum Request {
             LOOP_SET_FD = 0x4C00,
             LOOP_CLR_FD = 0x4C01,
+            LOOP_SET_STATUS = 0x4C02,
+            LOOP_GET_STATUS = 0x4C03,
         }
 
         let request = Request::try_from_primitive(request).map_err(|_| Errno::ENOTTY)?;
@@ -146,6 +214,8 @@ impl FileOps for LoopFile {
                 self.inode.clear_backing_file();
                 Ok(0)
             }
+            Request::LOOP_SET_STATUS => self.inode.set_status(arg, addrspace),
+            Request::LOOP_GET_STATUS => self.inode.get_status(arg, addrspace),
         }
     }
 
