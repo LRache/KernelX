@@ -413,15 +413,17 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         }
     }
 
+    let fd = current::fdtable().lock().push(file.clone(), fd_flags)?;
+
     if writable && open_flags.contains(OpenFlags::O_TRUNC) {
-        if let Some(inode) = file.get_inode() {
-            if inode.inode_type()? == FileType::Regular {
-                inode.truncate(0)?;
-            }
+        if let Some(inode) = file.get_inode()
+            && inode.inode_type()? == FileType::Regular
+            && let Err(err) = inode.truncate(0)
+        {
+            let _ = current::fdtable().lock().take(fd);
+            return Err(err);
         }
     }
-
-    let fd = current::fdtable().lock().push(file, fd_flags)?;
 
     Ok(fd)
 }
@@ -987,7 +989,7 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
     let flags = CloseRangeFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     if flags.contains(CloseRangeFlags::UNSHARE) {
-        current::tcb().unshare_fdtable();
+        current::tcb().unshare_fdtable()?;
     }
 
     let mut fdtable = current::fdtable().lock();

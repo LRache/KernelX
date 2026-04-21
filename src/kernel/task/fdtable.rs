@@ -68,6 +68,14 @@ impl FDTable {
         if fd >= self.table.len() {
             self.table.resize(fd + 1, None);
         }
+        let needs_install = self.table[fd]
+            .as_ref()
+            .is_none_or(|old_item| !Arc::ptr_eq(&old_item.file, &file));
+
+        if needs_install {
+            file.on_fd_install()?;
+        }
+
         if let Some(old_item) = self.table[fd].as_ref()
             && !Arc::ptr_eq(&old_item.file, &file)
         {
@@ -76,13 +84,7 @@ impl FDTable {
             }
             old_item.file.on_fd_remove();
         }
-        if self.table[fd].is_none() {
-            file.on_fd_install();
-        } else if let Some(old_item) = self.table[fd].as_ref()
-            && !Arc::ptr_eq(&old_item.file, &file)
-        {
-            file.on_fd_install();
-        }
+
         self.table[fd] = Some(FDItem { file, flags });
         Ok(())
     }
@@ -186,22 +188,29 @@ impl FDTable {
         }
     }
 
-    pub fn fork(&self, owner: Tid) -> Self {
+    pub fn fork(&self, owner: Tid) -> SysResult<Self> {
         let new_table = self
             .table
             .iter()
             .map(|item| item.as_ref().map(|fd_item| fd_item.clone()))
             .collect();
 
-        self.table.iter().flatten().for_each(|item| {
-            item.file.on_fd_install();
-        });
+        let mut installed = Vec::new();
+        for item in self.table.iter().flatten() {
+            if let Err(err) = item.file.on_fd_install() {
+                installed
+                    .into_iter()
+                    .for_each(|file: Arc<dyn FileOps>| file.on_fd_remove());
+                return Err(err);
+            }
+            installed.push(item.file.clone());
+        }
 
-        Self {
+        Ok(Self {
             table: new_table,
             max_fd: self.max_fd,
             owner,
-        }
+        })
     }
 
     pub fn cloexec(&mut self) {

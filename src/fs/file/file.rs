@@ -22,16 +22,6 @@ pub struct FileFlags {
 }
 
 impl FileFlags {
-    pub const fn dontcare() -> Self {
-        FileFlags {
-            readable: true,
-            writable: true,
-            blocked: true,
-            append: false,
-            direct: false,
-        }
-    }
-
     pub const fn readonly() -> Self {
         FileFlags {
             readable: true,
@@ -211,11 +201,18 @@ impl FileOps for RandomAccessFile {
         Some(&self.dentry)
     }
 
-    fn on_fd_install(&self) {
+    fn on_fd_install(&self) -> SysResult<()> {
+        if self.flags.writable {
+            self.inode.begin_write_open()?;
+        }
         self.fd_refs.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn on_fd_remove(&self) {
+        if self.flags.writable {
+            self.inode.end_write_open();
+        }
         self.release_bsd_flock_if_last_fd();
     }
 }

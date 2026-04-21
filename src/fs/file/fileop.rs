@@ -87,7 +87,9 @@ pub trait FileOps: DowncastSync {
         self as *const Self as *const () as usize
     }
 
-    fn on_fd_install(&self) {}
+    fn on_fd_install(&self) -> SysResult<()> {
+        Ok(())
+    }
 
     fn on_fd_remove(&self) {}
 }

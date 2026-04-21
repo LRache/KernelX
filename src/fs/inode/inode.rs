@@ -16,6 +16,8 @@ use super::{FileType, Mode, Owner};
 pub struct InodeLockState {
     pub(crate) bsd: BsdFlockState,
     pub(crate) posix: PosixFlockState,
+    writer_count: u32,
+    exec_count: u32,
 }
 
 impl InodeLockState {
@@ -23,7 +25,41 @@ impl InodeLockState {
         Self {
             bsd: BsdFlockState::new(),
             posix: PosixFlockState::new(),
+            writer_count: 0,
+            exec_count: 0,
         }
+    }
+
+    pub fn writer_count(&self) -> u32 {
+        self.writer_count
+    }
+
+    pub fn exec_count(&self) -> u32 {
+        self.exec_count
+    }
+
+    pub fn increment_writer_count(&mut self) {
+        self.writer_count = self
+            .writer_count
+            .checked_add(1)
+            .expect("InodeLockState::writer_count overflow");
+    }
+
+    pub fn decrement_writer_count(&mut self) {
+        debug_assert!(self.writer_count > 0, "InodeLockState::writer_count underflow");
+        self.writer_count -= 1;
+    }
+
+    pub fn increment_exec_count(&mut self) {
+        self.exec_count = self
+            .exec_count
+            .checked_add(1)
+            .expect("InodeLockState::exec_count overflow");
+    }
+
+    pub fn decrement_exec_count(&mut self) {
+        debug_assert!(self.exec_count > 0, "InodeLockState::exec_count underflow");
+        self.exec_count -= 1;
     }
 }
 
@@ -45,6 +81,56 @@ pub trait InodeOps: DowncastSync {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         None
+    }
+
+    fn begin_write_open(&self) -> SysResult<()> {
+        let Some(lock_state) = self.lock_state() else {
+            return Ok(());
+        };
+
+        let mut lock_state = lock_state.lock();
+        if lock_state.exec_count() > 0 {
+            return Err(Errno::ETXTBSY);
+        }
+        lock_state.increment_writer_count();
+        Ok(())
+    }
+
+    fn end_write_open(&self) {
+        let Some(lock_state) = self.lock_state() else {
+            return;
+        };
+
+        lock_state.lock().decrement_writer_count();
+    }
+
+    fn begin_exec(&self) -> SysResult<()> {
+        let Some(lock_state) = self.lock_state() else {
+            return Ok(());
+        };
+
+        let mut lock_state = lock_state.lock();
+        if lock_state.writer_count() > 0 {
+            return Err(Errno::ETXTBSY);
+        }
+        lock_state.increment_exec_count();
+        Ok(())
+    }
+
+    fn increment_exec_count(&self) {
+        let Some(lock_state) = self.lock_state() else {
+            return;
+        };
+
+        lock_state.lock().increment_exec_count();
+    }
+
+    fn end_exec(&self) {
+        let Some(lock_state) = self.lock_state() else {
+            return;
+        };
+
+        lock_state.lock().decrement_exec_count();
     }
 
     fn create(&self, _name: &str, _mode: Mode, _owner: Owner) -> SysResult<Arc<dyn InodeOps>> {

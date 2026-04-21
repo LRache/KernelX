@@ -353,7 +353,7 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
     let path = uptr_path.read_fixed()?;
 
     let file =
-        current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+        current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X)))?
             .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::ENOEXEC)?;
 
@@ -394,13 +394,13 @@ pub fn execveat(
         }
         // When pathname is absolute, dirfd can be ignored.
         let file = if path.starts_with('/') {
-            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X)))?
         } else if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X)))?
         } else {
             let dir_file = current::fdtable().lock().get(dirfd)?;
             let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
-            vfs::openat_file(dir, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
+            vfs::openat_file(dir, &path, FileFlags::readonly(), &Perm::current(PermFlags::X))?
         }
         .downcast_arc::<RandomAccessFile>()
         .map_err(|_| Errno::ENOEXEC)?;

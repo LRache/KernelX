@@ -98,11 +98,18 @@ impl FileOps for CharFile {
         "CharFile"
     }
 
-    fn on_fd_install(&self) {
+    fn on_fd_install(&self) -> SysResult<()> {
+        if self.writable {
+            self.inode.begin_write_open()?;
+        }
         self.fd_refs.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn on_fd_remove(&self) {
+        if self.writable {
+            self.inode.end_write_open();
+        }
         self.release_bsd_flock_if_last_fd();
     }
 }
