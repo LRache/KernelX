@@ -6,7 +6,7 @@ use fixedstr::str256;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
-use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
@@ -95,6 +95,10 @@ fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<Arc<dyn crate::fs::Ino
     Ok(inode)
 }
 
+fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<&RandomAccessFile> {
+    file.downcast_ref::<RandomAccessFile>().ok_or(Errno::ESPIPE)
+}
+
 fn normalize_posix_flock(
     file: &Arc<dyn FileOps>,
     inode: &Arc<dyn InodeOps>,
@@ -119,7 +123,7 @@ fn normalize_posix_flock(
 
     let base = match flock.l_whence {
         SEEK_SET => 0,
-        SEEK_CUR => i64::try_from(file.seek(0, SeekWhence::CUR)?).map_err(|_| Errno::EINVAL)?,
+        SEEK_CUR => i64::try_from(random_access_file(file)?.seek(0, SeekWhence::CUR)?).map_err(|_| Errno::EINVAL)?,
         SEEK_END => i64::try_from(inode.size()?).map_err(|_| Errno::EINVAL)?,
         _ => return Err(Errno::EINVAL),
     };
@@ -502,7 +506,7 @@ pub struct IOVec {
 impl UserStruct for IOVec {}
 
 fn check_positional_io(file: &Arc<dyn FileOps>) -> SysResult<()> {
-    file.seek(0, SeekWhence::CUR).map(|_| ())
+    random_access_file(file).map(|_| ())
 }
 
 pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
@@ -586,7 +590,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    check_positional_io(&file)?;
+    let file = random_access_file(&file)?;
     if !file.readable() {
         return Err(Errno::EBADF);
     }
@@ -693,7 +697,7 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
         return Err(Errno::EINVAL);
     }
 
-    check_positional_io(&file)?;
+    let file = random_access_file(&file)?;
     if !file.readable() {
         return Err(Errno::EBADF);
     }
@@ -735,7 +739,7 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    check_positional_io(&file)?;
+    let file = random_access_file(&file)?;
     if !file.writable() {
         return Err(Errno::EBADF);
     }
@@ -770,7 +774,7 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    check_positional_io(&file)?;
+    let file = random_access_file(&file)?;
     if !file.writable() {
         return Err(Errno::EBADF);
     }
@@ -947,6 +951,7 @@ pub fn pwritev2(
 
 pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
+    let file = random_access_file(&file)?;
 
     let how = match how {
         0 => SeekWhence::BEG,
@@ -1010,7 +1015,10 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
 pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: usize) -> SyscallRet {
     let mut fdtable = current::fdtable().lock();
     let out_file = fdtable.get(out_fd)?;
-    let in_file = fdtable.get(in_fd)?.downcast_arc::<File>().map_err(|_| Errno::EINVAL)?;
+    let in_file = fdtable
+        .get(in_fd)?
+        .downcast_arc::<RandomAccessFile>()
+        .map_err(|_| Errno::EINVAL)?;
     drop(fdtable); // Release lock early
 
     if !out_file.writable() {
@@ -1113,7 +1121,7 @@ fn splice_read_chunk(
     buf: &mut [u8],
 ) -> SysResult<usize> {
     match offset {
-        Some(pos) => file.pread(buf, pos),
+        Some(pos) => random_access_file(file)?.pread(buf, pos),
         None => match (file.downcast_ref::<Pipe>(), splice_pipe_blocked(file, flags)) {
             (Some(pipe), Some(blocked)) => pipe.read_with_blocked(buf, blocked),
             _ => file.read(buf),
@@ -1128,7 +1136,7 @@ fn splice_write_chunk(
     buf: &[u8],
 ) -> SysResult<usize> {
     match offset {
-        Some(pos) => file.pwrite(buf, pos),
+        Some(pos) => random_access_file(file)?.pwrite(buf, pos),
         None => match (file.downcast_ref::<Pipe>(), splice_pipe_blocked(file, flags)) {
             (Some(pipe), Some(blocked)) => pipe.write_with_blocked(buf, blocked),
             _ => file.write(buf),
@@ -1219,7 +1227,9 @@ pub fn splice(
             if in_offset.is_none() {
                 let unread = bytes_read - moved_from_chunk;
                 if unread > 0 {
-                    let _ = in_file.seek(-(unread as isize), SeekWhence::CUR);
+                    if let Ok(file) = random_access_file(&in_file) {
+                        let _ = file.seek(-(unread as isize), SeekWhence::CUR);
+                    }
                 }
             }
             break;
@@ -1562,7 +1572,7 @@ const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d
 
 pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
-    let file = file.downcast_arc::<File>().map_err(|_| Errno::EBADF)?;
+    let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::EBADF)?;
 
     if uptr_dirent == 0 {
         return Err(Errno::EINVAL);
@@ -1945,7 +1955,7 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
 
     let length = truncate_length(length)?;
     check_file_size_limit(length)?;
-    file.downcast_arc::<File>()
+    file.downcast_arc::<RandomAccessFile>()
         .map_err(|_| Errno::EINVAL)?
         .ftruncate(length)?;
 
@@ -1963,7 +1973,7 @@ pub fn fallocate(fd: usize, mode: usize, _offset: usize, _len: usize) -> Syscall
         return Err(Errno::EINVAL);
     }
 
-    // file.downcast_arc::<File>()
+    // file.downcast_arc::<RandomAccessFile>()
     //     .map_err(|_| Errno::EINVAL)?
     //     .fallocate(offset as u64, len as u64)?;
 

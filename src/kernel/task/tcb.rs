@@ -7,7 +7,7 @@ use core::time::Duration;
 
 use crate::arch::{KernelContext, UserContext, UserContextTrait};
 use crate::driver::chosen::kclock;
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::errno::{Errno, SysResult};
@@ -163,9 +163,9 @@ impl TCB {
         let exec_perm = Perm::new(0, 0, PermFlags::R | PermFlags::X);
         let file = vfs::open_file(initpath, FileFlags::dontcare(), &exec_perm)
             .expect("Failed to open init file")
-            .downcast_arc::<File>()
+            .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::ENOEXEC)
-            .expect("Failed to open init file as File");
+            .expect("Failed to open init file as RandomAccessFile");
 
         // Read the shebang
         let mut first_line = [0u8; 128];
@@ -297,7 +297,7 @@ impl TCB {
 
     pub fn new_exec(
         &self,
-        file: Arc<File>,
+        file: Arc<RandomAccessFile>,
         invoked_path: &str,
         argv: &[&str],
         envp: &[&str],
@@ -323,13 +323,13 @@ impl TCB {
 
                 let interpreter_file =
                     vfs::open_file(interpreter, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
-                        .downcast_arc::<File>()
+                        .downcast_arc::<RandomAccessFile>()
                         .map_err(|_| Errno::ENOEXEC)?;
                 return self.new_exec(interpreter_file, interpreter, &new_argv, envp);
             }
         }
 
-        // SAFETY: File MUTS HAVE dentry and path.
+        // SAFETY: RandomAccessFile must have dentry and path.
         let exec_path = file.get_dentry().unwrap().get_path();
 
         let mut addrspace = AddrSpace::new();

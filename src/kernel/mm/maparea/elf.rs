@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::fs::file::File;
+use crate::fs::file::RandomAccessFile;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
@@ -15,7 +15,7 @@ pub struct ELFArea {
     ubase: usize,
     perm: MapPerm,
 
-    file: Arc<File>,
+    file: Arc<RandomAccessFile>,
     file_offset: usize,
 
     file_length: usize,
@@ -27,7 +27,7 @@ impl ELFArea {
     pub fn new(
         ubase: usize,
         perm: MapPerm,
-        file: Arc<File>,
+        file: Arc<RandomAccessFile>,
         file_offset: usize,
         file_length: usize,
         memory_size: usize,

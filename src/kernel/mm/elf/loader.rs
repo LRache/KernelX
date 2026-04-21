@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 
-use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
 use crate::fs::{Perm, vfs};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
@@ -21,7 +21,7 @@ pub struct DynInfo {
     pub phnum: u16,
 }
 
-pub fn read_ehdr(file: &Arc<File>) -> Result<Elf64Ehdr, Errno> {
+pub fn read_ehdr(file: &Arc<RandomAccessFile>) -> Result<Elf64Ehdr, Errno> {
     let mut header = [0u8; core::mem::size_of::<Elf64Ehdr>()];
     file.read(&mut header)?;
 
@@ -30,7 +30,7 @@ pub fn read_ehdr(file: &Arc<File>) -> Result<Elf64Ehdr, Errno> {
     Ok(*ehdr)
 }
 
-pub fn read_phdr(file: &Arc<File>) -> Result<Elf64Phdr, Errno> {
+pub fn read_phdr(file: &Arc<RandomAccessFile>) -> Result<Elf64Phdr, Errno> {
     let mut ph_buf = [0u8; core::mem::size_of::<Elf64Phdr>()];
     file.read(&mut ph_buf)?;
 
@@ -39,7 +39,11 @@ pub fn read_phdr(file: &Arc<File>) -> Result<Elf64Phdr, Errno> {
     Ok(*phdr)
 }
 
-pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace, perm: &Perm) -> Result<(usize, Option<DynInfo>), Errno> {
+pub fn load_elf(
+    file: &Arc<RandomAccessFile>,
+    addrspace: &AddrSpace,
+    perm: &Perm,
+) -> Result<(usize, Option<DynInfo>), Errno> {
     let ehdr = read_ehdr(file)?;
 
     if !ehdr.is_valid_elf() {
@@ -130,7 +134,7 @@ pub fn load_elf(file: &Arc<File>, addrspace: &AddrSpace, perm: &Perm) -> Result<
 pub fn load_loadable_phdr(
     ph_offset: usize,
     ph_num: usize,
-    file: &Arc<File>,
+    file: &Arc<RandomAccessFile>,
     addrspace: &AddrSpace,
     addr_base: usize,
 ) -> Result<(), Errno> {
@@ -151,7 +155,7 @@ pub fn load_loadable_phdr(
 
 pub fn load_program_from_file(
     phdr: &Elf64Phdr,
-    file: &Arc<File>,
+    file: &Arc<RandomAccessFile>,
     addrspace: &AddrSpace,
     addr_base: usize,
 ) -> Result<(), Errno> {
@@ -181,7 +185,7 @@ pub fn load_program_from_file(
 fn load_interpreter(path: &str, addrspace: &AddrSpace, perm: &Perm) -> SysResult<(usize, usize)> {
     let file_flags = FileFlags::readonly();
     let file = vfs::open_file(path, file_flags, perm)?;
-    let file = file.downcast_arc::<File>().map_err(|_| Errno::ENOEXEC)?;
+    let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::ENOEXEC)?;
 
     let ehdr = read_ehdr(&file)?;
 

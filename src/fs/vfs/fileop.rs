@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::{Mode, Owner};
 use crate::fs::perm::Perm;
 use crate::fs::vfs::dentry::{self, Dentry};
@@ -77,5 +77,5 @@ pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysRes
     let inode = superblock.create_temp(mode)?;
     let dentry = Arc::new(Dentry::new("", dentry, &inode, dentry.sno()));
 
-    Ok(Arc::new(File::new(inode, dentry, flags)))
+    Ok(Arc::new(RandomAccessFile::new(inode, dentry, flags)))
 }

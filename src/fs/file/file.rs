@@ -43,7 +43,7 @@ impl FileFlags {
     }
 }
 
-pub struct File {
+pub struct RandomAccessFile {
     inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
     pos: SleepLock<usize>,
@@ -52,19 +52,31 @@ pub struct File {
     pub flags: FileFlags,
 }
 
-impl File {
+impl RandomAccessFile {
     pub fn new(inode: Arc<dyn InodeOps>, dentry: Arc<Dentry>, flags: FileFlags) -> Self {
         Self {
             inode,
             dentry,
-            pos: SleepLock::new(0, "File::pos"),
+            pos: SleepLock::new(0, "RandomAccessFile::pos"),
             fd_refs: AtomicUsize::new(0),
             flags,
         }
     }
 
     pub fn read_at(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        self.pread(buf, offset)
+    }
+
+    pub fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
         let len = self.inode.readat(buf, offset, self.flags.direct)?;
+        Ok(len)
+    }
+
+    pub fn pwrite(&self, buf: &[u8], mut offset: usize) -> SysResult<usize> {
+        if self.flags.append {
+            offset = self.inode.size()? as usize;
+        }
+        let len = self.inode.writeat(buf, offset)?;
         Ok(len)
     }
 
@@ -99,72 +111,7 @@ impl File {
         self.inode.owner()
     }
 
-    fn release_bsd_flock_if_last_fd(&self) {
-        let previous = self.fd_refs.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "File::fd_refs underflow");
-        if previous == 1 {
-            release_bsd_flock(&self.inode, self.flock_owner_id());
-        }
-    }
-}
-
-impl FileOps for File {
-    fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        let mut pos = self.pos.lock();
-        let len = self.inode.readat(buf, *pos, self.flags.direct)?;
-        *pos += len;
-
-        Ok(len)
-    }
-
-    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        let len = self.inode.readat(buf, offset, self.flags.direct)?;
-        Ok(len)
-    }
-
-    fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        let mut pos = self.pos.lock();
-        let len = self.inode.read_to_user(ubuf, *pos, self.flags.direct)?;
-        *pos += len;
-        Ok(len)
-    }
-
-    fn write(&self, buf: &[u8]) -> SysResult<usize> {
-        let mut pos = self.pos.lock();
-        if self.flags.append {
-            let size = self.inode.size()?;
-
-            *pos = size as usize;
-        }
-        let len = self.inode.writeat(buf, *pos)?;
-        *pos += len;
-
-        Ok(len)
-    }
-
-    fn pwrite(&self, buf: &[u8], mut offset: usize) -> SysResult<usize> {
-        if self.flags.append {
-            offset = self.inode.size()? as usize;
-        }
-        let len = self.inode.writeat(buf, offset)?;
-        Ok(len)
-    }
-
-    fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        let mut pos = self.pos.lock();
-        if self.flags.append {
-            *pos = self.inode.size()? as usize;
-        }
-        let len = self.inode.write_from_user(ubuf, *pos, self.flags.direct)?;
-        *pos += len;
-        Ok(len)
-    }
-
-    fn flags(&self) -> FileFlags {
-        self.flags
-    }
-
-    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
+    pub fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
         let mut pos = self.pos.lock();
         let new_pos = match whence {
             SeekWhence::BEG => {
@@ -194,6 +141,58 @@ impl FileOps for File {
         *pos = new_pos as usize;
 
         Ok(*pos)
+    }
+
+    fn release_bsd_flock_if_last_fd(&self) {
+        let previous = self.fd_refs.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "RandomAccessFile::fd_refs underflow");
+        if previous == 1 {
+            release_bsd_flock(&self.inode, self.flock_owner_id());
+        }
+    }
+}
+
+impl FileOps for RandomAccessFile {
+    fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
+        let mut pos = self.pos.lock();
+        let len = self.inode.readat(buf, *pos, self.flags.direct)?;
+        *pos += len;
+
+        Ok(len)
+    }
+
+    fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        let mut pos = self.pos.lock();
+        let len = self.inode.read_to_user(ubuf, *pos, self.flags.direct)?;
+        *pos += len;
+        Ok(len)
+    }
+
+    fn write(&self, buf: &[u8]) -> SysResult<usize> {
+        let mut pos = self.pos.lock();
+        if self.flags.append {
+            let size = self.inode.size()?;
+
+            *pos = size as usize;
+        }
+        let len = self.inode.writeat(buf, *pos)?;
+        *pos += len;
+
+        Ok(len)
+    }
+
+    fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        let mut pos = self.pos.lock();
+        if self.flags.append {
+            *pos = self.inode.size()? as usize;
+        }
+        let len = self.inode.write_from_user(ubuf, *pos, self.flags.direct)?;
+        *pos += len;
+        Ok(len)
+    }
+
+    fn flags(&self) -> FileFlags {
+        self.flags
     }
 
     fn fstat(&self) -> SysResult<FileStat> {

@@ -1,9 +1,9 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
-use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::errno::SysResult;
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
@@ -102,17 +102,9 @@ impl FileOps for InetSocket {
         Ok(n)
     }
 
-    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
-    }
-
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         let blocked = *self.blocked.lock();
         self.inner.lock().sendto(buf, None, blocked)
-    }
-
-    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn flags(&self) -> FileFlags {
@@ -123,10 +115,6 @@ impl FileOps for InetSocket {
             append: false,
             direct: false,
         }
-    }
-
-    fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {

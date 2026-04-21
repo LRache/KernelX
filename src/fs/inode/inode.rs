@@ -181,5 +181,3 @@ pub trait InodeOps: DowncastSync {
 }
 
 impl_downcast!(sync InodeOps);
-
-pub type Inode = Arc<dyn InodeOps>;

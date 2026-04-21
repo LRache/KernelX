@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use bitflags::bitflags;
 
 use crate::arch;
-use crate::fs::file::{File, FileOps};
+use crate::fs::file::{FileOps, RandomAccessFile};
 use crate::kernel::errno::Errno;
 use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{
@@ -89,7 +89,7 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         let file = current::fdtable()
             .lock()
             .get(fd)?
-            .downcast_arc::<File>()
+            .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::EINVAL)?;
 
         let inode = file.get_inode().unwrap().clone();

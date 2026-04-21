@@ -7,7 +7,7 @@ use crate::driver::chosen::kclock;
 use crate::fs::ext4::ffi::*;
 use crate::fs::ext4::superblock::{SuperBlockInner, map_error_to_kernel};
 use crate::fs::ext4::util::{get_block_size, revision_tuple};
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::{InodeLockState, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
@@ -846,6 +846,6 @@ impl InodeOps for Ext4Inode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 }

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
-use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
@@ -294,17 +294,9 @@ impl FileOps for NetlinkSocket {
         Ok(n)
     }
 
-    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
-    }
-
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         self.process_request(buf);
         Ok(buf.len())
-    }
-
-    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn flags(&self) -> FileFlags {
@@ -315,10 +307,6 @@ impl FileOps for NetlinkSocket {
             append: false,
             direct: false,
         }
-    }
-
-    fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {

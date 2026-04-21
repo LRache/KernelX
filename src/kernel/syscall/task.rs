@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
@@ -327,7 +327,7 @@ fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
 }
 
 fn do_execve(
-    file: Arc<File>,
+    file: Arc<RandomAccessFile>,
     invoked_path: &str,
     uptr_argv: UArray<UString>,
     uptr_envp: UArray<UString>,
@@ -354,7 +354,7 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
 
     let file =
         current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
-            .downcast_arc::<File>()
+            .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::ENOEXEC)?;
 
     do_execve(file, &path, uptr_argv, uptr_envp)
@@ -382,7 +382,7 @@ pub fn execveat(
         current::fdtable()
             .lock()
             .get(dirfd)?
-            .downcast_arc::<File>()
+            .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::ENOEXEC)
             .map(|file| {
                 let invoked_path = file.get_dentry().map(|dentry| dentry.get_path()).unwrap_or_default();
@@ -402,7 +402,7 @@ pub fn execveat(
             let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
             vfs::openat_file(dir, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
         }
-        .downcast_arc::<File>()
+        .downcast_arc::<RandomAccessFile>()
         .map_err(|_| Errno::ENOEXEC)?;
         (file, path.into())
     };

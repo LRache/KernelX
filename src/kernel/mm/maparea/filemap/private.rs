@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::fs::file::File;
+use crate::fs::file::RandomAccessFile;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
@@ -14,7 +14,7 @@ pub struct PrivateFileMapArea {
     ubase: usize,
     perm: MapPerm,
 
-    file: Arc<File>,
+    file: Arc<RandomAccessFile>,
     file_offset: usize,
     file_length: usize,
 
@@ -22,7 +22,13 @@ pub struct PrivateFileMapArea {
 }
 
 impl PrivateFileMapArea {
-    pub fn new(ubase: usize, perm: MapPerm, file: Arc<File>, file_offset: usize, file_length: usize) -> Self {
+    pub fn new(
+        ubase: usize,
+        perm: MapPerm,
+        file: Arc<RandomAccessFile>,
+        file_offset: usize,
+        file_length: usize,
+    ) -> Self {
         // File mapping areas should be page-aligned
         debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
         debug_assert!(file_offset % arch::PGSIZE == 0, "file_offset should be page-aligned");

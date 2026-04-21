@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::cmp::min;
 use core::fmt::Write;
 
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::procfs::inode::{fill_kstat_common, read_iter_text};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner};
 use crate::kernel::errno::{Errno, SysResult};
@@ -160,7 +160,7 @@ impl InodeOps for TaskDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs task dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -270,7 +270,7 @@ impl InodeOps for TaskTaskDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs task/task dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -396,7 +396,7 @@ impl InodeOps for TaskThreadDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs task/thread dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -476,7 +476,7 @@ impl InodeOps for TaskMapsInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs maps requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -550,7 +550,7 @@ impl InodeOps for TaskExeInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {
@@ -648,7 +648,7 @@ impl InodeOps for TaskStatInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs stat requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -762,7 +762,7 @@ impl InodeOps for TaskStatusInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs status requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -868,7 +868,7 @@ impl InodeOps for TaskFdDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs fd dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -963,6 +963,6 @@ impl InodeOps for TaskFdEntryInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 }

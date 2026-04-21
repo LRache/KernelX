@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use crate::fs::file::File;
+use crate::fs::file::RandomAccessFile;
 use crate::fs::{Dentry, Mode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
@@ -419,7 +419,7 @@ impl PCB {
     pub fn exec(
         self: &Arc<Self>,
         tcb: &TCB,
-        file: Arc<File>,
+        file: Arc<RandomAccessFile>,
         invoked_path: &str,
         argv: &[&str],
         envp: &[&str],

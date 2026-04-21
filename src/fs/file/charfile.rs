@@ -5,12 +5,10 @@ use crate::driver::CharDriverOps;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::inode::release_bsd_flock;
 use crate::fs::{Dentry, InodeOps};
-use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::errno::SysResult;
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
-
-use super::SeekWhence;
 
 pub struct CharFile {
     driver: Arc<dyn CharDriverOps>,
@@ -54,16 +52,8 @@ impl FileOps for CharFile {
         self.driver.read(buf, self.blocked)
     }
 
-    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
-        Err(Errno::EPIPE)
-    }
-
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         self.driver.write(buf)
-    }
-
-    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
-        Err(Errno::EPIPE)
     }
 
     fn flags(&self) -> FileFlags {
@@ -74,10 +64,6 @@ impl FileOps for CharFile {
             append: false,
             direct: false,
         }
-    }
-
-    fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {

@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
 
-use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::config;
-use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::errno::SysResult;
 use crate::kernel::event::{FileEvent, PollEventSet};
 use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -108,10 +108,6 @@ impl FileOps for UnixSocket {
         }
     }
 
-    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
-    }
-
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let blocked = *self.blocked.lock();
         match &self.channel {
@@ -126,10 +122,6 @@ impl FileOps for UnixSocket {
             Channel::Stream { tx, .. } => tx.write(buf, blocked),
             Channel::Message { tx, .. } => tx.write(buf, blocked),
         }
-    }
-
-    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
@@ -148,10 +140,6 @@ impl FileOps for UnixSocket {
             append: false,
             direct: false,
         }
-    }
-
-    fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
