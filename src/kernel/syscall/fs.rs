@@ -1791,15 +1791,21 @@ pub fn renameat2(
 }
 
 fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
+    let dentry = dentry.clone().get_mount_to();
     let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
     if dentry.is_superblock_readonly()? {
         return Err(Errno::EROFS);
     }
 
     let inode = dentry.get_inode();
-    if mode.contains(Mode::S_ISGID) && current::pcb().fsuid() != 0 {
-        let inode_gid = inode.owner()?.1;
-        let pcb = current::pcb();
+    let (inode_uid, inode_gid) = inode.owner()?;
+    let pcb = current::pcb();
+    let fsuid = pcb.fsuid();
+    if fsuid != 0 && fsuid != inode_uid {
+        return Err(Errno::EPERM);
+    }
+
+    if mode.contains(Mode::S_ISGID) && fsuid != 0 {
         let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
         if pcb.fsgid() != inode_gid && !in_supplementary_group {
             mode.remove(Mode::S_ISGID);
