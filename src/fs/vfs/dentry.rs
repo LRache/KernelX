@@ -22,7 +22,7 @@ pub struct Dentry {
 }
 
 impl Dentry {
-    fn check_search_perm_with(&self, perm: &Perm) -> SysResult<()> {
+    pub fn check_search_perm(&self, perm: &Perm) -> SysResult<()> {
         let inode = self.get_inode();
         if inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
@@ -137,12 +137,16 @@ impl Dentry {
         }
     }
 
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn get_parent(&self) -> Option<Arc<Dentry>> {
         self.parent.clone()
     }
 
     pub fn lookup_with_perm(self: &Arc<Self>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
-        self.check_search_perm_with(perm)?;
+        self.check_search_perm(perm)?;
 
         if let Some(child) = self.children.lock().get(name)
             && let Some(child) = child.upgrade()
@@ -172,7 +176,7 @@ impl Dentry {
     }
 
     pub fn lookup_nocached_with_perm(self: &Arc<Self>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
-        self.check_search_perm_with(perm)?;
+        self.check_search_perm(perm)?;
 
         let lookup_ino = self.get_inode().lookup(name)?;
         let lookup_sno = self.sno();

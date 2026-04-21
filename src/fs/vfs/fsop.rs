@@ -50,7 +50,7 @@ impl VirtualFileSystem {
 
     fn resolve_mountpoint(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
         match self.lookup_parent_dentry(dir, path)? {
-            Some((parent, name)) => parent.lookup(name),
+            Some((parent, name)) => parent.lookup(name.as_ref()),
             None => Ok(self.get_root().clone()),
         }
     }

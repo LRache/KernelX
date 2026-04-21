@@ -388,7 +388,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                     let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?.unwrap(); // SAFETY: The root must exist
                     vfs::create_file(
                         &parent_dentry,
-                        &child_name,
+                        child_name.as_ref(),
                         file_flags,
                         mode,
                         Owner::new(current::fsuid(), current::fsgid()),
@@ -467,7 +467,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
         )?
     } {
         let mut buffer = [0u8; 255];
-        if let Some(size) = parent.readlink(child, &mut buffer)? {
+        if let Some(size) = parent.readlink(child.as_ref(), &mut buffer)? {
             let path = core::str::from_utf8(&buffer[..size]).map_err(|_| Errno::EINVAL)?;
             let to_write = core::cmp::min(path.len(), bufsize);
             ubuf.write(0, &path.as_bytes()[..to_write])?;
@@ -1572,7 +1572,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         .ok_or(Errno::EEXIST)?
     };
 
-    parent.create(name, mode, Owner::new(current::fsuid(), current::fsgid()))?;
+    parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
 }
@@ -1663,12 +1663,12 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
     }?;
 
     let parent = parent_dentry.0;
-    let name = &parent_dentry.1;
+    let name = parent_dentry.1;
 
     if _flags == AT_REMOVEDIR {
-        parent.rmdir(name)?;
+        parent.rmdir(name.as_ref())?;
     } else {
-        parent.unlink(name)?;
+        parent.unlink(name.as_ref())?;
     }
 
     Ok(0)
@@ -1700,7 +1700,7 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
         .ok_or(Errno::EOPNOTSUPP)?
     };
 
-    parent.create_symlink(name, &target, Owner::new(current::fsuid(), current::fsgid()))?;
+    parent.create_symlink(name.as_ref(), &target, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
 }
@@ -1732,13 +1732,13 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     }?;
 
     let new_parent = new_parent_dentry.0;
-    let new_name = &new_parent_dentry.1;
+    let new_name = new_parent_dentry.1;
 
     if old_dentry.sno() != new_parent.sno() {
         return Err(Errno::EXDEV); // Cross-device link
     }
 
-    new_parent.link(new_name, &old_dentry)?;
+    new_parent.link(new_name.as_ref(), &old_dentry)?;
 
     Ok(0)
 }
@@ -1785,7 +1785,7 @@ pub fn renameat2(
         return Err(Errno::EXDEV); // Cross-device link
     }
 
-    old_parent.rename(&old_name, &new_parent, &new_name)?;
+    old_parent.rename(old_name.as_ref(), &new_parent, new_name.as_ref())?;
 
     Ok(0)
 }

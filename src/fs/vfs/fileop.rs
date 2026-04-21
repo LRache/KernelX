@@ -1,3 +1,4 @@
+use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
@@ -24,7 +25,7 @@ pub fn load_dentry(path: &str) -> SysResult<Arc<Dentry>> {
     vfs().lookup_dentry(vfs().get_root(), path)
 }
 
-pub fn load_parent_dentry(path: &str) -> SysResult<Option<(Arc<Dentry>, &str)>> {
+pub fn load_parent_dentry<'a>(path: &'a str) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
     vfs().lookup_parent_dentry(vfs().get_root(), path)
 }
 
@@ -51,7 +52,7 @@ pub fn load_dentry_at_nofollow_with_perm(dir: &Arc<Dentry>, path: &str, perm: &P
     Ok(dentry)
 }
 
-pub fn load_parent_dentry_at<'a>(dir: &Arc<Dentry>, path: &'a str) -> SysResult<Option<(Arc<Dentry>, &'a str)>> {
+pub fn load_parent_dentry_at<'a>(dir: &Arc<Dentry>, path: &'a str) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
     vfs().lookup_parent_dentry(dir, path)
 }
 

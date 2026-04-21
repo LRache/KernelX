@@ -1,3 +1,4 @@
+use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -93,7 +94,7 @@ impl VirtualFileSystem {
         .walk_link_with_perm(0, perm)?;
 
         if let Some((parent, name)) = self.lookup_parent_dentry_with_perm(dir, path, perm)? {
-            let dentry = parent.lookup_nocached_with_perm(name, perm)?;
+            let dentry = parent.lookup_nocached_with_perm(name.as_ref(), perm)?;
             Ok(dentry.get_mount_to())
         } else {
             Ok(current)
@@ -104,7 +105,7 @@ impl VirtualFileSystem {
         &self,
         dir: &Arc<Dentry>,
         path: &'a str,
-    ) -> SysResult<Option<(Arc<Dentry>, &'a str)>> {
+    ) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
         self.lookup_parent_dentry_with_perm(dir, path, &Perm::current(PermFlags::X))
     }
 
@@ -113,7 +114,7 @@ impl VirtualFileSystem {
         dir: &Arc<Dentry>,
         path: &'a str,
         perm: &Perm,
-    ) -> SysResult<Option<(Arc<Dentry>, &'a str)>> {
+    ) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
         let mut current = match path.chars().next() {
             Some('/') => self.get_root().clone(),
             _ => dir.clone(),
@@ -123,10 +124,9 @@ impl VirtualFileSystem {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
         if parts.is_empty() {
-            return Ok(current.get_parent().map(|p| (p, "/")));
+            return Ok(current.get_parent().map(|p| (p, Cow::Borrowed("/"))));
         }
 
-        // TODO: What if the path ends with `..` ?
         for part in &parts[0..parts.len() - 1] {
             if *part == "." {
                 continue;
@@ -135,7 +135,21 @@ impl VirtualFileSystem {
             current = next.get_mount_to().walk_link_with_perm(0, perm)?;
         }
 
-        Ok(Some((current, parts[parts.len() - 1])))
+        let name = parts[parts.len() - 1];
+        if name != "." && name != ".." {
+            return Ok(Some((current, Cow::Borrowed(name))));
+        }
+
+        current.check_search_perm(perm)?;
+        let target = if name == "." {
+            current
+        } else {
+            current.get_parent().unwrap_or(current)
+        };
+
+        Ok(target
+            .get_parent()
+            .map(|parent| (parent, Cow::Owned(target.name().into()))))
     }
 
     pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
