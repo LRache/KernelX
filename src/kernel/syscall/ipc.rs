@@ -8,7 +8,7 @@ use num_enum::TryFromPrimitive;
 use crate::arch;
 use crate::kernel::errno::Errno;
 use crate::kernel::event::{Event, timer};
-use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
+use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcFlag, ShmGetFlag, ShmMode};
 use crate::kernel::ipc::{
     KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SignalStackFlags, SocketType, UnixSocket, shm, signum,
 };
@@ -477,8 +477,14 @@ pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeou
 }
 
 pub fn shmget(key: usize, size: usize, shmflg: usize) -> SyscallRet {
-    let flags = IpcGetFlag::from_bits_truncate(shmflg);
-    let shmid = shm::get_or_create_shm(key, size, flags)?;
+    let supported_bits = IpcFlag::all().bits() | ShmGetFlag::all().bits() | ShmMode::all().bits() as usize;
+    if shmflg & !supported_bits != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let get_flags = ShmGetFlag::from_bits_truncate(shmflg);
+    let ipc_flags = IpcFlag::from_bits_truncate(shmflg);
+    let mode = ShmMode::from_bits_truncate(shmflg as u16);
+    let shmid = shm::get_or_create_shm(key, size, ipc_flags, get_flags, mode)?;
     Ok(shmid)
 }
 

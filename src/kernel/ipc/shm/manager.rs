@@ -9,7 +9,8 @@ use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::ShmArea;
 use crate::kernel::mm::{AddrSpace, MapPerm};
-use crate::kernel::scheduler::Tid;
+use crate::kernel::scheduler::{Tid, current};
+use crate::kernel::uapi::Uid;
 use crate::klib::SpinLock;
 
 use super::frame::ShmFrames;
@@ -19,10 +20,15 @@ pub const IPC_PRIVATE: usize = 0;
 static SHM_MAX: AtomicUsize = AtomicUsize::new(config::SHM_MAX);
 
 bitflags! {
-    pub struct IpcGetFlag: usize {
+    pub struct IpcFlag: usize {
         const IPC_CREAT = 0o1000;
         const IPC_EXCL = 0o2000;
-        const IPC_NOWAIT = 0o4000;
+    }
+}
+
+bitflags! {
+    pub struct ShmGetFlag: usize {
+        const SHM_HUGETLB = 0o4000;
     }
 }
 
@@ -30,6 +36,25 @@ pub const IPC_RMID: usize = 0;
 pub const IPC_SET: usize = 1;
 pub const IPC_STAT: usize = 2;
 pub const IPC_INFO: usize = 3;
+
+bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct ShmMode: u16 {
+        const OWNER_READ = 0o400;
+        const OWNER_WRITE = 0o200;
+        const OWNER_EXEC = 0o100;
+        const GROUP_READ = 0o040;
+        const GROUP_WRITE = 0o020;
+        const GROUP_EXEC = 0o010;
+        const OTHER_READ = 0o004;
+        const OTHER_WRITE = 0o002;
+        const OTHER_EXEC = 0o001;
+
+        const READ = Self::OWNER_READ.bits() | Self::GROUP_READ.bits() | Self::OTHER_READ.bits();
+        const WRITE = Self::OWNER_WRITE.bits() | Self::GROUP_WRITE.bits() | Self::OTHER_WRITE.bits();
+        const EXEC = Self::OWNER_EXEC.bits() | Self::GROUP_EXEC.bits() | Self::OTHER_EXEC.bits();
+    }
+}
 
 bitflags! {
     pub struct ShmFlag: usize {
@@ -40,11 +65,26 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct ShmAccess: u8 {
+        const READ = 0o4;
+        const WRITE = 0o2;
+        const EXEC = 0o1;
+    }
+}
+
+enum ShmAccessClass {
+    Owner,
+    Group,
+    Other,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ShmidDs {
     pub key: usize,
     pub size: usize,
-    pub mode: u32,
+    pub mode: ShmMode,
     pub ctime: usize, // Creation time (placeholder)
     pub atime: usize, // Last attach time
     pub dtime: usize, // Last detach time
@@ -52,6 +92,8 @@ pub struct ShmidDs {
 
 pub struct ShmIdentifier {
     pub ds: ShmidDs,
+    pub owner_uid: Uid,
+    pub owner_gid: Uid,
     pub frames: Arc<ShmFrames>,
     pub ref_count: usize,
     pub deleted: bool,
@@ -73,7 +115,70 @@ impl ShmManager {
         }
     }
 
-    fn get_or_create(&mut self, key: usize, size: usize, flags: IpcGetFlag) -> Result<usize, Errno> {
+    fn access_from_mode(mode: ShmMode, read: ShmMode, write: ShmMode, exec: ShmMode) -> ShmAccess {
+        let mut access = ShmAccess::empty();
+        if mode.intersects(read) {
+            access |= ShmAccess::READ;
+        }
+        if mode.intersects(write) {
+            access |= ShmAccess::WRITE;
+        }
+        if mode.intersects(exec) {
+            access |= ShmAccess::EXEC;
+        }
+        access
+    }
+
+    fn access_from_requested_mode(mode: ShmMode) -> ShmAccess {
+        Self::access_from_mode(mode, ShmMode::READ, ShmMode::WRITE, ShmMode::EXEC)
+    }
+
+    fn access_from_class_mode(mode: ShmMode, class: ShmAccessClass) -> ShmAccess {
+        match class {
+            ShmAccessClass::Owner => {
+                Self::access_from_mode(mode, ShmMode::OWNER_READ, ShmMode::OWNER_WRITE, ShmMode::OWNER_EXEC)
+            }
+            ShmAccessClass::Group => {
+                Self::access_from_mode(mode, ShmMode::GROUP_READ, ShmMode::GROUP_WRITE, ShmMode::GROUP_EXEC)
+            }
+            ShmAccessClass::Other => {
+                Self::access_from_mode(mode, ShmMode::OTHER_READ, ShmMode::OTHER_WRITE, ShmMode::OTHER_EXEC)
+            }
+        }
+    }
+
+    fn has_access(shm: &ShmIdentifier, requested_access: ShmAccess) -> bool {
+        if requested_access.is_empty() || current::euid() == 0 {
+            return true;
+        }
+
+        let allowed_access = if current::euid() == shm.owner_uid {
+            Self::access_from_class_mode(shm.ds.mode, ShmAccessClass::Owner)
+        } else {
+            let egid = current::egid();
+            let supplementary_gids = current::pcb().supplementary_gids();
+            if egid == shm.owner_gid || supplementary_gids.contains(&shm.owner_gid) {
+                Self::access_from_class_mode(shm.ds.mode, ShmAccessClass::Group)
+            } else {
+                Self::access_from_class_mode(shm.ds.mode, ShmAccessClass::Other)
+            }
+        };
+
+        allowed_access.contains(requested_access)
+    }
+
+    fn get_or_create(
+        &mut self,
+        key: usize,
+        size: usize,
+        ipc_flags: IpcFlag,
+        shmget_flags: ShmGetFlag,
+        mode: ShmMode,
+    ) -> Result<usize, Errno> {
+        if shmget_flags.contains(ShmGetFlag::SHM_HUGETLB) {
+            return Err(Errno::EINVAL);
+        }
+
         if key != IPC_PRIVATE {
             // Try to find existing
             let mut found_id = None;
@@ -85,18 +190,21 @@ impl ShmManager {
             }
 
             if let Some(id) = found_id {
-                if flags.contains(IpcGetFlag::IPC_CREAT | IpcGetFlag::IPC_EXCL) {
+                if ipc_flags.contains(IpcFlag::IPC_CREAT | IpcFlag::IPC_EXCL) {
                     return Err(Errno::EEXIST);
                 }
                 let shm = self.shms.get(&id).unwrap();
                 if size > shm.ds.size {
                     return Err(Errno::EINVAL);
                 }
+                if !Self::has_access(shm, Self::access_from_requested_mode(mode)) {
+                    return Err(Errno::EACCES);
+                }
                 return Ok(id);
             }
         }
 
-        if key != IPC_PRIVATE && !flags.contains(IpcGetFlag::IPC_CREAT) {
+        if key != IPC_PRIVATE && !ipc_flags.contains(IpcFlag::IPC_CREAT) {
             return Err(Errno::ENOENT);
         }
 
@@ -114,11 +222,13 @@ impl ShmManager {
             ds: ShmidDs {
                 key,
                 size,
-                mode: (flags.bits() & 0o777) as u32,
+                mode,
                 ctime: 0, // TODO: get time
                 atime: 0,
                 dtime: 0,
             },
+            owner_uid: current::euid(),
+            owner_gid: current::egid(),
             frames,
             ref_count: 0,
             deleted: false,
@@ -146,6 +256,16 @@ impl ShmManager {
         let shm = self.shms.get_mut(&shmid).ok_or(Errno::EINVAL)?;
         if shm.deleted {
             return Err(Errno::EINVAL);
+        }
+        let mut requested_access = ShmAccess::READ;
+        if !shmflg.contains(ShmFlag::SHM_RDONLY) {
+            requested_access |= ShmAccess::WRITE;
+        }
+        if shmflg.contains(ShmFlag::SHM_EXEC) {
+            requested_access |= ShmAccess::EXEC;
+        }
+        if !Self::has_access(shm, requested_access) {
+            return Err(Errno::EACCES);
         }
         let page_count = shm.frames.page_count();
         let frames = shm.frames.clone();
@@ -260,8 +380,16 @@ pub fn set_shmmax(size: usize) -> SysResult<()> {
     Ok(())
 }
 
-pub fn get_or_create_shm(key: usize, size: usize, flags: IpcGetFlag) -> SysResult<usize> {
-    SHM_MANAGER.lock().get_or_create(key, size, flags)
+pub fn get_or_create_shm(
+    key: usize,
+    size: usize,
+    ipc_flags: IpcFlag,
+    shmget_flags: ShmGetFlag,
+    mode: ShmMode,
+) -> SysResult<usize> {
+    SHM_MANAGER
+        .lock()
+        .get_or_create(key, size, ipc_flags, shmget_flags, mode)
 }
 
 pub fn attach_shm(shmid: usize, pid: Tid, addrspace: &AddrSpace, shmaddr: usize, shmflg: ShmFlag) -> SysResult<usize> {
