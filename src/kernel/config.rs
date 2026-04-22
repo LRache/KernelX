@@ -15,7 +15,7 @@ pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
 
 #[cfg(debug_assertions)]
-pub const UTASK_KSTACK_PAGE_COUNT: usize = 32; // Kernel stack page count for user tasks
+pub const UTASK_KSTACK_PAGE_COUNT: usize = 64; // Kernel stack page count for user tasks
 #[cfg(not(debug_assertions))]
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Kernel stack page count for user tasks
 pub const KTASK_KSTACK_PAGE_COUNT: usize = 16; // Kernel stack page count for kernel tasks
@@ -34,6 +34,7 @@ pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process
 
 pub const MAX_FILENAME_LEN: usize = 255;
+pub const MAX_PATH_LEN: usize = 4096;
 pub const MAX_SYMLINK_DEPTH: usize = 40;
 
 // pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer

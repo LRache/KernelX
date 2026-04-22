@@ -3,8 +3,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use crate::fs::file::File;
-use crate::fs::{Dentry, Mode, vfs};
+use crate::fs::file::RandomAccessFile;
+use crate::fs::{Dentry, InodeOps, Mode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, SignalNum, signum};
@@ -66,6 +66,7 @@ pub struct PCB {
     pub parent: SpinLock<Option<Arc<PCB>>>,
     state: SpinLock<State>,
     exec_path: SpinLock<String>,
+    exec_inode: SpinLock<Option<Arc<dyn InodeOps>>>,
 
     pub tasks: SleepLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
@@ -107,11 +108,17 @@ pub struct PCB {
 
 impl PCB {
     pub fn new(pid: i32, pgid: Pid, parent: &Arc<PCB>, exit_signal: SignalNum) -> Arc<Self> {
+        let exec_inode = parent.exec_inode.lock().clone();
+        if let Some(inode) = exec_inode.as_ref() {
+            inode.increment_exec_count();
+        }
+
         Arc::new(Self {
             pid,
             parent: SpinLock::new(Some(parent.clone()), "PCB::parent"),
             state: SpinLock::new(State::Running, "PCB::state"),
             exec_path: SpinLock::new(parent.exec_path.lock().clone(), "PCB::exec_path"),
+            exec_inode: SpinLock::new(exec_inode, "PCB::exec_inode"),
 
             tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
             cwd: SpinLock::new(parent.cwd.lock().clone(), "PCB::cwd"),
@@ -169,6 +176,7 @@ impl PCB {
             parent: SpinLock::new(None, "PCB::parent"),
             state: SpinLock::new(State::Running, "PCB::state"),
             exec_path: SpinLock::new(String::new(), "PCB::exec_path"),
+            exec_inode: SpinLock::new(None, "PCB::exec_inode"),
 
             tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
             cwd: SpinLock::new(cwd.clone(), "PCB::cwd"),
@@ -209,9 +217,10 @@ impl PCB {
             ),
         });
 
-        let (first_task, exec_path) = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
+        let (first_task, exec_path, exec_inode) = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
         pcb.tasks.lock().push(first_task.clone());
         *pcb.exec_path.lock() = exec_path;
+        pcb.replace_exec_inode(Some(exec_inode));
 
         Ok((pcb, first_task))
     }
@@ -388,18 +397,18 @@ impl PCB {
         let new_tcb;
 
         if flags.thread {
-            new_tcb = tcb.new_clone(new_tid, self, userstack, flags, tls);
+            new_tcb = tcb.new_clone(new_tid, self, userstack, flags, tls)?;
             self.tasks.lock().push(new_tcb.clone());
         } else if flags.parent {
             // CLONE_PARENT: the new process shares the same parent as the caller
             let real_parent = self.parent.lock().clone().ok_or(Errno::EINVAL)?;
             let new_pcb = PCB::new(new_tid, self.pgid(), &real_parent, exit_signal);
-            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls);
+            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             real_parent.children.lock().push(new_pcb);
         } else {
             let new_pcb = PCB::new(new_tid, self.pgid(), self, exit_signal);
-            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls);
+            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_pcb);
         }
@@ -419,7 +428,7 @@ impl PCB {
     pub fn exec(
         self: &Arc<Self>,
         tcb: &TCB,
-        file: Arc<File>,
+        file: Arc<RandomAccessFile>,
         invoked_path: &str,
         argv: &[&str],
         envp: &[&str],
@@ -427,7 +436,7 @@ impl PCB {
         let filemode = file.mode()?;
         let fileowner = file.owner()?;
 
-        let (first_task, exec_path) = tcb.new_exec(file, invoked_path, argv, envp)?;
+        let (first_task, exec_path, exec_inode) = tcb.new_exec(file, invoked_path, argv, envp)?;
 
         {
             let mut tasks = self.tasks.lock();
@@ -450,6 +459,7 @@ impl PCB {
         self.signal.actions.lock().reset_for_exec();
         *self.execed.lock() = true;
         *self.exec_path.lock() = exec_path;
+        self.replace_exec_inode(Some(exec_inode));
 
         scheduler::push_task(first_task.clone());
         manager::insert(first_task);
@@ -497,6 +507,7 @@ impl PCB {
         // and defer their cleanup to when this process is waited on (e.g. waitpid),
         // at which point it is safe to reclaim the resources.
         drop(tasks);
+        self.replace_exec_inode(None);
 
         *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();
         *self.state.lock() = State::Exited(status);
@@ -529,6 +540,17 @@ impl PCB {
         });
 
         manager::remove(self.pid);
+    }
+
+    fn replace_exec_inode(&self, new_inode: Option<Arc<dyn InodeOps>>) {
+        let old_inode = {
+            let mut exec_inode = self.exec_inode.lock();
+            core::mem::replace(&mut *exec_inode, new_inode)
+        };
+
+        if let Some(old_inode) = old_inode {
+            old_inode.end_exec();
+        }
     }
 
     pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<ExitStatus>, Errno> {
@@ -730,6 +752,15 @@ impl PCB {
         });
 
         (utime, stime)
+    }
+}
+
+impl Drop for PCB {
+    fn drop(&mut self) {
+        let exec_inode = self.exec_inode.lock().take();
+        if let Some(exec_inode) = exec_inode {
+            exec_inode.end_exec();
+        }
     }
 }
 

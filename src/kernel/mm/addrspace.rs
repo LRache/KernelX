@@ -2,11 +2,10 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use fixedstr::str256;
 use spin::Lazy;
 
 use crate::arch::{PageTable, PageTableTrait, TRAMPOLINE_BASE, UserContext};
-use crate::kernel::config::USER_RANDOM_ADDR_BASE;
+use crate::kernel::config::{MAX_PATH_LEN, USER_RANDOM_ADDR_BASE};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::Auxv;
 use crate::kernel::mm::{PhysPageFrame, maparea};
@@ -213,16 +212,27 @@ impl AddrSpace {
     }
 
     pub fn get_user_string(&self, mut uaddr: usize) -> Result<String, Errno> {
+        self.get_user_string_limited(&mut uaddr, 255, Errno::EINVAL)
+    }
+
+    pub fn get_user_string_fixed(&self, mut uaddr: usize) -> Result<String, Errno> {
+        self.get_user_string_limited(&mut uaddr, MAX_PATH_LEN, Errno::ENAMETOOLONG)
+    }
+
+    fn get_user_string_limited(
+        &self,
+        uaddr: &mut usize,
+        max_size: usize,
+        too_long_errno: Errno,
+    ) -> Result<String, Errno> {
         let mut map_manager = self.map_manager.lock();
 
         let mut result = String::new();
 
-        const MAXSIZE: usize = 255;
-
         loop {
-            let page_offset = uaddr & arch::PGMASK;
+            let page_offset = *uaddr & arch::PGMASK;
             let to_read = arch::PGSIZE - page_offset;
-            let kaddr = map_manager.translate_read(uaddr, self).ok_or(Errno::EFAULT)?;
+            let kaddr = map_manager.translate_read(*uaddr, self).ok_or(Errno::EFAULT)?;
 
             let slice = unsafe { core::slice::from_raw_parts(kaddr as *const u8, to_read) };
             if let Some(pos) = slice.iter().position(|&b| b == 0) {
@@ -230,43 +240,16 @@ impl AddrSpace {
                 break;
             } else {
                 result.push_str(&String::from_utf8(slice.to_vec()).map_err(|_| Errno::EINVAL)?);
-                if result.len() > MAXSIZE {
-                    return Err(Errno::EINVAL);
+                if result.len() > max_size {
+                    return Err(too_long_errno);
                 }
             }
 
-            uaddr += to_read;
+            *uaddr += to_read;
         }
 
-        Ok(result)
-    }
-
-    pub fn get_user_string_fixed(&self, mut uaddr: usize) -> Result<str256, Errno> {
-        let mut map_manager = self.map_manager.lock();
-        let mut result = str256::new();
-
-        loop {
-            let page_offset = uaddr & arch::PGMASK;
-            let to_read = arch::PGSIZE - page_offset;
-            let kaddr = map_manager.translate_read(uaddr, self).ok_or(Errno::EFAULT)?;
-
-            let slice = unsafe { core::slice::from_raw_parts(kaddr as *const u8, to_read) };
-            let bytes = if let Some(pos) = slice.iter().position(|&b| b == 0) {
-                &slice[..pos]
-            } else {
-                slice
-            };
-            let chunk = core::str::from_utf8(bytes).map_err(|_| Errno::EINVAL)?;
-
-            if !result.push(chunk).is_empty() {
-                return Err(Errno::ENAMETOOLONG);
-            }
-
-            if bytes.len() != to_read {
-                break;
-            }
-
-            uaddr += to_read;
+        if result.len() > max_size {
+            return Err(too_long_errno);
         }
 
         Ok(result)

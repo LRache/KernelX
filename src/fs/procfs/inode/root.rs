@@ -3,14 +3,14 @@ use alloc::sync::Arc;
 use core::fmt::Write;
 
 use crate::arch;
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::procfs::inode::read_iter_text;
 use crate::fs::vfs::vfs;
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::page;
-use crate::kernel::scheduler::tid::TID_START;
 use crate::kernel::scheduler::Tid;
+use crate::kernel::scheduler::tid::TID_START;
 use crate::kernel::task::manager;
 
 use super::{SysDirInode, TaskDirInode, TaskDirSelfInode};
@@ -128,7 +128,7 @@ impl InodeOps for RootInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs root requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -176,7 +176,7 @@ impl InodeOps for MountsInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 
     fn size(&self) -> SysResult<u64> {
@@ -224,7 +224,7 @@ impl InodeOps for MemInfoInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 
     fn size(&self) -> SysResult<u64> {

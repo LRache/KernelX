@@ -7,7 +7,7 @@ use core::time::Duration;
 
 use crate::arch::{KernelContext, UserContext, UserContextTrait};
 use crate::driver::chosen::kclock;
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::errno::{Errno, SysResult};
@@ -159,13 +159,13 @@ impl TCB {
         argv: &[&str],
         envp: &[&str],
         tty: &str,
-    ) -> (Arc<Self>, String) {
+    ) -> (Arc<Self>, String, Arc<dyn crate::fs::InodeOps>) {
         let exec_perm = Perm::new(0, 0, PermFlags::R | PermFlags::X);
-        let file = vfs::open_file(initpath, FileFlags::dontcare(), &exec_perm)
+        let file = vfs::open_file(initpath, FileFlags::readonly(), &exec_perm)
             .expect("Failed to open init file")
-            .downcast_arc::<File>()
+            .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::ENOEXEC)
-            .expect("Failed to open init file as File");
+            .expect("Failed to open init file as RandomAccessFile");
 
         // Read the shebang
         let mut first_line = [0u8; 128];
@@ -193,6 +193,8 @@ impl TCB {
         }
 
         let exec_path = file.get_dentry().unwrap().get_path();
+        let exec_inode = file.get_inode().cloned().expect("Init executable missing inode");
+        exec_inode.begin_exec().expect("Failed to acquire init executable");
 
         let mut addrspace = AddrSpace::new();
         let (user_entry, dyn_info) =
@@ -247,7 +249,7 @@ impl TCB {
             Arc::new(SleepLock::new(fdtable, "TCB::fdtable")),
         );
 
-        (tcb, exec_path)
+        (tcb, exec_path, exec_inode)
     }
 
     pub fn new_clone(
@@ -257,7 +259,7 @@ impl TCB {
         userstack: usize,
         flags: &TaskCloneFlags,
         tls: Option<usize>,
-    ) -> Arc<Self> {
+    ) -> SysResult<Arc<Self>> {
         let mut new_user_context = self.user_context().new_clone();
 
         if userstack != 0 {
@@ -281,7 +283,10 @@ impl TCB {
         let new_fdtable = if flags.files {
             self.fdtable().clone()
         } else {
-            Arc::new(SleepLock::new(self.fdtable().lock().fork(parent.pid()), "TCB::fdtable"))
+            Arc::new(SleepLock::new(
+                self.fdtable().lock().fork(parent.pid())?,
+                "TCB::fdtable",
+            ))
         };
 
         let new_tcb = Self::new(tid, parent, new_user_context, new_addrspace, new_fdtable);
@@ -292,16 +297,16 @@ impl TCB {
             new_tcb.set_signal_stack_state(self.get_signal_stack_state());
         }
 
-        new_tcb
+        Ok(new_tcb)
     }
 
     pub fn new_exec(
         &self,
-        file: Arc<File>,
+        file: Arc<RandomAccessFile>,
         invoked_path: &str,
         argv: &[&str],
         envp: &[&str],
-    ) -> SysResult<(Arc<Self>, String)> {
+    ) -> SysResult<(Arc<Self>, String, Arc<dyn crate::fs::InodeOps>)> {
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file.read_at(&mut first_line, 0)?;
@@ -322,50 +327,60 @@ impl TCB {
                 }
 
                 let interpreter_file =
-                    vfs::open_file(interpreter, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
-                        .downcast_arc::<File>()
+                    vfs::open_file(interpreter, FileFlags::readonly(), &Perm::current(PermFlags::X))?
+                        .downcast_arc::<RandomAccessFile>()
                         .map_err(|_| Errno::ENOEXEC)?;
                 return self.new_exec(interpreter_file, interpreter, &new_argv, envp);
             }
         }
 
-        // SAFETY: File MUTS HAVE dentry and path.
+        // SAFETY: RandomAccessFile must have dentry and path.
         let exec_path = file.get_dentry().unwrap().get_path();
+        let exec_inode = file.get_inode().cloned().ok_or(Errno::ENOEXEC)?;
+        exec_inode.begin_exec()?;
 
-        let mut addrspace = AddrSpace::new();
-        let exec_perm = Perm::current(PermFlags::X);
-        let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace, &exec_perm)?;
+        let result = (|| {
+            let mut addrspace = AddrSpace::new();
+            let exec_perm = Perm::current(PermFlags::X);
+            let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace, &exec_perm)?;
 
-        let mut auxv = Auxv::new();
-        if let Some(dyn_info) = dyn_info {
-            auxv.push(AuxKey::BASE, dyn_info.interpreter_base);
-            auxv.push(AuxKey::PHDR, dyn_info.phdr_addr);
-            auxv.push(AuxKey::PHENT, dyn_info.phent as usize);
-            auxv.push(AuxKey::PHNUM, dyn_info.phnum as usize);
-            auxv.push(AuxKey::ENTRY, dyn_info.user_entry);
+            let mut auxv = Auxv::new();
+            if let Some(dyn_info) = dyn_info {
+                auxv.push(AuxKey::BASE, dyn_info.interpreter_base);
+                auxv.push(AuxKey::PHDR, dyn_info.phdr_addr);
+                auxv.push(AuxKey::PHENT, dyn_info.phent as usize);
+                auxv.push(AuxKey::PHNUM, dyn_info.phnum as usize);
+                auxv.push(AuxKey::ENTRY, dyn_info.user_entry);
+            }
+
+            auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
+            auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
+
+            let usetstack_top = addrspace.create_user_stack(argv, envp, &auxv)?;
+
+            let mut new_user_context = UserContext::new();
+            new_user_context.set_user_stack_top(usetstack_top);
+            new_user_context.set_user_entry(user_entry);
+
+            self.fdtable().lock().cloexec();
+
+            let new_tcb = TCB::new(
+                self.tid,
+                &self.parent,
+                new_user_context,
+                addrspace,
+                self.fdtable().clone(),
+            );
+            new_tcb.set_signal_mask(self.get_signal_mask());
+
+            Ok((new_tcb, exec_path, exec_inode.clone()))
+        })();
+
+        if result.is_err() {
+            exec_inode.end_exec();
         }
 
-        auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
-        auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
-
-        let usetstack_top = addrspace.create_user_stack(argv, envp, &auxv)?;
-
-        let mut new_user_context = UserContext::new();
-        new_user_context.set_user_stack_top(usetstack_top);
-        new_user_context.set_user_entry(user_entry);
-
-        self.fdtable().lock().cloexec();
-
-        let new_tcb = TCB::new(
-            self.tid,
-            &self.parent,
-            new_user_context,
-            addrspace,
-            self.fdtable().clone(),
-        );
-        new_tcb.set_signal_mask(self.get_signal_mask());
-
-        Ok((new_tcb, exec_path))
+        result
     }
 
     pub fn tid(&self) -> i32 {
@@ -392,12 +407,13 @@ impl TCB {
         self.fdtable.get_mut()
     }
 
-    pub fn unshare_fdtable(&self) {
+    pub fn unshare_fdtable(&self) -> SysResult<()> {
         let new_fdtable = Arc::new(SleepLock::new(
-            self.fdtable.get_mut().lock().fork(self.parent.pid()),
+            self.fdtable.get_mut().lock().fork(self.parent.pid())?,
             "TCB::fdtable",
         ));
         self.fdtable.set(new_fdtable);
+        Ok(())
     }
 
     pub fn get_signal_mask(&self) -> SignalSet {

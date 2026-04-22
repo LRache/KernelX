@@ -12,6 +12,7 @@ mod procfs;
 mod rootfs;
 mod tmpfs;
 
+pub use filesystem::MountOptions;
 pub use init::{fini, init, mount_init_fs};
 pub use inode::{FileType, InodeOps, Mode, Owner};
 pub use perm::{Perm, PermFlags};

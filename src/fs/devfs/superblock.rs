@@ -4,9 +4,10 @@ use alloc::sync::Arc;
 
 use crate::driver::{DeviceType, DriverOps};
 use crate::fs::devfs::devnode::CharDevInode;
-use crate::fs::filesystem::FileSystemOps;
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::memtreefs::inode::Inode as MemInode;
 use crate::fs::{InodeOps, Mode, Owner, memtreefs};
+use crate::kernel::errno::SysResult;
 use crate::klib::InitedCell;
 
 use super::{LoopInode, NullInode, RtcInode, URandomInode, ZeroInode};
@@ -31,13 +32,14 @@ impl FileSystemOps for FileSystem {
         &self,
         _sno: u32,
         _driver: Option<Arc<dyn crate::driver::BlockDriverOps>>,
-    ) -> crate::kernel::errno::SysResult<Arc<dyn crate::fs::filesystem::SuperBlockOps>> {
+        _options: MountOptions,
+    ) -> SysResult<Arc<dyn SuperBlockOps>> {
         Ok(DEV_SUPERBLOCK.clone())
     }
 }
 
 pub fn init() {
-    let superblock = memtreefs::SuperBlock::new();
+    let superblock = memtreefs::SuperBlock::new(false);
     let root = superblock.root_inode();
     root.add_child("null".into(), Arc::new(NullInode::new(superblock.alloc_inode_number())))
         .unwrap();

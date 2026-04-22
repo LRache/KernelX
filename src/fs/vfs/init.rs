@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 use core::time::Duration;
 
 use crate::fs::ext4::Ext4FileSystem;
+use crate::fs::filesystem::MountOptions;
 use crate::fs::rootfs::RootFileSystem;
 use crate::fs::vfs::VFS;
 use crate::fs::vfs::vfs::VirtualFileSystem;
@@ -30,7 +31,10 @@ pub fn init() {
     vfs.register_filesystem("tmpfs", &tmpfs::FileSystem);
     vfs.register_filesystem("procfs", &procfs::FileSystem);
 
-    vfs.superblock_table.lock().mount(&RootFileSystem, None).unwrap();
+    vfs.superblock_table
+        .lock()
+        .mount(&RootFileSystem, None, MountOptions::default())
+        .unwrap();
     vfs.root.init(Arc::new(Dentry::root(&vfs.load_inode(0, 0).unwrap(), 0)));
 
     VFS.init(vfs);

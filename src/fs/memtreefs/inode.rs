@@ -6,7 +6,7 @@ use core::time::Duration;
 
 use crate::arch;
 use crate::driver::chosen::kclock;
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::{InodeLockState, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
@@ -134,6 +134,10 @@ impl<T: StaticFsInfo> Inode<T> {
 }
 
 impl<T: StaticFsInfo> InodeOps for Inode<T> {
+    fn filesystem_refcount_bias(&self) -> usize {
+        1
+    }
+
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(ref mut children) = meta.meta {
@@ -567,7 +571,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {

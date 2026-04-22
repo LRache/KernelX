@@ -18,9 +18,7 @@ pub enum SeekWhence {
 
 pub trait FileOps: DowncastSync {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize>;
-    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize>;
     fn write(&self, buf: &[u8]) -> SysResult<usize>;
-    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize>;
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let mut total_read = 0;
@@ -63,7 +61,6 @@ pub trait FileOps: DowncastSync {
         self.flags().blocked
     }
 
-    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize>;
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
         Err(Errno::ENOSYS)
     }
@@ -90,7 +87,9 @@ pub trait FileOps: DowncastSync {
         self as *const Self as *const () as usize
     }
 
-    fn on_fd_install(&self) {}
+    fn on_fd_install(&self) -> SysResult<()> {
+        Ok(())
+    }
 
     fn on_fd_remove(&self) {}
 }

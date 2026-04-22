@@ -1,4 +1,13 @@
+use bitflags::bitflags;
+
 use crate::kernel::syscall::UserStruct;
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct StatfsFlags: u64 {
+        const ST_RDONLY = 0x1;
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]

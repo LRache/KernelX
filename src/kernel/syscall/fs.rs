@@ -1,14 +1,14 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 use bitflags::bitflags;
 use core::time::Duration;
 use core::usize;
-use fixedstr::str256;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
-use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
-use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner, Perm, PermFlags, vfs};
+use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
@@ -95,6 +95,10 @@ fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<Arc<dyn crate::fs::Ino
     Ok(inode)
 }
 
+fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<&RandomAccessFile> {
+    file.downcast_ref::<RandomAccessFile>().ok_or(Errno::ESPIPE)
+}
+
 fn normalize_posix_flock(
     file: &Arc<dyn FileOps>,
     inode: &Arc<dyn InodeOps>,
@@ -119,7 +123,7 @@ fn normalize_posix_flock(
 
     let base = match flock.l_whence {
         SEEK_SET => 0,
-        SEEK_CUR => i64::try_from(file.seek(0, SeekWhence::CUR)?).map_err(|_| Errno::EINVAL)?,
+        SEEK_CUR => i64::try_from(random_access_file(file)?.seek(0, SeekWhence::CUR)?).map_err(|_| Errno::EINVAL)?,
         SEEK_END => i64::try_from(inode.size()?).map_err(|_| Errno::EINVAL)?,
         _ => return Err(Errno::EINVAL),
     };
@@ -384,7 +388,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                     let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?.unwrap(); // SAFETY: The root must exist
                     vfs::create_file(
                         &parent_dentry,
-                        &child_name,
+                        child_name.as_ref(),
                         file_flags,
                         mode,
                         Owner::new(current::fsuid(), current::fsgid()),
@@ -409,15 +413,17 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         }
     }
 
+    let fd = current::fdtable().lock().push(file.clone(), fd_flags)?;
+
     if writable && open_flags.contains(OpenFlags::O_TRUNC) {
-        if let Some(inode) = file.get_inode() {
-            if inode.inode_type()? == FileType::Regular {
-                inode.truncate(0)?;
-            }
+        if let Some(inode) = file.get_inode()
+            && inode.inode_type()? == FileType::Regular
+            && let Err(err) = inode.truncate(0)
+        {
+            let _ = current::fdtable().lock().take(fd);
+            return Err(err);
         }
     }
-
-    let fd = current::fdtable().lock().push(file, fd_flags)?;
 
     Ok(fd)
 }
@@ -461,7 +467,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
         )?
     } {
         let mut buffer = [0u8; 255];
-        if let Some(size) = parent.readlink(child, &mut buffer)? {
+        if let Some(size) = parent.readlink(child.as_ref(), &mut buffer)? {
             let path = core::str::from_utf8(&buffer[..size]).map_err(|_| Errno::EINVAL)?;
             let to_write = core::cmp::min(path.len(), bufsize);
             ubuf.write(0, &path.as_bytes()[..to_write])?;
@@ -502,7 +508,7 @@ pub struct IOVec {
 impl UserStruct for IOVec {}
 
 fn check_positional_io(file: &Arc<dyn FileOps>) -> SysResult<()> {
-    file.seek(0, SeekWhence::CUR).map(|_| ())
+    random_access_file(file).map(|_| ())
 }
 
 pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
@@ -586,7 +592,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    check_positional_io(&file)?;
+    let file = random_access_file(&file)?;
     if !file.readable() {
         return Err(Errno::EBADF);
     }
@@ -693,7 +699,7 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
         return Err(Errno::EINVAL);
     }
 
-    check_positional_io(&file)?;
+    let file = random_access_file(&file)?;
     if !file.readable() {
         return Err(Errno::EBADF);
     }
@@ -735,7 +741,7 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    check_positional_io(&file)?;
+    let file = random_access_file(&file)?;
     if !file.writable() {
         return Err(Errno::EBADF);
     }
@@ -770,7 +776,7 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    check_positional_io(&file)?;
+    let file = random_access_file(&file)?;
     if !file.writable() {
         return Err(Errno::EBADF);
     }
@@ -947,6 +953,7 @@ pub fn pwritev2(
 
 pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
+    let file = random_access_file(&file)?;
 
     let how = match how {
         0 => SeekWhence::BEG,
@@ -982,7 +989,7 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
     let flags = CloseRangeFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     if flags.contains(CloseRangeFlags::UNSHARE) {
-        current::tcb().unshare_fdtable();
+        current::tcb().unshare_fdtable()?;
     }
 
     let mut fdtable = current::fdtable().lock();
@@ -1010,7 +1017,10 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
 pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: usize) -> SyscallRet {
     let mut fdtable = current::fdtable().lock();
     let out_file = fdtable.get(out_fd)?;
-    let in_file = fdtable.get(in_fd)?.downcast_arc::<File>().map_err(|_| Errno::EINVAL)?;
+    let in_file = fdtable
+        .get(in_fd)?
+        .downcast_arc::<RandomAccessFile>()
+        .map_err(|_| Errno::EINVAL)?;
     drop(fdtable); // Release lock early
 
     if !out_file.writable() {
@@ -1113,7 +1123,7 @@ fn splice_read_chunk(
     buf: &mut [u8],
 ) -> SysResult<usize> {
     match offset {
-        Some(pos) => file.pread(buf, pos),
+        Some(pos) => random_access_file(file)?.pread(buf, pos),
         None => match (file.downcast_ref::<Pipe>(), splice_pipe_blocked(file, flags)) {
             (Some(pipe), Some(blocked)) => pipe.read_with_blocked(buf, blocked),
             _ => file.read(buf),
@@ -1128,7 +1138,7 @@ fn splice_write_chunk(
     buf: &[u8],
 ) -> SysResult<usize> {
     match offset {
-        Some(pos) => file.pwrite(buf, pos),
+        Some(pos) => random_access_file(file)?.pwrite(buf, pos),
         None => match (file.downcast_ref::<Pipe>(), splice_pipe_blocked(file, flags)) {
             (Some(pipe), Some(blocked)) => pipe.write_with_blocked(buf, blocked),
             _ => file.write(buf),
@@ -1219,7 +1229,9 @@ pub fn splice(
             if in_offset.is_none() {
                 let unread = bytes_read - moved_from_chunk;
                 if unread > 0 {
-                    let _ = in_file.seek(-(unread as isize), SeekWhence::CUR);
+                    if let Ok(file) = random_access_file(&in_file) {
+                        let _ = file.seek(-(unread as isize), SeekWhence::CUR);
+                    }
                 }
             }
             break;
@@ -1351,12 +1363,13 @@ fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_p
             return Err(Errno::ENOENT);
         }
 
-        if dirfd as isize == AT_FDCWD {
-            return current::with_cwd(|cwd| Ok(cwd));
-        }
-
-        let file = current::fdtable().lock().get(dirfd)?;
-        return Ok(file.get_dentry().ok_or(Errno::ENOTDIR)?.clone());
+        let dentry = if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| Ok(cwd))?
+        } else {
+            let file = current::fdtable().lock().get(dirfd)?;
+            file.get_dentry().ok_or(Errno::ENOTDIR)?.clone()
+        };
+        return Ok(dentry.get_mount_to());
     }
 
     let helper = if flags.contains(AccessAtFlags::AT_SYMLINK_NOFOLLOW) {
@@ -1365,11 +1378,22 @@ fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_p
         vfs::load_dentry_at_with_perm
     };
 
-    if path.starts_with('/') || dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| helper(&cwd, path, search_perm))
+    let dentry = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| helper(&cwd, path, search_perm))?
     } else {
         let file = current::fdtable().lock().get(dirfd)?;
-        helper(file.get_dentry().ok_or(Errno::ENOTDIR)?, path, search_perm)
+        helper(file.get_dentry().ok_or(Errno::ENOTDIR)?, path, search_perm)?
+    };
+
+    Ok(dentry.get_mount_to())
+}
+
+fn last_path_component(path: &str) -> Option<&str> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        trimmed.rsplit('/').next()
     }
 }
 
@@ -1383,6 +1407,10 @@ fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFl
     let dentry = lookup_access_dentry(dirfd, &path, flags, &search_perm)?;
 
     if !mode.is_empty() {
+        if mode.contains(AccessMode::W_OK) && dentry.is_superblock_readonly()? {
+            return Err(Errno::EROFS);
+        }
+
         let inode = dentry.get_inode();
         let mode = inode.mode()?;
         let (uid, gid) = inode.owner()?;
@@ -1417,7 +1445,7 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
-        str256::new()
+        String::new()
     } else {
         uptr_path.should_not_null()?;
         uptr_path.read_fixed()?
@@ -1481,7 +1509,7 @@ const UTIME_OMIT: u64 = 0x3ffffffe;
 
 pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, _flags: usize) -> SyscallRet {
     let path = if uptr_path.is_null() {
-        str256::new()
+        String::new()
     } else {
         uptr_path.read_fixed()?
     };
@@ -1553,7 +1581,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         .ok_or(Errno::EEXIST)?
     };
 
-    parent.create(name, mode, Owner::new(current::fsuid(), current::fsgid()))?;
+    parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
 }
@@ -1562,7 +1590,7 @@ const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d
 
 pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
-    let file = file.downcast_arc::<File>().map_err(|_| Errno::EBADF)?;
+    let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::EBADF)?;
 
     if uptr_dirent == 0 {
         return Err(Errno::EINVAL);
@@ -1617,13 +1645,22 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     }
 }
 
-pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct UnlinkAtFlags: usize {
+        const AT_REMOVEDIR = 0x200;
+    }
+}
+
+pub fn unlinkat(dirfd: usize, uptr_path: UString, flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
+    let flags = UnlinkAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let path = uptr_path.read_fixed()?;
-    const AT_REMOVEDIR: usize = 0x200;
-
-    if _flags & !AT_REMOVEDIR != 0 {
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    if flags.contains(UnlinkAtFlags::AT_REMOVEDIR) && last_path_component(&path) == Some(".") {
         return Err(Errno::EINVAL);
     }
 
@@ -1643,13 +1680,17 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
         .ok_or(Errno::EOPNOTSUPP)
     }?;
 
-    let parent = parent_dentry.0;
-    let name = &parent_dentry.1;
+    let parent = parent_dentry.0.get_mount_to();
+    let name = parent_dentry.1;
 
-    if _flags == AT_REMOVEDIR {
-        parent.rmdir(name)?;
+    if parent.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    if flags.contains(UnlinkAtFlags::AT_REMOVEDIR) {
+        parent.rmdir(name.as_ref())?;
     } else {
-        parent.unlink(name)?;
+        parent.unlink(name.as_ref())?;
     }
 
     Ok(0)
@@ -1681,7 +1722,7 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
         .ok_or(Errno::EOPNOTSUPP)?
     };
 
-    parent.create_symlink(name, &target, Owner::new(current::fsuid(), current::fsgid()))?;
+    parent.create_symlink(name.as_ref(), &target, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
 }
@@ -1713,13 +1754,13 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     }?;
 
     let new_parent = new_parent_dentry.0;
-    let new_name = &new_parent_dentry.1;
+    let new_name = new_parent_dentry.1;
 
     if old_dentry.sno() != new_parent.sno() {
         return Err(Errno::EXDEV); // Cross-device link
     }
 
-    new_parent.link(new_name, &old_dentry)?;
+    new_parent.link(new_name.as_ref(), &old_dentry)?;
 
     Ok(0)
 }
@@ -1766,14 +1807,38 @@ pub fn renameat2(
         return Err(Errno::EXDEV); // Cross-device link
     }
 
-    old_parent.rename(&old_name, &new_parent, &new_name)?;
+    old_parent.rename(old_name.as_ref(), &new_parent, new_name.as_ref())?;
 
     Ok(0)
 }
 
-pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
+fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
+    let dentry = dentry.clone().get_mount_to();
     let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
+    if dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
 
+    let inode = dentry.get_inode();
+    let (inode_uid, inode_gid) = inode.owner()?;
+    let pcb = current::pcb();
+    let fsuid = pcb.fsuid();
+    if fsuid != 0 && fsuid != inode_uid {
+        return Err(Errno::EPERM);
+    }
+
+    if mode.contains(Mode::S_ISGID) && fsuid != 0 {
+        let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
+        if pcb.fsgid() != inode_gid && !in_supplementary_group {
+            mode.remove(Mode::S_ISGID);
+        }
+    }
+
+    inode.chmod(mode)?;
+    Ok(0)
+}
+
+pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let path = uptr_path.should_not_null()?.read_fixed()?;
     if path.is_empty() {
         return Err(Errno::ENOENT);
@@ -1792,47 +1857,19 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         )?
     };
 
-    let inode = dentry.get_inode();
-    if mode.contains(Mode::S_ISGID) && current::pcb().fsuid() != 0 {
-        let inode_gid = inode.owner()?.1;
-        let pcb = current::pcb();
-        let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
-        if pcb.fsgid() != inode_gid && !in_supplementary_group {
-            mode.remove(Mode::S_ISGID);
-        }
-    }
-
-    inode.chmod(mode)?;
-
-    Ok(0)
+    do_chmod(&dentry, mode)
 }
 
 pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
-    let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
-
     let file = current::fdtable().lock().get(fd)?;
-
-    if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
-        if mode.contains(Mode::S_ISGID) && current::pcb().fsuid() != 0 {
-            let inode_gid = inode.owner()?.1;
-            let pcb = current::pcb();
-            let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
-            if pcb.fsgid() != inode_gid && !in_supplementary_group {
-                mode.remove(Mode::S_ISGID);
-            }
-        }
-        inode.chmod(mode)?;
-    } else {
-        return Err(Errno::EINVAL);
-    }
-
-    Ok(0)
+    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
+    do_chmod(dentry, mode)
 }
 
 pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags: usize) -> SyscallRet {
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
-        fixedstr::str256::new()
+        String::new()
     } else {
         uptr_path.should_not_null()?;
         uptr_path.read_fixed()?
@@ -1945,7 +1982,7 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
 
     let length = truncate_length(length)?;
     check_file_size_limit(length)?;
-    file.downcast_arc::<File>()
+    file.downcast_arc::<RandomAccessFile>()
         .map_err(|_| Errno::EINVAL)?
         .ftruncate(length)?;
 
@@ -1963,7 +2000,7 @@ pub fn fallocate(fd: usize, mode: usize, _offset: usize, _len: usize) -> Syscall
         return Err(Errno::EINVAL);
     }
 
-    // file.downcast_arc::<File>()
+    // file.downcast_arc::<RandomAccessFile>()
     //     .map_err(|_| Errno::EINVAL)?
     //     .fallocate(offset as u64, len as u64)?;
 
@@ -2044,10 +2081,11 @@ pub fn mount(
     uptr_source: UString,
     uptr_target: UString,
     uptr_fstype: UString,
-    _flags: usize,
+    flags: usize,
     _data: usize,
 ) -> SyscallRet {
     use crate::fs::devfs::devnode::BlockDevInode;
+    const MS_RDONLY: usize = 0x1;
 
     uptr_target.should_not_null()?;
     uptr_fstype.should_not_null()?;
@@ -2069,12 +2107,22 @@ pub fn mount(
         None
     };
 
-    vfs::mount(&target, &fstype, device)?;
+    // crate::kinfo!("mount: target = {:?}, fstype = {:?}, source = {:?}", target, fstype, device.is_none());
+
+    let options = MountOptions::new(flags & MS_RDONLY != 0);
+    current::with_cwd(|cwd| vfs::mount(&cwd, &target, &fstype, device, options))?;
 
     Ok(0)
 }
 
-// TODO: Implement umount2 syscall
-pub fn umount2(_uptr_target: UString, _flags: usize) -> SyscallRet {
-    Err(Errno::ENOSYS)
+pub fn umount2(uptr_target: UString, flags: usize) -> SyscallRet {
+    uptr_target.should_not_null()?;
+
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let target = uptr_target.read_fixed()?;
+    current::with_cwd(|cwd| vfs::unmount(&cwd, &target))?;
+    Ok(0)
 }

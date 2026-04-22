@@ -3,8 +3,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use crate::fs::file::{File, FileFlags, FileOps};
-use crate::fs::{Perm, PermFlags, vfs};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
+use crate::fs::{FileType, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::SignalNum;
@@ -327,7 +327,7 @@ fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
 }
 
 fn do_execve(
-    file: Arc<File>,
+    file: Arc<RandomAccessFile>,
     invoked_path: &str,
     uptr_argv: UArray<UString>,
     uptr_envp: UArray<UString>,
@@ -353,11 +353,46 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
     let path = uptr_path.read_fixed()?;
 
     let file =
-        current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
-            .downcast_arc::<File>()
+        current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X)))?
+            .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::ENOEXEC)?;
 
     do_execve(file, &path, uptr_argv, uptr_envp)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ExecveAtFlags: usize {
+        const AT_SYMLINK_NOFOLLOW = 0x100;
+        const AT_EMPTY_PATH = 0x1000;
+    }
+}
+
+fn open_execveat_file(
+    dir: &Arc<crate::fs::Dentry>,
+    path: &str,
+    flags: ExecveAtFlags,
+    perm: &Perm,
+) -> SysResult<Arc<RandomAccessFile>> {
+    let file = if flags.contains(ExecveAtFlags::AT_SYMLINK_NOFOLLOW) {
+        let dentry = vfs::load_dentry_at_nofollow_with_perm(dir, path, perm)?;
+        let inode = dentry.get_inode();
+        if inode.inode_type()? == FileType::Symlink {
+            return Err(Errno::ELOOP);
+        }
+
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(perm, uid, gid) {
+            return Err(Errno::EACCES);
+        }
+
+        inode.wrap_file(Some(dentry), FileFlags::readonly())
+    } else {
+        vfs::openat_file(dir, path, FileFlags::readonly(), perm)?
+    };
+
+    file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::ENOEXEC)
 }
 
 pub fn execveat(
@@ -369,20 +404,15 @@ pub fn execveat(
 ) -> SyscallRet {
     use super::def::AT_FDCWD;
 
-    const AT_EMPTY_PATH: usize = 0x1000;
+    let flags = ExecveAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let path = uptr_path.should_not_null()?.read_fixed()?;
+    let perm = Perm::current(PermFlags::X);
 
-    let path = if uptr_path.is_null() {
-        None
-    } else {
-        Some(uptr_path.read_fixed()?)
-    };
-    let path = path.as_deref().unwrap_or("");
-
-    let (file, invoked_path) = if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
+    let (file, invoked_path) = if flags.contains(ExecveAtFlags::AT_EMPTY_PATH) && path.is_empty() {
         current::fdtable()
             .lock()
             .get(dirfd)?
-            .downcast_arc::<File>()
+            .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::ENOEXEC)
             .map(|file| {
                 let invoked_path = file.get_dentry().map(|dentry| dentry.get_path()).unwrap_or_default();
@@ -392,19 +422,18 @@ pub fn execveat(
         if path.is_empty() {
             return Err(Errno::ENOENT);
         }
+
         // When pathname is absolute, dirfd can be ignored.
         let file = if path.starts_with('/') {
-            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+            current::with_cwd(|cwd| open_execveat_file(&cwd, &path, flags, &perm))?
         } else if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+            current::with_cwd(|cwd| open_execveat_file(&cwd, &path, flags, &perm))?
         } else {
             let dir_file = current::fdtable().lock().get(dirfd)?;
             let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
-            vfs::openat_file(dir, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
-        }
-        .downcast_arc::<File>()
-        .map_err(|_| Errno::ENOEXEC)?;
-        (file, path.into())
+            open_execveat_file(dir, &path, flags, &perm)?
+        };
+        (file, path.as_str().into())
     };
 
     do_execve(file, &invoked_path, uptr_argv, uptr_envp)

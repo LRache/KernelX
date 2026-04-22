@@ -8,6 +8,7 @@ pub enum Errno {
     ESRCH = 3,            // No such process
     EINTR = 4,            // Interrupted system call
     EIO = 5,              // Input/output error
+    ENXIO = 6,            // No such device or address
     E2BIG = 7,            // Argument list too long
     ENOEXEC = 8,          // Exec format error
     EBADF = 9,            // Bad file descriptor
@@ -16,6 +17,7 @@ pub enum Errno {
     ENOMEM = 12,          // Out of memory
     EACCES = 13,          // Permission denied
     EFAULT = 14,          // Bad address
+    EBUSY = 16,           // Device or resource busy
     EEXIST = 17,          // File exists
     EXDEV = 18,           // Cross-device link
     ENODEV = 19,          // No such device
@@ -24,6 +26,7 @@ pub enum Errno {
     EINVAL = 22,          // Invalid argument
     EMFILE = 24,          // Too many open files
     ENOTTY = 25,          // Not a typewriter (inappropriate ioctl)
+    ETXTBSY = 26,         // Text file busy
     EFBIG = 27,           // File too large
     ENOSPC = 28,          // No space left on device
     ESPIPE = 29,          // Illegal seek

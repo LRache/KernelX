@@ -4,12 +4,28 @@ use core::option::Option;
 use crate::driver::BlockDriverOps;
 use crate::fs::Mode;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::uapi::Statfs;
+use crate::kernel::uapi::{Statfs, StatfsFlags};
 
 use super::InodeOps;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MountOptions {
+    pub read_only: bool,
+}
+
+impl MountOptions {
+    pub const fn new(read_only: bool) -> Self {
+        Self { read_only }
+    }
+}
+
 pub trait FileSystemOps: Send + Sync {
-    fn create(&self, fsno: u32, driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>>;
+    fn create(
+        &self,
+        fsno: u32,
+        driver: Option<Arc<dyn BlockDriverOps>>,
+        options: MountOptions,
+    ) -> SysResult<Arc<dyn SuperBlockOps>>;
 }
 
 pub trait SuperBlockOps: Send + Sync {
@@ -34,6 +50,18 @@ pub trait SuperBlockOps: Send + Sync {
     fn sync(&self) -> SysResult<()> {
         // Default implementation does nothing, can be overridden by specific filesystems
         Ok(())
+    }
+
+    fn is_readonly(&self) -> bool {
+        false
+    }
+
+    fn statfs_flags(&self) -> StatfsFlags {
+        if self.is_readonly() {
+            StatfsFlags::ST_RDONLY
+        } else {
+            StatfsFlags::empty()
+        }
     }
 
     fn type_name(&self) -> &'static str;

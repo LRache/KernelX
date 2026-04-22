@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{FileEvent, PollEventSet};
@@ -84,20 +84,12 @@ impl FileOps for Pipe {
         self.read_with_blocked(buf, *self.blocked.lock())
     }
 
-    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
-    }
-
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         self.read_to_user_with_blocked(ubuf, *self.blocked.lock())
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         self.write_with_blocked(buf, *self.blocked.lock())
-    }
-
-    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
@@ -112,10 +104,6 @@ impl FileOps for Pipe {
             append: false,
             direct: false,
         }
-    }
-
-    fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {

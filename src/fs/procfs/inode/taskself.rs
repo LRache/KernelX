@@ -2,7 +2,7 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 use core::cmp::min;
 
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::procfs::inode::fill_kstat_common;
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
@@ -71,7 +71,7 @@ impl InodeOps for TaskDirSelfInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {
