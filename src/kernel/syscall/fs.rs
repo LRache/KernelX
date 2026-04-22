@@ -1838,6 +1838,40 @@ fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
     Ok(0)
 }
 
+fn do_chown(dentry: &Arc<Dentry>, uid: Option<Uid>, gid: Option<Uid>) -> SyscallRet {
+    let dentry = dentry.clone().get_mount_to();
+    if dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    let inode = dentry.get_inode();
+    let (inode_uid, inode_gid) = inode.owner()?;
+    let pcb = current::pcb();
+    let fsuid = pcb.fsuid();
+
+    if fsuid != 0 {
+        if fsuid != inode_uid {
+            return Err(Errno::EPERM);
+        }
+
+        if uid.is_some_and(|uid| uid != inode_uid) {
+            return Err(Errno::EPERM);
+        }
+
+        if let Some(gid) = gid
+            && gid != inode_gid
+        {
+            let in_supplementary_group = pcb.supplementary_gids().contains(&gid);
+            if pcb.fsgid() != gid && !in_supplementary_group {
+                return Err(Errno::EPERM);
+            }
+        }
+    }
+
+    inode.chown(uid, gid)?;
+    Ok(0)
+}
+
 pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let path = uptr_path.should_not_null()?.read_fixed()?;
     if path.is_empty() {
@@ -1875,20 +1909,28 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags:
         uptr_path.read_fixed()?
     };
 
+    if path.is_empty() && !flags.contains(AtFlags::AT_EMPTY_PATH) {
+        return Err(Errno::ENOENT);
+    }
+
     let dentry = if path.is_empty() {
-        current::fdtable()
-            .lock()
-            .get(dirfd)?
-            .get_dentry()
-            .cloned()
-            .ok_or(Errno::EINVAL)?
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| Ok(cwd))?
+        } else {
+            current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .cloned()
+                .ok_or(Errno::EINVAL)?
+        }
     } else {
         let helper = if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
             vfs::load_dentry_at_nofollow
         } else {
             vfs::load_dentry_at
         };
-        if dirfd as isize == AT_FDCWD {
+        if path.starts_with('/') || dirfd as isize == AT_FDCWD {
             current::with_cwd(|cwd| helper(&cwd, &path))?
         } else {
             helper(
@@ -1907,9 +1949,7 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags:
 
     let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
     let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
-    dentry.get_inode().chown(uid, gid)?;
-
-    Ok(0)
+    do_chown(&dentry, uid, gid)
 }
 
 pub fn fchown(fd: usize, uid: usize, gid: usize) -> SyscallRet {
@@ -1918,15 +1958,10 @@ pub fn fchown(fd: usize, uid: usize, gid: usize) -> SyscallRet {
     let uid = uid as Uid;
     let gid = gid as Uid;
 
-    if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
-        let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
-        let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
-        inode.chown(uid, gid)?;
-    } else {
-        return Err(Errno::EINVAL);
-    }
-
-    Ok(0)
+    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
+    let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
+    let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
+    do_chown(dentry, uid, gid)
 }
 
 fn truncate_length(length: usize) -> SysResult<u64> {
