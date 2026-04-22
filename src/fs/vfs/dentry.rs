@@ -327,6 +327,14 @@ impl Dentry {
     }
 
     pub fn link(self: &Arc<Self>, name: &str, target: &Arc<Dentry>) -> SysResult<()> {
+        self.check_child_mutation_perm()?;
+
+        match self.lookup(name) {
+            Ok(_) => return Err(Errno::EEXIST),
+            Err(Errno::ENOENT) => {}
+            Err(err) => return Err(err),
+        }
+
         let target_inode = target.get_inode();
         self.get_inode().link(name, &target_inode)?;
         vfs().cache.insert(
