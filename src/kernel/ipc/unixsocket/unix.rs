@@ -4,7 +4,7 @@ use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
@@ -161,33 +161,71 @@ impl FileOps for UnixSocket {
         None
     }
 
-    fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
         match &self.channel {
             Channel::Stream { rx, tx, .. } => {
-                if event.contains(PollEventSet::POLLIN) {
-                    if let Some(ev) = rx.wait_event(waker, PollEventSet::POLLIN, false)? {
-                        return Ok(Some(ev));
+                let mut ready = FileEvent::empty();
+                let mut waiting_on_rx = false;
+                let mut waiting_on_tx = false;
+
+                if event.contains(FileEvent::READ_READY) {
+                    if let Some(ev) = rx.wait_event(waker, FileEvent::READ_READY, false)? {
+                        ready |= ev;
+                    } else {
+                        waiting_on_rx = true;
                     }
                 }
-                if event.contains(PollEventSet::POLLOUT) {
-                    if let Some(ev) = tx.wait_event(waker, PollEventSet::POLLOUT, true)? {
-                        return Ok(Some(ev));
+                if event.contains(FileEvent::WRITE_READY) {
+                    if let Some(ev) = tx.wait_event(waker, FileEvent::WRITE_READY, true)? {
+                        ready |= ev;
+                    } else {
+                        waiting_on_tx = true;
                     }
                 }
-                Ok(None)
+
+                if !ready.is_empty() {
+                    if waiting_on_rx {
+                        rx.wait_event_cancel();
+                    }
+                    if waiting_on_tx {
+                        tx.wait_event_cancel();
+                    }
+                    Ok(Some(ready))
+                } else {
+                    Ok(None)
+                }
             }
             Channel::Message { rx, tx, .. } => {
-                if event.contains(PollEventSet::POLLIN) {
-                    if let Some(ev) = rx.wait_event(waker, PollEventSet::POLLIN, false)? {
-                        return Ok(Some(ev));
+                let mut ready = FileEvent::empty();
+                let mut waiting_on_rx = false;
+                let mut waiting_on_tx = false;
+
+                if event.contains(FileEvent::READ_READY) {
+                    if let Some(ev) = rx.wait_event(waker, FileEvent::READ_READY, false)? {
+                        ready |= ev;
+                    } else {
+                        waiting_on_rx = true;
                     }
                 }
-                if event.contains(PollEventSet::POLLOUT) {
-                    if let Some(ev) = tx.wait_event(waker, PollEventSet::POLLOUT, true)? {
-                        return Ok(Some(ev));
+                if event.contains(FileEvent::WRITE_READY) {
+                    if let Some(ev) = tx.wait_event(waker, FileEvent::WRITE_READY, true)? {
+                        ready |= ev;
+                    } else {
+                        waiting_on_tx = true;
                     }
                 }
-                Ok(None)
+
+                if !ready.is_empty() {
+                    if waiting_on_rx {
+                        rx.wait_event_cancel();
+                    }
+                    if waiting_on_tx {
+                        tx.wait_event_cancel();
+                    }
+                    Ok(Some(ready))
+                } else {
+                    Ok(None)
+                }
             }
         }
     }

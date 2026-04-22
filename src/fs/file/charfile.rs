@@ -6,7 +6,7 @@ use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::inode::release_bsd_flock;
 use crate::fs::{Dentry, InodeOps};
 use crate::kernel::errno::SysResult;
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 
@@ -86,7 +86,7 @@ impl FileOps for CharFile {
         self.driver.ioctl(request, arg, addrspace)
     }
 
-    fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
         self.driver.wait_event(waker, event)
     }
 

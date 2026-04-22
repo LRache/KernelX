@@ -7,7 +7,7 @@ use num_enum::TryFromPrimitive;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 use crate::net::manager;
@@ -328,14 +328,17 @@ impl FileOps for NetlinkSocket {
         None
     }
 
-    fn wait_event(&self, _waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
-        if event.contains(PollEventSet::POLLIN) && !self.rx_buf.lock().is_empty() {
-            return Ok(Some(FileEvent::ReadReady));
+    fn wait_event(&self, _waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let mut ready = FileEvent::empty();
+
+        if event.contains(FileEvent::READ_READY) && !self.rx_buf.lock().is_empty() {
+            ready |= FileEvent::READ_READY;
         }
-        if event.contains(PollEventSet::POLLOUT) {
-            return Ok(Some(FileEvent::WriteReady));
+        if event.contains(FileEvent::WRITE_READY) {
+            ready |= FileEvent::WRITE_READY;
         }
-        Ok(None)
+
+        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
     fn set_flags(&self, flags: FileFlags) {

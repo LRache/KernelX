@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::net::protocol::MacAddr;
 
@@ -146,7 +146,7 @@ impl_downcast!(BlockDriverOps);
 pub trait CharDriverOps: DriverOps + Downcast {
     fn write(&self, buf: &[u8]) -> SysResult<usize>;
     fn read(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize>;
-    fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>>;
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>>;
     fn wait_event_cancel(&self);
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
         Err(Errno::EINVAL)

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
+use crate::kernel::event::{Event, FileEvent, WaitQueue};
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::page;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -378,46 +378,55 @@ impl PipeInner {
         }
     }
 
-    pub fn wait_event(&self, waker: usize, event: PollEventSet, writable: bool) -> SysResult<Option<FileEvent>> {
-        // Pipe read end only handles POLLIN; write end only handles POLLOUT
-        if event.contains(PollEventSet::POLLIN) && writable {
-            return Ok(None);
-        }
-        if event.contains(PollEventSet::POLLOUT) && !writable {
+    pub fn wait_event(&self, waker: usize, event: FileEvent, writable: bool) -> SysResult<Option<FileEvent>> {
+        let want_read = event.contains(FileEvent::READ_READY) && !writable;
+        let want_write = event.contains(FileEvent::WRITE_READY) && writable;
+        if !want_read && !want_write {
             return Ok(None);
         }
 
         let fifo = self.fifo.lock();
+        let mut ready = FileEvent::empty();
 
-        if event.contains(PollEventSet::POLLIN) {
+        if want_read {
             if *self.writer_count.lock() == 0 {
-                // All writers gone: report HangUp regardless of data left
-                return Ok(Some(FileEvent::HangUp));
+                ready |= FileEvent::HANG_UP;
+                if fifo.len() > 0 {
+                    ready |= FileEvent::READ_READY;
+                }
+            } else if fifo.len() > 0 {
+                ready |= FileEvent::READ_READY;
             }
-            if fifo.len() > 0 {
-                return Ok(Some(FileEvent::ReadReady));
+        }
+
+        if want_write {
+            if *self.reader_count.lock() == 0 {
+                // All readers gone: write end should get HangUp (caller maps to EPIPE)
+                ready |= FileEvent::HANG_UP;
+            } else if fifo.len() < *self.capacity.lock() {
+                ready |= FileEvent::WRITE_READY;
             }
+        }
+
+        if !ready.is_empty() {
+            return Ok(Some(ready));
+        }
+
+        if want_read {
             self.read_waiter.lock().wait(
                 current::task().clone(),
                 Event::Poll {
-                    event: FileEvent::ReadReady,
+                    event: FileEvent::READ_READY,
                     waker,
                 },
             );
         }
 
-        if event.contains(PollEventSet::POLLOUT) {
-            if *self.reader_count.lock() == 0 {
-                // All readers gone: write end should get HangUp (caller maps to EPIPE)
-                return Ok(Some(FileEvent::HangUp));
-            }
-            if fifo.len() < *self.capacity.lock() {
-                return Ok(Some(FileEvent::WriteReady));
-            }
+        if want_write {
             self.write_waiter.lock().wait(
                 current::task().clone(),
                 Event::Poll {
-                    event: FileEvent::WriteReady,
+                    event: FileEvent::WRITE_READY,
                     waker,
                 },
             );
@@ -454,12 +463,14 @@ impl PipeInner {
         debug_assert!(*writer_count > 0);
         *writer_count -= 1;
         if *writer_count == 0 {
+            let wake_event = if self.fifo.lock().len() > 0 {
+                FileEvent::READ_READY | FileEvent::HANG_UP
+            } else {
+                FileEvent::HANG_UP
+            };
             self.read_waiter.lock().wake_all(|e| match e {
-                Event::Poll {
-                    event: FileEvent::ReadReady,
-                    waker,
-                } => Event::Poll {
-                    event: FileEvent::HangUp,
+                Event::Poll { event, waker } if event.intersects(FileEvent::READ_READY) => Event::Poll {
+                    event: wake_event,
                     waker,
                 },
                 _ => e,

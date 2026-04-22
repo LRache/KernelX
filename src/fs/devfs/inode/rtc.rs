@@ -6,7 +6,7 @@ use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::inode::{InodeLockState, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
@@ -154,7 +154,7 @@ impl FileOps for RtcFile {
         self.dentry.as_ref()
     }
 
-    fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
+    fn wait_event(&self, _waker: usize, _event: FileEvent) -> SysResult<Option<FileEvent>> {
         Ok(None)
     }
 
