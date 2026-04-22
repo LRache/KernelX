@@ -1,20 +1,27 @@
 /*
  * LoongArch64 kernel linker script for KernelX.
  *
- * Layout choice (decided in Phase 0):
- *   - Load ELF straight via `qemu-system-loongarch64 -M virt -bios /dev/null -kernel vmkernelx`.
- *   - QEMU reserves physical 0x0..0x100000 for its `boot_info` region, so kernel segments
- *     must start past that. We use physical 0x9000_0000 which is the conventional LA virt
- *     RAM base and is inside DMW1's direct-mapped range.
- *   - DMW1 = 0x9000_0000_0000_0000 -> PA 0 (cached). So VA for the kernel = PA | DMW1 mask.
- *     VIRT_BASE = 0x9000_0000_9000_0000 keeps virt==phys+DMW1 so the pre-paging entry code
- *     can treat it as identity within that window.
+ * QEMU `-M virt` memory layout we target (verified via `-machine dumpdtb`):
+ *   - RAM:        PA 0x00000000..(m-1)           (256 MiB default, size configurable)
+ *   - boot_info:  PA 0x00000000..0x000fffff      (QEMU writes cmdline/systab here)
+ *   - FDT:        PA 0x00100000..0x001fffff      (FDT_BASE = 0x100000, up to 1 MiB)
+ *   - UART0:      PA 0x1fe001e0                  (ns16550a, access via DMW0)
+ *   - Flash0:     PA 0x1c000000..0x1cffffff      (aux_boot_code lives here at reset)
  *
- * Keeping section names identical to scripts/linker/riscv64.ld so common kernel code
- * (which references e.g. __init_start / __bss_end / __trampoline_start) just works.
+ * So the first usable PA for the kernel is 0x200000 (2 MiB mark). Anything
+ * lower overlaps with FDT / boot_info and QEMU refuses to run.
+ *
+ * Virtual layout: DMW1 = VSEG 0x9, MAT=CC, PLV0, so VA = PA | 0x9000_0000_0000_0000.
+ * That keeps `virt = phys + 0x9000_0000_0000_0000` throughout the kernel image and
+ * lets `arch::paddr_to_kaddr` / `kaddr_to_paddr` be pure bit-OR / bit-AND operations.
+ *
+ * NOTE: Section names are kept identical to scripts/linker/riscv64.ld so generic
+ * kernel code (which references __init_start / __bss_end / __trampoline_start) works.
  */
 
-VIRT_BASE = 0x9000000090000000;
+PHYS_BASE = 0x200000;
+DMW1_MASK = 0x9000000000000000;
+VIRT_BASE = DMW1_MASK + PHYS_BASE;
 
 ENTRY(_entry)
 EXTERN(_entry)
@@ -24,7 +31,7 @@ SECTIONS {
 
     __kernel_start = .;
     __init_start = .;
-    .init : {
+    .init : AT(PHYS_BASE) {
         KEEP(*(.text.entry))
         KEEP(*(.text.init))
         KEEP(*(.data.init))

@@ -8,6 +8,7 @@
 //! future diffs stay straightforward.
 
 mod arch;
+mod boot;
 mod context;
 mod pagetable;
 mod task;

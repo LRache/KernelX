@@ -237,14 +237,16 @@ config QEMU_MACHINE
 
 config QEMU_BIOS
 	string "QEMU -bios firmware (empty = omit the flag)"
-	default "" if RISCV64
-	default "/dev/null" if LOONGARCH64
+	default ""
 	help
-	  Passed as `-bios <value>` to qemu-system-${ARCH}.
-	  On LoongArch, qemu 10.2+ rejects `-bios none`, but accepts
-	  `/dev/null` to mean "no firmware, raw-boot the -kernel ELF".
-	  Leave empty to omit the flag entirely (RISC-V uses OpenSBI
-	  built into qemu by default).
+	  Passed as `-bios <value>` to qemu-system-${ARCH}. Leave empty to omit
+	  the flag entirely.
+
+	  - RISC-V virt: empty lets QEMU fall back to its built-in OpenSBI.
+	  - LoongArch virt: *must* be empty for raw `-kernel` boots. If you pass
+	    anything (even /dev/null), QEMU loads it as firmware and skips the
+	    aux_boot_code shim that hands PC off to our ELF entry, and the CPU
+	    just executes zeros out of reset.
 
 config QEMU_MEMORY
 	string "QEMU memory size"
