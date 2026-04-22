@@ -1,70 +1,57 @@
-//! Early boot hooks for LoongArch.
+//! Early ns16550a UART driver for the QEMU `-M virt` LoongArch machine.
 //!
-//! Phase 2 temporary: we don't yet have enough of the architecture
-//! backend implemented to call all the way into `kernel::main::main`.
-//! So `_entry` (in `clib/src/arch/loongarch/entry/entry.S`) will be
-//! redirected here via a linker-visible C symbol named `main`, we print
-//! a greeting through the UART MMIO window, and we park the CPU.
+//! This is the minimum piece of the driver stack that has to work before the
+//! full `driver::*` framework comes up — `kinfo!` / `print!` / the panic
+//! handler all funnel through `driver::chosen::kconsole::kputs`, so somebody
+//! needs to register a `KConsole` right at the top of `Arch::init`.
 //!
-//! Once Phase 2 milestones are met (DMW up, stack valid, BSS zeroed,
-//! control flow reaches Rust) this file goes away and the real
-//! `kernel::main::main` takes over.
+//! Hardware facts (verified against `-machine dumpdtb`):
+//!   - PA        0x1fe0_01e0    ns16550a, reg-shift=0, reg-io-width=1
+//!   - CC attr:  through DMW0 (VSEG 0x8, MAT=SUC, set in clib/.../entry.S)
+//!              → KernelX VA 0x8000_0000_1fe0_01e0
+//!   - Clock:    100 MHz (0x5f5e100 Hz per DTS)
+//!
+//! We don't reprogram the UART — QEMU's already left it in a usable state
+//! (8N1, FIFO enabled, 115200 baud).  All we do is poll LSR.THRE before
+//! each byte and write THR.
 
-/// ns16550a base address in the DMW0 (uncached) high half window.
-/// Physical UART0 = 0x1fe0_01e0 (from `qemu-system-loongarch64 -M virt -machine dumpdtb=...`),
-/// DMW0 = VSEG 0x8, MAT=SUC, PLV0.
-const EARLY_UART_MMIO: usize = 0x8000_0000_1fe0_01e0;
+use crate::driver::chosen::kconsole::KConsole;
 
-/// Poke one byte at the UART transmit holding register. NS16550a is
-/// "just write the byte at offset 0" — no need to poll LSR while QEMU
-/// has an infinite-depth TX FIFO.
+/// UART THR / RBR (offset 0, DLAB=0)
+const UART_BASE: usize = 0x8000_0000_1fe0_01e0;
+/// Line Status Register
+const UART_LSR: usize = UART_BASE + 5;
+/// LSR bit 5 = Transmit Holding Register empty
+const LSR_THRE: u8 = 1 << 5;
+
 #[inline(always)]
-unsafe fn uart_putc(c: u8) {
-    unsafe { core::ptr::write_volatile(EARLY_UART_MMIO as *mut u8, c) };
+fn poll_tx_ready() {
+    // Spin until THR is empty. QEMU's model never blocks the host, so this
+    // is essentially a one-read loop in practice.
+    while unsafe { core::ptr::read_volatile(UART_LSR as *const u8) } & LSR_THRE == 0 {}
 }
 
 #[inline(always)]
-unsafe fn uart_puts(s: &str) {
-    for &b in s.as_bytes() {
-        unsafe { uart_putc(b) };
+fn putc(c: u8) {
+    poll_tx_ready();
+    unsafe { core::ptr::write_volatile(UART_BASE as *mut u8, c) };
+}
+
+/// `KConsole` impl. Owned by `Arch::init`, which registers an eternal
+/// `&'static` reference with `driver::chosen::kconsole::register`.
+pub struct EarlyUart;
+
+impl KConsole for EarlyUart {
+    fn kputs(&self, s: &str) {
+        for b in s.bytes() {
+            // Translate lone '\n' to CR-LF so we look sane on a raw serial
+            // line and in Qemu's `-nographic` mode.
+            if b == b'\n' {
+                putc(b'\r');
+            }
+            putc(b);
+        }
     }
 }
 
-/// Temporary `main` stand-in so we can close the loop on Phase 2 before
-/// wiring up `Processor`, the scheduler, paging, etc.
-///
-/// Signature matches `kernel::main::main(hartid, heap_start, memory_top)`
-/// so the asm in `entry.S` (which passes `a0`, `a1`, `a2`) doesn't care
-/// whether this or the real one answers.
-#[unsafe(no_mangle)]
-pub extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) -> ! {
-    unsafe {
-        uart_puts("\r\n[KernelX] Hello from LoongArch64!\r\n");
-        uart_puts("[KernelX] Phase 2 entry probe\r\n");
-        // Cheap hex dump of the three args so we can confirm entry.S
-        // computed sensible values.
-        uart_puts("  hartid      = ");
-        uart_put_hex64(hartid as u64);
-        uart_puts("\r\n  heap_start  = ");
-        uart_put_hex64(heap_start as u64);
-        uart_puts("\r\n  memory_top  = ");
-        uart_put_hex64(memory_top as u64);
-        uart_puts("\r\n[KernelX] parking.\r\n");
-    }
-    loop {
-        unsafe { core::arch::asm!("idle 0", options(nomem, nostack)) };
-    }
-}
-
-unsafe fn uart_put_hex64(mut v: u64) {
-    unsafe { uart_puts("0x") };
-    let mut buf = [0u8; 16];
-    for i in (0..16).rev() {
-        let nib = (v & 0xf) as u8;
-        buf[i] = if nib < 10 { b'0' + nib } else { b'a' + (nib - 10) };
-        v >>= 4;
-    }
-    for &c in &buf {
-        unsafe { uart_putc(c) };
-    }
-}
+pub static EARLY_UART: EarlyUart = EarlyUart;

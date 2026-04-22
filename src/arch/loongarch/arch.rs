@@ -1,19 +1,37 @@
-//! LoongArch64 `ArchTrait` skeleton.
+//! LoongArch64 `ArchTrait` — Phase 2.5 cut.
 //!
-//! Every runtime method panics — that's by design: Phase 1 only requires the
-//! generic kernel code to *link*. Phase 2 onwards fills these in. The order
-//! here mirrors `src/arch/riscv/arch.rs` so side-by-side diffs stay small.
+//! What's real:
+//!   - per-CPU data pointer stashed in `$r21` (the kernel-reserved GPR)
+//!   - DMW1 / DMW0 address translation (pure bit twiddling, no page table)
+//!   - kernel console registration via `driver::chosen::kconsole`
+//!   - frame pointer / kernel stack top (for backtrace + overflow checks)
+//!   - is_kernel_addr (carry-over from Phase 1)
+//!
+//! Everything else still `unimplemented!()`s. Ordering mirrors `src/arch/riscv/arch.rs`.
 
 use core::time::Duration;
 
 use crate::arch::arch::{Arch, ArchTrait};
+use crate::driver::chosen;
 use crate::kernel::mm::MapPerm;
 
+use super::boot::EARLY_UART;
 use super::context::KernelContext;
+
+/// DMW1 base. Set in `clib/src/arch/loongarch/entry/entry.S`. Keeps
+/// VA = PA | DMW1_MASK for every kernel byte we ever touch.
+const DMW1_MASK: usize = 0x9000_0000_0000_0000;
+/// Low 48 bits — PALEN=48 on la464, any kaddr ANDed with this becomes PA.
+const PA_MASK: usize = (1 << 48) - 1;
 
 impl ArchTrait for Arch {
     fn init() {
-        unimplemented!("loongarch: Arch::init (Phase 2/4)");
+        // Kernel console first, so anything that follows (including a panic)
+        // can actually talk to the outside world.
+        chosen::kconsole::register(&EARLY_UART);
+        // Phase 4 will set EENTRY / TLBRENTRY, init the timer, etc. For now
+        // we leave them zero — any exception at this stage means a real bug
+        // and we'd rather triple-fault than mask it.
     }
 
     fn setup_all_cores(_current_core: usize) {
@@ -23,12 +41,16 @@ impl ArchTrait for Arch {
 
     /* ----- Per-CPU Data (stashed in $r21, the kernel-reserved reg) ----- */
 
-    fn set_percpu_data(_data: usize) {
-        unimplemented!("loongarch: Arch::set_percpu_data (Phase 2)");
+    #[inline(always)]
+    fn set_percpu_data(data: usize) {
+        unsafe { core::arch::asm!("move $r21, {x}", x = in(reg) data) };
     }
 
+    #[inline(always)]
     fn get_percpu_data() -> usize {
-        unimplemented!("loongarch: Arch::get_percpu_data (Phase 2)");
+        let data: usize;
+        unsafe { core::arch::asm!("move {x}, $r21", x = out(reg) data) };
+        data
     }
 
     /* ----- Context Switching ----- */
@@ -72,21 +94,34 @@ impl ArchTrait for Arch {
         unimplemented!("loongarch: Arch::enable_device_interrupt_irq (Phase 4/6)");
     }
 
+    #[inline(always)]
     fn get_kernel_stack_top() -> usize {
-        unimplemented!("loongarch: Arch::get_kernel_stack_top (Phase 2)");
+        let sp: usize;
+        unsafe { core::arch::asm!("move {x}, $sp", x = out(reg) sp) };
+        sp
     }
 
-    /* ----- Address translation via DMW1 window (Phase 3 firms this up) ----- */
+    /* ----- Address translation via the DMW1 window -----
+     * DMW1 is programmed at boot (entry.S) with VSEG=0x9, MAT=CC, PLV0, so
+     * every kernel byte lives at VA = PA | DMW1_MASK. These two helpers are
+     * called all over kernel/mm (the hot path for page alloc), so keep them
+     * branchless.
+     */
 
-    fn kaddr_to_paddr(_kaddr: usize) -> usize {
-        unimplemented!("loongarch: Arch::kaddr_to_paddr (Phase 2/3)");
+    #[inline(always)]
+    fn kaddr_to_paddr(kaddr: usize) -> usize {
+        kaddr & PA_MASK
     }
 
-    fn paddr_to_kaddr(_paddr: usize) -> usize {
-        unimplemented!("loongarch: Arch::paddr_to_kaddr (Phase 2/3)");
+    #[inline(always)]
+    fn paddr_to_kaddr(paddr: usize) -> usize {
+        paddr | DMW1_MASK
     }
 
     fn map_kernel_addr(_kstart: usize, _pstart: usize, _size: usize, _perm: MapPerm) {
+        // Phase 3: edit the kernel page table. For now DMW1 covers every PA
+        // the kernel image and heap will ever touch, so callers that only
+        // need an identity-like kernel mapping already have one.
         unimplemented!("loongarch: Arch::map_kernel_addr (Phase 3)");
     }
 
@@ -111,33 +146,51 @@ impl ArchTrait for Arch {
     }
 
     fn scan_device() {
-        unimplemented!("loongarch: Arch::scan_device (Phase 6)");
+        // Phase 6 will walk the FDT that QEMU pins at PA 0x100000 and populate
+        // `driver::found_device` + `BOOT_ARGS`. For now a log line so the
+        // absence is visible.
+        crate::kinfo!("loongarch: scan_device is a no-op (Phase 6 will parse the FDT)");
     }
 
     /* ----- Volatile fences ----- */
 
-    fn read_volatile<T>(_src: *const T) -> T {
-        unimplemented!("loongarch: Arch::read_volatile (Phase 4)");
+    fn read_volatile<T>(src: *const T) -> T {
+        unsafe {
+            let v = core::ptr::read_volatile(src);
+            core::arch::asm!("dbar 0", options(nostack, preserves_flags));
+            v
+        }
     }
 
-    fn write_volatile<T>(_dst: *mut T, _val: T) {
-        unimplemented!("loongarch: Arch::write_volatile (Phase 4)");
+    fn write_volatile<T>(dst: *mut T, val: T) {
+        unsafe {
+            core::arch::asm!("dbar 0", options(nostack, preserves_flags));
+            core::ptr::write_volatile(dst, val);
+        }
     }
 
     /* ----- Debugging helpers (fp = $r22) ----- */
 
+    #[inline(always)]
     fn get_frame_pointer() -> usize {
-        unimplemented!("loongarch: Arch::get_frame_pointer (Phase 2/9)");
+        let fp: usize;
+        unsafe { core::arch::asm!("move {x}, $r22", x = out(reg) fp) };
+        fp
     }
 
-    unsafe fn frame_info(_fp: usize) -> (usize, usize) {
-        unimplemented!("loongarch: Arch::frame_info (Phase 9)");
+    #[inline(always)]
+    unsafe fn frame_info(fp: usize) -> (usize, usize) {
+        // LoongArch gcc/clang with -fno-omit-frame-pointer places (ra, old_fp)
+        // at the top of each frame, right below the saved fp. This matches
+        // the RISC-V port's convention, so `klib::backtrace` stays arch-agnostic.
+        let p = fp as *const usize;
+        unsafe { (*p.sub(1), *p.sub(2)) }
     }
 
+    #[inline(always)]
     fn is_kernel_addr(addr: usize) -> bool {
-        // DMW0/1 live in the upper half (bit 63 set). Phase 3 may refine this
-        // to a window-aware check, but the top-bit test is already correct for
-        // all addresses we ever hand back up from the kernel.
+        // DMW0/1 live in the upper half (bit 63 set). Every kernel VA comes
+        // out of paddr_to_kaddr, which OR-s in DMW1_MASK.
         (addr as isize) < 0
     }
 }
