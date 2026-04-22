@@ -85,6 +85,12 @@ fn write_back_fdsets(
     Ok(())
 }
 
+fn has_pending_unmasked_signal() -> bool {
+    let tcb = current::tcb();
+    tcb.recive_pending_signal_from_parent();
+    tcb.state().lock().pending_signal.is_some()
+}
+
 fn select(
     nfds: usize,
     uptr_readfds: UPtr<FdSet>,
@@ -196,6 +202,25 @@ fn select(
     };
 
     let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+
+    if has_pending_unmasked_signal() {
+        old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+        waiting_files.iter().for_each(|file| {
+            file.wait_event_cancel();
+        });
+        timer_id.map(|id| timer::remove_timer(id));
+
+        write_back_fdsets(
+            &uptr_readfds,
+            &uptr_writefds,
+            &uptr_exceptfds,
+            &readfds,
+            &writefds,
+            &exceptfds,
+        )?;
+
+        return Err(Errno::EINTR);
+    }
 
     defer::cancel(defer);
     current::schedule();
@@ -336,7 +361,7 @@ impl Pollfd {
     }
 }
 
-fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
+fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<SignalSet>) -> SysResult<usize> {
     let mut fdtable = current::fdtable().lock();
 
     pollfds.iter_mut().for_each(|pfd| {
@@ -400,8 +425,22 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize
         None => None,
     };
 
+    let tcb = current::tcb();
+    let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+
+    if has_pending_unmasked_signal() {
+        old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+        timer_id.map(|id| timer::remove_timer(id));
+        poll_files.iter_mut().for_each(|(file, _)| {
+            file.wait_event_cancel();
+        });
+        return Err(Errno::EINTR);
+    }
+
     defer::cancel(defer);
     current::schedule();
+
+    old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
 
     // start polling
     let event = current::task().take_wakeup_event().unwrap();
@@ -447,8 +486,8 @@ pub fn ppoll_time32(
     uptr_ufds: UArray<Pollfd>,
     nfds: usize,
     uptr_timeout: UPtr<uapi::Timespec32>,
-    _uptr_sigmask: usize,
-    _sigmask_size: usize,
+    uptr_sigmask: UPtr<SignalSet>,
+    sigmask_size: usize,
 ) -> SysResult<usize> {
     if nfds > 0 {
         uptr_ufds.should_not_null()?;
@@ -469,7 +508,13 @@ pub fn ppoll_time32(
         None
     };
 
-    let r = do_poll(&mut pollfds, timeout)?;
+    if !uptr_sigmask.is_null() && sigmask_size != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
+
+    let sigmask = uptr_sigmask.read_optional()?;
+
+    let r = do_poll(&mut pollfds, timeout, sigmask)?;
 
     if nfds > 0 {
         uptr_ufds.write(0, &pollfds)?;
