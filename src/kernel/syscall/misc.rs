@@ -396,6 +396,11 @@ pub fn sched_getparam(_pid: usize, uptr_param: UPtr<u32>) -> SyscallRet {
     Ok(0)
 }
 
+// TODO: implement real reboot syscall
+pub fn reboot() -> SyscallRet {
+    Ok(0)
+}
+
 #[derive(TryFromPrimitive)]
 #[repr(usize)]
 enum SyslogAction {

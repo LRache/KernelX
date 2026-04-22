@@ -102,6 +102,7 @@ macro_rules! syscall_entries {
             121 => misc::sched_getparam(2),
             122 => misc::sched_setaffinity(3),
             123 => misc::sched_getaffinity(3),
+            142 => misc::reboot(0),
             160 => misc::newuname(1),
             165 => misc::getrusage(2),
             179 => misc::sysinfo(1),
