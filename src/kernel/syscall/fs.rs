@@ -1,8 +1,8 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 use bitflags::bitflags;
 use core::time::Duration;
 use core::usize;
-use fixedstr::str256;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
@@ -1388,6 +1388,15 @@ fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_p
     Ok(dentry.get_mount_to())
 }
 
+fn last_path_component(path: &str) -> Option<&str> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        trimmed.rsplit('/').next()
+    }
+}
+
 fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFlags) -> SyscallRet {
     uptr_path.should_not_null()?;
 
@@ -1436,7 +1445,7 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
-        str256::new()
+        String::new()
     } else {
         uptr_path.should_not_null()?;
         uptr_path.read_fixed()?
@@ -1500,7 +1509,7 @@ const UTIME_OMIT: u64 = 0x3ffffffe;
 
 pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, _flags: usize) -> SyscallRet {
     let path = if uptr_path.is_null() {
-        str256::new()
+        String::new()
     } else {
         uptr_path.read_fixed()?
     };
@@ -1636,13 +1645,22 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     }
 }
 
-pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct UnlinkAtFlags: usize {
+        const AT_REMOVEDIR = 0x200;
+    }
+}
+
+pub fn unlinkat(dirfd: usize, uptr_path: UString, flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
+    let flags = UnlinkAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let path = uptr_path.read_fixed()?;
-    const AT_REMOVEDIR: usize = 0x200;
-
-    if _flags & !AT_REMOVEDIR != 0 {
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    if flags.contains(UnlinkAtFlags::AT_REMOVEDIR) && last_path_component(&path) == Some(".") {
         return Err(Errno::EINVAL);
     }
 
@@ -1662,10 +1680,14 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
         .ok_or(Errno::EOPNOTSUPP)
     }?;
 
-    let parent = parent_dentry.0;
+    let parent = parent_dentry.0.get_mount_to();
     let name = parent_dentry.1;
 
-    if _flags == AT_REMOVEDIR {
+    if parent.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    if flags.contains(UnlinkAtFlags::AT_REMOVEDIR) {
         parent.rmdir(name.as_ref())?;
     } else {
         parent.unlink(name.as_ref())?;
@@ -1847,7 +1869,7 @@ pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
 pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags: usize) -> SyscallRet {
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
-        fixedstr::str256::new()
+        String::new()
     } else {
         uptr_path.should_not_null()?;
         uptr_path.read_fixed()?

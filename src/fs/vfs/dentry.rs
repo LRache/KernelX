@@ -6,6 +6,7 @@ use alloc::sync::{Arc, Weak};
 
 use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
 use crate::fs::perm::{Perm, PermFlags};
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::klib::SpinLock;
@@ -195,16 +196,17 @@ impl Dentry {
         }
     }
 
-    pub fn walk_link_with_perm(self: Arc<Self>, depth: usize, perm: &Perm) -> SysResult<Arc<Dentry>> {
+    pub fn walk_link_with_perm(self: Arc<Self>, symlink_depth: &mut usize, perm: &Perm) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
             let mut buffer = [0u8; 255];
             if let Some(length) = inode.readlink(&mut buffer)? {
-                if depth >= 40 {
+                if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
                     return Err(Errno::ELOOP);
                 }
+                *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
-                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(p, link_name, depth + 1, perm)?;
+                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(p, link_name, symlink_depth, perm)?;
                 return Ok(link_dentry);
             }
         }
@@ -292,14 +294,18 @@ impl Dentry {
 
     fn remove_child(self: &Arc<Self>, name: &str, remove_dir: bool) -> SysResult<()> {
         self.check_child_mutation_perm()?;
+        let child = self.lookup(name)?;
 
         let parent_inode = self.get_inode();
         if parent_inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
         }
 
-        let child_ino = parent_inode.lookup(name)?;
-        let child_inode = vfs().load_inode(self.sno(), child_ino)?;
+        if remove_dir && child.mounted_root().is_some() {
+            return Err(Errno::EBUSY);
+        }
+
+        let child_inode = child.get_inode();
         let child_is_dir = child_inode.inode_type()? == FileType::Directory;
         if remove_dir && !child_is_dir {
             return Err(Errno::ENOTDIR);
@@ -310,15 +316,10 @@ impl Dentry {
 
         self.check_sticky_remove_perm(&parent_inode, &child_inode)?;
 
-        let inode_index = Index {
-            sno: self.sno(),
-            ino: child_ino,
-        };
-
         parent_inode.unlink(name)?;
 
         self.children.lock().remove(name);
-        vfs().cache.remove(&inode_index);
+        vfs().cache.remove(&child.get_inode_index());
 
         Ok(())
     }

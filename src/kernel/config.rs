@@ -34,6 +34,7 @@ pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process
 
 pub const MAX_FILENAME_LEN: usize = 255;
+pub const MAX_PATH_LEN: usize = 4096;
 pub const MAX_SYMLINK_DEPTH: usize = 40;
 
 // pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer
