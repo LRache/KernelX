@@ -10,7 +10,6 @@ include config/config.mk
 init:
 	@ git submodule init
 	@ git submodule update --remote
-	@ make -f build.mk patch-lwext4
 
 kernel:
 	@ $(MAKE) -f build.mk kernel $(KERNEL_CONFIG)

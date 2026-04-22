@@ -3,8 +3,6 @@ COMPILE_MODE ?= debug
 OBJCOPY ?= objcopy
 
 KERNELX_HOME := $(strip $(patsubst %/, %, $(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
-LWEXT4_SUBMODULE := $(KERNELX_HOME)/clib/lib/lwext4/lwext4
-LWEXT4_PATCHES := $(sort $(abspath $(wildcard $(KERNELX_HOME)/patches/lwext4-*.patch)))
 
 BUILD = $(abspath build/$(ARCH)$(ARCH_BITS))
 KERNEL_VM = $(BUILD)/vmkernelx
@@ -100,7 +98,7 @@ $(KERNEL_IMAGE): $(RUST_KERNEL)
 
 $(CLIB): clib
 
-clib: patch-lwext4
+clib:
 	@ $(BUILD_ENV) make -C clib all
 
 $(VDSO): vdso
@@ -117,26 +115,12 @@ ifeq ($(CONFIG_BACKTRACE),y)
 	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
 endif
 
-check: patch-lwext4
+check: clib vdso
 	@ $(BUILD_ENV) cargo check $(CARGO_FLAGS)
-
-patch-lwext4:
-	@if [ -z "$(LWEXT4_PATCHES)" ]; then \
-		echo "[lwext4] no local patches to apply"; \
-	else \
-		for patch in $(LWEXT4_PATCHES); do \
-			if git -C $(LWEXT4_SUBMODULE) apply --check --reverse "$$patch" >/dev/null 2>&1; then \
-				echo "[lwext4] patch already applied: $$patch"; \
-			else \
-				echo "[lwext4] applying patch: $$patch"; \
-				git -C $(LWEXT4_SUBMODULE) apply "$$patch" || exit $$?; \
-			fi; \
-		done; \
-	fi
 
 clean:
 	@ $(BUILD_ENV) make -C clib clean
 	@ $(BUILD_ENV) make -C vdso clean
 	@ $(BUILD_ENV) cargo clean
 
-.PHONY: all clib vdso image check patch-lwext4 $(RUST_KERNEL)
+.PHONY: all clib vdso image check $(RUST_KERNEL)
