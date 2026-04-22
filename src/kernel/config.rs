@@ -43,8 +43,20 @@ pub const PIPE_CAPACITY: usize = PIPE_BUFFER_PAGES * arch::PGSIZE;
 
 /* ------ BOOT ARGS ------- */
 pub const DEFAULT_BOOT_ROOT_FSTYPE: &str = "ext4";
-pub const DEFAULT_BOOT_ROOT: &str = "virtio_block0";
-pub const DEFAULT_INITPATH: &str = "/init";
-pub const DEFAULT_INITCWD: &str = "/";
-pub const DEFAULT_INITTTY: &str = "/dev/serial@10000000";
+pub const DEFAULT_BOOT_ROOT: &str = match option_env!("CONFIG_DEFAULT_BOOT_ROOT") {
+    Some(v) => v,
+    None => "virtio_block0",
+};
+pub const DEFAULT_INITPATH: &str = match option_env!("CONFIG_DEFAULT_INITPATH") {
+    Some(v) => v,
+    None => "/init",
+};
+pub const DEFAULT_INITCWD: &str = match option_env!("CONFIG_DEFAULT_INITCWD") {
+    Some(v) => v,
+    None => "/",
+};
+pub const DEFAULT_INITTTY: &str = match option_env!("CONFIG_DEFAULT_INITTTY") {
+    Some(v) => v,
+    None => "/dev/serial@10000000",
+};
 /* ------ BOOT ARGS ------- */
