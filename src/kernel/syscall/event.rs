@@ -317,7 +317,7 @@ impl Pollfd {
     }
 }
 
-fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
+fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     let mut fdtable = current::fdtable().lock();
 
     let mut count = 0u32;
@@ -439,6 +439,9 @@ pub fn ppoll_time32(
     if nfds > 0 {
         uptr_ufds.should_not_null()?;
     }
+    if (nfds as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
 
     let mut pollfds = vec![Pollfd::default(); nfds];
     if nfds > 0 {
@@ -451,7 +454,7 @@ pub fn ppoll_time32(
         None
     };
 
-    let r = poll(&mut pollfds, timeout)?;
+    let r = do_poll(&mut pollfds, timeout)?;
 
     if nfds > 0 {
         uptr_ufds.write(0, &pollfds)?;
