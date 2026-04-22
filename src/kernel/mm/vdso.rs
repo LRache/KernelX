@@ -116,7 +116,7 @@ pub fn init() {
     // let ehdr = unsafe {(vdso_start() as *const Elf64Ehdr).as_ref().unwrap()};
     let ehdr = unsafe { (VDSO_BYTES.as_ptr() as *const Elf64Ehdr).as_ref().unwrap() };
 
-    if !ehdr.is_valid_elf() || !ehdr.is_64bit() || !ehdr.is_little_endian() || !ehdr.is_riscv() || !ehdr.is_dynamic() {
+    if !ehdr.is_valid_elf() || !ehdr.is_64bit() || !ehdr.is_little_endian() || !ehdr.is_native() || !ehdr.is_dynamic() {
         panic!("Invalid VDSO ELF header: {:?}", ehdr);
     }
 

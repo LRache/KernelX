@@ -94,7 +94,6 @@ const LOGO: &str = r#"
  |_|\_\  \___| |_|    |_| |_|  \___| |_| /_/\_\
 "#;
 
-#[cfg(not(arch_loongarch64))]
 #[unsafe(no_mangle)]
 extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     let processor = Processor::new(hartid);
