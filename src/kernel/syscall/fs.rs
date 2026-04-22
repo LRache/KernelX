@@ -358,6 +358,9 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             }
 
             let dentry = vfs::load_dentry_at(parent, &path)?;
+            if dentry.is_superblock_readonly()? {
+                return Err(Errno::EROFS);
+            }
             return vfs::create_temp(
                 &dentry,
                 file_flags,
@@ -386,6 +389,10 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                     let mode =
                         Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
                     let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?.unwrap(); // SAFETY: The root must exist
+                    let parent_dentry = parent_dentry.get_mount_to();
+                    if parent_dentry.is_superblock_readonly()? {
+                        return Err(Errno::EROFS);
+                    }
                     vfs::create_file(
                         &parent_dentry,
                         child_name.as_ref(),
