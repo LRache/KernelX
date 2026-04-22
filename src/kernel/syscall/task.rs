@@ -4,16 +4,16 @@ use alloc::vec::Vec;
 use bitflags::bitflags;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
-use crate::fs::{vfs, FileType, Perm, PermFlags};
+use crate::fs::{FileType, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::SignalNum;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
-use crate::kernel::scheduler::{current, Tid};
+use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::ExitStatus;
+use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::uapi::Uid;
 use crate::kernel::{config, scheduler, task};
 

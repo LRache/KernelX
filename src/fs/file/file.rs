@@ -6,6 +6,7 @@ use crate::fs::inode::release_bsd_flock;
 use crate::fs::vfs::Dentry;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SleepLock;
@@ -72,6 +73,10 @@ impl RandomAccessFile {
 
     pub fn ftruncate(&self, new_size: u64) -> SysResult<()> {
         self.inode.truncate(new_size)
+    }
+
+    pub fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        self.inode.ioctl(request, arg, addrspace)
     }
 
     /// Return the dirent and the old file pos.
@@ -183,6 +188,10 @@ impl FileOps for RandomAccessFile {
 
     fn flags(&self) -> FileFlags {
         self.flags
+    }
+
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        RandomAccessFile::ioctl(self, request, arg, addrspace)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {

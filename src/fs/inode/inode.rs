@@ -5,6 +5,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::SpinLock;
@@ -240,6 +241,10 @@ pub trait InodeOps: DowncastSync {
 
     fn sync(&self) -> SysResult<()> {
         Ok(())
+    }
+
+    fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
+        Err(Errno::ENOSYS)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
