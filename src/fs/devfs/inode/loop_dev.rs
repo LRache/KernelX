@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
 use num_enum::TryFromPrimitive;
 
+use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::{InodeLockState, InodeOps, Mode};
-use crate::fs::Dentry;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::current;
