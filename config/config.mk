@@ -21,6 +21,12 @@ INITCWD ?= /
 CROSS_COMPILE ?= $(CONFIG_CROSS_COMPILE)
 CROSS_COMPILE ?= riscv64-unknown-elf-
 
+# Rust target triple, chosen per architecture via Kconfig.
+RUST_TARGET ?= $(CONFIG_RUST_TARGET)
+ifeq ($(RUST_TARGET),)
+RUST_TARGET := riscv64gc-unknown-none-elf
+endif
+
 SYSROOT ?= $(CONFIG_SYSROOT)
 
 # Log level control: trace, debug, info, warn, none
@@ -44,6 +50,7 @@ KERNEL_CONFIG = \
 	ARCH=$(ARCH) \
 	ARCH_BITS=$(ARCH_BITS) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
+	RUST_TARGET=$(RUST_TARGET) \
 	KERNELX_RELEASE=$(KERNELX_RELEASE) \
 	CONFIG_LOG_LEVEL=$(LOG_LEVEL) \
 	CONFIG_LOG_SYSCALL=$(CONFIG_LOG_SYSCALL) \
