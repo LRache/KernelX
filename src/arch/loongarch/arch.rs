@@ -1,22 +1,28 @@
-//! LoongArch64 `ArchTrait` — Phase 2.5 cut.
+//! LoongArch64 `ArchTrait` — Phase 4 cut.
 //!
-//! What's real:
-//!   - per-CPU data pointer stashed in `$r21` (the kernel-reserved GPR)
-//!   - DMW1 / DMW0 address translation (pure bit twiddling, no page table)
-//!   - kernel console registration via `driver::chosen::kconsole`
-//!   - frame pointer / kernel stack top (for backtrace + overflow checks)
-//!   - is_kernel_addr (carry-over from Phase 1)
+//! What's real now on top of Phase 3:
+//!   - trap entry installed in EENTRY; kerneltrap_handler dispatches timer
+//!     and panics readably on any other exception
+//!   - stable-timer programmed for 10 ms ticks via TCFG
+//!   - interrupt enable/disable/wait via CRMD.IE / `idle 0`
+//!   - kernel_switch goes to the asm in clib/.../switch.S
 //!
-//! Everything else still `unimplemented!()`s. Ordering mirrors `src/arch/riscv/arch.rs`.
+//! Still `unimplemented!()`: everything touching the user side
+//! (get_user_pc / return_to_user / enable_device_interrupt / irq-specific
+//! enable). Those are Phase 5/6.
 
 use core::time::Duration;
 
 use crate::arch::arch::{Arch, ArchTrait};
 use crate::driver::chosen;
 use crate::kernel::mm::MapPerm;
+use crate::klib::initcell::InitedCell;
 
 use super::boot::EARLY_UART;
 use super::context::KernelContext;
+use super::csr;
+use super::task;
+use super::trap;
 
 /// DMW1 base. Set in `clib/src/arch/loongarch/entry/entry.S`. Keeps
 /// VA = PA | DMW1_MASK for every kernel byte we ever touch.
@@ -24,14 +30,26 @@ const DMW1_MASK: usize = 0x9000_0000_0000_0000;
 /// Low 48 bits — PALEN=48 on la464, any kaddr ANDed with this becomes PA.
 const PA_MASK: usize = (1 << 48) - 1;
 
+/// Stable-counter frequency, cached at `Arch::init` so `get_time_us` doesn't
+/// hit CPUCFG on every call. 100 MHz on QEMU virt la464.
+static STABLE_COUNTER_FREQ_HZ: InitedCell<u64> = InitedCell::uninit();
+
 impl ArchTrait for Arch {
     fn init() {
         // Kernel console first, so anything that follows (including a panic)
         // can actually talk to the outside world.
         chosen::kconsole::register(&EARLY_UART);
-        // Phase 4 will set EENTRY / TLBRENTRY, init the timer, etc. For now
-        // we leave them zero — any exception at this stage means a real bug
-        // and we'd rather triple-fault than mask it.
+
+        // Trap entry: install EENTRY + set VS=0 (single-entry, Ecode-dispatched).
+        trap::install_trap_entry();
+
+        // Cache the stable-counter frequency for get_time_us. Must be done
+        // before any code path calls uptime() / timer::now().
+        STABLE_COUNTER_FREQ_HZ.init(csr::stable_counter_freq());
+
+        // We're ready to take interrupts as soon as CRMD.IE gets flipped by
+        // the scheduler loop. No interrupt lines are enabled yet; Phase 4's
+        // enable_timer_interrupt fires first (from main() after this init).
     }
 
     fn setup_all_cores(_current_core: usize) {
@@ -57,8 +75,8 @@ impl ArchTrait for Arch {
 
     /* ----- Context Switching ----- */
 
-    fn kernel_switch(_from: *mut KernelContext, _to: *mut KernelContext) {
-        unimplemented!("loongarch: Arch::kernel_switch (Phase 4/5)");
+    fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext) {
+        task::kernel_switch(from, to);
     }
 
     fn get_user_pc() -> usize {
@@ -72,28 +90,32 @@ impl ArchTrait for Arch {
     /* ----- Interrupts (CRMD.IE / ECFG.LIE) ----- */
 
     fn wait_for_interrupt() {
-        // Real impl: `idle 0`
-        unimplemented!("loongarch: Arch::wait_for_interrupt (Phase 4)");
+        unsafe { core::arch::asm!("idle 0", options(nostack, preserves_flags)) };
     }
 
     fn enable_interrupt() {
-        unimplemented!("loongarch: Arch::enable_interrupt (Phase 4)");
+        csr::xchg::<{ csr::num::CRMD }>(csr::crmd::IE, csr::crmd::IE);
     }
 
     fn disable_interrupt() {
-        unimplemented!("loongarch: Arch::disable_interrupt (Phase 4)");
+        csr::xchg::<{ csr::num::CRMD }>(0, csr::crmd::IE);
     }
 
     fn enable_timer_interrupt() {
-        unimplemented!("loongarch: Arch::enable_timer_interrupt (Phase 4)");
+        // ECFG.LIE bit 11 — "timer interrupt line enabled at the core".
+        let bit = 1usize << csr::ecfg::LINE_TIMER;
+        csr::xchg::<{ csr::num::ECFG }>(bit, bit);
     }
 
     fn enable_device_interrupt(_hartid: usize) {
-        unimplemented!("loongarch: Arch::enable_device_interrupt (Phase 4/6)");
+        // Phase 6 will route PCH-PIC / HWI0..7 and flip the right ECFG bit.
+        // Phase 4 doesn't subscribe to any device line, so this is deliberately
+        // a no-op (the RISC-V side does SBI+PLIC here; LoongArch doesn't have
+        // a matching "enable seie" concept — it's per-line).
     }
 
     fn enable_device_interrupt_irq(_irq: u32) {
-        unimplemented!("loongarch: Arch::enable_device_interrupt_irq (Phase 4/6)");
+        unimplemented!("loongarch: Arch::enable_device_interrupt_irq (Phase 6)");
     }
 
     #[inline(always)]
@@ -150,13 +172,23 @@ impl ArchTrait for Arch {
     }
 
     fn get_time_us() -> u64 {
-        // Phase 4: `rdtime.d rd, rj` + CPUCFG-reported timer frequency
-        unimplemented!("loongarch: Arch::get_time_us (Phase 4)");
+        // rdtime.d gives us raw counter ticks. Convert with the cached freq.
+        // Integer math order matters: multiply by 1_000_000 first so small
+        // intervals don't round to zero. The counter is 64-bit — we have
+        // ~5800 years of headroom before overflow at 100 MHz, so the
+        // multiply is safe.
+        csr::rdtime() * 1_000_000 / *STABLE_COUNTER_FREQ_HZ
     }
 
-    fn set_next_time_event_us(_interval: u64) {
-        // Phase 4: write TCFG with {InitVal<<2 | Periodic | Enable}
-        unimplemented!("loongarch: Arch::set_next_time_event_us (Phase 4)");
+    fn set_next_time_event_us(interval: u64) {
+        // Convert microseconds → counter ticks. The scheduler passes 10_000
+        // (= 10 ms); at 100 MHz that's 1_000_000 ticks, well clear of the
+        // 2-bit shift in TCFG.
+        let ticks = (interval * *STABLE_COUNTER_FREQ_HZ) / 1_000_000;
+        let tcfg = (ticks as usize) << csr::tcfg::INITVAL_SHIFT
+            | csr::tcfg::PERIODIC
+            | csr::tcfg::EN;
+        csr::write::<{ csr::num::TCFG }>(tcfg);
     }
 
     fn scan_device() {
