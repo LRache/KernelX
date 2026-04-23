@@ -4,7 +4,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::fs::file::FileFlags;
 use crate::fs::{Dentry, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
@@ -70,7 +70,7 @@ pub trait FileOps: DowncastSync {
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>>;
     fn get_dentry(&self) -> Option<&Arc<Dentry>>;
 
-    fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
+    fn wait_event(&self, _waker: usize, _event: FileEvent) -> SysResult<Option<FileEvent>> {
         Ok(None)
     }
     fn wait_event_cancel(&self) {}

@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use bitflags::bitflags;
 use core::convert::TryInto;
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
@@ -9,7 +10,7 @@ use num_enum::TryFromPrimitive;
 use crate::arch;
 use crate::fs::file::FileOps;
 use crate::kernel::errno::Errno;
-use crate::kernel::event::{Event, FileEvent, PollEventSet, timer};
+use crate::kernel::event::{Event, FileEvent, timer};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet, signum};
 use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::SysResult;
@@ -53,20 +54,14 @@ fn set_select_fd_by_event(
     writefds: &mut Option<FdSet>,
     exceptfds: &mut Option<FdSet>,
 ) {
-    match event {
-        FileEvent::ReadReady => {
-            readfds.as_mut().map(|set| set.set(fd));
-        }
-        FileEvent::WriteReady => {
-            writefds.as_mut().map(|set| set.set(fd));
-        }
-        FileEvent::Priority => {
-            exceptfds.as_mut().map(|set| set.set(fd));
-        }
-        FileEvent::HangUp => {
-            readfds.as_mut().map(|set| set.set(fd));
-            writefds.as_mut().map(|set| set.set(fd));
-        }
+    if event.intersects(FileEvent::READ_READY | FileEvent::HANG_UP) {
+        readfds.as_mut().map(|set| set.set(fd));
+    }
+    if event.intersects(FileEvent::WRITE_READY | FileEvent::HANG_UP) {
+        writefds.as_mut().map(|set| set.set(fd));
+    }
+    if event.contains(FileEvent::PRIORITY) {
+        exceptfds.as_mut().map(|set| set.set(fd));
     }
 }
 
@@ -88,6 +83,12 @@ fn write_back_fdsets(
         except_ptr.write(*t)?;
     }
     Ok(())
+}
+
+fn has_pending_unmasked_signal() -> bool {
+    let tcb = current::tcb();
+    tcb.recive_pending_signal_from_parent();
+    tcb.state().lock().pending_signal.is_some()
 }
 
 fn select(
@@ -115,15 +116,15 @@ fn select(
             continue;
         }
 
-        let mut wait_set = PollEventSet::empty();
+        let mut wait_set = FileEvent::empty();
         if want_read {
-            wait_set |= PollEventSet::POLLIN;
+            wait_set |= FileEvent::READ_READY;
         }
         if want_write {
-            wait_set |= PollEventSet::POLLOUT;
+            wait_set |= FileEvent::WRITE_READY;
         }
         if want_except {
-            wait_set |= PollEventSet::POLLPRI;
+            wait_set |= FileEvent::PRIORITY;
         }
 
         let file = fdtable.get(i).map_err(|_| Errno::EBADF)?;
@@ -201,6 +202,25 @@ fn select(
     };
 
     let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+
+    if has_pending_unmasked_signal() {
+        old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+        waiting_files.iter().for_each(|file| {
+            file.wait_event_cancel();
+        });
+        timer_id.map(|id| timer::remove_timer(id));
+
+        write_back_fdsets(
+            &uptr_readfds,
+            &uptr_writefds,
+            &uptr_exceptfds,
+            &readfds,
+            &writefds,
+            &exceptfds,
+        )?;
+
+        return Err(Errno::EINTR);
+    }
 
     defer::cancel(defer);
     current::schedule();
@@ -298,12 +318,36 @@ pub fn pselect6_time32(
     select(nfds, uptr_readfds, uptr_writefds, uptr_exceptfds, timeout, uptr_sigmask)
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct PollEventSet: i16 {
+        const POLLIN   = FileEvent::READ_READY.bits();  // There is data to read.
+        const POLLPRI  = FileEvent::PRIORITY.bits();    // There is urgent data to read.
+        const POLLOUT  = FileEvent::WRITE_READY.bits(); // Writing now will not block.
+        const POLLERR  = FileEvent::ERROR.bits();       // Error condition.
+        const POLLHUP  = FileEvent::HANG_UP.bits();     // Hung up.
+        const POLLNVAL = FileEvent::INVALID.bits();     // Invalid request: fd not open.
+    }
+}
+
+impl Into<FileEvent> for PollEventSet {
+    fn into(self) -> FileEvent {
+        FileEvent::from_bits_truncate(self.bits())
+    }
+}
+
+impl From<FileEvent> for PollEventSet {
+    fn from(event: FileEvent) -> Self {
+        PollEventSet::from_bits_truncate(event.bits())
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Pollfd {
-    pub fd: i32,
-    pub events: i16,
-    pub revents: i16,
+    fd: i32,
+    events: PollEventSet,
+    revents: PollEventSet,
 }
 impl UserStruct for Pollfd {}
 
@@ -311,14 +355,18 @@ impl Pollfd {
     pub fn default() -> Self {
         Self {
             fd: -1,
-            events: -1,
-            revents: -1,
+            events: PollEventSet::empty(),
+            revents: PollEventSet::empty(),
         }
     }
 }
 
-fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
+fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<SignalSet>) -> SysResult<usize> {
     let mut fdtable = current::fdtable().lock();
+
+    pollfds.iter_mut().for_each(|pfd| {
+        pfd.revents = PollEventSet::empty();
+    });
 
     let mut count = 0u32;
     let mut i = 0;
@@ -340,19 +388,15 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize
             let file = match fdtable.get(pfd.fd as usize) {
                 Ok(f) => f,
                 Err(_) => {
+                    pfd.revents = PollEventSet::POLLNVAL;
                     count += 1;
                     return None;
                 }
             };
 
-            let poll_set = PollEventSet::from_bits_truncate(pfd.events);
-            if let Some(event) = file.wait_event(i, poll_set).unwrap() {
-                pfd.revents = match event {
-                    FileEvent::ReadReady => PollEventSet::POLLIN.bits(),
-                    FileEvent::WriteReady => PollEventSet::POLLOUT.bits(),
-                    FileEvent::Priority => PollEventSet::POLLPRI.bits(),
-                    FileEvent::HangUp => PollEventSet::POLLHUP.bits(),
-                };
+            let wait_set = pfd.events.into();
+            if let Some(event) = file.wait_event(i, wait_set).unwrap() {
+                pfd.revents = event.into();
                 count += 1;
             }
 
@@ -381,8 +425,22 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize
         None => None,
     };
 
+    let tcb = current::tcb();
+    let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+
+    if has_pending_unmasked_signal() {
+        old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+        timer_id.map(|id| timer::remove_timer(id));
+        poll_files.iter_mut().for_each(|(file, _)| {
+            file.wait_event_cancel();
+        });
+        return Err(Errno::EINTR);
+    }
+
     defer::cancel(defer);
     current::schedule();
+
+    old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
 
     // start polling
     let event = current::task().take_wakeup_event().unwrap();
@@ -413,16 +471,11 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize
     poll_files.iter_mut().enumerate().for_each(|(i, (file, pfd))| {
         if i != waker {
             file.wait_event_cancel();
-            pfd.revents = 0;
+            pfd.revents = PollEventSet::empty();
         }
     });
 
-    poll_files[waker].1.revents = match poll_event {
-        FileEvent::ReadReady => PollEventSet::POLLIN.bits(),
-        FileEvent::WriteReady => PollEventSet::POLLOUT.bits(),
-        FileEvent::Priority => PollEventSet::POLLPRI.bits(),
-        FileEvent::HangUp => PollEventSet::POLLHUP.bits(),
-    };
+    poll_files[waker].1.revents = poll_event.into();
 
     timer_id.map(|id| timer::remove_timer(id));
 
@@ -433,13 +486,14 @@ pub fn ppoll_time32(
     uptr_ufds: UArray<Pollfd>,
     nfds: usize,
     uptr_timeout: UPtr<uapi::Timespec32>,
-    _uptr_sigmask: usize,
-    _sigmask_size: usize,
+    uptr_sigmask: UPtr<SignalSet>,
+    sigmask_size: usize,
 ) -> SysResult<usize> {
     if nfds > 0 {
         uptr_ufds.should_not_null()?;
     }
-    if (nfds as isize) < 0 {
+
+    if nfds > current::fdtable().lock().get_max_fd() {
         return Err(Errno::EINVAL);
     }
 
@@ -454,7 +508,13 @@ pub fn ppoll_time32(
         None
     };
 
-    let r = do_poll(&mut pollfds, timeout)?;
+    if !uptr_sigmask.is_null() && sigmask_size != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
+
+    let sigmask = uptr_sigmask.read_optional()?;
+
+    let r = do_poll(&mut pollfds, timeout, sigmask)?;
 
     if nfds > 0 {
         uptr_ufds.write(0, &pollfds)?;

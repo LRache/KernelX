@@ -90,7 +90,9 @@ impl VirtualFileSystem {
         .get_mount_to()
         .walk_link_with_perm(&mut symlink_depth, perm)?;
 
-        if let Some((parent, name)) = self.lookup_parent_dentry_with_depth_and_perm(dir, path, &mut symlink_depth, perm)? {
+        if let Some((parent, name)) =
+            self.lookup_parent_dentry_with_depth_and_perm(dir, path, &mut symlink_depth, perm)?
+        {
             let dentry = parent.lookup_nocached_with_perm(name.as_ref(), perm)?;
             Ok(dentry.get_mount_to())
         } else {

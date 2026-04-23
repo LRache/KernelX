@@ -9,9 +9,7 @@ use crate::arch;
 use crate::kernel::errno::Errno;
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
-use crate::kernel::ipc::{
-    KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SignalStackFlags, SocketType, UnixSocket, shm, signum,
-};
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SignalStackFlags, shm, signum};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
@@ -19,7 +17,6 @@ use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::{PCB, manager};
 use crate::kernel::uapi::OpenFlags;
 use crate::kernel::{config, uapi};
-use crate::net::socket::{AddressFamily, SOCK_CLOEXEC, SOCK_NONBLOCK, SocketKind};
 
 use super::SyscallRet;
 
@@ -29,9 +26,6 @@ bitflags! {
         const O_CLOEXEC = OpenFlags::O_CLOEXEC.bits();
     }
 }
-
-const IPPROTO_TCP: usize = 6;
-const IPPROTO_UDP: usize = 17;
 
 pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     let flags = PipeFlags::from_bits_truncate(flags);
@@ -52,77 +46,6 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
     }
 
     uptr_pipefd.write(0, &[read_fd as i32, write_fd as i32])?;
-
-    Ok(0)
-}
-
-fn unix_socketpair_type(sock_kind: SocketKind, protocol: usize) -> Result<SocketType, Errno> {
-    if protocol != 0 {
-        return Err(Errno::EPROTONOSUPPORT);
-    }
-
-    match sock_kind {
-        SocketKind::Stream => Ok(SocketType::Stream),
-        SocketKind::Dgram => Ok(SocketType::Dgram),
-        SocketKind::SeqPacket => Ok(SocketType::SeqPacket),
-        SocketKind::Raw => Err(Errno::EPROTONOSUPPORT),
-    }
-}
-
-fn inet_socketpair_error(sock_kind: SocketKind, protocol: usize) -> Errno {
-    match sock_kind {
-        SocketKind::Dgram => match protocol {
-            0 | IPPROTO_UDP => Errno::EOPNOTSUPP,
-            _ => Errno::EPROTONOSUPPORT,
-        },
-        SocketKind::Stream => match protocol {
-            0 | IPPROTO_TCP => Errno::EOPNOTSUPP,
-            _ => Errno::EPROTONOSUPPORT,
-        },
-        SocketKind::Raw => Errno::EPROTONOSUPPORT,
-        SocketKind::SeqPacket => Errno::EINVAL,
-    }
-}
-
-pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UArray<i32>) -> SyscallRet {
-    let flags = sock_type & (SOCK_NONBLOCK | SOCK_CLOEXEC);
-    let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
-    let domain = AddressFamily::try_from(domain).map_err(|_| Errno::EAFNOSUPPORT)?;
-    let sock_kind = SocketKind::try_from(base_type).map_err(|_| Errno::EINVAL)?;
-
-    let socket_type = match domain {
-        AddressFamily::Unix => unix_socketpair_type(sock_kind, protocol)?,
-        AddressFamily::Inet => return Err(inet_socketpair_error(sock_kind, protocol)),
-        _ => return Err(Errno::EAFNOSUPPORT),
-    };
-
-    let blocked = flags & SOCK_NONBLOCK == 0;
-    let cloexec = flags & SOCK_CLOEXEC != 0;
-    let fd_flags = FDFlags { cloexec };
-
-    let (sock_a, sock_b) = UnixSocket::create_pair(socket_type, blocked);
-    let sock_a = Arc::new(sock_a);
-    let sock_b = Arc::new(sock_b);
-
-    let (fd_a, fd_b);
-    {
-        let mut fdtable = current::fdtable().lock();
-        fd_a = fdtable.push(sock_a, fd_flags)?;
-        fd_b = match fdtable.push(sock_b, fd_flags) {
-            Ok(fd) => fd,
-            Err(err) => {
-                let _ = fdtable.take(fd_a);
-                return Err(err);
-            }
-        };
-    }
-
-    if let Err(err) = uptr_sv.write(0, &[fd_a as i32, fd_b as i32]) {
-        let mut fdtable = current::fdtable().lock();
-        let _ = fdtable.take(fd_a);
-        let _ = fdtable.take(fd_b);
-        return Err(err);
-    }
 
     Ok(0)
 }

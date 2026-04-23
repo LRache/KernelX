@@ -6,6 +6,7 @@ use crate::fs::inode::release_bsd_flock;
 use crate::fs::vfs::Dentry;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
@@ -208,6 +209,19 @@ impl FileOps for RandomAccessFile {
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {
         Some(&self.dentry)
+    }
+
+    fn wait_event(&self, _waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let mut ready = FileEvent::empty();
+
+        if event.contains(FileEvent::READ_READY) && self.flags.readable {
+            ready |= FileEvent::READ_READY;
+        }
+        if event.contains(FileEvent::WRITE_READY) && self.flags.writable {
+            ready |= FileEvent::WRITE_READY;
+        }
+
+        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
     fn on_fd_install(&self) -> SysResult<()> {

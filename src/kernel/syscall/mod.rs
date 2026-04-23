@@ -5,7 +5,7 @@ mod futex;
 mod ipc;
 mod misc;
 mod mm;
-mod net;
+mod socket;
 mod task;
 mod time;
 mod uid;

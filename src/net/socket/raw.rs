@@ -61,9 +61,14 @@ impl SocketInner for RawInner {
             return Err(Errno::EINVAL);
         }
 
-        let iface = self.resolve_iface(addr.ip)?;
+        let iface = if addr.ip.is_unspecified() {
+            manager::default_interface().ok_or(Errno::EADDRNOTAVAIL)?
+        } else {
+            manager::find_interface_for(addr.ip).ok_or(Errno::EADDRNOTAVAIL)?
+        };
         iface.bind_raw(self.protocol);
         self.local = Some(SocketAddr::new(addr.ip, 0));
+        self.iface = Some(iface);
         Ok(())
     }
 

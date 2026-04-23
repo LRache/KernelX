@@ -6,7 +6,7 @@ use core::usize;
 use crate::driver::char::serial::SerialOps;
 use crate::driver::{CharDriverOps, DeviceType, DriverOps};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
+use crate::kernel::event::{Event, FileEvent, WaitQueue};
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::current;
@@ -325,24 +325,28 @@ impl CharDriverOps for Stty {
         }
     }
 
-    fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
-        if event.contains(PollEventSet::POLLOUT) {
-            return Ok(Some(FileEvent::WriteReady));
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let mut ready = FileEvent::empty();
+
+        if event.contains(FileEvent::WRITE_READY) {
+            ready |= FileEvent::WRITE_READY;
         }
 
-        if event.contains(PollEventSet::POLLIN) {
+        if event.contains(FileEvent::READ_READY) {
             if self.recv_buffer.lock().empty() {
-                self.waiters.lock().wait_current(Event::Poll {
-                    event: FileEvent::ReadReady,
-                    waker,
-                });
-                return Ok(None);
+                if ready.is_empty() {
+                    self.waiters.lock().wait_current(Event::Poll {
+                        event: FileEvent::READ_READY,
+                        waker,
+                    });
+                    return Ok(None);
+                }
             } else {
-                return Ok(Some(FileEvent::ReadReady));
+                ready |= FileEvent::READ_READY;
             }
         }
 
-        Ok(None)
+        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
     fn wait_event_cancel(&self) {

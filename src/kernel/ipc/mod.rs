@@ -5,4 +5,3 @@ pub mod unixsocket;
 
 pub use pipe::Pipe;
 pub use signal::*;
-pub use unixsocket::{SocketType, UnixSocket};

@@ -35,7 +35,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
     let to_sleep = Duration::try_from(req)?;
 
     let start_sleep = kclock::now()?;
-    timer::add_timer(current::task().clone(), to_sleep);
+    let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
     match event {
@@ -46,6 +46,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
+            timer::remove_timer(timer_id);
             Err(Errno::EINTR)
         }
         _ => unreachable!("event={:?}", event),
@@ -99,7 +100,7 @@ pub fn clock_nanosleep(
     };
 
     let start_sleep = kclock::now()?;
-    timer::add_timer(current::task().clone(), to_sleep);
+    let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
     match event {
@@ -110,6 +111,7 @@ pub fn clock_nanosleep(
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
+            timer::remove_timer(timer_id);
             Err(Errno::EINTR)
         }
         _ => unreachable!(),

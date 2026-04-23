@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::SysResult;
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
@@ -136,7 +136,7 @@ impl FileOps for InetSocket {
         None
     }
 
-    fn wait_event(&self, _waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
+    fn wait_event(&self, _waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
         Ok(self.inner.lock().wait_event(event))
     }
 

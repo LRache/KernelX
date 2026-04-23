@@ -13,6 +13,14 @@ fn new_file(dentry: Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Arc
     let inode = dentry.get_inode();
     let mode = inode.mode()?;
 
+    if flags.writable && mode.contains(Mode::S_IFDIR) {
+        return Err(Errno::EISDIR);
+    }
+
+    if flags.writable && dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
     let (uid, gid) = inode.owner()?;
     if !mode.check_perm(perm, uid, gid) {
         return Err(Errno::EACCES);
