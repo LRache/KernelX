@@ -37,17 +37,12 @@ pub fn default_interface() -> Option<Arc<Interface>> {
         .cloned()
 }
 
-/// Find an interface whose IPv4 address matches, or fall back to default.
+/// Find the interface bound to a specific local IPv4 address.
+/// `0.0.0.0` still resolves to the default interface.
 pub fn find_interface_for(ip: Ipv4Addr) -> Option<Arc<Interface>> {
     if ip.is_unspecified() {
         return default_interface();
     }
     let ifaces = INTERFACES.read();
-    ifaces.values().find(|i| i.ipv4() == Some(ip)).cloned().or_else(|| {
-        ifaces
-            .values()
-            .find(|i| !i.is_loopback())
-            .or_else(|| ifaces.values().next())
-            .cloned()
-    })
+    ifaces.values().find(|i| i.ipv4() == Some(ip)).cloned()
 }
