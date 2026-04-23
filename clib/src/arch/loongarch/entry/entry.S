@@ -76,9 +76,24 @@ _entry:
      */
     move    $a0, $s0
     la.pcrel $a1, __kernel_end
-    /* memory_top = 0x9000_0000_0000_0000 | 0x1000_0000  (256 MiB) */
-    lu12i.w $a2, 0x10000              /* 0x10000000 */
-    lu52i.d $a2, $a2, -1792           /* |= 0x9000 << 48 */
+    /*
+     * memory_top = 0x9000_0000_0000_0000 | 0x0FF0_0000  (~255 MiB)
+     *
+     * QEMU `-M virt` gives us 256 MiB at PA [0, 0x1000_0000). Everything
+     * past that PA is MMIO (RTC at 0x100d_0100, PIC at 0x100e_001c, UART
+     * at 0x1fe0_01e0, ...). Going through DMW1 (cached, MAT=CC) those
+     * addresses don't just silently fail — the CPU raises ADE, because
+     * cached loads against device memory are not allowed.
+     *
+     * That lands on us any time the page allocator hands out a frame near
+     * the top of RAM and then memcpy / compiler-builtin prefetches one
+     * double-word past the end. Trimming a full MiB off the top buys us a
+     * guard region that outsizes any plausible unrolled-loop look-ahead.
+     * Phase 6's FDT parse will replace this hard-coded value with the real
+     * RAM range, making the margin unnecessary.
+     */
+    lu12i.w $a2, 0x0FF00                /* 0x0FF0_0000 */
+    lu52i.d $a2, $a2, -1792             /* |= 0x9000 << 48 */
 
     /* Hand off to Rust. `main` is declared `extern "C" fn main(...)` in
      * src/kernel/main.rs. pcaddu18i + jirl reaches anywhere within +-128 MiB

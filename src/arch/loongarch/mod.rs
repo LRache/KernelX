@@ -10,8 +10,10 @@
 mod arch;
 mod boot;
 mod context;
+mod csr;
 mod pagetable;
 mod task;
+mod trap;
 
 pub use context::{KernelContext, SigContext, UserContext};
 pub use pagetable::PageTable;
