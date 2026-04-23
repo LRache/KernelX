@@ -35,8 +35,10 @@ impl ArchTrait for Arch {
     }
 
     fn setup_all_cores(_current_core: usize) {
-        // SMP boot on LoongArch uses IPI CSRs (not SBI). Implemented in Phase 8.
-        unimplemented!("loongarch: Arch::setup_all_cores (Phase 8)");
+        // LoongArch SMP bring-up uses IPI CSRs (not SBI) and lives in Phase 8.
+        // On NO_SMP builds there's nothing to do; mirror the RISC-V convention
+        // of a loop whose body is empty at core_count() == 1 rather than
+        // guarding with cfg, so the shape stays consistent across arches.
     }
 
     /* ----- Per-CPU Data (stashed in $r21, the kernel-reserved reg) ----- */
@@ -119,14 +121,26 @@ impl ArchTrait for Arch {
     }
 
     fn map_kernel_addr(_kstart: usize, _pstart: usize, _size: usize, _perm: MapPerm) {
-        // Phase 3: edit the kernel page table. For now DMW1 covers every PA
-        // the kernel image and heap will ever touch, so callers that only
-        // need an identity-like kernel mapping already have one.
-        unimplemented!("loongarch: Arch::map_kernel_addr (Phase 3)");
+        // DMW0 (VSEG 0x8, MAT=SUC) covers MMIO and DMW1 (VSEG 0x9, MAT=CC)
+        // covers RAM — both are programmed in clib/.../entry.S and have
+        // priority over the TLB. Any kernel VA of ours (`paddr | 0x9000_...`)
+        // resolves directly via DMW; there is no kernel page table to edit,
+        // which is why the RISC-V kernelpagetable machinery has no LA analog.
+        //
+        // Consequences:
+        //   - `KernelStack::new` on LA silently loses its hardware guard page.
+        //     The software overflow check in `KernelStack::check_stack_overflow`
+        //     is our only protection.
+        //   - Driver MMIO callers compute `kbase = paddr_to_kaddr(pa)` which
+        //     lands in the DMW1 cached window. That's semantically wrong for
+        //     uncached MMIO, but we don't trip it in Phase 3 (scan_device is
+        //     a no-op). Phase 6 will have to route MMIO through DMW0 — see
+        //     `paddr_to_kaddr` in this file for the fix site.
     }
 
     unsafe fn unmap_kernel_addr(_kstart: usize, _size: usize) {
-        unimplemented!("loongarch: Arch::unmap_kernel_addr (Phase 3)");
+        // See `map_kernel_addr` above. This is intentionally a no-op on
+        // LoongArch; there is no kernel page table to edit.
     }
 
     /* ----- Time ----- */
