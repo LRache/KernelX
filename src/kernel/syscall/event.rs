@@ -10,16 +10,42 @@ use num_enum::TryFromPrimitive;
 use crate::arch;
 use crate::fs::file::FileOps;
 use crate::kernel::errno::Errno;
-use crate::kernel::event::{Event, FileEvent, timer};
+use crate::kernel::event::{Event, EventFd, FileEvent, timer};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet, signum};
 use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
 use crate::kernel::task::PCB;
+use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::uapi;
+use crate::kernel::uapi::OpenFlags;
 use crate::klib::defer;
 
 const FD_SET_SIZE: usize = 1024;
+
+bitflags! {
+    struct EventFdFlags: usize {
+        const EFD_SEMAPHORE = 1;
+        const EFD_NONBLOCK = OpenFlags::O_NONBLOCK.bits();
+        const EFD_CLOEXEC = OpenFlags::O_CLOEXEC.bits();
+    }
+}
+
+pub fn eventfd2(initval: usize, flags: usize) -> SysResult<usize> {
+    let flags = EventFdFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let eventfd = Arc::new(EventFd::new(
+        initval as u32 as u64,
+        !flags.contains(EventFdFlags::EFD_NONBLOCK),
+        flags.contains(EventFdFlags::EFD_SEMAPHORE),
+    ));
+    let fd = current::fdtable().lock().push(
+        eventfd,
+        FDFlags {
+            cloexec: flags.contains(EventFdFlags::EFD_CLOEXEC),
+        },
+    )?;
+    Ok(fd)
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

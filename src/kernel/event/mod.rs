@@ -1,8 +1,10 @@
 mod event;
+mod eventfd;
 mod poll;
 pub mod timer;
 mod waitqueue;
 
 pub use event::*;
+pub use eventfd::*;
 pub use poll::*;
 pub use waitqueue::WaitQueue;

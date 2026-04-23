@@ -175,6 +175,7 @@ macro_rules! syscall_entries {
             169 => time::gettimeofday(2),
 
             // Event
+            19  => event::eventfd2(2),
             72  => event::pselect6_time32(6) [no_restart],
             73  => event::ppoll_time32(5) [no_restart],
             103 => event::setitimer(3),

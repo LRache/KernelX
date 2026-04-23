@@ -386,6 +386,10 @@ impl PCB {
         }
     }
 
+    pub fn leader(&self) -> Arc<TCB> {
+        self.tasks.lock()[0].clone()
+    }
+
     fn recycle(&self) -> Option<ExitStatus> {
         let mut state = self.state.lock();
         let status = match *state {

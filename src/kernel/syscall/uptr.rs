@@ -161,7 +161,6 @@ impl UString {
     }
 
     pub fn read_fixed(&self) -> SysResult<String> {
-        debug_assert!(!self.is_null());
         copy_from_user::string_fixed(self.uaddr)
     }
 

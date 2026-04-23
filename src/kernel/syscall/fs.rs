@@ -1507,14 +1507,11 @@ bitflags! {
 }
 
 pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flags: usize) -> SyscallRet {
-    uptr_stat.should_not_null()?;
-
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
         String::new()
     } else {
-        uptr_path.should_not_null()?;
         uptr_path.read_fixed()?
     };
 

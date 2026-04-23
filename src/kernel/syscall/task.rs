@@ -16,7 +16,7 @@ use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::pidfd::PidFile;
-use crate::kernel::task::{ExitStatus, PCB};
+use crate::kernel::task::{ExitStatus, PCB, manager};
 use crate::kernel::uapi::{OpenFlags, Uid};
 use crate::kernel::{config, scheduler, task};
 
@@ -126,14 +126,8 @@ bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-#[repr(usize)]
-enum KcmpType {
-    File = 0,
-}
-
 fn find_process(pid: Tid) -> Option<Arc<task::PCB>> {
-    task::with_initpcb(|init_pcb| init_pcb.find_process(pid))
+    manager::get(pid).map(|tcb| tcb.parent().clone())
 }
 
 fn can_access_pidfd_target(target: &task::PCB) -> bool {
@@ -151,30 +145,6 @@ fn can_access_pidfd_target(target: &task::PCB) -> bool {
     let caller_gids = [caller.gid(), caller.egid(), caller.sgid()];
     let target_gids = [target.gid(), target.egid(), target.sgid()];
     caller_gids.iter().all(|gid| target_gids.contains(gid))
-}
-
-fn task_for_fdtable(target: &Arc<task::PCB>) -> Option<Arc<task::TCB>> {
-    let tasks = target.tasks.lock();
-    tasks
-        .iter()
-        .find(|task| task.tid() == target.pid())
-        .or_else(|| tasks.first())
-        .cloned()
-}
-
-fn process_fd_file(target: &Arc<task::PCB>, fd: usize) -> SysResult<Arc<dyn FileOps>> {
-    let task = task_for_fdtable(target).ok_or(Errno::ESRCH)?;
-    task.fdtable().lock().get(fd)
-}
-
-fn kcmp_file_result(file1: &Arc<dyn FileOps>, file2: &Arc<dyn FileOps>) -> usize {
-    if Arc::ptr_eq(file1, file2) {
-        return 0;
-    }
-
-    let ptr1 = Arc::as_ptr(file1) as *const () as usize;
-    let ptr2 = Arc::as_ptr(file2) as *const () as usize;
-    if ptr1 < ptr2 { 1 } else { 2 }
 }
 
 pub fn pidfd_open(pid: usize, flags: usize) -> SyscallRet {
@@ -218,29 +188,46 @@ pub fn pidfd_getfd(pidfd: usize, targetfd: usize, flags: usize) -> SyscallRet {
         return Err(Errno::EPERM);
     }
 
-    let file = process_fd_file(&target, targetfd)?;
+    let file = target.leader().fdtable().lock().get(targetfd)?;
     let new_fd = current::fdtable().lock().push(file, FDFlags { cloexec: true })?;
     Ok(new_fd)
 }
 
+fn kcmp_object<T: ?Sized>(obj1: &Arc<T>, obj2: &Arc<T>) -> usize {
+    match Arc::as_ptr(obj1).addr().cmp(&Arc::as_ptr(obj2).addr()) {
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Less => 1,
+        core::cmp::Ordering::Greater => 2,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[repr(usize)]
+enum KcmpType {
+    File = 0,
+    VM = 1,
+}
+
 pub fn kcmp(pid1: usize, pid2: usize, compare_type: usize, idx1: usize, idx2: usize) -> SyscallRet {
-    let _compare_type = KcmpType::try_from(compare_type).map_err(|_| Errno::EINVAL)?;
+    let compare_type = KcmpType::try_from(compare_type).map_err(|_| Errno::EINVAL)?;
     let pid1 = Tid::try_from(pid1).map_err(|_| Errno::ESRCH)?;
     let pid2 = Tid::try_from(pid2).map_err(|_| Errno::ESRCH)?;
     if pid1 <= 0 || pid2 <= 0 {
         return Err(Errno::ESRCH);
     }
 
-    let process1 = find_process(pid1).ok_or(Errno::ESRCH)?;
-    let process2 = find_process(pid2).ok_or(Errno::ESRCH)?;
+    let pcb1 = find_process(pid1).ok_or(Errno::ESRCH)?;
+    let pcb2 = find_process(pid2).ok_or(Errno::ESRCH)?;
 
-    if !can_access_pidfd_target(&process1) || !can_access_pidfd_target(&process2) {
-        return Err(Errno::EPERM);
-    }
+    let r = match compare_type {
+        KcmpType::File => kcmp_object(
+            &pcb1.leader().fdtable().lock().get(idx1)?,
+            &pcb2.leader().fdtable().lock().get(idx2)?,
+        ),
+        KcmpType::VM => kcmp_object(pcb1.leader().get_addrspace(), pcb2.leader().get_addrspace()),
+    };
 
-    let file1 = process_fd_file(&process1, idx1)?;
-    let file2 = process_fd_file(&process2, idx2)?;
-    Ok(kcmp_file_result(&file1, &file2))
+    Ok(r)
 }
 
 bitflags! {
