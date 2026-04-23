@@ -88,9 +88,8 @@ pub fn addrspace() -> &'static Arc<AddrSpace> {
     tcb.get_addrspace()
 }
 
-pub fn fdtable() -> &'static SleepLock<FDTable> {
-    let tcb = tcb();
-    tcb.fdtable()
+pub fn fdtable() -> Arc<SleepLock<FDTable>> {
+    tcb().fdtable()
 }
 
 pub fn with_cwd<F, R>(f: F) -> R

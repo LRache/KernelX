@@ -22,7 +22,8 @@ use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Times
 use super::def::*;
 
 pub fn dup(oldfd: usize) -> SyscallRet {
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     fdtable.dup2(oldfd, FDFlags::empty())
 }
 
@@ -31,7 +32,8 @@ pub fn dup3(oldfd: usize, newfd: usize, flags: usize) -> SyscallRet {
     let fd_flags = FDFlags {
         cloexec: flags.contains(OpenFlags::O_CLOEXEC),
     };
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     fdtable.dup3(oldfd, newfd, fd_flags)
 }
 
@@ -230,7 +232,8 @@ fn fcntl_setlk(file: &Arc<dyn FileOps>, arg: usize, blocking: bool) -> SyscallRe
 pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     match FcntlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)? {
         FcntlCmd::F_DUPFD => {
-            let mut fdtable = current::fdtable().lock();
+            let fdtable = current::fdtable();
+            let mut fdtable = fdtable.lock();
             fdtable.dup_min(fd, arg, FDFlags::empty())
         }
 
@@ -270,7 +273,8 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
 
         FcntlCmd::F_GETFD => {
-            let fdtable = current::fdtable().lock();
+            let fdtable = current::fdtable();
+            let fdtable = fdtable.lock();
             let fdflags = fdtable.get_fd_flags(fd)?;
             let mut flags = FDArgs::empty();
             if fdflags.cloexec {
@@ -282,7 +286,8 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         FcntlCmd::F_SETFD => {
             let flags = FDArgs::from_bits(arg).ok_or(Errno::EINVAL)?;
 
-            let mut fdtable = current::fdtable().lock();
+            let fdtable = current::fdtable();
+            let mut fdtable = fdtable.lock();
             let mut fdflags = fdtable.get_fd_flags(fd)?;
             fdflags.cloexec = flags.contains(FDArgs::FD_CLOEXEC);
             fdtable.set_fd_flags(fd, fdflags)?;
@@ -291,7 +296,8 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
 
         FcntlCmd::F_DUPFD_CLOEXEC => {
-            let mut fdtable = current::fdtable().lock();
+            let fdtable = current::fdtable();
+            let mut fdtable = fdtable.lock();
             fdtable.dup_min(fd, arg, FDFlags { cloexec: true })
         }
 
@@ -999,7 +1005,8 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
         current::tcb().unshare_fdtable()?;
     }
 
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         for i in fd..=max_fd {
             if let Ok(fdflags) = fdtable.get_fd_flags(i) {
@@ -1022,7 +1029,8 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
 }
 
 pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: usize) -> SyscallRet {
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     let out_file = fdtable.get(out_fd)?;
     let in_file = fdtable
         .get(in_fd)?
@@ -1163,7 +1171,8 @@ pub fn splice(
 ) -> SyscallRet {
     let flags = SpliceFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     let in_file = fdtable.get(in_fd)?;
     let out_file = fdtable.get(out_fd)?;
     drop(fdtable);
@@ -1258,7 +1267,8 @@ pub fn splice(
 pub fn tee(in_fd: usize, out_fd: usize, len: usize, flags: usize) -> SyscallRet {
     let flags = SpliceFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     let in_file = fdtable.get(in_fd)?;
     let out_file = fdtable.get(out_fd)?;
     drop(fdtable);

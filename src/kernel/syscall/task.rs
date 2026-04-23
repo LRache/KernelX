@@ -2,19 +2,22 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
+use num_enum::TryFromPrimitive;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::{FileType, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
-use crate::kernel::ipc::SignalNum;
+use crate::kernel::ipc::{SiCode, SiSigChld, SigInfo, SignalNum, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::task::ExitStatus;
 use crate::kernel::task::def::TaskCloneFlags;
-use crate::kernel::uapi::Uid;
+use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::task::pidfd::PidFile;
+use crate::kernel::task::{ExitStatus, PCB};
+use crate::kernel::uapi::{OpenFlags, Uid};
 use crate::kernel::{config, scheduler, task};
 
 pub fn sched_yield() -> SyscallRet {
@@ -115,6 +118,129 @@ pub fn setsid() -> SyscallRet {
     pcb.set_sid(pcb.pid());
     pcb.set_pgid(pcb.pid());
     Ok(pcb.pid() as usize)
+}
+
+bitflags! {
+    struct PidFdFlags: usize {
+        const NONBLOCK = OpenFlags::O_NONBLOCK.bits();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[repr(usize)]
+enum KcmpType {
+    File = 0,
+}
+
+fn find_process(pid: Tid) -> Option<Arc<task::PCB>> {
+    task::with_initpcb(|init_pcb| init_pcb.find_process(pid))
+}
+
+fn can_access_pidfd_target(target: &task::PCB) -> bool {
+    let caller = current::pcb();
+    if caller.euid() == 0 {
+        return true;
+    }
+
+    let caller_uids = [caller.uid(), caller.euid(), caller.suid()];
+    let target_uids = [target.uid(), target.euid(), target.suid()];
+    if !caller_uids.iter().all(|uid| target_uids.contains(uid)) {
+        return false;
+    }
+
+    let caller_gids = [caller.gid(), caller.egid(), caller.sgid()];
+    let target_gids = [target.gid(), target.egid(), target.sgid()];
+    caller_gids.iter().all(|gid| target_gids.contains(gid))
+}
+
+fn task_for_fdtable(target: &Arc<task::PCB>) -> Option<Arc<task::TCB>> {
+    let tasks = target.tasks.lock();
+    tasks
+        .iter()
+        .find(|task| task.tid() == target.pid())
+        .or_else(|| tasks.first())
+        .cloned()
+}
+
+fn process_fd_file(target: &Arc<task::PCB>, fd: usize) -> SysResult<Arc<dyn FileOps>> {
+    let task = task_for_fdtable(target).ok_or(Errno::ESRCH)?;
+    task.fdtable().lock().get(fd)
+}
+
+fn kcmp_file_result(file1: &Arc<dyn FileOps>, file2: &Arc<dyn FileOps>) -> usize {
+    if Arc::ptr_eq(file1, file2) {
+        return 0;
+    }
+
+    let ptr1 = Arc::as_ptr(file1) as *const () as usize;
+    let ptr2 = Arc::as_ptr(file2) as *const () as usize;
+    if ptr1 < ptr2 { 1 } else { 2 }
+}
+
+pub fn pidfd_open(pid: usize, flags: usize) -> SyscallRet {
+    let pid = pid as Tid;
+    if pid <= 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let flags = PidFdFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let pcb = find_process(pid).ok_or(Errno::ESRCH)?;
+    let pidfd = Arc::new(PidFile::new(
+        &pcb,
+        FileFlags {
+            readable: true,
+            writable: false,
+            blocked: !flags.contains(PidFdFlags::NONBLOCK),
+            append: false,
+            direct: false,
+        },
+    ));
+    let fd = current::fdtable().lock().push(pidfd, FDFlags { cloexec: true })?;
+    Ok(fd)
+}
+
+pub fn pidfd_getfd(pidfd: usize, targetfd: usize, flags: usize) -> SyscallRet {
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let pidfd = current::fdtable()
+        .lock()
+        .get(pidfd)?
+        .downcast_arc::<PidFile>()
+        .map_err(|_| Errno::EBADF)?;
+    let target = pidfd.pcb().ok_or(Errno::ESRCH)?;
+
+    if target.is_exited() {
+        return Err(Errno::ESRCH);
+    }
+    if !can_access_pidfd_target(&target) {
+        return Err(Errno::EPERM);
+    }
+
+    let file = process_fd_file(&target, targetfd)?;
+    let new_fd = current::fdtable().lock().push(file, FDFlags { cloexec: true })?;
+    Ok(new_fd)
+}
+
+pub fn kcmp(pid1: usize, pid2: usize, compare_type: usize, idx1: usize, idx2: usize) -> SyscallRet {
+    let _compare_type = KcmpType::try_from(compare_type).map_err(|_| Errno::EINVAL)?;
+    let pid1 = Tid::try_from(pid1).map_err(|_| Errno::ESRCH)?;
+    let pid2 = Tid::try_from(pid2).map_err(|_| Errno::ESRCH)?;
+    if pid1 <= 0 || pid2 <= 0 {
+        return Err(Errno::ESRCH);
+    }
+
+    let process1 = find_process(pid1).ok_or(Errno::ESRCH)?;
+    let process2 = find_process(pid2).ok_or(Errno::ESRCH)?;
+
+    if !can_access_pidfd_target(&process1) || !can_access_pidfd_target(&process2) {
+        return Err(Errno::EPERM);
+    }
+
+    let file1 = process_fd_file(&process1, idx1)?;
+    let file2 = process_fd_file(&process2, idx2)?;
+    Ok(kcmp_file_result(&file1, &file2))
 }
 
 bitflags! {
@@ -502,6 +628,85 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
     }
 
     Ok(wait_pid as usize)
+}
+
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+enum WaitIdType {
+    All = 0,
+    Pid = 1,
+    Pgid = 2,
+    PidFd = 3,
+}
+
+bitflags! {
+    struct WaitIdOptions: usize {
+        const WNOHANG    = 1 << 0;
+        const WEXITED    = 1 << 2;
+        const WSTOPPED   = 1 << 1;
+        const WCONTINUED = 1 << 3;
+        const WNOWAIT    = 1 << 24;
+    }
+}
+
+fn waitid_siginfo(child: &PCB, status: ExitStatus) -> SigInfo {
+    let si_code = match status {
+        ExitStatus::Normal(_) => SiCode::CLD_EXITED,
+        ExitStatus::Signal { coredump: true, .. } => SiCode::CLD_DUMPED,
+        ExitStatus::Signal { coredump: false, .. } => SiCode::CLD_KILLED,
+    };
+
+    SigInfo::sigchld(
+        signum::SIGCHLD.num() as i32,
+        si_code,
+        SiSigChld {
+            si_pid: child.pid(),
+            si_uid: child.uid(),
+            si_status: status.si_status(),
+            si_utime: 0,
+            si_stime: 0,
+        },
+    )
+}
+
+pub fn waitid(idtype: usize, id: usize, infop: UPtr<SigInfo>, options: usize, _user_rusage: usize) -> SyscallRet {
+    let idtype = WaitIdType::try_from(idtype).map_err(|_| Errno::EINVAL)?;
+    let options = WaitIdOptions::from_bits(options).ok_or(Errno::EINVAL)?;
+
+    if idtype != WaitIdType::PidFd
+        || !options.contains(WaitIdOptions::WEXITED)
+        || options.intersects(WaitIdOptions::WSTOPPED | WaitIdOptions::WCONTINUED | WaitIdOptions::WNOWAIT)
+    {
+        return Err(Errno::EINVAL);
+    }
+
+    let pidfd = current::fdtable()
+        .lock()
+        .get(id)?
+        .downcast_arc::<PidFile>()
+        .map_err(|_| Errno::EINVAL)?;
+    let child = pidfd.pcb().ok_or(Errno::ECHILD)?;
+    let child_pid = child.pid() as usize;
+    let block = pidfd.block() && !options.contains(WaitIdOptions::WNOHANG);
+
+    let status = match current::pcb().wait_child(child_pid as i32, block)? {
+        Some(status) => status,
+        None => {
+            if !infop.is_null() {
+                infop.write(SigInfo::empty())?;
+            }
+            if !pidfd.block() && !options.contains(WaitIdOptions::WNOHANG) {
+                return Err(Errno::EAGAIN);
+            }
+            return Ok(0);
+        }
+    };
+
+    if !infop.is_null() {
+        infop.write(waitid_siginfo(&child, status))?;
+    }
+
+    Ok(0)
 }
 
 pub fn exit(code: usize) -> SyscallRet {

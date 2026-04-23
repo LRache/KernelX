@@ -1,3 +1,4 @@
+use crate::kernel::syscall::UserStruct;
 use crate::kernel::task::Pid;
 use crate::kernel::uapi::uid_t;
 
@@ -47,6 +48,12 @@ impl SiCode {
     pub const SI_QUEUE: Self = Self(-1);
     pub const SI_TIMER: Self = Self(-2);
     pub const SI_TKILL: Self = Self(-6);
+
+    pub const CLD_EXITED: Self = Self(1);
+    pub const CLD_KILLED: Self = Self(2);
+    pub const CLD_DUMPED: Self = Self(3);
+    pub const CLD_STOPPED: Self = Self(5);
+    pub const CLD_CONTINUED: Self = Self(6);
 }
 
 #[repr(C)]
@@ -114,4 +121,16 @@ impl SigInfo {
             },
         }
     }
+
+    pub fn sigchld(si_signo: i32, si_code: SiCode, sigchld: SiSigChld) -> Self {
+        Self {
+            si_signo,
+            si_errno: 0,
+            si_code,
+            __pad0: 0,
+            fields: KSiFields::SigChld(sigchld).into(),
+        }
+    }
 }
+
+impl UserStruct for SigInfo {}

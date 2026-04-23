@@ -40,7 +40,8 @@ pub fn pipe(uptr_pipefd: UArray<i32>, flags: usize) -> SyscallRet {
 
     let (read_fd, write_fd);
     {
-        let mut fdtable = current::fdtable().lock();
+        let fdtable = current::fdtable();
+        let mut fdtable = fdtable.lock();
         read_fd = fdtable.push(read_end, fd_flags)?;
         write_fd = fdtable.push(write_end, fd_flags)?;
     }

@@ -105,7 +105,8 @@ fn select(
     let sigmask = uptr_sigmask.read_optional()?;
 
     let mut files_to_select = Vec::new();
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
 
     for i in 0..nfds {
         let want_read = readfds.as_mut().map_or(false, |set| set.clear(i));
@@ -362,7 +363,8 @@ impl Pollfd {
 }
 
 fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<SignalSet>) -> SysResult<usize> {
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
 
     pollfds.iter_mut().for_each(|pfd| {
         pfd.revents = PollEventSet::empty();
