@@ -17,6 +17,7 @@ use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct, utils};
 use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::task::pidfd::PidFile;
 use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec, Uid};
 
 use super::def::*;
@@ -89,16 +90,66 @@ struct Flock {
 
 impl UserStruct for Flock {}
 
-fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<Arc<dyn crate::fs::InodeOps>> {
-    let inode = file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<&Arc<dyn InodeOps>> {
+    let inode = file.get_inode().ok_or(Errno::EINVAL)?;
     if inode.lock_state().is_none() {
         return Err(Errno::EINVAL);
     }
     Ok(inode)
 }
 
-fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<&RandomAccessFile> {
-    file.downcast_ref::<RandomAccessFile>().ok_or(Errno::ESPIPE)
+enum RandomAccess<'a> {
+    File(&'a RandomAccessFile),
+}
+
+impl RandomAccess<'_> {
+    fn readable(&self) -> bool {
+        match self {
+            Self::File(file) => file.readable(),
+        }
+    }
+
+    fn writable(&self) -> bool {
+        match self {
+            Self::File(file) => file.writable(),
+        }
+    }
+
+    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        match self {
+            Self::File(file) => file.pread(buf, offset),
+        }
+    }
+
+    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        match self {
+            Self::File(file) => file.pwrite(buf, offset),
+        }
+    }
+
+    fn get_dent(&self) -> SysResult<Option<(crate::fs::file::DirResult, usize)>> {
+        match self {
+            Self::File(file) => file.get_dent(),
+        }
+    }
+
+    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
+        match self {
+            Self::File(file) => file.seek(offset, whence),
+        }
+    }
+}
+
+fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<RandomAccess<'_>> {
+    if let Some(file) = file.downcast_ref::<RandomAccessFile>() {
+        return Ok(RandomAccess::File(file));
+    }
+    if let Some(file) = file.downcast_ref::<PidFile>()
+        && let Some(file) = file.random_access_file()
+    {
+        return Ok(RandomAccess::File(file));
+    }
+    Err(Errno::ESPIPE)
 }
 
 fn normalize_posix_flock(
@@ -967,7 +1018,6 @@ pub fn pwritev2(
 pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
     let file = random_access_file(&file)?;
-
     let how = match how {
         0 => SeekWhence::BEG,
         1 => SeekWhence::CUR,
@@ -1607,7 +1657,7 @@ const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d
 
 pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
-    let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::EBADF)?;
+    let file = random_access_file(&file)?;
 
     if uptr_dirent == 0 {
         return Err(Errno::EINVAL);
@@ -1993,7 +2043,7 @@ fn truncate_length(length: usize) -> SysResult<u64> {
 fn check_file_size_limit(length: u64) -> SysResult<()> {
     let (rlim_cur, _) = current::pcb().file_size_limit();
     if rlim_cur != usize::MAX && length > rlim_cur as u64 {
-        let _ = current::pcb().send_signal(signum::SIGXFSZ, SiCode::SI_KERNEL, KSiFields::Empty, None);
+        let _ = current::pcb().send_signal(signum::SIGXFSZ, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
         return Err(Errno::EFBIG);
     }
 
@@ -2081,7 +2131,7 @@ pub fn fsync(fd: usize) -> SyscallRet {
 
 pub fn flock(fd: usize, operation: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
-    let inode = file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+    let inode = file.get_inode().ok_or(Errno::EINVAL)?;
     let lock_state = inode.lock_state().ok_or(Errno::EINVAL)?;
 
     let request_type = match operation & (LOCK_SH | LOCK_EX | LOCK_UN) {

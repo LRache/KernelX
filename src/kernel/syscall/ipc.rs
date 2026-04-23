@@ -6,14 +6,17 @@ use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
 use crate::arch;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
-use crate::kernel::ipc::{KSiFields, Pipe, SiCode, SignalAction, SignalNum, SignalSet, SignalStackFlags, shm, signum};
+use crate::kernel::ipc::{
+    KSiFields, Pipe, SiCode, SigInfo, SignalAction, SignalNum, SignalSet, SignalStackFlags, shm, signum,
+};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer};
 use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::task::pidfd::PidFile;
 use crate::kernel::task::{PCB, manager};
 use crate::kernel::uapi::OpenFlags;
 use crate::kernel::{config, uapi};
@@ -70,7 +73,7 @@ where
     targets
 }
 
-fn can_send_signal(target: &PCB, signum: SignalNum) -> bool {
+pub(super) fn can_send_signal(target: &PCB, signum: SignalNum) -> bool {
     let caller = current::pcb();
     if caller.euid() == 0 {
         return true;
@@ -132,7 +135,7 @@ pub fn kill(pid: usize, signum: usize) -> SyscallRet {
         if !can_send_signal(&pcb, signum) {
             continue;
         }
-        pcb.send_signal(signum, SiCode::SI_USER, fields, None)?;
+        pcb.send_signal(signum, SiCode::SI_USER, 0, fields, None)?;
         sent = true;
     }
 
@@ -154,6 +157,7 @@ pub fn tkill(tid: usize, signum: usize) -> SyscallRet {
         tcb.parent().send_signal(
             signum,
             SiCode::SI_TKILL,
+            0,
             KSiFields::kill(current::pid(), current::uid()),
             Some(tid),
         )?;
@@ -181,11 +185,60 @@ pub fn tgkill(tgid: usize, tid: usize, signum: usize) -> SyscallRet {
         tcb.parent().send_signal(
             signum,
             SiCode::SI_TKILL,
+            0,
             KSiFields::kill(current::pid(), current::uid()),
             Some(tid),
         )?;
     }
 
+    Ok(0)
+}
+
+fn pidfd_signal_info(target: &Arc<PCB>, info: UPtr<SigInfo>) -> SysResult<(SiCode, i32, KSiFields)> {
+    if info.is_null() {
+        return Ok((SiCode::SI_USER, 0, KSiFields::kill(current::pid(), current::uid())));
+    }
+
+    let info = info.read()?;
+    let self_target = Arc::ptr_eq(target, &current::pcb());
+    if !self_target && (info.si_code.0 >= 0 || info.si_code == SiCode::SI_TKILL) {
+        return Err(Errno::EPERM);
+    }
+
+    let rt = info.rt();
+    Ok((
+        info.si_code,
+        info.si_errno,
+        KSiFields::rt(rt.si_pid, rt.si_uid, rt.si_sigval),
+    ))
+}
+
+pub fn pidfd_send_signal(pidfd: usize, signum: usize, info: UPtr<SigInfo>, flags: usize) -> SyscallRet {
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let signum = SignalNum::try_from(signum as u32)?;
+    let pidfd = current::fdtable()
+        .lock()
+        .get(pidfd)?
+        .downcast_arc::<PidFile>()
+        .map_err(|_| Errno::EBADF)?;
+    let target = pidfd.pcb().ok_or(Errno::ESRCH)?;
+
+    if target.is_exited() {
+        return Err(Errno::ESRCH);
+    }
+    if !can_send_signal(&target, signum) {
+        return Err(Errno::EPERM);
+    }
+
+    let (si_code, si_errno, fields) = pidfd_signal_info(&target, info)?;
+    if signum.is_empty() {
+        return Ok(0);
+    }
+
+    target.send_signal(signum, si_code, si_errno, fields, None)?;
     Ok(0)
 }
 

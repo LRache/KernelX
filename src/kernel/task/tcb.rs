@@ -334,7 +334,7 @@ impl TCB {
 
         // SAFETY: RandomAccessFile must have dentry and path.
         let exec_path = file.get_dentry().unwrap().get_path();
-        let exec_inode = file.get_inode().cloned().ok_or(Errno::ENOEXEC)?;
+        let exec_inode = file.get_inode().ok_or(Errno::ENOEXEC)?;
         exec_inode.begin_exec()?;
 
         let result = (|| {

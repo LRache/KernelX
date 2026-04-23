@@ -79,6 +79,7 @@ macro_rules! syscall_entries {
             260 => task::wait4(4),
             272 => task::kcmp(5),
             281 => task::execveat(5),
+            424 => ipc::pidfd_send_signal(4),
             434 => task::pidfd_open(2),
             435 => task::clone3(2),
             438 => task::pidfd_getfd(3),

@@ -583,18 +583,18 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
 
     if pid == -1 {
         // Wait for any child
-        if let Some(result) = pcb.wait_any_child(!options.contains(WaitOptions::WNOHANG))? {
-            wait_pid = result.0;
-            exit_status = result.1;
+        if let Some((child, status)) = pcb.wait_any_child(!options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = child.pid();
+            exit_status = status;
         } else {
             return Ok(0);
         }
     } else if pid == 0 {
         // Wait for any child whose pgid equals the caller's pgid
         let caller_pgid = pcb.pgid();
-        if let Some(result) = pcb.wait_child_by_pgid(caller_pgid, !options.contains(WaitOptions::WNOHANG))? {
-            wait_pid = result.0;
-            exit_status = result.1;
+        if let Some((child, status)) = pcb.wait_child_by_pgid(caller_pgid, !options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = child.pid();
+            exit_status = status;
         } else {
             return Ok(0);
         }
@@ -607,17 +607,17 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
         // Wait for any child whose pgid equals -pid
         let target_pgid = -pid;
 
-        if let Some(result) = pcb.wait_child_by_pgid(target_pgid, !options.contains(WaitOptions::WNOHANG))? {
-            wait_pid = result.0;
-            exit_status = result.1;
+        if let Some((child, status)) = pcb.wait_child_by_pgid(target_pgid, !options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = child.pid();
+            exit_status = status;
         } else {
             return Ok(0);
         }
     } else {
         // pid > 0: wait for specific child
-        if let Some(result) = pcb.wait_child(pid as i32, !options.contains(WaitOptions::WNOHANG))? {
-            wait_pid = pid as i32;
-            exit_status = result;
+        if let Some((child, status)) = pcb.wait_child(pid as i32, !options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = child.pid();
+            exit_status = status;
         } else {
             return Ok(0);
         }
@@ -669,44 +669,113 @@ fn waitid_siginfo(child: &PCB, status: ExitStatus) -> SigInfo {
     )
 }
 
-pub fn waitid(idtype: usize, id: usize, infop: UPtr<SigInfo>, options: usize, _user_rusage: usize) -> SyscallRet {
+pub fn waitid(
+    idtype: usize,
+    id: usize,
+    uptr_siginfo: UPtr<SigInfo>,
+    options: usize,
+    _user_rusage: usize,
+) -> SyscallRet {
     let idtype = WaitIdType::try_from(idtype).map_err(|_| Errno::EINVAL)?;
     let options = WaitIdOptions::from_bits(options).ok_or(Errno::EINVAL)?;
 
-    if idtype != WaitIdType::PidFd
-        || !options.contains(WaitIdOptions::WEXITED)
+    if !options.contains(WaitIdOptions::WEXITED)
         || options.intersects(WaitIdOptions::WSTOPPED | WaitIdOptions::WCONTINUED | WaitIdOptions::WNOWAIT)
     {
         return Err(Errno::EINVAL);
     }
 
-    let pidfd = current::fdtable()
-        .lock()
-        .get(id)?
-        .downcast_arc::<PidFile>()
-        .map_err(|_| Errno::EINVAL)?;
-    let child = pidfd.pcb().ok_or(Errno::ECHILD)?;
-    let child_pid = child.pid() as usize;
-    let block = pidfd.block() && !options.contains(WaitIdOptions::WNOHANG);
+    match idtype {
+        WaitIdType::All => {
+            let (child, status) = match current::pcb().wait_any_child(!options.contains(WaitIdOptions::WNOHANG))? {
+                Some(result) => result,
+                None => {
+                    if !uptr_siginfo.is_null() {
+                        uptr_siginfo.write(SigInfo::empty())?;
+                    }
+                    return Ok(0);
+                }
+            };
 
-    let status = match current::pcb().wait_child(child_pid as i32, block)? {
-        Some(status) => status,
-        None => {
-            if !infop.is_null() {
-                infop.write(SigInfo::empty())?;
+            if !uptr_siginfo.is_null() {
+                uptr_siginfo.write(waitid_siginfo(&child, status))?;
             }
-            if !pidfd.block() && !options.contains(WaitIdOptions::WNOHANG) {
-                return Err(Errno::EAGAIN);
-            }
-            return Ok(0);
+
+            Ok(0)
         }
-    };
+        WaitIdType::Pid => {
+            let target_pid = i32::try_from(id).map_err(|_| Errno::EINVAL)?;
+            let (child, status) =
+                match current::pcb().wait_child(target_pid, !options.contains(WaitIdOptions::WNOHANG))? {
+                    Some(result) => result,
+                    None => {
+                        if !uptr_siginfo.is_null() {
+                            uptr_siginfo.write(SigInfo::empty())?;
+                        }
+                        return Ok(0);
+                    }
+                };
 
-    if !infop.is_null() {
-        infop.write(waitid_siginfo(&child, status))?;
+            if !uptr_siginfo.is_null() {
+                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+            }
+
+            Ok(0)
+        }
+        WaitIdType::PidFd => {
+            let pidfd = current::fdtable()
+                .lock()
+                .get(id)?
+                .downcast_arc::<PidFile>()
+                .map_err(|_| Errno::EINVAL)?;
+            let child = pidfd.pcb().ok_or(Errno::ECHILD)?;
+            let child_pid = child.pid() as usize;
+            let block = pidfd.block() && !options.contains(WaitIdOptions::WNOHANG);
+
+            let status = match current::pcb().wait_child(child_pid as i32, block)? {
+                Some(result) => result,
+                None => {
+                    if !uptr_siginfo.is_null() {
+                        uptr_siginfo.write(SigInfo::empty())?;
+                    }
+                    if !pidfd.block() && !options.contains(WaitIdOptions::WNOHANG) {
+                        return Err(Errno::EAGAIN);
+                    }
+                    return Ok(0);
+                }
+            };
+            let (child, status) = status;
+
+            if !uptr_siginfo.is_null() {
+                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+            }
+
+            Ok(0)
+        }
+        WaitIdType::Pgid => {
+            let target_pgid = if id == 0 {
+                current::pcb().pgid()
+            } else {
+                i32::try_from(id).map_err(|_| Errno::EINVAL)?
+            };
+            let (child, status) =
+                match current::pcb().wait_child_by_pgid(target_pgid, !options.contains(WaitIdOptions::WNOHANG))? {
+                    Some(result) => result,
+                    None => {
+                        if !uptr_siginfo.is_null() {
+                            uptr_siginfo.write(SigInfo::empty())?;
+                        }
+                        return Ok(0);
+                    }
+                };
+
+            if !uptr_siginfo.is_null() {
+                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+            }
+
+            Ok(0)
+        }
     }
-
-    Ok(0)
 }
 
 pub fn exit(code: usize) -> SyscallRet {

@@ -552,7 +552,7 @@ fn setitimer_helper(signum: SignalNum, interval: Duration, pcb: Arc<PCB>, which:
         return;
     }
 
-    let _ = pcb.send_signal(signum, SiCode::SI_KERNEL, KSiFields::Empty, None);
+    let _ = pcb.send_signal(signum, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
 
     // Schedule next interval
     let expiry_us = arch::get_time_us() + interval.as_micros() as u64;
@@ -652,7 +652,7 @@ pub fn setitimer(
         timer::add_timer_with_callback(
             value_dur,
             Box::new(move || {
-                let _ = pcb_cb.send_signal(signum, SiCode::SI_KERNEL, KSiFields::Empty, None);
+                let _ = pcb_cb.send_signal(signum, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
                 pcb_cb.itimer_ids.lock()[which] = None;
                 pcb_cb.itimer_expiry_us.lock()[which] = 0;
             }),

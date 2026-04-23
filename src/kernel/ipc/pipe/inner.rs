@@ -243,7 +243,7 @@ impl PipeInner {
 
     pub fn write(&self, buf: &[u8], blocked: bool) -> SysResult<usize> {
         if *self.reader_count.lock() == 0 {
-            let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, KSiFields::Empty, None);
+            let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, 0, KSiFields::Empty, None);
             return Err(Errno::EPIPE);
         }
 
@@ -333,7 +333,7 @@ impl PipeInner {
 
     pub fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, blocked: bool) -> SysResult<usize> {
         if *self.reader_count.lock() == 0 {
-            let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, KSiFields::Empty, None);
+            let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, 0, KSiFields::Empty, None);
             return Err(Errno::EPIPE);
         }
 

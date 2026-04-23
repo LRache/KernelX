@@ -512,7 +512,7 @@ impl PCB {
         // indefinitely and leaving the system hung instead of halting cleanly.
         if self.pid == task::INIT_UTASK_TID {
             self.children.lock().iter().for_each(|child| {
-                let _ = child.send_signal(signum::SIGKILL, SiCode::EMPTY, KSiFields::Empty, None);
+                let _ = child.send_signal(signum::SIGKILL, SiCode::EMPTY, 0, KSiFields::Empty, None);
             });
             loop {
                 if let Some(child) = self.children.lock().pop() {
@@ -570,7 +570,7 @@ impl PCB {
             });
             if !self.exit_signal.is_empty() {
                 parent
-                    .send_signal(self.exit_signal, SiCode::SI_KERNEL, fields, None)
+                    .send_signal(self.exit_signal, SiCode::SI_KERNEL, 0, fields, None)
                     .unwrap_or(());
             }
         }
@@ -597,7 +597,7 @@ impl PCB {
         }
     }
 
-    pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<ExitStatus>, Errno> {
+    pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<(Arc<PCB>, ExitStatus)>, Errno> {
         let child = {
             let children = self.children.lock();
             children.iter().find(|c| c.pid() == pid).cloned()
@@ -611,7 +611,7 @@ impl PCB {
                 let positon = children.iter().position(|c| c.pid() == pid).unwrap();
                 children.swap_remove(positon);
 
-                return Ok(Some(status));
+                return Ok(Some((child, status)));
             }
 
             if blocked {
@@ -645,7 +645,7 @@ impl PCB {
                 let mut children = self.children.lock();
                 children.retain(|c| c.pid() != pid);
 
-                return Ok(Some(status));
+                return Ok(Some((child, status)));
             } else {
                 return Ok(None);
             }
@@ -655,7 +655,7 @@ impl PCB {
         }
     }
 
-    pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, ExitStatus)>> {
+    pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(Arc<PCB>, ExitStatus)>> {
         if let Some(child) = {
             let mut children = self.children.lock();
             if children.is_empty() {
@@ -672,7 +672,7 @@ impl PCB {
         } {
             if let Some(status) = child.recycle() {
                 self.accumulate_waited_child(&child);
-                return Ok(Some((child.pid(), status)));
+                return Ok(Some((child, status)));
             }
         };
 
@@ -698,7 +698,7 @@ impl PCB {
                     };
                     if let Some(status) = child.recycle() {
                         self.accumulate_waited_child(&child);
-                        return Ok(Some((pid, status)));
+                        return Ok(Some((child, status)));
                     } else {
                         continue; // The child process was recycled by other waiters
                     }
@@ -709,7 +709,7 @@ impl PCB {
         }
     }
 
-    pub fn wait_child_by_pgid(&self, pgid: Tid, blocked: bool) -> SysResult<Option<(Tid, ExitStatus)>> {
+    pub fn wait_child_by_pgid(&self, pgid: Tid, blocked: bool) -> SysResult<Option<(Arc<PCB>, ExitStatus)>> {
         if let Some(child) = {
             let mut children = self.children.lock();
             if !children.iter().any(|c| c.pgid() == pgid) {
@@ -724,7 +724,7 @@ impl PCB {
         } {
             if let Some(status) = child.recycle() {
                 self.accumulate_waited_child(&child);
-                return Ok(Some((child.pid(), status)));
+                return Ok(Some((child, status)));
             }
         };
 
@@ -750,7 +750,7 @@ impl PCB {
                     };
                     if let Some(status) = child.recycle() {
                         self.accumulate_waited_child(&child);
-                        return Ok(Some((pid, status)));
+                        return Ok(Some((child, status)));
                     } else {
                         continue;
                     }
