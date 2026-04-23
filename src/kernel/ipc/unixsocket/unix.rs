@@ -1,9 +1,10 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::config;
-use crate::kernel::errno::SysResult;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -13,7 +14,10 @@ use crate::klib::SpinLock;
 use super::msgpipe::MessagePipeInner;
 
 /// The channel type determines how data flows through the socket.
+#[derive(Clone)]
 enum Channel {
+    /// Freshly created via socket(), not yet connected to a peer.
+    Unconnected,
     /// Byte-stream (SOCK_STREAM): uses PipeInner, no message boundaries.
     Stream { rx: Arc<PipeInner>, tx: Arc<PipeInner> },
     /// Message-oriented (SOCK_DGRAM, SOCK_SEQPACKET): preserves message boundaries.
@@ -23,27 +27,37 @@ enum Channel {
     },
 }
 
-/// One endpoint of a Unix domain socket pair.
-pub struct UnixSocket {
-    channel: Channel,
-    blocked: SpinLock<bool>,
-    sock_type: SocketType,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SocketType {
+pub enum UnixSocketType {
     Stream,
     Dgram,
     SeqPacket,
 }
 
+pub struct UnixSocket {
+    channel: SpinLock<Channel>,
+    blocked: SpinLock<bool>,
+    bound_path: SpinLock<Option<String>>,
+    sock_type: UnixSocketType,
+}
+
 impl UnixSocket {
+    /// Create a fresh Unix domain socket for socket().
+    pub fn new(sock_type: UnixSocketType, blocked: bool) -> Self {
+        Self {
+            channel: SpinLock::new(Channel::Unconnected, "UnixSocket::channel"),
+            blocked: SpinLock::new(blocked, "UnixSocket::blocked"),
+            bound_path: SpinLock::new(None, "UnixSocket::bound_path"),
+            sock_type,
+        }
+    }
+
     /// Create a connected pair of Unix domain sockets.
-    pub fn create_pair(sock_type: SocketType, blocked: bool) -> (Self, Self) {
+    pub fn create_pair(sock_type: UnixSocketType, blocked: bool) -> (Self, Self) {
         let capacity = config::PIPE_CAPACITY;
 
         match sock_type {
-            SocketType::Stream => {
+            UnixSocketType::Stream => {
                 let pipe_a = Arc::new(PipeInner::new(capacity));
                 let pipe_b = Arc::new(PipeInner::new(capacity));
 
@@ -53,23 +67,28 @@ impl UnixSocket {
                 pipe_b.increment_writer_count();
 
                 let sock_a = UnixSocket {
-                    channel: Channel::Stream {
-                        rx: pipe_a.clone(),
-                        tx: pipe_b.clone(),
-                    },
+                    channel: SpinLock::new(
+                        Channel::Stream {
+                            rx: pipe_a.clone(),
+                            tx: pipe_b.clone(),
+                        },
+                        "UnixSocket::channel",
+                    ),
                     blocked: SpinLock::new(blocked, "UnixSocket::blocked"),
+                    bound_path: SpinLock::new(None, "UnixSocket::bound_path"),
                     sock_type,
                 };
 
                 let sock_b = UnixSocket {
-                    channel: Channel::Stream { rx: pipe_b, tx: pipe_a },
+                    channel: SpinLock::new(Channel::Stream { rx: pipe_b, tx: pipe_a }, "UnixSocket::channel"),
                     blocked: SpinLock::new(blocked, "UnixSocket::blocked"),
+                    bound_path: SpinLock::new(None, "UnixSocket::bound_path"),
                     sock_type,
                 };
 
                 (sock_a, sock_b)
             }
-            SocketType::Dgram | SocketType::SeqPacket => {
+            UnixSocketType::Dgram | UnixSocketType::SeqPacket => {
                 let pipe_a = Arc::new(MessagePipeInner::new(capacity));
                 let pipe_b = Arc::new(MessagePipeInner::new(capacity));
 
@@ -79,17 +98,22 @@ impl UnixSocket {
                 pipe_b.increment_writer_count();
 
                 let sock_a = UnixSocket {
-                    channel: Channel::Message {
-                        rx: pipe_a.clone(),
-                        tx: pipe_b.clone(),
-                    },
+                    channel: SpinLock::new(
+                        Channel::Message {
+                            rx: pipe_a.clone(),
+                            tx: pipe_b.clone(),
+                        },
+                        "UnixSocket::channel",
+                    ),
                     blocked: SpinLock::new(blocked, "UnixSocket::blocked"),
+                    bound_path: SpinLock::new(None, "UnixSocket::bound_path"),
                     sock_type,
                 };
 
                 let sock_b = UnixSocket {
-                    channel: Channel::Message { rx: pipe_b, tx: pipe_a },
+                    channel: SpinLock::new(Channel::Message { rx: pipe_b, tx: pipe_a }, "UnixSocket::channel"),
                     blocked: SpinLock::new(blocked, "UnixSocket::blocked"),
+                    bound_path: SpinLock::new(None, "UnixSocket::bound_path"),
                     sock_type,
                 };
 
@@ -97,12 +121,51 @@ impl UnixSocket {
             }
         }
     }
+
+    fn unconnected_read_error(&self) -> SysResult<usize> {
+        Err(Errno::ENOTCONN)
+    }
+
+    fn unconnected_write_error(&self) -> SysResult<usize> {
+        match self.sock_type {
+            UnixSocketType::Dgram => Err(Errno::EDESTADDRREQ),
+            UnixSocketType::Stream | UnixSocketType::SeqPacket => Err(Errno::ENOTCONN),
+        }
+    }
+
+    pub fn can_bind(&self) -> SysResult<()> {
+        if self.bound_path.lock().is_some() {
+            return Err(Errno::EINVAL);
+        }
+
+        if matches!(*self.channel.lock(), Channel::Unconnected) {
+            Ok(())
+        } else {
+            Err(Errno::EINVAL)
+        }
+    }
+
+    pub fn bind_path(&self, path: String) -> SysResult<()> {
+        let mut bound_path = self.bound_path.lock();
+        if bound_path.is_some() {
+            return Err(Errno::EINVAL);
+        }
+
+        if !matches!(*self.channel.lock(), Channel::Unconnected) {
+            return Err(Errno::EINVAL);
+        }
+
+        *bound_path = Some(path);
+        Ok(())
+    }
 }
 
 impl FileOps for UnixSocket {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
         let blocked = *self.blocked.lock();
-        match &self.channel {
+        let channel = self.channel.lock().clone();
+        match channel {
+            Channel::Unconnected => self.unconnected_read_error(),
             Channel::Stream { rx, .. } => rx.read(buf, blocked),
             Channel::Message { rx, .. } => rx.read(buf, blocked),
         }
@@ -110,7 +173,9 @@ impl FileOps for UnixSocket {
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let blocked = *self.blocked.lock();
-        match &self.channel {
+        let channel = self.channel.lock().clone();
+        match channel {
+            Channel::Unconnected => self.unconnected_read_error(),
             Channel::Stream { rx, .. } => rx.read_to_user(ubuf, blocked),
             Channel::Message { rx, .. } => rx.read_to_user(ubuf, blocked),
         }
@@ -118,7 +183,9 @@ impl FileOps for UnixSocket {
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         let blocked = *self.blocked.lock();
-        match &self.channel {
+        let channel = self.channel.lock().clone();
+        match channel {
+            Channel::Unconnected => self.unconnected_write_error(),
             Channel::Stream { tx, .. } => tx.write(buf, blocked),
             Channel::Message { tx, .. } => tx.write(buf, blocked),
         }
@@ -126,7 +193,9 @@ impl FileOps for UnixSocket {
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let blocked = *self.blocked.lock();
-        match &self.channel {
+        let channel = self.channel.lock().clone();
+        match channel {
+            Channel::Unconnected => self.unconnected_write_error(),
             Channel::Stream { tx, .. } => tx.write_from_user(ubuf, blocked),
             Channel::Message { tx, .. } => tx.write_from_user(ubuf, blocked),
         }
@@ -162,7 +231,9 @@ impl FileOps for UnixSocket {
     }
 
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
-        match &self.channel {
+        let channel = self.channel.lock().clone();
+        match channel {
+            Channel::Unconnected => Ok(Some(FileEvent::HANG_UP)),
             Channel::Stream { rx, tx, .. } => {
                 let mut ready = FileEvent::empty();
                 let mut waiting_on_rx = false;
@@ -231,7 +302,9 @@ impl FileOps for UnixSocket {
     }
 
     fn wait_event_cancel(&self) {
-        match &self.channel {
+        let channel = self.channel.lock().clone();
+        match channel {
+            Channel::Unconnected => {}
             Channel::Stream { rx, tx, .. } => {
                 rx.wait_event_cancel();
                 tx.wait_event_cancel();
@@ -249,16 +322,17 @@ impl FileOps for UnixSocket {
 
     fn type_name(&self) -> &'static str {
         match self.sock_type {
-            SocketType::Stream => "unix-stream",
-            SocketType::Dgram => "unix-dgram",
-            SocketType::SeqPacket => "unix-seqpacket",
+            UnixSocketType::Stream => "unix-stream",
+            UnixSocketType::Dgram => "unix-dgram",
+            UnixSocketType::SeqPacket => "unix-seqpacket",
         }
     }
 }
 
 impl Drop for UnixSocket {
     fn drop(&mut self) {
-        match &self.channel {
+        match &*self.channel.lock() {
+            Channel::Unconnected => {}
             Channel::Stream { rx, tx } => {
                 rx.decrement_reader_count();
                 tx.decrement_writer_count();

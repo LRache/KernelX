@@ -1,4 +1,4 @@
 mod msgpipe;
 mod unix;
 
-pub use unix::{SocketType, UnixSocket};
+pub use unix::{UnixSocket, UnixSocketType};

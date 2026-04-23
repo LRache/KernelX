@@ -24,15 +24,6 @@ pub enum AddressFamily {
     Netlink = 16,
 }
 
-#[repr(usize)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-pub enum SocketKind {
-    Stream = 1,
-    Dgram = 2,
-    Raw = 3,
-    SeqPacket = 5,
-}
-
 pub const SOCK_NONBLOCK: usize = 0x800;
 pub const SOCK_CLOEXEC: usize = 0x80000;
 
