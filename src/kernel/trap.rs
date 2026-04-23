@@ -81,7 +81,7 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
     if fixed_kaddr.is_none() {
         // TODO: Implement the sicode and fields for memory fault
         current::pcb()
-            .send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, KSiFields::Empty, None)
+            .send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, 0, KSiFields::Empty, None)
             .unwrap();
         current::schedule();
     }
@@ -90,13 +90,13 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
 pub fn illegal_inst() {
     // TODO: Implement the sicode and fields for illegal inst
     current::pcb()
-        .send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, KSiFields::Empty, None)
+        .send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, 0, KSiFields::Empty, None)
         .unwrap();
 }
 
 pub fn memory_misaligned() {
     current::pcb()
-        .send_signal(signum::SIGBUS, SiCode::SI_KERNEL, KSiFields::Empty, None)
+        .send_signal(signum::SIGBUS, SiCode::SI_KERNEL, 0, KSiFields::Empty, None)
         .unwrap();
 }
 

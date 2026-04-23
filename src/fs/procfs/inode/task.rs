@@ -12,6 +12,7 @@ use crate::kernel::mm::MapPerm;
 use crate::kernel::scheduler::tid::PID_MAX;
 use crate::kernel::scheduler::{TaskState, Tid};
 use crate::kernel::task::manager;
+use crate::kernel::task::pidfd::PidFile;
 use crate::kernel::uapi::{FileStat, Uid};
 
 use super::RootInode;
@@ -160,6 +161,13 @@ impl InodeOps for TaskDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs task dir requires associated dentry");
+        if let Some(tcb) = manager::get(self.tid)
+            && tcb.parent().pid() == self.tid
+        {
+            let file = Arc::new(RandomAccessFile::new(self, dentry, flags));
+            return Arc::new(PidFile::new_with_file(tcb.parent(), file, flags));
+        }
+
         Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }

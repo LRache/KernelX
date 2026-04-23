@@ -105,7 +105,8 @@ fn select(
     let sigmask = uptr_sigmask.read_optional()?;
 
     let mut files_to_select = Vec::new();
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
 
     for i in 0..nfds {
         let want_read = readfds.as_mut().map_or(false, |set| set.clear(i));
@@ -362,7 +363,8 @@ impl Pollfd {
 }
 
 fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<SignalSet>) -> SysResult<usize> {
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
 
     pollfds.iter_mut().for_each(|pfd| {
         pfd.revents = PollEventSet::empty();
@@ -550,7 +552,7 @@ fn setitimer_helper(signum: SignalNum, interval: Duration, pcb: Arc<PCB>, which:
         return;
     }
 
-    let _ = pcb.send_signal(signum, SiCode::SI_KERNEL, KSiFields::Empty, None);
+    let _ = pcb.send_signal(signum, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
 
     // Schedule next interval
     let expiry_us = arch::get_time_us() + interval.as_micros() as u64;
@@ -650,7 +652,7 @@ pub fn setitimer(
         timer::add_timer_with_callback(
             value_dur,
             Box::new(move || {
-                let _ = pcb_cb.send_signal(signum, SiCode::SI_KERNEL, KSiFields::Empty, None);
+                let _ = pcb_cb.send_signal(signum, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
                 pcb_cb.itimer_ids.lock()[which] = None;
                 pcb_cb.itimer_expiry_us.lock()[which] = 0;
             }),

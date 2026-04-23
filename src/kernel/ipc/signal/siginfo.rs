@@ -1,7 +1,8 @@
+use crate::kernel::syscall::UserStruct;
 use crate::kernel::task::Pid;
 use crate::kernel::uapi::uid_t;
 
-const SI_PAD_SIZE: usize = 128 - 3 * core::mem::size_of::<i32>();
+const SI_PAD_SIZE: usize = 128 - 4 * core::mem::size_of::<i32>();
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -15,6 +16,14 @@ pub struct SiKill {
 pub struct SiTimer {
     pub si_tid: i32,      // Timer ID
     pub si_overrun: i32,  // Overrun count
+    pub si_sigval: usize, // Signal value
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SiRt {
+    pub si_pid: Pid,      // Sending process ID
+    pub si_uid: uid_t,    // Real user ID of sending process
     pub si_sigval: usize, // Signal value
 }
 
@@ -47,6 +56,12 @@ impl SiCode {
     pub const SI_QUEUE: Self = Self(-1);
     pub const SI_TIMER: Self = Self(-2);
     pub const SI_TKILL: Self = Self(-6);
+
+    pub const CLD_EXITED: Self = Self(1);
+    pub const CLD_KILLED: Self = Self(2);
+    pub const CLD_DUMPED: Self = Self(3);
+    pub const CLD_STOPPED: Self = Self(5);
+    pub const CLD_CONTINUED: Self = Self(6);
 }
 
 #[repr(C)]
@@ -54,6 +69,7 @@ impl SiCode {
 pub union USiFields {
     _pad: [i32; SI_PAD_SIZE / core::mem::size_of::<i32>()],
     kill: SiKill,
+    rt: SiRt,
     timer: SiTimer,
     sigchld: SiSigChld,
     sigfault: SiSigFault,
@@ -64,6 +80,7 @@ pub union USiFields {
 pub enum KSiFields {
     Empty,
     Kill(SiKill),
+    Rt(SiRt),
     Timer(SiTimer),
     SigChld(SiSigChld),
     SigFault(SiSigFault),
@@ -76,6 +93,14 @@ impl KSiFields {
             si_uid: uid,
         })
     }
+
+    pub fn rt(pid: Pid, uid: uid_t, sigval: usize) -> Self {
+        Self::Rt(SiRt {
+            si_pid: pid,
+            si_uid: uid,
+            si_sigval: sigval,
+        })
+    }
 }
 
 impl Into<USiFields> for KSiFields {
@@ -85,6 +110,7 @@ impl Into<USiFields> for KSiFields {
                 _pad: [0; SI_PAD_SIZE / core::mem::size_of::<i32>()],
             },
             KSiFields::Kill(kill) => USiFields { kill },
+            KSiFields::Rt(rt) => USiFields { rt },
             KSiFields::SigChld(sigchld) => USiFields { sigchld },
             KSiFields::SigFault(sigfault) => USiFields { sigfault },
             KSiFields::Timer(timer) => USiFields { timer },
@@ -114,4 +140,20 @@ impl SigInfo {
             },
         }
     }
+
+    pub fn sigchld(si_signo: i32, si_code: SiCode, sigchld: SiSigChld) -> Self {
+        Self {
+            si_signo,
+            si_errno: 0,
+            si_code,
+            __pad0: 0,
+            fields: KSiFields::SigChld(sigchld).into(),
+        }
+    }
+
+    pub fn rt(&self) -> SiRt {
+        unsafe { self.fields.rt }
+    }
 }
+
+impl UserStruct for SigInfo {}

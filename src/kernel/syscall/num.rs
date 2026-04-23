@@ -60,6 +60,7 @@ macro_rules! syscall_entries {
             50  => task::fchdir(1),
             93  => task::exit(1),
             94  => task::exit_group(1),
+            95  => task::waitid(5),
             96  => task::set_tid_address(1),
             124 => task::sched_yield(0),
             151 => task::setfsuid(1),
@@ -76,8 +77,12 @@ macro_rules! syscall_entries {
             220 => task::clone(5),
             221 => task::execve(3),
             260 => task::wait4(4),
+            272 => task::kcmp(5),
             281 => task::execveat(5),
+            424 => ipc::pidfd_send_signal(4),
+            434 => task::pidfd_open(2),
             435 => task::clone3(2),
+            438 => task::pidfd_getfd(3),
 
             // Memory
             214 => mm::brk(1),

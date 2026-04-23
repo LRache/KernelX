@@ -201,7 +201,8 @@ impl DriverOps for Stty {
                     // Ctrl-C
                     if attr.canonical {
                         if current::has_task() {
-                            let _ = current::pcb().send_signal(signum::SIGQUIT, SiCode::EMPTY, KSiFields::Empty, None);
+                            let _ =
+                                current::pcb().send_signal(signum::SIGQUIT, SiCode::EMPTY, 0, KSiFields::Empty, None);
                         }
                         push_to_buffer = false;
                     }

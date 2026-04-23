@@ -23,7 +23,7 @@ use crate::kernel::uapi::Uid;
 use crate::kernel::usync::futex;
 use crate::kernel::{config, scheduler};
 use crate::klib::ksync::TaskLocal;
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::{RWLock, SleepLock, SpinLock};
 use crate::{arch, ktrace};
 
 #[derive(Debug, Clone, Copy)]
@@ -87,7 +87,7 @@ pub struct TCB {
     pub kernel_stack: KernelStack,
 
     addrspace: Arc<AddrSpace>,
-    fdtable: TaskLocal<Arc<SleepLock<FDTable>>>,
+    fdtable: RWLock<Arc<SleepLock<FDTable>>>,
 
     pub signal_mask: SpinLock<SignalSet>,
     signal_stack: SpinLock<SignalStackState>,
@@ -135,7 +135,7 @@ impl TCB {
             kernel_stack,
 
             addrspace,
-            fdtable: TaskLocal::new(tid, fdtable),
+            fdtable: RWLock::new(fdtable, "TCB::fdtable"),
 
             signal_mask: SpinLock::new(SignalSet::empty(), "TCB::signal_mask"),
             signal_stack: SpinLock::new(SignalStackState::default(), "TCB::signal_stack"),
@@ -281,12 +281,10 @@ impl TCB {
         }
 
         let new_fdtable = if flags.files {
-            self.fdtable().clone()
+            self.fdtable()
         } else {
-            Arc::new(SleepLock::new(
-                self.fdtable().lock().fork(parent.pid())?,
-                "TCB::fdtable",
-            ))
+            let fdtable = self.fdtable();
+            Arc::new(SleepLock::new(fdtable.lock().fork(parent.pid())?, "TCB::fdtable"))
         };
 
         let new_tcb = Self::new(tid, parent, new_user_context, new_addrspace, new_fdtable);
@@ -336,7 +334,7 @@ impl TCB {
 
         // SAFETY: RandomAccessFile must have dentry and path.
         let exec_path = file.get_dentry().unwrap().get_path();
-        let exec_inode = file.get_inode().cloned().ok_or(Errno::ENOEXEC)?;
+        let exec_inode = file.get_inode().ok_or(Errno::ENOEXEC)?;
         exec_inode.begin_exec()?;
 
         let result = (|| {
@@ -362,15 +360,10 @@ impl TCB {
             new_user_context.set_user_stack_top(usetstack_top);
             new_user_context.set_user_entry(user_entry);
 
-            self.fdtable().lock().cloexec();
+            let fdtable = self.fdtable();
+            fdtable.lock().cloexec();
 
-            let new_tcb = TCB::new(
-                self.tid,
-                &self.parent,
-                new_user_context,
-                addrspace,
-                self.fdtable().clone(),
-            );
+            let new_tcb = TCB::new(self.tid, &self.parent, new_user_context, addrspace, fdtable);
             new_tcb.set_signal_mask(self.get_signal_mask());
 
             Ok((new_tcb, exec_path, exec_inode.clone()))
@@ -403,16 +396,14 @@ impl TCB {
         &self.addrspace
     }
 
-    pub fn fdtable(&self) -> &Arc<SleepLock<FDTable>> {
-        self.fdtable.get_mut()
+    pub fn fdtable(&self) -> Arc<SleepLock<FDTable>> {
+        self.fdtable.read().clone()
     }
 
     pub fn unshare_fdtable(&self) -> SysResult<()> {
-        let new_fdtable = Arc::new(SleepLock::new(
-            self.fdtable.get_mut().lock().fork(self.parent.pid())?,
-            "TCB::fdtable",
-        ));
-        self.fdtable.set(new_fdtable);
+        let fdtable = self.fdtable();
+        let new_fdtable = Arc::new(SleepLock::new(fdtable.lock().fork(self.parent.pid())?, "TCB::fdtable"));
+        *self.fdtable.write() = new_fdtable;
         Ok(())
     }
 

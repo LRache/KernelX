@@ -121,7 +121,8 @@ pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UAr
 
     let (fd_a, fd_b);
     {
-        let mut fdtable = current::fdtable().lock();
+        let fdtable = current::fdtable();
+        let mut fdtable = fdtable.lock();
         fd_a = fdtable.push(sock_a, fd_flags)?;
         fd_b = match fdtable.push(sock_b, fd_flags) {
             Ok(fd) => fd,
@@ -133,7 +134,8 @@ pub fn socketpair(domain: usize, sock_type: usize, protocol: usize, uptr_sv: UAr
     }
 
     if let Err(err) = uptr_sv.write(0, &[fd_a as i32, fd_b as i32]) {
-        let mut fdtable = current::fdtable().lock();
+        let fdtable = current::fdtable();
+        let mut fdtable = fdtable.lock();
         let _ = fdtable.take(fd_a);
         let _ = fdtable.take(fd_b);
         return Err(err);

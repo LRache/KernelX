@@ -79,9 +79,9 @@ impl TCB {
 
         let mut sigframe = SigFrame::empty();
         sigframe.info.si_signo = Into::<u32>::into(signum) as i32;
+        sigframe.info.si_errno = signal.si_errno;
         sigframe.info.si_code = signal.si_code;
         sigframe.info.fields = signal.fields.into();
-        sigframe.info.si_errno = 0;
         sigframe.ucontext._uc_stack = SignalStack::from_state(self.get_signal_stack_state());
         sigframe.ucontext.uc_sigmask = old_mask;
         sigframe.ucontext.uc_mcontext = (*user_context).into();
@@ -207,11 +207,13 @@ impl PCB {
         &self,
         signum: SignalNum,
         si_code: SiCode,
+        si_errno: i32,
         fields: KSiFields,
         dest: Option<Tid>,
     ) -> SysResult<()> {
         let pending = PendingSignal {
             signum,
+            si_errno,
             si_code,
             fields,
             dest,

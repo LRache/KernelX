@@ -142,7 +142,8 @@ pub fn prlimit64(
         }
 
         RLimitResource::NOFILE => {
-            let mut fdtable = current::fdtable().lock();
+            let fdtable = current::fdtable();
+            let mut fdtable = fdtable.lock();
             if !uptr_old_limit.is_null() {
                 let old_limit = RLimit {
                     rlim_cur: fdtable.get_max_fd(),
