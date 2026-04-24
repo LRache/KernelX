@@ -13,6 +13,7 @@ mod context;
 mod csr;
 mod pagetable;
 mod task;
+pub(super) mod test_init;
 mod trap;
 
 pub use context::{KernelContext, SigContext, UserContext};

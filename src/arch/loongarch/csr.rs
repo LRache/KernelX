@@ -45,6 +45,15 @@ pub mod num {
     pub const DMW1:       u32 = 0x181;
     pub const DMW2:       u32 = 0x182;
     pub const DMW3:       u32 = 0x183;
+
+    // CSR.SAVEn — four 64-bit scratch registers preserved across exceptions.
+    // Phase 5 uses SAVE0 to hold the current task's UserContext kaddr so
+    // that asm_usertrap_entry can atomically reach it (analogous to RISC-V's
+    // sscratch). SAVE1..3 reserved for future use (e.g., per-hart cpu id).
+    pub const SAVE0:      u32 = 0x30;
+    pub const SAVE1:      u32 = 0x31;
+    pub const SAVE2:      u32 = 0x32;
+    pub const SAVE3:      u32 = 0x33;
 }
 
 // ---------------------------------------------------------------------
@@ -65,6 +74,73 @@ pub mod crmd {
     pub const DATF_SHIFT: usize = 5;
     /// Instruction fetch memory-access type (bits 8:7).
     pub const DATM_SHIFT: usize = 7;
+}
+
+/// PRMD — saved copy of CRMD on exception. The low bits we care about are
+/// PPLV (bits 1:0 = PLV at the time of the exception) and PIE (bit 2 = IE
+/// at the time). `ertn` restores CRMD from PRMD atomically.
+pub mod prmd {
+    /// Previous PLV (bits 1:0). 0 = kernel, 3 = user.
+    pub const PPLV_MASK: usize = 0b11;
+    /// Previous IE (bit 2). `ertn` copies this back into CRMD.IE.
+    pub const PIE: usize = 1 << 2;
+    /// User-mode frame we hand to `ertn` on each return_to_user:
+    /// PLV=3, IE=1 (so the user runs with interrupts on).
+    pub const USERFRAME: usize = 0b11 | PIE;
+}
+
+/// PWCL — page-walk configuration, low half. Encodes the bit ranges
+/// HPTW should use at each directory level when translating a VA.
+///
+/// Layout (LoongArch Vol.1 §7.4.15): six 5-bit fields packing
+///   [4:0]   PTBase   — bit position of level-3 (leaf PT) index
+///   [9:5]   PTWidth  — width of the leaf index
+///   [14:10] Dir1Base — bit position of level-2 (mid dir) index
+///   [19:15] Dir1Width
+///   [24:20] Dir2Base — bit position of level-1 (top dir) index
+///   [29:25] Dir2Width
+///   [31:30] PTEWidth — encoded: 0=8-byte PTEs (we want this)
+pub mod pwcl {
+    pub const PTBASE_SHIFT:    u32 = 0;
+    pub const PTWIDTH_SHIFT:   u32 = 5;
+    pub const DIR1_BASE_SHIFT: u32 = 10;
+    pub const DIR1_WIDTH_SHIFT: u32 = 15;
+    pub const DIR2_BASE_SHIFT: u32 = 20;
+    pub const DIR2_WIDTH_SHIFT: u32 = 25;
+    pub const PTEWIDTH_SHIFT:  u32 = 30;
+
+    /// 3-level 9-9-9-12 walker on 4 KiB pages with 64-bit PTEs:
+    ///   VA[11:0]  = page offset
+    ///   VA[20:12] = PT   (leaf)
+    ///   VA[29:21] = Dir1
+    ///   VA[38:30] = Dir2
+    ///   (VA[47:39] would be Dir3 — unused, set in PWCH to 0)
+    pub const THREE_LEVEL_9_9_9_12: usize =
+          (12usize << PTBASE_SHIFT)
+        | (9usize  << PTWIDTH_SHIFT)
+        | (21usize << DIR1_BASE_SHIFT)
+        | (9usize  << DIR1_WIDTH_SHIFT)
+        | (30usize << DIR2_BASE_SHIFT)
+        | (9usize  << DIR2_WIDTH_SHIFT)
+        | (0usize  << PTEWIDTH_SHIFT);  // 0 ⇒ 8-byte PTE
+}
+
+/// PWCH — page-walk configuration, high half. With 3 levels we leave it
+/// at 0 (no Dir3).
+pub mod pwch {
+    pub const DIR3_BASE_SHIFT:  u32 = 0;
+    pub const DIR3_WIDTH_SHIFT: u32 = 6;
+    pub const DIR4_BASE_SHIFT:  u32 = 12;
+    pub const DIR4_WIDTH_SHIFT: u32 = 18;
+
+    /// Three levels only — no higher directories.
+    pub const NONE: usize = 0;
+}
+
+/// STLBPS — shared TLB page size. Value is the log2 of the page size.
+/// For 4 KiB pages: 12.
+pub mod stlbps {
+    pub const PS_4K: usize = 12;
 }
 
 /// ECFG — interrupt enable and vector size.
