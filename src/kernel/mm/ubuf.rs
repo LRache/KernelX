@@ -28,6 +28,14 @@ impl<'a> UAddrSpaceBuffer<'a> {
         self.length
     }
 
+    pub fn with_length(&self, length: usize) -> Self {
+        Self {
+            uaddr: self.uaddr,
+            length,
+            addrspace: self.addrspace,
+        }
+    }
+
     pub fn uaddr(&self) -> usize {
         self.uaddr
     }

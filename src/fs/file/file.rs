@@ -7,8 +7,10 @@ use crate::fs::vfs::Dentry;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
+use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
+use crate::kernel::scheduler::current;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SleepLock;
 
@@ -68,7 +70,8 @@ impl RandomAccessFile {
         if self.flags.append {
             offset = self.inode.size()? as usize;
         }
-        let len = self.inode.writeat(buf, offset)?;
+        let len = self.limit_write_len(offset, buf.len())?;
+        let len = self.inode.writeat(&buf[..len], offset)?;
         Ok(len)
     }
 
@@ -146,6 +149,24 @@ impl RandomAccessFile {
             release_bsd_flock(&self.inode, self.flock_owner_id());
         }
     }
+
+    fn limit_write_len(&self, offset: usize, len: usize) -> SysResult<usize> {
+        let (rlim_cur, _) = current::pcb().file_size_limit();
+        if len == 0 || rlim_cur == usize::MAX {
+            return Ok(len);
+        }
+
+        if (self.inode.mode()? & Mode::S_IFMT) != Mode::S_IFREG {
+            return Ok(len);
+        }
+
+        if offset >= rlim_cur {
+            let _ = current::pcb().send_signal(signum::SIGXFSZ, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
+            return Err(Errno::EFBIG);
+        }
+
+        Ok(core::cmp::min(len, rlim_cur - offset))
+    }
 }
 
 impl FileOps for RandomAccessFile {
@@ -171,7 +192,8 @@ impl FileOps for RandomAccessFile {
 
             *pos = size as usize;
         }
-        let len = self.inode.writeat(buf, *pos)?;
+        let len = self.limit_write_len(*pos, buf.len())?;
+        let len = self.inode.writeat(&buf[..len], *pos)?;
         *pos += len;
 
         Ok(len)
@@ -182,7 +204,9 @@ impl FileOps for RandomAccessFile {
         if self.flags.append {
             *pos = self.inode.size()? as usize;
         }
-        let len = self.inode.write_from_user(ubuf, *pos, self.flags.direct)?;
+        let limit_len = self.limit_write_len(*pos, ubuf.length())?;
+        let ubuf = ubuf.with_length(limit_len);
+        let len = self.inode.write_from_user(&ubuf, *pos, self.flags.direct)?;
         *pos += len;
         Ok(len)
     }
