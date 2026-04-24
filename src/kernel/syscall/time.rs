@@ -3,7 +3,6 @@ use core::convert::{TryFrom, TryInto};
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
-use crate::driver;
 use crate::driver::chosen::kclock;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
@@ -69,6 +68,17 @@ enum ClockId {
     CLOCK_THREAD_CPUTIME_ID = 3,
 }
 
+impl ClockId {
+    fn now(&self) -> SysResult<Duration> {
+        match self {
+            ClockId::CLOCK_REALTIME => kclock::now(),
+            ClockId::CLOCK_MONOTONIC | ClockId::CLOCK_PROCESS_CPUTIME_ID | ClockId::CLOCK_THREAD_CPUTIME_ID => {
+                Ok(timer::now())
+            }
+        }
+    }
+}
+
 pub fn clock_nanosleep(
     clockid: usize,
     flags: usize,
@@ -87,7 +97,7 @@ pub fn clock_nanosleep(
     let req: Duration = uptr_req.read()?.try_into()?;
 
     let to_sleep = if flags.contains(ClockNanosleepFlags::TIMER_ABSTIME) {
-        let now = kclock::now()?;
+        let now = clockid.now()?;
         if req <= now {
             return Ok(0);
         }
@@ -99,7 +109,7 @@ pub fn clock_nanosleep(
         req
     };
 
-    let start_sleep = kclock::now()?;
+    let start_sleep = clockid.now()?;
     let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
@@ -107,7 +117,7 @@ pub fn clock_nanosleep(
         Event::Timeout => Ok(0),
         Event::Signal => {
             if !uptr_rem.is_null() && !flags.contains(ClockNanosleepFlags::TIMER_ABSTIME) {
-                let elapsed = kclock::now()? - start_sleep;
+                let elapsed = clockid.now()? - start_sleep;
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
@@ -118,10 +128,11 @@ pub fn clock_nanosleep(
     }
 }
 
-pub fn clock_gettime(_clockid: usize, uptr_timespec: UPtr<Timespec>) -> SysResult<usize> {
+pub fn clock_gettime(clockid: usize, uptr_timespec: UPtr<Timespec>) -> SysResult<usize> {
     uptr_timespec.should_not_null()?;
 
-    let timespec = driver::chosen::kclock::now()?.into();
+    let clockid = ClockId::try_from(clockid).map_err(|_| Errno::EINVAL)?;
+    let timespec = clockid.now()?.into();
 
     uptr_timespec.write(timespec)?;
 
