@@ -267,7 +267,7 @@ impl Dentry {
 
         if parent_mode.contains(Mode::S_ISGID) {
             owner.gid = parent_gid;
-            if mode.contains(Mode::S_IFDIR) {
+            if (mode & Mode::S_IFMT) == Mode::S_IFDIR {
                 mode.insert(Mode::S_ISGID);
             }
         }

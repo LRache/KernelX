@@ -2057,7 +2057,7 @@ pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
     let inode = dentry.get_inode();
     let mode = inode.mode()?;
-    if mode.contains(Mode::S_IFDIR) {
+    if (mode & Mode::S_IFMT) == Mode::S_IFDIR {
         return Err(Errno::EISDIR);
     }
 
