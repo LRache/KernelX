@@ -72,6 +72,20 @@ impl TimeCounter {
             system_start: Some(timer::now()),
         }
     }
+
+    fn pause_system_time(&mut self, now: Duration) -> Duration {
+        if let Some(system_start) = self.system_start.take() {
+            let delta = now.checked_sub(system_start).unwrap_or(Duration::ZERO);
+            self.system_time += delta;
+            delta
+        } else {
+            Duration::ZERO
+        }
+    }
+
+    fn resume_system_time(&mut self, now: Duration) {
+        self.system_start = Some(now);
+    }
 }
 
 pub struct TCB {
@@ -450,6 +464,36 @@ impl TCB {
         self.create_time
     }
 
+    pub fn thread_cpu_time(&self) -> Duration {
+        let now = timer::now();
+        let counter = self.time_counter.lock();
+        let mut cpu_time = counter.user_time + counter.system_time;
+        if current::has_task() && current::tid() == self.tid {
+            if let Some(user_start) = counter.user_start {
+                cpu_time += now.checked_sub(user_start).unwrap_or(Duration::ZERO);
+            }
+            if let Some(system_start) = counter.system_start {
+                cpu_time += now.checked_sub(system_start).unwrap_or(Duration::ZERO);
+            }
+        }
+        cpu_time
+    }
+
+    pub fn check_cpu_timers(&self) {
+        self.parent.timers.check_process_cpu();
+        self.parent.timers.check_thread_cpu(self.tid);
+    }
+
+    fn pause_user_task_system_time(&self) {
+        let delta = self.time_counter.lock().pause_system_time(timer::now());
+        self.parent.add_task_time(Duration::ZERO, delta);
+        self.check_cpu_timers();
+    }
+
+    fn resume_user_task_system_time(&self) {
+        self.time_counter.lock().resume_system_time(timer::now());
+    }
+
     // pub fn with_state_mut<F, R>(&self, f: F) -> R
     // where
     //     F: FnOnce(&mut TaskStateSet) -> R,
@@ -570,6 +614,14 @@ impl Task for TCB {
 
     fn tcb(&self) -> &TCB {
         self
+    }
+
+    fn pause_system_time(&self) {
+        self.pause_user_task_system_time();
+    }
+
+    fn resume_system_time(&self) {
+        self.resume_user_task_system_time();
     }
 
     fn run_if_ready(&self) -> bool {

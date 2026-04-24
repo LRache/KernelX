@@ -6,7 +6,7 @@ use core::time::Duration;
 use crate::fs::file::RandomAccessFile;
 use crate::fs::{Dentry, InodeOps, Mode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, WaitQueue};
+use crate::kernel::event::{Event, FileEvent, TimerTable, WaitQueue, timer};
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, SignalNum, signum};
 use crate::kernel::main::deinit;
 use crate::kernel::scheduler;
@@ -84,6 +84,7 @@ pub struct PCB {
     pub itimer_expiry_us: SpinLock<[u64; 3]>,
     /// Interval for repeating itimers
     pub itimer_interval: SpinLock<[Duration; 3]>,
+    pub timers: TimerTable,
 
     // TODO: 减少鉴权时候的数据拷贝。
     uid: SpinLock<Uid>,
@@ -101,6 +102,8 @@ pub struct PCB {
     execed: SpinLock<bool>,
     exit_signal: SignalNum,
 
+    /// Cumulative CPU time of this process' own threads.
+    tasks_time_usage: SpinLock<(Duration, Duration)>,
     /// CPU time snapshot taken at exit (own threads). Preserved after recycle clears tasks.
     tasks_time_usage_capture: SpinLock<(Duration, Duration)>,
     /// Cumulative CPU time of all waited-for (reaped) children, including their descendants.
@@ -138,6 +141,7 @@ impl PCB {
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
             itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
             itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
+            timers: TimerTable::new(),
 
             uid: SpinLock::new(*parent.uid.lock(), "PCB::uid"),
             euid: SpinLock::new(*parent.euid.lock(), "PCB::euid"),
@@ -154,6 +158,7 @@ impl PCB {
             execed: SpinLock::new(false, "PCB::execed"),
             exit_signal,
 
+            tasks_time_usage: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage"),
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
             waited_children_time_usage: SpinLock::new(
                 (Duration::ZERO, Duration::ZERO),
@@ -209,9 +214,11 @@ impl PCB {
             execed: SpinLock::new(false, "PCB::execed"),
             exit_signal: signum::SIGCHLD,
 
+            tasks_time_usage: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage"),
             itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
             itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
             itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
+            timers: TimerTable::new(),
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
             waited_children_time_usage: SpinLock::new(
@@ -488,6 +495,8 @@ impl PCB {
             tasks.push(first_task.clone());
         }
 
+        self.timers.clear();
+
         if filemode.contains(Mode::S_ISUID) {
             self.set_euid(fileowner.0);
             self.set_suid(fileowner.0);
@@ -548,6 +557,7 @@ impl PCB {
         // and defer their cleanup to when this process is waited on (e.g. waitpid),
         // at which point it is safe to reclaim the resources.
         drop(tasks);
+        self.timers.clear();
         self.replace_exec_inode(None);
 
         *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();
@@ -778,6 +788,12 @@ impl PCB {
         *self.waited_children_time_usage.lock()
     }
 
+    pub fn add_task_time(&self, user_time: Duration, system_time: Duration) {
+        let mut usage = self.tasks_time_usage.lock();
+        usage.0 += user_time;
+        usage.1 += system_time;
+    }
+
     /// Called by the parent after successfully reaping `child` via wait.
     /// Accumulates the child's own exit time and its waited-children time into self.
     fn accumulate_waited_child(&self, child: &PCB) {
@@ -789,22 +805,32 @@ impl PCB {
     }
 
     pub fn tasks_usage_time(&self) -> (Duration, Duration) {
-        let tasks = self.tasks.lock();
-        let mut utime = Duration::ZERO;
-        let mut stime = Duration::ZERO;
+        let (mut utime, mut stime) = *self.tasks_time_usage.lock();
+        let now = timer::now();
+        let current_is_self = current::has_task() && current::pid() == self.pid();
 
-        tasks.iter().for_each(|task| {
-            let counter = task.time_counter.lock();
-            utime += counter.user_time;
-            stime += counter.system_time;
-        });
+        if current_is_self {
+            let counter = current::tcb().time_counter.lock();
+            if let Some(user_start) = counter.user_start {
+                utime += now.checked_sub(user_start).unwrap_or(Duration::ZERO);
+            }
+            if let Some(system_start) = counter.system_start {
+                stime += now.checked_sub(system_start).unwrap_or(Duration::ZERO);
+            }
+        }
 
         (utime, stime)
+    }
+
+    pub fn process_cpu_time(&self) -> Duration {
+        let (utime, stime) = self.tasks_usage_time();
+        utime + stime
     }
 }
 
 impl Drop for PCB {
     fn drop(&mut self) {
+        self.timers.clear();
         let exec_inode = self.exec_inode.lock().take();
         if let Some(exec_inode) = exec_inode {
             exec_inode.end_exec();

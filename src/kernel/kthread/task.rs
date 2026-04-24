@@ -78,6 +78,10 @@ impl Task for KThread {
         unreachable!("KThread is not a TCB")
     }
 
+    fn pause_system_time(&self) {}
+
+    fn resume_system_time(&self) {}
+
     fn kstack(&self) -> &KernelStack {
         &self.kstack
     }

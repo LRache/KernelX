@@ -21,13 +21,16 @@ use crate::klib::SpinLock;
 pub enum TimerFdClockId {
     CLOCK_REALTIME = 0,
     CLOCK_MONOTONIC = 1,
+    CLOCK_BOOTTIME = 7,
+    CLOCK_REALTIME_ALARM = 8,
+    CLOCK_BOOTTIME_ALARM = 9,
 }
 
 impl TimerFdClockId {
     fn now(self) -> SysResult<Duration> {
         match self {
-            Self::CLOCK_REALTIME => kclock::now(),
-            Self::CLOCK_MONOTONIC => Ok(timer::now()),
+            Self::CLOCK_REALTIME | Self::CLOCK_REALTIME_ALARM => kclock::now(),
+            Self::CLOCK_MONOTONIC | Self::CLOCK_BOOTTIME | Self::CLOCK_BOOTTIME_ALARM => Ok(timer::now()),
         }
     }
 }
