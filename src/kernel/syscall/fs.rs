@@ -65,17 +65,6 @@ bitflags! {
     }
 }
 
-const F_RDLCK: i16 = 0;
-const F_WRLCK: i16 = 1;
-const F_UNLCK: i16 = 2;
-const SEEK_SET: i16 = 0;
-const SEEK_CUR: i16 = 1;
-const SEEK_END: i16 = 2;
-const LOCK_SH: usize = 1;
-const LOCK_EX: usize = 2;
-const LOCK_NB: usize = 4;
-const LOCK_UN: usize = 8;
-
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct Flock {
@@ -90,6 +79,22 @@ struct Flock {
 
 impl UserStruct for Flock {}
 
+#[derive(TryFromPrimitive)]
+#[repr(i16)]
+enum FcntlLockType {
+    Read = 0,
+    Write = 1,
+    Unlock = 2,
+}
+
+#[derive(TryFromPrimitive)]
+#[repr(i16)]
+enum FcntlWhence {
+    Set = 0,
+    Cur = 1,
+    End = 2,
+}
+
 fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<&Arc<dyn InodeOps>> {
     let inode = file.get_inode().ok_or(Errno::EINVAL)?;
     if inode.lock_state().is_none() {
@@ -98,56 +103,14 @@ fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<&Arc<dyn InodeOps>> {
     Ok(inode)
 }
 
-enum RandomAccess<'a> {
-    File(&'a RandomAccessFile),
-}
-
-impl RandomAccess<'_> {
-    fn readable(&self) -> bool {
-        match self {
-            Self::File(file) => file.readable(),
-        }
-    }
-
-    fn writable(&self) -> bool {
-        match self {
-            Self::File(file) => file.writable(),
-        }
-    }
-
-    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        match self {
-            Self::File(file) => file.pread(buf, offset),
-        }
-    }
-
-    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
-        match self {
-            Self::File(file) => file.pwrite(buf, offset),
-        }
-    }
-
-    fn get_dent(&self) -> SysResult<Option<(crate::fs::file::DirResult, usize)>> {
-        match self {
-            Self::File(file) => file.get_dent(),
-        }
-    }
-
-    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
-        match self {
-            Self::File(file) => file.seek(offset, whence),
-        }
-    }
-}
-
-fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<RandomAccess<'_>> {
+fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<&RandomAccessFile> {
     if let Some(file) = file.downcast_ref::<RandomAccessFile>() {
-        return Ok(RandomAccess::File(file));
+        return Ok(file);
     }
     if let Some(file) = file.downcast_ref::<PidFile>()
         && let Some(file) = file.random_access_file()
     {
-        return Ok(RandomAccess::File(file));
+        return Ok(file);
     }
     Err(Errno::ESPIPE)
 }
@@ -157,28 +120,28 @@ fn normalize_posix_flock(
     inode: &Arc<dyn InodeOps>,
     flock: &Flock,
 ) -> SysResult<(Option<PosixFlockType>, i64, i64)> {
-    let lock_type = match flock.l_type {
-        F_RDLCK => {
+    let lock_type = match FcntlLockType::try_from(flock.l_type).map_err(|_| Errno::EINVAL)? {
+        FcntlLockType::Read => {
             if !file.readable() {
                 return Err(Errno::EBADF);
             }
             Some(PosixFlockType::Read)
         }
-        F_WRLCK => {
+        FcntlLockType::Write => {
             if !file.writable() {
                 return Err(Errno::EBADF);
             }
             Some(PosixFlockType::Write)
         }
-        F_UNLCK => None,
-        _ => return Err(Errno::EINVAL),
+        FcntlLockType::Unlock => None,
     };
 
-    let base = match flock.l_whence {
-        SEEK_SET => 0,
-        SEEK_CUR => i64::try_from(random_access_file(file)?.seek(0, SeekWhence::CUR)?).map_err(|_| Errno::EINVAL)?,
-        SEEK_END => i64::try_from(inode.size()?).map_err(|_| Errno::EINVAL)?,
-        _ => return Err(Errno::EINVAL),
+    let base = match FcntlWhence::try_from(flock.l_whence).map_err(|_| Errno::EINVAL)? {
+        FcntlWhence::Set => 0,
+        FcntlWhence::Cur => {
+            i64::try_from(random_access_file(file)?.seek(0, SeekWhence::CUR)?).map_err(|_| Errno::EINVAL)?
+        }
+        FcntlWhence::End => i64::try_from(inode.size()?).map_err(|_| Errno::EINVAL)?,
     };
 
     let mut start = base.checked_add(flock.l_start).ok_or(Errno::EINVAL)?;
@@ -206,10 +169,10 @@ fn normalize_posix_flock(
 fn flock_from_conflict(conflict: PosixFlock) -> Flock {
     Flock {
         l_type: match conflict.lock_type {
-            PosixFlockType::Read => F_RDLCK,
-            PosixFlockType::Write => F_WRLCK,
+            PosixFlockType::Read => FcntlLockType::Read as i16,
+            PosixFlockType::Write => FcntlLockType::Write as i16,
         },
-        l_whence: SEEK_SET,
+        l_whence: FcntlWhence::Set as i16,
         __pad0: 0,
         l_start: conflict.start,
         l_len: conflict.len,
@@ -233,7 +196,7 @@ fn fcntl_getlk(file: &Arc<dyn FileOps>, arg: usize) -> SyscallRet {
     if let Some(conflict) = conflict {
         user_lock = flock_from_conflict(conflict);
     } else {
-        user_lock.l_type = F_UNLCK;
+        user_lock.l_type = FcntlLockType::Unlock as i16;
     }
 
     uptr_lock.write(user_lock)?;
@@ -1509,14 +1472,22 @@ bitflags! {
 pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flags: usize) -> SyscallRet {
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
-    let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
+    let path = if uptr_path.is_null() && flags.contains(AtFlags::AT_EMPTY_PATH) {
         String::new()
     } else {
         uptr_path.read_fixed()?
     };
 
     let fstat = if path.is_empty() {
-        current::fdtable().lock().get(dirfd)?.fstat()?
+        if !flags.contains(AtFlags::AT_EMPTY_PATH) {
+            return Err(Errno::ENOENT);
+        }
+
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| cwd.get_inode().fstat())?
+        } else {
+            current::fdtable().lock().get(dirfd)?.fstat()?
+        }
     } else {
         let helper = if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
             vfs::load_dentry_at_nofollow
@@ -2126,20 +2097,32 @@ pub fn fsync(fd: usize) -> SyscallRet {
     Ok(0)
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct FlockOperation: usize {
+        const SHARED = 1;
+        const EXCLUSIVE = 1 << 1;
+        const NONBLOCK = 1 << 2;
+        const UNLOCK = 1 << 3;
+    }
+}
+
 pub fn flock(fd: usize, operation: usize) -> SyscallRet {
+    let operation = FlockOperation::from_bits(operation).ok_or(Errno::EINVAL)?;
     let file = current::fdtable().lock().get(fd)?;
     let inode = file.get_inode().ok_or(Errno::EINVAL)?;
     let lock_state = inode.lock_state().ok_or(Errno::EINVAL)?;
 
-    let request_type = match operation & (LOCK_SH | LOCK_EX | LOCK_UN) {
-        LOCK_SH => Some(BsdFlockType::Shared),
-        LOCK_EX => Some(BsdFlockType::Exclusive),
-        LOCK_UN => None,
-        _ => return Err(Errno::EINVAL),
-    };
-    if operation & !(LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN) != 0 {
+    let lock_operation = operation & (FlockOperation::SHARED | FlockOperation::EXCLUSIVE | FlockOperation::UNLOCK);
+    let request_type = if lock_operation == FlockOperation::SHARED {
+        Some(BsdFlockType::Shared)
+    } else if lock_operation == FlockOperation::EXCLUSIVE {
+        Some(BsdFlockType::Exclusive)
+    } else if lock_operation == FlockOperation::UNLOCK {
+        None
+    } else {
         return Err(Errno::EINVAL);
-    }
+    };
 
     let owner = file.flock_owner_id();
     if request_type.is_none() {
@@ -2151,7 +2134,7 @@ pub fn flock(fd: usize, operation: usize) -> SyscallRet {
     }
 
     let request_type = request_type.unwrap();
-    let blocking = operation & LOCK_NB == 0;
+    let blocking = !operation.contains(FlockOperation::NONBLOCK);
     loop {
         let mut state = lock_state.lock();
         if state.bsd.get_conflict(owner, request_type).is_none() {
