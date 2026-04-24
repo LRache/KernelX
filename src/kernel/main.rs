@@ -36,6 +36,17 @@ fn kinit() {
 
     mm::vdso::init();
 
+    // TEMP(phase6): On LoongArch, `arch::scan_device` is still a no-op, so
+    // `parse_boot_args()` never fires and `BOOT_ARGS` stays uninitialized.
+    // Release builds would then read the cell as UB (BTreeMap internals as
+    // garbage, yielding wild pointer deref → ADE). Seed it empty so every
+    // `.get(...)` returns None and the DEFAULT_* fallbacks below kick in.
+    //
+    // Once Phase 6 lands an FDT parser that calls parse_boot_args(), drop
+    // this block.
+    #[cfg(arch_loongarch64)]
+    BOOT_ARGS.init(BTreeMap::new());
+
     fs::mount_init_fs(
         BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT_DEVICE),
         BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE),
