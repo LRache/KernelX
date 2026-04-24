@@ -18,8 +18,9 @@ use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct, utils};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::pidfd::PidFile;
-use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec, Uid};
+use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Uid};
 
+use super::common::Timespec;
 use super::def::*;
 
 pub fn dup(oldfd: usize) -> SyscallRet {

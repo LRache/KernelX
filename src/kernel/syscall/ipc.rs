@@ -22,6 +22,7 @@ use crate::kernel::uapi::OpenFlags;
 use crate::kernel::{config, uapi};
 
 use super::SyscallRet;
+use super::common::Timespec;
 
 bitflags! {
     struct PipeFlags: usize {
@@ -420,7 +421,7 @@ pub fn rt_sig_return() -> SyscallRet {
     arch::return_to_user();
 }
 
-pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeout: UPtr<uapi::Timespec>) -> SyscallRet {
+pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeout: UPtr<Timespec>) -> SyscallRet {
     uptr_set.should_not_null()?;
 
     let timeout = uptr_timeout.read_optional()?;

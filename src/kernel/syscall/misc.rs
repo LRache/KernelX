@@ -4,13 +4,15 @@ use num_enum::TryFromPrimitive;
 
 use crate::arch;
 use crate::fs::vfs;
+use crate::kernel::config;
 use crate::kernel::errno::Errno;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::{config, uapi};
 use crate::klib::dmesg;
 use crate::klib::random::random;
+
+use super::common::Timeval;
 
 pub fn rseq() -> Result<usize, Errno> {
     // This syscall is a no-op in the current implementation.
@@ -211,22 +213,22 @@ pub fn get_mempolicy() -> SyscallRet {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Rusage {
-    ru_utime: uapi::TimeVal, // user CPU time used
-    ru_stime: uapi::TimeVal, // system CPU time used
-    ru_maxrss: isize,        // maximum resident set size
-    ru_ixrss: isize,         // integral shared memory size
-    ru_idrss: isize,         // integral unshared data size
-    ru_isrss: isize,         // integral unshared stack size
-    ru_minflt: isize,        // page reclaims (soft page faults)
-    ru_majflt: isize,        // page faults (hard page faults)
-    ru_nswap: isize,         // swaps
-    ru_inblock: isize,       // block input operations
-    ru_oublock: isize,       // block output operations
-    ru_msgsnd: isize,        // IPC messages sent
-    ru_msgrcv: isize,        // IPC messages received
-    ru_nsignals: isize,      // signals received
-    ru_nvcsw: isize,         // voluntary context switches
-    ru_nivcsw: isize,        // involuntary context switches
+    ru_utime: Timeval,  // user CPU time used
+    ru_stime: Timeval,  // system CPU time used
+    ru_maxrss: isize,   // maximum resident set size
+    ru_ixrss: isize,    // integral shared memory size
+    ru_idrss: isize,    // integral unshared data size
+    ru_isrss: isize,    // integral unshared stack size
+    ru_minflt: isize,   // page reclaims (soft page faults)
+    ru_majflt: isize,   // page faults (hard page faults)
+    ru_nswap: isize,    // swaps
+    ru_inblock: isize,  // block input operations
+    ru_oublock: isize,  // block output operations
+    ru_msgsnd: isize,   // IPC messages sent
+    ru_msgrcv: isize,   // IPC messages received
+    ru_nsignals: isize, // signals received
+    ru_nvcsw: isize,    // voluntary context switches
+    ru_nivcsw: isize,   // involuntary context switches
 }
 
 impl UserStruct for Rusage {}
@@ -234,8 +236,8 @@ impl UserStruct for Rusage {}
 impl Default for Rusage {
     fn default() -> Self {
         Rusage {
-            ru_utime: uapi::TimeVal { tv_sec: 0, tv_usec: 0 },
-            ru_stime: uapi::TimeVal { tv_sec: 0, tv_usec: 0 },
+            ru_utime: Timeval::ZERO,
+            ru_stime: Timeval::ZERO,
             ru_maxrss: 0,
             ru_ixrss: 0,
             ru_idrss: 0,

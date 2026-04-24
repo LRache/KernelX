@@ -6,11 +6,12 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver::chosen::kclock;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, Timer, TimerClockId, TimerNotify, TimerTime, timer};
+use crate::kernel::event::{Event, Timer, TimerClockId, TimerNotify, timer};
 use crate::kernel::ipc::SignalNum;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UPtr, UserPointer, UserStruct};
-use crate::kernel::uapi::{Timespec, Timeval};
+
+use super::common::{ITimerSpec, Timespec, Timeval};
 
 pub fn gettimeofday(uptr_timeval: UPtr<Timeval>, uptr_tz: UPtr<u8>) -> SysResult<usize> {
     if !uptr_tz.is_null() {
@@ -164,30 +165,6 @@ pub fn clock_getres(_clockid: usize, uptr_timespec: UPtr<Timespec>) -> SysResult
     Ok(0)
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TimerSpec {
-    it_interval: Timespec,
-    it_value: Timespec,
-}
-
-impl UserStruct for TimerSpec {}
-
-impl TimerSpec {
-    fn into_durations(self) -> SysResult<(Duration, Duration)> {
-        Ok((self.it_value.try_into()?, self.it_interval.try_into()?))
-    }
-}
-
-impl From<TimerTime> for TimerSpec {
-    fn from(time: TimerTime) -> Self {
-        Self {
-            it_interval: time.interval.into(),
-            it_value: time.value.into(),
-        }
-    }
-}
-
 #[repr(i32)]
 #[derive(Debug, TryFromPrimitive)]
 #[allow(non_camel_case_types)]
@@ -287,8 +264,8 @@ pub fn timer_create(clockid: usize, uptr_sev: UPtr<SigEvent>, uptr_timerid: UPtr
 pub fn timer_settime(
     timerid: usize,
     flags: usize,
-    uptr_new_value: UPtr<TimerSpec>,
-    uptr_old_value: UPtr<TimerSpec>,
+    uptr_new_value: UPtr<ITimerSpec>,
+    uptr_old_value: UPtr<ITimerSpec>,
 ) -> SysResult<usize> {
     uptr_new_value.should_not_null()?;
 
@@ -297,19 +274,20 @@ pub fn timer_settime(
     let timer = get_timer(timerid)?;
     let old = timer.set_time(value, interval, flags.contains(TimerSetTimeFlags::TIMER_ABSTIME))?;
     if !uptr_old_value.is_null() {
-        uptr_old_value.write(old.into())?;
+        uptr_old_value.write(ITimerSpec::from_durations(old.interval, old.value))?;
     }
 
     Ok(0)
 }
 
-pub fn timer_gettime(timerid: usize, uptr_value: UPtr<TimerSpec>) -> SysResult<usize> {
+pub fn timer_gettime(timerid: usize, uptr_value: UPtr<ITimerSpec>) -> SysResult<usize> {
     if uptr_value.is_null() {
         return Err(Errno::EFAULT);
     }
 
     let timer = get_timer(timerid)?;
-    uptr_value.write(timer.get_time().into())?;
+    let time = timer.get_time();
+    uptr_value.write(ITimerSpec::from_durations(time.interval, time.value))?;
 
     Ok(0)
 }

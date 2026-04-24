@@ -10,16 +10,17 @@ use num_enum::TryFromPrimitive;
 use crate::arch;
 use crate::fs::file::FileOps;
 use crate::kernel::errno::Errno;
-use crate::kernel::event::{Event, EventFd, FileEvent, TimerFd, TimerFdClockId, TimerFdTime, timer};
+use crate::kernel::event::{Event, EventFd, FileEvent, TimerFd, TimerFdClockId, timer};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet, signum};
 use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
 use crate::kernel::task::PCB;
 use crate::kernel::task::fdtable::FDFlags;
-use crate::kernel::uapi;
 use crate::kernel::uapi::OpenFlags;
 use crate::klib::defer;
+
+use super::common::{ITimerSpec, ITimerVal, Timespec32};
 
 const FD_SET_SIZE: usize = 1024;
 
@@ -61,30 +62,6 @@ pub fn eventfd2(initval: usize, flags: usize) -> SysResult<usize> {
     Ok(fd)
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TimerFdSpec {
-    it_interval: uapi::Timespec,
-    it_value: uapi::Timespec,
-}
-
-impl UserStruct for TimerFdSpec {}
-
-impl TimerFdSpec {
-    fn into_durations(self) -> SysResult<(Duration, Duration)> {
-        Ok((self.it_value.try_into()?, self.it_interval.try_into()?))
-    }
-}
-
-impl From<TimerFdTime> for TimerFdSpec {
-    fn from(time: TimerFdTime) -> Self {
-        Self {
-            it_interval: time.interval.into(),
-            it_value: time.value.into(),
-        }
-    }
-}
-
 pub fn timerfd_create(clockid: usize, flags: usize) -> SysResult<usize> {
     let clock_id = TimerFdClockId::try_from(clockid).map_err(|_| Errno::EINVAL)?;
     let flags = TimerFdCreateFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
@@ -104,8 +81,8 @@ pub fn timerfd_create(clockid: usize, flags: usize) -> SysResult<usize> {
 pub fn timerfd_settime(
     fd: usize,
     flags: usize,
-    uptr_new_value: UPtr<TimerFdSpec>,
-    uptr_old_value: UPtr<TimerFdSpec>,
+    uptr_new_value: UPtr<ITimerSpec>,
+    uptr_old_value: UPtr<ITimerSpec>,
 ) -> SysResult<usize> {
     uptr_new_value.should_not_null()?;
 
@@ -116,16 +93,17 @@ pub fn timerfd_settime(
 
     let old = timerfd.set_time(value, interval, flags.contains(TimerFdSetTimeFlags::TFD_TIMER_ABSTIME))?;
     if !uptr_old_value.is_null() {
-        uptr_old_value.write(old.into())?;
+        uptr_old_value.write(ITimerSpec::from_durations(old.interval, old.value))?;
     }
 
     Ok(0)
 }
 
-pub fn timerfd_gettime(fd: usize, uptr_value: UPtr<TimerFdSpec>) -> SysResult<usize> {
+pub fn timerfd_gettime(fd: usize, uptr_value: UPtr<ITimerSpec>) -> SysResult<usize> {
     let file = current::fdtable().lock().get(fd)?;
     let timerfd = file.downcast_ref::<TimerFd>().ok_or(Errno::EINVAL)?;
-    uptr_value.write(timerfd.get_time().into())?;
+    let time = timerfd.get_time();
+    uptr_value.write(ITimerSpec::from_durations(time.interval, time.value))?;
 
     Ok(0)
 }
@@ -413,7 +391,7 @@ pub fn pselect6_time32(
     uptr_readfds: UPtr<FdSet>,
     uptr_writefds: UPtr<FdSet>,
     uptr_exceptfds: UPtr<FdSet>,
-    uptr_timeout: UPtr<uapi::Timespec32>,
+    uptr_timeout: UPtr<Timespec32>,
     uptr_sigmask: UPtr<SignalSet>,
 ) -> SysResult<usize> {
     if nfds > FD_SET_SIZE {
@@ -596,7 +574,7 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
 pub fn ppoll_time32(
     uptr_ufds: UArray<Pollfd>,
     nfds: usize,
-    uptr_timeout: UPtr<uapi::Timespec32>,
+    uptr_timeout: UPtr<Timespec32>,
     uptr_sigmask: UPtr<SignalSet>,
     sigmask_size: usize,
 ) -> SysResult<usize> {
@@ -634,15 +612,6 @@ pub fn ppoll_time32(
     Ok(r)
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct ITimerValue {
-    pub it_interval: uapi::TimeVal,
-    pub it_value: uapi::TimeVal,
-}
-
-impl UserStruct for ITimerValue {}
-
 #[repr(usize)]
 #[derive(Debug, TryFromPrimitive)]
 enum ITimerWhich {
@@ -678,36 +647,26 @@ fn setitimer_helper(signum: SignalNum, interval: Duration, pcb: Arc<PCB>, which:
 }
 
 /// Compute remaining time for an itimer. Returns (remaining value, interval).
-fn get_old_itimer(pcb: &Arc<PCB>, which: usize) -> ITimerValue {
+fn get_old_itimer(pcb: &Arc<PCB>, which: usize) -> ITimerVal {
     let expiry_us = pcb.itimer_expiry_us.lock()[which];
     let interval = pcb.itimer_interval.lock()[which];
 
     let remaining = if expiry_us == 0 {
-        uapi::TimeVal { tv_sec: 0, tv_usec: 0 }
+        Duration::ZERO
     } else {
         let now = arch::get_time_us();
         if now >= expiry_us {
-            uapi::TimeVal { tv_sec: 0, tv_usec: 0 }
+            Duration::ZERO
         } else {
             let rem_us = expiry_us - now;
-            uapi::TimeVal {
-                tv_sec: (rem_us / 1_000_000) as usize,
-                tv_usec: (rem_us % 1_000_000) as usize,
-            }
+            Duration::from_micros(rem_us)
         }
     };
 
-    ITimerValue {
-        it_interval: uapi::TimeVal::from(interval),
-        it_value: remaining,
-    }
+    ITimerVal::from_durations(interval, remaining)
 }
 
-pub fn setitimer(
-    which: usize,
-    uptr_new_value: UPtr<ITimerValue>,
-    uptr_old_value: UPtr<ITimerValue>,
-) -> SysResult<usize> {
+pub fn setitimer(which: usize, uptr_new_value: UPtr<ITimerVal>, uptr_old_value: UPtr<ITimerVal>) -> SysResult<usize> {
     let which_enum = ITimerWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
     let pcb = current::pcb();
 
@@ -747,7 +706,7 @@ pub fn setitimer(
 
     let interval = new_value.it_interval;
 
-    if (interval.tv_sec as isize) < 0 || interval.tv_usec >= 1_000_000 {
+    if interval.tv_usec >= 1_000_000 {
         return Err(Errno::EINVAL);
     }
 
