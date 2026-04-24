@@ -5,6 +5,14 @@ cfg_if::cfg_if! {
     } else if #[cfg(target_arch = "loongarch64")] {
         mod loongarch;
         use loongarch as arch_impl;
+
+        /// TEMP(phase7): LoongArch-only hook to sanity-check the Phase 5
+        /// user-mode AddrSpace + page-table plumbing without spawning a
+        /// real TCB. Gets removed once `task::create_initprocess` can
+        /// load a real ELF off a mounted root filesystem.
+        pub fn loongarch_test_init_probe() {
+            arch_impl::test_init::probe();
+        }
     } else {
         compile_error!("Unsupported architecture");
     }

@@ -1,4 +1,4 @@
-//! Task support for LoongArch: kernel-context switch glue.
+//! Kernel-context switch glue.
 //!
 //! The real asm lives in `clib/src/arch/loongarch/entry/switch.S`. This
 //! file just wraps the extern so `Arch::kernel_switch` has a safe Rust

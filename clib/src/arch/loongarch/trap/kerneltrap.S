@@ -68,6 +68,17 @@
     .p2align 12                   /* EENTRY must be page-aligned (VS=0) */
 
 asm_kerneltrap_entry:
+    /*
+     * EENTRY is singular. We're entered for traps both from PLV0 (kernel)
+     * and PLV3 (user); dispatch by PRMD.PPLV. $t0 ($r12) is caller-saved,
+     * safe to clobber before any save.
+     */
+    csrrd   $t0, 0x1              /* PRMD */
+    andi    $t0, $t0, 0x3         /* PPLV */
+    bnez    $t0, asm_usertrap_entry /* non-zero PPLV -> came from user */
+
+    /* PLV0 path below: we can reuse the interrupted $sp (it's kernel). */
+
     addi.d  $sp, $sp, -272
 
     st.d    $r1,  $sp,  0         /* ra   */

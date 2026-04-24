@@ -13,7 +13,7 @@
 
 use core::time::Duration;
 
-use crate::arch::arch::{Arch, ArchTrait};
+use crate::arch::arch::{Arch, ArchTrait, UserContextTrait};
 use crate::driver::chosen;
 use crate::kernel::mm::MapPerm;
 use crate::klib::initcell::InitedCell;
@@ -42,6 +42,21 @@ impl ArchTrait for Arch {
 
         // Trap entry: install EENTRY + set VS=0 (single-entry, Ecode-dispatched).
         trap::install_trap_entry();
+
+        // Configure the hardware page-table walker so that, as soon as a
+        // user task is scheduled (Phase 5), CPU-side TLB misses auto-walk
+        // our 3-level page table. This is global state (not per-process),
+        // so we do it once here.
+        //
+        // STLBPS = 12 (log2 of 4 KiB page size)
+        // PWCL   = 3-level 9-9-9-12 layout with 64-bit PTEs
+        // PWCH   = 0 (no 4th level)
+        // ASID   = 0 — Phase 5 uses a single ASID and relies on full TLB
+        //           flushes via invtlb when page tables change.
+        csr::write::<{ csr::num::STLBPS }>(csr::stlbps::PS_4K);
+        csr::write::<{ csr::num::PWCL   }>(csr::pwcl::THREE_LEVEL_9_9_9_12);
+        csr::write::<{ csr::num::PWCH   }>(csr::pwch::NONE);
+        csr::write::<{ csr::num::ASID   }>(0);
 
         // Cache the stable-counter frequency for get_time_us. Must be done
         // before any code path calls uptime() / timer::now().
@@ -80,11 +95,11 @@ impl ArchTrait for Arch {
     }
 
     fn get_user_pc() -> usize {
-        unimplemented!("loongarch: Arch::get_user_pc (Phase 5)");
+        crate::kernel::scheduler::current::tcb().user_context().get_user_entry()
     }
 
     fn return_to_user() -> ! {
-        unimplemented!("loongarch: Arch::return_to_user (Phase 5)");
+        task::traphandle::return_to_user()
     }
 
     /* ----- Interrupts (CRMD.IE / ECFG.LIE) ----- */

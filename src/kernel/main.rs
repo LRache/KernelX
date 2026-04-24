@@ -47,6 +47,14 @@ fn kinit() {
     #[cfg(arch_loongarch64)]
     BOOT_ARGS.init(BTreeMap::new());
 
+    // TEMP(phase7): Exercise the Phase 5 user-mode round-trip scaffolding
+    // by probing the fake-init AddrSpace builder. No actual user task is
+    // spawned yet (that requires a real PCB path, which itself needs a
+    // mounted rootfs). Probe just verifies the asm + dispatcher + HPTW
+    // CSR programming all link together in release mode.
+    #[cfg(arch_loongarch64)]
+    arch::loongarch_test_init_probe();
+
     fs::mount_init_fs(
         BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT_DEVICE),
         BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE),
