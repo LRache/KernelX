@@ -43,9 +43,15 @@ impl DriverOps for Driver {
 
 impl RTCDriverOps for Driver {
     fn now(&self) -> SysResult<Duration> {
-        let low = self.read(0x0) as u64;
-        let high = self.read(0x4) as u64;
-        Ok(Duration::from_nanos(high << 32 | low))
+        let mut high = self.read(0x4) as u64;
+        loop {
+            let low = self.read(0x0) as u64;
+            let next_high = self.read(0x4) as u64;
+            if high == next_high {
+                return Ok(Duration::from_nanos(high << 32 | low));
+            }
+            high = next_high;
+        }
     }
 }
 
