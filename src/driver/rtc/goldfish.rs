@@ -7,19 +7,31 @@ use crate::driver::matcher::DriverMatcher;
 use crate::driver::{Device, DeviceType, DriverOps, RTCDriverOps};
 use crate::kernel::errno::SysResult;
 use crate::kernel::mm::{MapPerm, page};
+use crate::klib::SpinLock;
+
+#[repr(usize)]
+enum Register {
+    TimeLow = 0x0,
+    TimeHigh = 0x4,
+}
 
 pub struct Driver {
     base: usize,
     name: String,
+    lock: SpinLock<()>,
 }
 
 impl Driver {
     fn new(base: usize, name: String) -> Self {
-        Driver { base, name }
+        Driver {
+            base,
+            name,
+            lock: SpinLock::new((), "GoldfishRtc::lock"),
+        }
     }
 
-    fn read(&self, offset: usize) -> u32 {
-        unsafe { arch::read_volatile((self.base + offset) as *mut u32) }
+    fn read(&self, register: Register) -> u32 {
+        unsafe { arch::read_volatile((self.base + register as usize) as *mut u32) }
     }
 }
 
@@ -43,15 +55,12 @@ impl DriverOps for Driver {
 
 impl RTCDriverOps for Driver {
     fn now(&self) -> SysResult<Duration> {
-        let mut high = self.read(0x4) as u64;
-        loop {
-            let low = self.read(0x0) as u64;
-            let next_high = self.read(0x4) as u64;
-            if high == next_high {
-                return Ok(Duration::from_nanos(high << 32 | low));
-            }
-            high = next_high;
-        }
+        let _guard = self.lock.lock();
+        // TIME_LOW latches TIME_HIGH in goldfish RTC, so this read pair must
+        // stay ordered and cannot be interleaved with another CPU's RTC read.
+        let low = self.read(Register::TimeLow) as u64;
+        let high = self.read(Register::TimeHigh) as u64;
+        Ok(Duration::from_nanos(high << 32 | low))
     }
 }
 
