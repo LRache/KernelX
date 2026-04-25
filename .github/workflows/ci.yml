@@ -20,7 +20,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             curl wget gnupg ca-certificates lsb-release software-properties-common \
-            make cmake ninja-build gcc g++ git python3 xz-utils file e2tools \
+            make cmake ninja-build gcc g++ git python3 xz-utils file guestfish \
             gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu \
             qemu-system-misc \
           && rm -rf /var/lib/apt/lists/*
@@ -49,7 +49,7 @@ jobs:
         run: |
           git clone --branch main https://github.com/LRache/KernelX-testsuit.git
           cd KernelX-testsuit/testsuit-for-oskernel
-          bash build-e2tools.sh
+          bash build-guestfish.sh
 
       - name: Build riscv64 kernel
         run: |
