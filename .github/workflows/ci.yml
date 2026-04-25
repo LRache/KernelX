@@ -20,7 +20,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             curl wget gnupg ca-certificates lsb-release software-properties-common \
-            make cmake ninja-build gcc g++ git python3 xz-utils file guestfish \
+            make cmake ninja-build gcc g++ git python3 xz-utils file guestfish linux-image-generic \
             gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu \
             qemu-system-misc \
           && rm -rf /var/lib/apt/lists/*
