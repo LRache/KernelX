@@ -35,7 +35,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
 
     let to_sleep = Duration::try_from(req)?;
 
-    let start_sleep = kclock::now()?;
+    let start_sleep = timer::now();
     let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
@@ -43,7 +43,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
         Event::Timeout => Ok(0),
         Event::Signal => {
             if !uptr_rem.is_null() {
-                let elapsed = kclock::now()? - start_sleep;
+                let elapsed = timer::now() - start_sleep;
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
@@ -125,7 +125,7 @@ pub fn clock_nanosleep(
         req
     };
 
-    let start_sleep = clockid.now()?;
+    let start_sleep = timer::now();
     let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
@@ -133,7 +133,7 @@ pub fn clock_nanosleep(
         Event::Timeout => Ok(0),
         Event::Signal => {
             if !uptr_rem.is_null() && !flags.contains(ClockNanosleepFlags::TIMER_ABSTIME) {
-                let elapsed = clockid.now()? - start_sleep;
+                let elapsed = timer::now() - start_sleep;
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
