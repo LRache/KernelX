@@ -1,4 +1,3 @@
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
@@ -188,7 +187,7 @@ pub fn pidfd_getfd(pidfd: usize, targetfd: usize, flags: usize) -> SyscallRet {
         return Err(Errno::EPERM);
     }
 
-    let file = target.leader().fdtable().lock().get(targetfd)?;
+    let file = target.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(targetfd)?;
     let new_fd = current::fdtable().lock().push(file, FDFlags { cloexec: true })?;
     Ok(new_fd)
 }
@@ -221,10 +220,13 @@ pub fn kcmp(pid1: usize, pid2: usize, compare_type: usize, idx1: usize, idx2: us
 
     let r = match compare_type {
         KcmpType::File => kcmp_object(
-            &pcb1.leader().fdtable().lock().get(idx1)?,
-            &pcb2.leader().fdtable().lock().get(idx2)?,
+            &pcb1.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx1)?,
+            &pcb2.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx2)?,
         ),
-        KcmpType::VM => kcmp_object(pcb1.leader().get_addrspace(), pcb2.leader().get_addrspace()),
+        KcmpType::VM => kcmp_object(
+            pcb1.leader().ok_or(Errno::ESRCH)?.get_addrspace(),
+            pcb2.leader().ok_or(Errno::ESRCH)?.get_addrspace(),
+        ),
     };
 
     Ok(r)
@@ -421,7 +423,7 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
     })
 }
 
-fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
+fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<fixedstr::tstr<255>>> {
     if uarray.is_null() {
         return Ok(Vec::new());
     }
@@ -433,7 +435,7 @@ fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
         if p.is_null() {
             break;
         }
-        vec.push(p.read()?);
+        vec.push(p.read_string()?);
         i += 1;
     }
     Ok(vec)
@@ -463,7 +465,7 @@ fn do_execve(
 pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read_fixed()?;
+    let path = uptr_path.read_string()?;
 
     let file =
         current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X)))?
@@ -518,7 +520,7 @@ pub fn execveat(
     use super::def::AT_FDCWD;
 
     let flags = ExecveAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-    let path = uptr_path.should_not_null()?.read_fixed()?;
+    let path = uptr_path.should_not_null()?.read_path()?;
     let perm = Perm::current(PermFlags::X);
 
     let (file, invoked_path) = if flags.contains(ExecveAtFlags::AT_EMPTY_PATH) && path.is_empty() {
@@ -795,7 +797,7 @@ pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {
 }
 
 pub fn chdir(uptr_path: UString) -> SysResult<usize> {
-    let path = uptr_path.should_not_null()?.read_fixed()?;
+    let path = uptr_path.should_not_null()?.read_path()?;
     if path.len() >= config::MAX_FILENAME_LEN {
         return Err(Errno::ENAMETOOLONG);
     }
