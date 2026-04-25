@@ -5,7 +5,7 @@ use crate::driver::BlockDriverOps;
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::vfs::vfs::VirtualFileSystem;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::uapi::Statfs;
+use crate::kernel::uapi::{Statfs, StatfsFlags};
 
 use super::{Dentry, vfs};
 
@@ -55,6 +55,12 @@ impl VirtualFileSystem {
         }
     }
 
+    fn remount(&self, dir: &Arc<Dentry>, path: &str, options: MountOptions) -> SysResult<()> {
+        let dentry = self.resolve_mountpoint(dir, path)?;
+        let mounted_root = dentry.mounted_root().ok_or(Errno::EINVAL)?;
+        self.superblock_table.lock().remount(mounted_root.sno(), options)
+    }
+
     fn unmount(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<()> {
         fn is_descendant_mount(parent: &str, child: &str) -> bool {
             if child == parent {
@@ -101,7 +107,7 @@ impl VirtualFileSystem {
     }
 
     pub(super) fn is_superblock_readonly(&self, sno: u32) -> SysResult<bool> {
-        Ok(self.get_superblock(sno)?.is_readonly())
+        self.superblock_table.lock().is_readonly(sno)
     }
 
     pub fn mountpoint_list(&self) -> Vec<Arc<Dentry>> {
@@ -123,14 +129,25 @@ pub fn unmount(dir: &Arc<Dentry>, path: &str) -> Result<(), Errno> {
     vfs().unmount(dir, path)
 }
 
+pub fn remount(dir: &Arc<Dentry>, path: &str, options: MountOptions) -> Result<(), Errno> {
+    vfs().remount(dir, path, options)
+}
+
 pub fn get_root_dentry() -> &'static Arc<Dentry> {
     vfs().get_root()
 }
 
 pub fn statfs(sno: u32) -> SysResult<Statfs> {
-    let superblock = vfs().get_superblock(sno).unwrap();
+    let vfs = vfs();
+    let readonly = vfs.is_superblock_readonly(sno)?;
+    let mut statfs = vfs.get_superblock(sno)?.statfs()?;
 
-    superblock.statfs()
+    if readonly {
+        statfs.f_flag |= StatfsFlags::ST_RDONLY.bits();
+    } else {
+        statfs.f_flag &= !StatfsFlags::ST_RDONLY.bits();
+    }
+    Ok(statfs)
 }
 
 pub fn sync_all() -> Result<(), Errno> {

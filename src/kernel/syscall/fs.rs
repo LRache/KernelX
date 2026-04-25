@@ -6,6 +6,7 @@ use core::usize;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
+use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
@@ -2099,6 +2100,14 @@ pub fn fsync(fd: usize) -> SyscallRet {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct MountFlags: usize {
+        const RDONLY = 0x1;
+        const REMOUNT = 0x20;
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct FlockOperation: usize {
         const SHARED = 1;
         const EXCLUSIVE = 1 << 1;
@@ -2166,13 +2175,19 @@ pub fn mount(
     flags: usize,
     _data: usize,
 ) -> SyscallRet {
-    use crate::fs::devfs::devnode::BlockDevInode;
-    const MS_RDONLY: usize = 0x1;
+    let flags = MountFlags::from_bits_truncate(flags);
 
     uptr_target.should_not_null()?;
-    uptr_fstype.should_not_null()?;
 
     let target = uptr_target.read_path()?;
+    let options = MountOptions::new(flags.contains(MountFlags::RDONLY));
+
+    if flags.contains(MountFlags::REMOUNT) {
+        current::with_cwd(|cwd| vfs::remount(&cwd, &target, options))?;
+        return Ok(0);
+    }
+
+    uptr_fstype.should_not_null()?;
     let fstype = uptr_fstype.read_string()?;
 
     let device = if !uptr_source.is_null() {
@@ -2189,9 +2204,6 @@ pub fn mount(
         None
     };
 
-    // crate::kinfo!("mount: target = {:?}, fstype = {:?}, source = {:?}", target, fstype, device.is_none());
-
-    let options = MountOptions::new(flags & MS_RDONLY != 0);
     current::with_cwd(|cwd| vfs::mount(&cwd, &target, &fstype, device, options))?;
 
     Ok(0)
