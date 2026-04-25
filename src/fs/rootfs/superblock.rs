@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::driver::BlockDriverOps;
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::{Dentry, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 
@@ -73,7 +73,12 @@ impl SuperBlockOps for RootFileSystemSuperBlock {
 }
 
 impl FileSystemOps for RootFileSystem {
-    fn create(&self, _fsno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> Result<Arc<dyn SuperBlockOps>, Errno> {
+    fn create(
+        &self,
+        _fsno: u32,
+        _driver: Option<Arc<dyn BlockDriverOps>>,
+        _options: MountOptions,
+    ) -> Result<Arc<dyn SuperBlockOps>, Errno> {
         Ok(Arc::new(RootFileSystemSuperBlock::new()))
     }
 }

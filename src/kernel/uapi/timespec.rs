@@ -1,6 +1,15 @@
 use core::time::Duration;
 
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::syscall::UserStruct;
+
+fn checked_duration(tv_sec: i64, tv_nsec: i64) -> SysResult<Duration> {
+    if tv_sec < 0 || tv_nsec < 0 || tv_nsec >= 1_000_000_000 {
+        return Err(Errno::EINVAL);
+    }
+
+    Ok(Duration::new(tv_sec as u64, tv_nsec as u32))
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -11,9 +20,11 @@ pub struct Timespec {
 
 impl UserStruct for Timespec {}
 
-impl Into<Duration> for Timespec {
-    fn into(self) -> Duration {
-        Duration::new(self.tv_sec as u64, self.tv_nsec as u32)
+impl TryFrom<Timespec> for Duration {
+    type Error = Errno;
+
+    fn try_from(value: Timespec) -> Result<Self, Self::Error> {
+        checked_duration(value.tv_sec as i64, value.tv_nsec as i64)
     }
 }
 
@@ -59,9 +70,11 @@ pub struct Timespec32 {
 
 impl UserStruct for Timespec32 {}
 
-impl Into<Duration> for Timespec32 {
-    fn into(self) -> Duration {
-        Duration::new(self.tv_sec as u64, self.tv_nsec as u32)
+impl TryFrom<Timespec32> for Duration {
+    type Error = Errno;
+
+    fn try_from(value: Timespec32) -> Result<Self, Self::Error> {
+        checked_duration(value.tv_sec as i64, value.tv_nsec as i64)
     }
 }
 

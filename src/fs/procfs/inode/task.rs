@@ -1,18 +1,38 @@
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::cmp::min;
 use core::fmt::Write;
 
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::procfs::inode::{fill_kstat_common, read_iter_text};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::MapPerm;
+use crate::kernel::scheduler::tid::PID_MAX;
 use crate::kernel::scheduler::{TaskState, Tid};
 use crate::kernel::task::manager;
+use crate::kernel::task::pidfd::PidFile;
 use crate::kernel::uapi::{FileStat, Uid};
 
 use super::RootInode;
+
+fn process_leader_tid(tid: Tid) -> SysResult<Tid> {
+    let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
+    Ok(tcb.parent().pid())
+}
+
+fn thread_group_tids(pid: Tid) -> SysResult<Vec<Tid>> {
+    let tcb = manager::get(pid).ok_or(Errno::ESRCH)?;
+    let pcb = tcb.parent();
+    if pcb.pid() != pid {
+        return Err(Errno::ENOENT);
+    }
+
+    let mut tids = pcb.tasks.lock().iter().map(|task| task.tid()).collect::<Vec<_>>();
+    tids.sort_unstable();
+    Ok(tids)
+}
 
 pub struct TaskDirInode {
     tid: Tid,
@@ -54,6 +74,7 @@ impl InodeOps for TaskDirInode {
         match name {
             "." => Ok(Self::ino_from_tid(self.tid)),
             ".." => Ok(RootInode::INO),
+            "task" if process_leader_tid(self.tid)? == self.tid => Ok(TaskTaskDirInode::ino_from_pid(self.tid)),
             "maps" => Ok(TaskMapsInode::ino_from_tid(self.tid)),
             "exe" => Ok(TaskExeInode::ino_from_tid(self.tid)),
             "stat" => Ok(TaskStatInode::ino_from_tid(self.tid)),
@@ -64,6 +85,7 @@ impl InodeOps for TaskDirInode {
     }
 
     fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        let has_task_dir = process_leader_tid(self.tid)? == self.tid;
         let d = match index {
             0 => Some(DirResult {
                 ino: Self::ino_from_tid(self.tid),
@@ -72,6 +94,254 @@ impl InodeOps for TaskDirInode {
             }),
             1 => Some(DirResult {
                 ino: RootInode::INO,
+                name: "..".into(),
+                file_type: FileType::Directory,
+            }),
+            2 => Some(DirResult {
+                ino: TaskMapsInode::ino_from_tid(self.tid),
+                name: "maps".into(),
+                file_type: FileType::Regular,
+            }),
+            3 => Some(DirResult {
+                ino: TaskExeInode::ino_from_tid(self.tid),
+                name: "exe".into(),
+                file_type: FileType::Symlink,
+            }),
+            4 => Some(DirResult {
+                ino: TaskStatInode::ino_from_tid(self.tid),
+                name: "stat".into(),
+                file_type: FileType::Regular,
+            }),
+            5 => Some(DirResult {
+                ino: TaskStatusInode::ino_from_tid(self.tid),
+                name: "status".into(),
+                file_type: FileType::Regular,
+            }),
+            6 => Some(DirResult {
+                ino: TaskFdDirInode::ino_from_tid(self.tid),
+                name: "fd".into(),
+                file_type: FileType::Directory,
+            }),
+            7 if has_task_dir => Some(DirResult {
+                ino: TaskTaskDirInode::ino_from_pid(self.tid),
+                name: "task".into(),
+                file_type: FileType::Directory,
+            }),
+            _ => None,
+        };
+
+        Ok(d.map(|r| (r, index + 1)))
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_mode = self.mode()?.bits();
+        kstat.st_nlink = 1;
+
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
+
+        Ok(kstat)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFDIR
+            | Mode::S_IRUSR
+            | Mode::S_IXUSR
+            | Mode::S_IRGRP
+            | Mode::S_IXGRP
+            | Mode::S_IROTH
+            | Mode::S_IXOTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs task dir requires associated dentry");
+        if let Some(tcb) = manager::get(self.tid)
+            && tcb.parent().pid() == self.tid
+        {
+            let file = Arc::new(RandomAccessFile::new(self, dentry, flags));
+            return Arc::new(PidFile::new_with_file(tcb.parent(), file, flags));
+        }
+
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
+    }
+}
+
+pub struct TaskTaskDirInode {
+    pid: Tid,
+}
+
+impl TaskTaskDirInode {
+    pub const INO_BASE: u32 = 0x5000_0000;
+    pub const INO_END: u32 = Self::INO_BASE + PID_MAX as u32;
+
+    pub fn from_ino(ino: u32) -> Option<Self> {
+        debug_assert!(ino >= Self::INO_BASE);
+        let pid = (ino - Self::INO_BASE) as Tid;
+        let tcb = manager::get(pid)?;
+        if tcb.parent().pid() != pid {
+            return None;
+        }
+        Some(Self { pid })
+    }
+
+    pub fn ino_from_pid(pid: Tid) -> u32 {
+        Self::INO_BASE + pid as u32
+    }
+}
+
+impl InodeOps for TaskTaskDirInode {
+    fn get_ino(&self) -> u32 {
+        Self::ino_from_pid(self.pid)
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_task_task_dir"
+    }
+
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
+        Err(Errno::EISDIR)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn lookup(&self, name: &str) -> SysResult<u32> {
+        match name {
+            "." => Ok(Self::ino_from_pid(self.pid)),
+            ".." => Ok(TaskDirInode::ino_from_tid(self.pid)),
+            _ => {
+                let tid = name.parse::<Tid>().map_err(|_| Errno::ENOENT)?;
+                let tcb = manager::get(tid).ok_or(Errno::ENOENT)?;
+                if tcb.parent().pid() != self.pid {
+                    return Err(Errno::ENOENT);
+                }
+                Ok(TaskThreadDirInode::ino_from_tid(tid))
+            }
+        }
+    }
+
+    fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        let tids = thread_group_tids(self.pid)?;
+        let d = match index {
+            0 => Some(DirResult {
+                ino: Self::ino_from_pid(self.pid),
+                name: ".".into(),
+                file_type: FileType::Directory,
+            }),
+            1 => Some(DirResult {
+                ino: TaskDirInode::ino_from_tid(self.pid),
+                name: "..".into(),
+                file_type: FileType::Directory,
+            }),
+            i => tids.get(i - 2).map(|tid| DirResult {
+                ino: TaskThreadDirInode::ino_from_tid(*tid),
+                name: tid.to_string(),
+                file_type: FileType::Directory,
+            }),
+        };
+
+        Ok(d.map(|r| (r, index + 1)))
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_mode = self.mode()?.bits();
+        kstat.st_nlink = 1;
+
+        let tcb = manager::get(self.pid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
+
+        Ok(kstat)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFDIR
+            | Mode::S_IRUSR
+            | Mode::S_IXUSR
+            | Mode::S_IRGRP
+            | Mode::S_IXGRP
+            | Mode::S_IROTH
+            | Mode::S_IXOTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs task/task dir requires associated dentry");
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
+    }
+}
+
+pub struct TaskThreadDirInode {
+    tid: Tid,
+}
+
+impl TaskThreadDirInode {
+    pub const INO_BASE: u32 = 0x5010_0000;
+    pub const INO_END: u32 = Self::INO_BASE + PID_MAX as u32;
+
+    pub fn from_ino(ino: u32) -> Option<Self> {
+        debug_assert!(ino >= Self::INO_BASE);
+        let tid = (ino - Self::INO_BASE) as Tid;
+        manager::get(tid)?;
+        Some(Self { tid })
+    }
+
+    pub fn ino_from_tid(tid: Tid) -> u32 {
+        Self::INO_BASE + tid as u32
+    }
+}
+
+impl InodeOps for TaskThreadDirInode {
+    fn get_ino(&self) -> u32 {
+        Self::ino_from_tid(self.tid)
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_task_thread_dir"
+    }
+
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
+        Err(Errno::EISDIR)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn lookup(&self, name: &str) -> SysResult<u32> {
+        match name {
+            "." => Ok(Self::ino_from_tid(self.tid)),
+            ".." => Ok(TaskTaskDirInode::ino_from_pid(process_leader_tid(self.tid)?)),
+            "maps" => Ok(TaskMapsInode::ino_from_tid(self.tid)),
+            "exe" => Ok(TaskExeInode::ino_from_tid(self.tid)),
+            "stat" => Ok(TaskStatInode::ino_from_tid(self.tid)),
+            "status" => Ok(TaskStatusInode::ino_from_tid(self.tid)),
+            "fd" => Ok(TaskFdDirInode::ino_from_tid(self.tid)),
+            _ => Err(Errno::ENOENT),
+        }
+    }
+
+    fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        let parent_ino = TaskTaskDirInode::ino_from_pid(process_leader_tid(self.tid)?);
+        let d = match index {
+            0 => Some(DirResult {
+                ino: Self::ino_from_tid(self.tid),
+                name: ".".into(),
+                file_type: FileType::Directory,
+            }),
+            1 => Some(DirResult {
+                ino: parent_ino,
                 name: "..".into(),
                 file_type: FileType::Directory,
             }),
@@ -133,8 +403,8 @@ impl InodeOps for TaskDirInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        let dentry = dentry.expect("procfs task dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        let dentry = dentry.expect("procfs task/thread dir requires associated dentry");
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -214,7 +484,7 @@ impl InodeOps for TaskMapsInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs maps requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -288,7 +558,7 @@ impl InodeOps for TaskExeInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {
@@ -386,7 +656,7 @@ impl InodeOps for TaskStatInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs stat requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -440,9 +710,11 @@ impl InodeOps for TaskStatusInode {
         let uid = pcb.uid();
         let euid = pcb.euid();
         let suid = pcb.suid();
+        let fsuid = pcb.fsuid();
         let gid = pcb.gid();
         let egid = pcb.egid();
         let sgid = pcb.sgid();
+        let fsgid = pcb.fsgid();
         let umask = pcb.umask();
 
         let exec_path = pcb.exec_path();
@@ -460,8 +732,8 @@ impl InodeOps for TaskStatusInode {
         let _ = writeln!(content, "Tgid:\t{}", tgid);
         let _ = writeln!(content, "Pid:\t{}", pid);
         let _ = writeln!(content, "PPid:\t{}", ppid);
-        let _ = writeln!(content, "Uid:\t{}\t{}\t{}\t{}", uid, euid, suid, euid);
-        let _ = writeln!(content, "Gid:\t{}\t{}\t{}\t{}", gid, egid, sgid, egid);
+        let _ = writeln!(content, "Uid:\t{}\t{}\t{}\t{}", uid, euid, suid, fsuid);
+        let _ = writeln!(content, "Gid:\t{}\t{}\t{}\t{}", gid, egid, sgid, fsgid);
 
         let content_bytes = content.as_bytes();
         if offset >= content_bytes.len() {
@@ -498,7 +770,7 @@ impl InodeOps for TaskStatusInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs status requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -604,7 +876,7 @@ impl InodeOps for TaskFdDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs fd dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -615,6 +887,7 @@ pub struct TaskFdEntryInode {
 
 impl TaskFdEntryInode {
     pub const INO_BASE: u32 = 0x700000;
+    pub const INO_END: u32 = Self::INO_BASE + (PID_MAX as u32) * crate::kernel::config::MAX_FD as u32;
 
     pub fn from_ino(ino: u32) -> Option<Self> {
         debug_assert!(ino >= Self::INO_BASE);
@@ -698,6 +971,6 @@ impl InodeOps for TaskFdEntryInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 }

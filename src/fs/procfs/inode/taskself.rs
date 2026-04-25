@@ -2,7 +2,7 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 use core::cmp::min;
 
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::procfs::inode::fill_kstat_common;
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
@@ -39,7 +39,7 @@ impl InodeOps for TaskDirSelfInode {
     }
 
     fn readlink(&self, buffer: &mut [u8]) -> SysResult<Option<usize>> {
-        let link_name = current::tid().to_string();
+        let link_name = current::pid().to_string();
         let bytes = link_name.as_bytes();
         let len = min(buffer.len(), bytes.len());
         buffer[..len].copy_from_slice(&bytes[..len]);
@@ -71,7 +71,7 @@ impl InodeOps for TaskDirSelfInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {

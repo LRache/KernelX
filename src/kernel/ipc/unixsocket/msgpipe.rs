@@ -2,7 +2,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, PollEventSet, WaitQueue};
+use crate::kernel::event::{Event, FileEvent, WaitQueue};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
 use crate::klib::{SleepLock, SpinLock};
@@ -11,6 +11,7 @@ struct MessageQueue {
     messages: VecDeque<Vec<u8>>,
     total_bytes: usize,
     capacity: usize,
+    max_messages: usize,
 }
 
 impl MessageQueue {
@@ -19,6 +20,7 @@ impl MessageQueue {
             messages: VecDeque::new(),
             total_bytes: 0,
             capacity,
+            max_messages: capacity / 2,
         }
     }
 
@@ -28,6 +30,14 @@ impl MessageQueue {
 
     fn available_space(&self) -> usize {
         self.capacity.saturating_sub(self.total_bytes)
+    }
+
+    fn available_messages(&self) -> usize {
+        self.max_messages.saturating_sub(self.messages.len())
+    }
+
+    fn can_push(&self, msg_len: usize) -> bool {
+        self.available_space() >= msg_len && self.available_messages() > 0
     }
 
     fn push(&mut self, msg: Vec<u8>) {
@@ -145,7 +155,7 @@ impl MessagePipeInner {
 
         loop {
             let mut queue = self.queue.lock();
-            if queue.available_space() >= buf.len() {
+            if queue.can_push(buf.len()) {
                 let msg = Vec::from(buf);
                 queue.push(msg);
                 drop(queue);
@@ -186,7 +196,7 @@ impl MessagePipeInner {
 
         loop {
             let mut queue = self.queue.lock();
-            if queue.available_space() >= msg.len() {
+            if queue.can_push(msg.len()) {
                 let len = msg.len();
                 queue.push(msg);
                 drop(queue);
@@ -213,43 +223,54 @@ impl MessagePipeInner {
         }
     }
 
-    pub fn wait_event(&self, waker: usize, event: PollEventSet, is_writer: bool) -> SysResult<Option<FileEvent>> {
-        if event.contains(PollEventSet::POLLIN) && is_writer {
-            return Ok(None);
-        }
-        if event.contains(PollEventSet::POLLOUT) && !is_writer {
+    pub fn wait_event(&self, waker: usize, event: FileEvent, is_writer: bool) -> SysResult<Option<FileEvent>> {
+        let want_read = event.contains(FileEvent::READ_READY) && !is_writer;
+        let want_write = event.contains(FileEvent::WRITE_READY) && is_writer;
+        if !want_read && !want_write {
             return Ok(None);
         }
 
         let queue = self.queue.lock();
+        let mut ready = FileEvent::empty();
 
-        if event.contains(PollEventSet::POLLIN) {
+        if want_read {
             if *self.writer_count.lock() == 0 {
-                return Ok(Some(FileEvent::HangUp));
+                ready |= FileEvent::HANG_UP;
+                if !queue.is_empty() {
+                    ready |= FileEvent::READ_READY;
+                }
+            } else if !queue.is_empty() {
+                ready |= FileEvent::READ_READY;
             }
-            if !queue.is_empty() {
-                return Ok(Some(FileEvent::ReadReady));
+        }
+
+        if want_write {
+            if *self.reader_count.lock() == 0 {
+                ready |= FileEvent::HANG_UP;
+            } else if queue.available_space() > 0 && queue.available_messages() > 0 {
+                ready |= FileEvent::WRITE_READY;
             }
+        }
+
+        if !ready.is_empty() {
+            return Ok(Some(ready));
+        }
+
+        if want_read {
             self.read_waiter.lock().wait(
                 current::task().clone(),
                 Event::Poll {
-                    event: FileEvent::ReadReady,
+                    event: FileEvent::READ_READY,
                     waker,
                 },
             );
         }
 
-        if event.contains(PollEventSet::POLLOUT) {
-            if *self.reader_count.lock() == 0 {
-                return Ok(Some(FileEvent::HangUp));
-            }
-            if queue.available_space() > 0 {
-                return Ok(Some(FileEvent::WriteReady));
-            }
+        if want_write {
             self.write_waiter.lock().wait(
                 current::task().clone(),
                 Event::Poll {
-                    event: FileEvent::WriteReady,
+                    event: FileEvent::WRITE_READY,
                     waker,
                 },
             );
@@ -285,12 +306,14 @@ impl MessagePipeInner {
         debug_assert!(*count > 0);
         *count -= 1;
         if *count == 0 {
+            let wake_event = if !self.queue.lock().is_empty() {
+                FileEvent::READ_READY | FileEvent::HANG_UP
+            } else {
+                FileEvent::HANG_UP
+            };
             self.read_waiter.lock().wake_all(|e| match e {
-                Event::Poll {
-                    event: FileEvent::ReadReady,
-                    waker,
-                } => Event::Poll {
-                    event: FileEvent::HangUp,
+                Event::Poll { event, waker } if event.intersects(FileEvent::READ_READY) => Event::Poll {
+                    event: wake_event,
                     waker,
                 },
                 _ => e,

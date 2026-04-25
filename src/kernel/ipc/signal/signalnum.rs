@@ -112,7 +112,7 @@ impl Into<u32> for SignalNum {
 impl TryFrom<u32> for SignalNum {
     type Error = Errno;
     fn try_from(value: u32) -> SysResult<Self> {
-        if value > 63 {
+        if value > 64 {
             Err(Errno::EINVAL)
         } else {
             Ok(SignalNum(value))
@@ -133,6 +133,10 @@ pub struct SignalSet(usize);
 impl SignalSet {
     pub const fn empty() -> Self {
         SignalSet(0)
+    }
+
+    pub fn without_unblockable(self) -> Self {
+        SignalSet(self.0 & !(SIGKILL.to_mask() | SIGSTOP.to_mask()))
     }
 
     pub fn contains(&self, num: SignalNum) -> bool {

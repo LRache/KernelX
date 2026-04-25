@@ -3,8 +3,9 @@ use alloc::sync::Arc;
 use core::cmp::min;
 use core::fmt::Write;
 
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::{Dentry, FileType, InodeOps, Mode};
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::tid::PID_MAX;
 
@@ -87,7 +88,7 @@ impl InodeOps for SysDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs sys dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -168,7 +169,7 @@ impl InodeOps for SysKernelDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs sys kernel dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
 
@@ -213,7 +214,7 @@ impl InodeOps for PidMaxInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 }
 
@@ -256,7 +257,7 @@ impl InodeOps for TaintedInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 }
 
@@ -288,6 +289,7 @@ impl InodeOps for SysFsDirInode {
         match name {
             "." => Ok(Self::INO),
             ".." => Ok(SysDirInode::INO),
+            "pipe-max-size" => Ok(PipeMaxSizeInode::INO),
             "pipe-user-pages-soft" => Ok(PipeUserPagesSoftInode::INO),
             _ => Err(Errno::ENOENT),
         }
@@ -306,6 +308,11 @@ impl InodeOps for SysFsDirInode {
                 file_type: FileType::Directory,
             }),
             2 => Some(DirResult {
+                ino: PipeMaxSizeInode::INO,
+                name: "pipe-max-size".into(),
+                file_type: FileType::Regular,
+            }),
+            3 => Some(DirResult {
                 ino: PipeUserPagesSoftInode::INO,
                 name: "pipe-user-pages-soft".into(),
                 file_type: FileType::Regular,
@@ -331,7 +338,52 @@ impl InodeOps for SysFsDirInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs sys fs dir requires associated dentry");
-        Arc::new(File::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
+    }
+}
+
+// /proc/sys/fs/pipe-max-size
+pub struct PipeMaxSizeInode;
+
+impl PipeMaxSizeInode {
+    pub const INO: u32 = 10;
+}
+
+impl InodeOps for PipeMaxSizeInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_pipe_max_size"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
+        let mut content = String::with_capacity(16);
+        let _ = writeln!(content, "{}", config::PIPE_CAPACITY);
+        let bytes = content.as_bytes();
+        if offset >= bytes.len() {
+            return Ok(0);
+        }
+        let len = min(buf.len(), bytes.len() - offset);
+        buf[..len].copy_from_slice(&bytes[offset..offset + len]);
+        Ok(len)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 }
 
@@ -339,7 +391,7 @@ impl InodeOps for SysFsDirInode {
 pub struct PipeUserPagesSoftInode;
 
 impl PipeUserPagesSoftInode {
-    pub const INO: u32 = 10;
+    pub const INO: u32 = 11;
 }
 
 impl InodeOps for PipeUserPagesSoftInode {
@@ -374,6 +426,6 @@ impl InodeOps for PipeUserPagesSoftInode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 }

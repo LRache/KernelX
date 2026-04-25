@@ -6,8 +6,8 @@ use core::time::Duration;
 
 use crate::arch;
 use crate::driver::chosen::kclock;
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::fs::inode::{Mode, Owner};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
+use crate::fs::inode::{InodeLockState, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
@@ -40,6 +40,7 @@ impl FileMeta {
 enum Meta {
     File(FileMeta),
     Directory(BTreeMap<String, u32>),
+    Symlink(String),
 }
 
 pub struct InodeMeta {
@@ -59,6 +60,8 @@ impl InodeMeta {
             children.insert(".".into(), ino);
             children.insert("..".into(), parent_ino);
             Meta::Directory(children)
+        } else if mode.contains(Mode::S_IFLNK) {
+            Meta::Symlink(String::new())
         } else {
             Meta::File(FileMeta::new())
         };
@@ -77,6 +80,7 @@ impl InodeMeta {
 pub struct Inode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
+    lock_state: SpinLock<InodeLockState>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
 }
@@ -86,6 +90,7 @@ impl<T: StaticFsInfo> Inode<T> {
         Self {
             ino,
             meta: SpinLock::new(meta, "Inode::meta"),
+            lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
             superblock,
             _marker: core::marker::PhantomData,
         }
@@ -106,9 +111,33 @@ impl<T: StaticFsInfo> Inode<T> {
             Err(Errno::ENOTDIR)
         }
     }
+
+    fn zero_file_range(file_meta: &mut FileMeta, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+
+        let mut current = start;
+        while current < end {
+            let page_index = current / arch::PGSIZE;
+            let page_offset = current % arch::PGSIZE;
+            let chunk_end = core::cmp::min(end, (page_index + 1) * arch::PGSIZE);
+
+            while page_index >= file_meta.pages.len() {
+                file_meta.pages.push(PhysPageFrame::alloc_zeroed());
+            }
+
+            file_meta.pages[page_index].slice()[page_offset..page_offset + (chunk_end - current)].fill(0);
+            current = chunk_end;
+        }
+    }
 }
 
 impl<T: StaticFsInfo> InodeOps for Inode<T> {
+    fn filesystem_refcount_bias(&self) -> usize {
+        1
+    }
+
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(ref mut children) = meta.meta {
@@ -138,6 +167,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
@@ -182,7 +215,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(total_read)
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
         }
     }
 
@@ -239,12 +272,16 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(total_read)
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
         }
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
         if let Meta::File(ref mut meta) = self.meta.lock().meta {
+            if offset > meta.filesize {
+                Self::zero_file_range(meta, meta.filesize, offset);
+            }
+
             let mut written_bytes = 0;
             let mut current_offset = offset;
 
@@ -253,7 +290,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 let page_offset = current_offset % arch::PGSIZE;
 
                 while page_index >= meta.pages.len() {
-                    meta.pages.push(PhysPageFrame::alloc());
+                    meta.pages.push(PhysPageFrame::alloc_zeroed());
                 }
 
                 let page = &meta.pages[page_index];
@@ -269,12 +306,16 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(written_bytes)
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
         }
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, _direct: bool) -> SysResult<usize> {
         if let Meta::File(ref mut meta) = self.meta.lock().meta {
+            if offset > meta.filesize {
+                Self::zero_file_range(meta, meta.filesize, offset);
+            }
+
             let mut written_bytes = 0;
             let mut current_offset = offset;
 
@@ -286,7 +327,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                     let page_offset = current_offset % arch::PGSIZE;
 
                     while page_index >= meta.pages.len() {
-                        meta.pages.push(PhysPageFrame::alloc());
+                        meta.pages.push(PhysPageFrame::alloc_zeroed());
                     }
 
                     let to_write = core::cmp::min(kbuf.len() - copied, arch::PGSIZE - page_offset);
@@ -301,14 +342,26 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             meta.filesize = core::cmp::max(meta.filesize, offset + written_bytes);
             Ok(written_bytes)
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
         }
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(children) = &mut meta.meta {
-            let ino = children.remove(name).ok_or(Errno::ENOENT)?;
+            let ino = *children.get(name).ok_or(Errno::ENOENT)?;
+            let child = self.superblock.lock().get_inode(ino)?;
+            if child.inode_type()? == FileType::Directory {
+                let child_inode = child.downcast_arc::<Self>().map_err(|_| Errno::EIO)?;
+                let child_meta = child_inode.meta.lock();
+                if let Meta::Directory(grandchildren) = &child_meta.meta
+                    && grandchildren.len() > 2
+                {
+                    return Err(Errno::ENOTEMPTY);
+                }
+            }
+
+            children.remove(name);
             self.superblock.lock().remove_inode(ino);
             Ok(())
         } else {
@@ -320,6 +373,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         let size = match self.meta.lock().meta {
             Meta::File(ref meta) => meta.filesize,
             Meta::Directory(_) => arch::PGSIZE,
+            Meta::Symlink(ref target) => target.len(),
         };
         Ok(size as u64)
     }
@@ -395,6 +449,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 kstat.st_size = arch::PGSIZE as i64;
                 kstat.st_blocks = 1;
             }
+            Meta::Symlink(ref target) => {
+                kstat.st_size = target.len() as i64;
+                kstat.st_blocks = 0;
+            }
         }
 
         Ok(kstat)
@@ -403,15 +461,15 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn truncate(&self, new_size: u64) -> SysResult<()> {
         let mut meta = self.meta.lock();
         if let Meta::File(ref mut file_meta) = meta.meta {
+            let old_size = file_meta.filesize;
             let new_size = new_size as usize;
             let new_pages = (new_size + arch::PGSIZE - 1) / arch::PGSIZE;
 
             if new_size > file_meta.filesize {
-                // Extend: allocate new zero pages as needed
-                while file_meta.pages.len() < new_pages {
-                    file_meta.pages.push(PhysPageFrame::alloc_zeroed());
-                }
+                Self::zero_file_range(file_meta, old_size, new_size);
             } else {
+                Self::zero_file_range(file_meta, new_size, old_size);
+
                 // Shrink: drop excess pages
                 file_meta.pages.truncate(new_pages);
             }
@@ -419,7 +477,33 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             file_meta.filesize = new_size;
             Ok(())
         } else {
-            Err(Errno::EISDIR)
+            Err(Errno::EINVAL)
+        }
+    }
+
+    fn symlink(&self, target: &str) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if let Meta::Symlink(ref mut link) = meta.meta {
+            link.clear();
+            link.push_str(target);
+            let now = kclock::now().unwrap_or_default();
+            meta.mtime = now;
+            meta.ctime = now;
+            Ok(())
+        } else {
+            Err(Errno::EINVAL)
+        }
+    }
+
+    fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        let mut meta = self.meta.lock();
+        if let Meta::Symlink(ref link) = meta.meta {
+            let len = core::cmp::min(link.len(), buf.len());
+            buf[..len].copy_from_slice(&link.as_bytes()[..len]);
+            meta.atime = kclock::now().unwrap_or_default();
+            Ok(Some(len))
+        } else {
+            Ok(None)
         }
     }
 
@@ -487,7 +571,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {

@@ -3,12 +3,13 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver::chosen::kclock;
 use crate::fs::Dentry;
-use crate::fs::file::{DirResult, FileFlags, FileOps, SeekWhence};
-use crate::fs::inode::{InodeOps, Mode};
+use crate::fs::file::{DirResult, FileFlags, FileOps};
+use crate::fs::inode::{InodeLockState, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
+use crate::klib::SpinLock;
 
 /// Linux-compatible `struct rtc_time`
 #[repr(C)]
@@ -27,17 +28,25 @@ struct RtcTime {
 
 pub struct RtcInode {
     ino: u32,
+    lock_state: SpinLock<InodeLockState>,
 }
 
 impl RtcInode {
     pub fn new(ino: u32) -> Self {
-        Self { ino }
+        Self {
+            ino,
+            lock_state: SpinLock::new(InodeLockState::new(), "RtcInode::lock_state"),
+        }
     }
 }
 
 impl InodeOps for RtcInode {
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn type_name(&self) -> &'static str {
@@ -95,15 +104,7 @@ impl FileOps for RtcFile {
         self.inode.readat(buf, 0, self.flags.direct)
     }
 
-    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        self.inode.readat(buf, offset, self.flags.direct)
-    }
-
     fn write(&self, _buf: &[u8]) -> SysResult<usize> {
-        Err(Errno::EACCES)
-    }
-
-    fn pwrite(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
         Err(Errno::EACCES)
     }
 
@@ -115,10 +116,6 @@ impl FileOps for RtcFile {
             append: false,
             direct: self.flags.direct,
         }
-    }
-
-    fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
@@ -157,7 +154,7 @@ impl FileOps for RtcFile {
         self.dentry.as_ref()
     }
 
-    fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
+    fn wait_event(&self, _waker: usize, _event: FileEvent) -> SysResult<Option<FileEvent>> {
         Ok(None)
     }
 

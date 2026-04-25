@@ -10,4 +10,4 @@ pub mod random;
 pub mod ring;
 
 pub use initcell::InitedCell;
-pub use ksync::{SleepLock, SpinLock};
+pub use ksync::{RWLock, SleepLock, SpinLock};

@@ -66,6 +66,14 @@ impl Task for KThread {
         0
     }
 
+    fn fsuid(&self) -> Uid {
+        0
+    }
+
+    fn fsgid(&self) -> Uid {
+        0
+    }
+
     fn tcb(&self) -> &TCB {
         unreachable!("KThread is not a TCB")
     }

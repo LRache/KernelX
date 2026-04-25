@@ -159,7 +159,7 @@ pub struct Manager {
     areas: BTreeMap<usize, Box<dyn Area>>,
     /// 用户栈的起始地址
     userstack_ubase: usize,
-    /// 用户 brk 的起始地址
+    /// 用户 brk 的起始地址到 USER_BRK_MAX 的区间
     userbrk: UserBrk,
 }
 
@@ -193,7 +193,7 @@ impl Manager {
 
     /// 处理内存访问错误，尝试修复，修复成功则返回 true
     pub fn try_to_fix_memory_fault(&mut self, uaddr: usize, access_type: MemAccessType, addrspace: &Arc<AddrSpace>) -> bool;
-    /// 增加用户 brk，返回新的 brk 地址
+    /// 增加用户 brk，返回新的 brk 地址；超过 USER_BRK_MAX 时返回 ENOMEM
     pub fn increase_userbrk(&mut self, new_ubrk: usize) -> SysResult<usize>;
 }
 ```

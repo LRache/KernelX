@@ -22,6 +22,14 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SignalStackFlags: usize {
+        const SS_ONSTACK = 1 << 0;
+        const SS_DISABLE = 1 << 1;
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SignalAction {
     pub handler: usize,
@@ -47,16 +55,27 @@ impl SignalAction {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SignalStackState {
+    pub stack: Option<(usize, usize)>, // (ss_sp, ss_size)
+    pub on_stack: bool,
+}
+
+impl SignalStackState {
+    pub fn get_stack_top(&self) -> Option<usize> {
+        self.stack.map(|(sp, size)| (sp + size) & !0xf)
+    }
+}
+
+#[derive(Clone)]
 pub struct SignalActionTable {
-    actions: [SignalAction; 63],
-    stack: Option<(usize, usize)>, // (ss_sp, ss_size)
+    actions: [SignalAction; 64],
 }
 
 impl SignalActionTable {
     pub fn new() -> Self {
         SignalActionTable {
-            actions: [SignalAction::empty(); 63],
-            stack: None,
+            actions: [SignalAction::empty(); 64],
         }
     }
 
@@ -65,22 +84,10 @@ impl SignalActionTable {
         self.actions[index - 1]
     }
 
-    pub fn get_stack_top(&self) -> Option<usize> {
-        self.stack.map(|(sp, size)| (sp + size) & !0xf)
-    }
-
-    pub fn get_stack(&self) -> Option<(usize, usize)> {
-        self.stack
-    }
-
     pub fn set(&mut self, signum: SignalNum, action: &SignalAction) -> SysResult<()> {
         let index: usize = signum.into();
         self.actions[index - 1] = *action;
         Ok(())
-    }
-
-    pub fn set_stack(&mut self, stack: Option<(usize, usize)>) {
-        self.stack = stack;
     }
 
     pub fn reset_for_exec(&mut self) {
@@ -91,13 +98,7 @@ impl SignalActionTable {
                 action.handler = SIG_DFL;
                 action.mask = SignalSet::empty();
                 action.flags = SignalActionFlags::empty();
-            } else if action.flags.contains(SignalActionFlags::SA_ONSTACK) {
-                // POSIX: SA_ONSTACK is cleared for all signals after exec.
-                action.flags.remove(SignalActionFlags::SA_ONSTACK);
             }
         }
-
-        // POSIX: alternate signal stack is not preserved across exec.
-        self.stack = None;
     }
 }

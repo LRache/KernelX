@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::arch;
 use crate::driver::BlockDriverOps;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
@@ -12,7 +12,12 @@ use super::inode;
 pub struct FileSystem;
 
 impl FileSystemOps for FileSystem {
-    fn create(&self, _fsno: u32, _driver: Option<Arc<dyn BlockDriverOps>>) -> SysResult<Arc<dyn SuperBlockOps>> {
+    fn create(
+        &self,
+        _fsno: u32,
+        _driver: Option<Arc<dyn BlockDriverOps>>,
+        _options: MountOptions,
+    ) -> SysResult<Arc<dyn SuperBlockOps>> {
         Ok(Arc::new(SuperBlock))
     }
 }
@@ -35,6 +40,7 @@ impl SuperBlockOps for SuperBlock {
             inode::PidMaxInode::INO => Ok(Arc::new(inode::PidMaxInode)),
             inode::TaintedInode::INO => Ok(Arc::new(inode::TaintedInode)),
             inode::SysFsDirInode::INO => Ok(Arc::new(inode::SysFsDirInode)),
+            inode::PipeMaxSizeInode::INO => Ok(Arc::new(inode::PipeMaxSizeInode)),
             inode::PipeUserPagesSoftInode::INO => Ok(Arc::new(inode::PipeUserPagesSoftInode)),
             i if i >= inode::TaskDirInode::BASE_INO && i < inode::TaskMapsInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
@@ -54,8 +60,14 @@ impl SuperBlockOps for SuperBlock {
             i if i >= inode::TaskFdDirInode::INO_BASE && i < inode::TaskFdEntryInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskFdDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
-            i if i >= inode::TaskFdEntryInode::INO_BASE => {
+            i if i >= inode::TaskFdEntryInode::INO_BASE && i < inode::TaskFdEntryInode::INO_END => {
                 Ok(Arc::new(inode::TaskFdEntryInode::from_ino(i).ok_or(Errno::ENOENT)?))
+            }
+            i if i >= inode::TaskTaskDirInode::INO_BASE && i < inode::TaskTaskDirInode::INO_END => {
+                Ok(Arc::new(inode::TaskTaskDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
+            }
+            i if i >= inode::TaskThreadDirInode::INO_BASE && i < inode::TaskThreadDirInode::INO_END => {
+                Ok(Arc::new(inode::TaskThreadDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
             _ => Err(Errno::ENOENT),
         }
@@ -72,11 +84,16 @@ impl SuperBlockOps for SuperBlock {
         statfs.f_blocks = 0;
         statfs.f_bfree = 0;
         statfs.f_bavail = 0;
+        statfs.f_flag = self.statfs_flags().bits();
         Ok(statfs)
     }
 
     fn sync(&self) -> SysResult<()> {
         Ok(())
+    }
+
+    fn is_readonly(&self) -> bool {
+        true
     }
 
     fn type_name(&self) -> &'static str {

@@ -32,11 +32,28 @@ impl Perm {
     }
 
     pub fn current(flags: PermFlags) -> Self {
-        let pcb = current::pcb();
+        let task = current::task();
         Self {
-            uid: pcb.euid(),
-            gid: pcb.egid(),
-            supplementary_gids: pcb.supplementary_gids(),
+            uid: task.fsuid(),
+            gid: task.fsgid(),
+            supplementary_gids: task.supplementary_gids(),
+            flags,
+        }
+    }
+
+    pub fn access(flags: PermFlags, use_effective_ids: bool) -> Self {
+        let pcb = current::pcb();
+        let (uid, gid) = if use_effective_ids {
+            (pcb.euid(), pcb.egid())
+        } else {
+            (pcb.uid(), pcb.gid())
+        };
+
+        let task = current::task();
+        Self {
+            uid,
+            gid,
+            supplementary_gids: task.supplementary_gids(),
             flags,
         }
     }

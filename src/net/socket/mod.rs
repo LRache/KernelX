@@ -1,6 +1,5 @@
 pub mod inet;
 pub mod netlink;
-pub mod options;
 pub mod raw;
 pub mod tcp;
 pub mod udp;
@@ -11,7 +10,7 @@ use num_enum::TryFromPrimitive;
 
 use crate::fs::file::FileFlags;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::syscall::UserStruct;
 
 pub use inet::InetSocket;
@@ -25,15 +24,6 @@ pub enum AddressFamily {
     Netlink = 16,
 }
 
-#[repr(usize)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-pub enum SocketKind {
-    Stream = 1,
-    Dgram = 2,
-    Raw = 3,
-    SeqPacket = 5,
-}
-
 pub const SOCK_NONBLOCK: usize = 0x800;
 pub const SOCK_CLOEXEC: usize = 0x80000;
 
@@ -44,14 +34,6 @@ pub enum ShutdownHow {
     Write = 1,
     ReadWrite = 2,
 }
-
-pub const AF_UNIX: usize = AddressFamily::Unix as usize;
-pub const AF_INET: usize = AddressFamily::Inet as usize;
-pub const AF_NETLINK: usize = AddressFamily::Netlink as usize;
-
-pub const SOCK_STREAM: usize = SocketKind::Stream as usize;
-pub const SOCK_DGRAM: usize = SocketKind::Dgram as usize;
-pub const SOCK_RAW: usize = SocketKind::Raw as usize;
 
 /// SHUT_* constants for shutdown()
 pub const SHUT_RD: usize = ShutdownHow::Read as usize;
@@ -140,14 +122,17 @@ pub trait SocketInner: Send + Sync {
         true
     }
 
-    fn wait_event(&self, event: PollEventSet) -> Option<FileEvent> {
-        if event.contains(PollEventSet::POLLIN) && self.poll_read() {
-            return Some(FileEvent::ReadReady);
+    fn wait_event(&self, event: FileEvent) -> Option<FileEvent> {
+        let mut ready = FileEvent::empty();
+
+        if event.contains(FileEvent::READ_READY) && self.poll_read() {
+            ready |= FileEvent::READ_READY;
         }
-        if event.contains(PollEventSet::POLLOUT) && self.poll_write() {
-            return Some(FileEvent::WriteReady);
+        if event.contains(FileEvent::WRITE_READY) && self.poll_write() {
+            ready |= FileEvent::WRITE_READY;
         }
-        None
+
+        if ready.is_empty() { None } else { Some(ready) }
     }
 
     fn set_flags(&mut self, _flags: &FileFlags) {}

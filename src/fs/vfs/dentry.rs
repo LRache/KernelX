@@ -4,8 +4,11 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 
-use crate::fs::inode::{Index, InodeOps, Mode, Owner};
+use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
+use crate::fs::perm::{Perm, PermFlags};
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::current;
 use crate::klib::SpinLock;
 
 use super::vfs;
@@ -20,6 +23,64 @@ pub struct Dentry {
 }
 
 impl Dentry {
+    pub fn check_search_perm(&self, perm: &Perm) -> SysResult<()> {
+        let inode = self.get_inode();
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(perm, uid, gid) {
+            return Err(Errno::EACCES);
+        }
+
+        Ok(())
+    }
+
+    fn check_child_mutation_perm(&self) -> SysResult<()> {
+        let inode = self.get_inode();
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(&Perm::current(PermFlags::W | PermFlags::X), uid, gid) {
+            return Err(Errno::EACCES);
+        }
+
+        Ok(())
+    }
+
+    fn check_sticky_remove_perm(
+        &self,
+        parent_inode: &Arc<dyn InodeOps>,
+        child_inode: &Arc<dyn InodeOps>,
+    ) -> SysResult<()> {
+        let parent_mode = parent_inode.mode()?;
+        if !parent_mode.contains(Mode::S_ISVTX) {
+            return Ok(());
+        }
+
+        let fsuid = current::fsuid();
+        if fsuid == 0 {
+            return Ok(());
+        }
+
+        let (parent_uid, _) = parent_inode.owner()?;
+        if fsuid == parent_uid {
+            return Ok(());
+        }
+
+        let (child_uid, _) = child_inode.owner()?;
+        if fsuid == child_uid {
+            return Ok(());
+        }
+
+        Err(Errno::EPERM)
+    }
+
     pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
         Self {
             inode_index: Index {
@@ -60,6 +121,10 @@ impl Dentry {
         self.inode_index
     }
 
+    pub fn is_superblock_readonly(&self) -> SysResult<bool> {
+        vfs().is_superblock_readonly(self.sno())
+    }
+
     pub fn get_inode(&self) -> Arc<dyn InodeOps> {
         let inode = self.inode.lock();
         match inode.upgrade() {
@@ -73,11 +138,17 @@ impl Dentry {
         }
     }
 
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn get_parent(&self) -> Option<Arc<Dentry>> {
         self.parent.clone()
     }
 
-    pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
+    pub fn lookup_with_perm(self: &Arc<Self>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
+        self.check_search_perm(perm)?;
+
         if let Some(child) = self.children.lock().get(name)
             && let Some(child) = child.upgrade()
         {
@@ -101,7 +172,13 @@ impl Dentry {
         }
     }
 
-    pub fn lookup_nocached(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
+    pub fn lookup(self: &Arc<Self>, name: &str) -> SysResult<Arc<Dentry>> {
+        self.lookup_with_perm(name, &Perm::current(PermFlags::X))
+    }
+
+    pub fn lookup_nocached_with_perm(self: &Arc<Self>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
+        self.check_search_perm(perm)?;
+
         let lookup_ino = self.get_inode().lookup(name)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
@@ -119,13 +196,17 @@ impl Dentry {
         }
     }
 
-    pub fn walk_link(self: Arc<Self>) -> SysResult<Arc<Dentry>> {
+    pub fn walk_link_with_perm(self: Arc<Self>, symlink_depth: &mut usize, perm: &Perm) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
             let mut buffer = [0u8; 255];
             if let Some(length) = inode.readlink(&mut buffer)? {
+                if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
+                    return Err(Errno::ELOOP);
+                }
+                *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
-                let link_dentry = vfs().lookup_dentry(p, link_name)?;
+                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(p, link_name, symlink_depth, perm)?;
                 return Ok(link_dentry);
             }
         }
@@ -146,6 +227,14 @@ impl Dentry {
         }));
     }
 
+    pub fn mounted_root(self: &Arc<Self>) -> Option<Arc<Dentry>> {
+        self.mount_to.lock().clone()
+    }
+
+    pub fn unmount(self: &Arc<Self>) -> Option<Arc<Dentry>> {
+        self.mount_to.lock().take()
+    }
+
     pub fn get_path(&self) -> String {
         if let Some(parent) = self.parent.as_ref() {
             let mut path = parent.get_path();
@@ -162,11 +251,36 @@ impl Dentry {
     }
 
     pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
-        if self.lookup(name).is_ok() {
-            return Err(Errno::EEXIST);
+        self.check_child_mutation_perm()?;
+
+        match self.lookup(name) {
+            Ok(_) => return Err(Errno::EEXIST),
+            Err(Errno::ENOENT) => {}
+            Err(err) => return Err(err),
         }
 
-        let inode = self.get_inode().create(name, mode, owner)?;
+        let parent_inode = self.get_inode();
+        let parent_mode = parent_inode.mode()?;
+        let parent_gid = parent_inode.owner()?.1;
+        let mut mode = mode;
+        let mut owner = owner;
+
+        if parent_mode.contains(Mode::S_ISGID) {
+            owner.gid = parent_gid;
+            if mode.contains(Mode::S_IFDIR) {
+                mode.insert(Mode::S_ISGID);
+            }
+        }
+
+        if mode.contains(Mode::S_ISGID) && current::fsuid() != 0 {
+            let pcb = current::pcb();
+            let in_supplementary_group = pcb.supplementary_gids().contains(&owner.gid);
+            if pcb.fsgid() != owner.gid && !in_supplementary_group {
+                mode.remove(Mode::S_ISGID);
+            }
+        }
+
+        let inode = parent_inode.create(name, mode, owner)?;
         vfs().cache.insert(
             &Index {
                 sno: self.sno(),
@@ -178,19 +292,49 @@ impl Dentry {
         Ok(inode)
     }
 
-    pub fn unlink(self: &Arc<Self>, name: &str) -> SysResult<()> {
-        let inode = self.get_inode();
-        let inode_index = Index {
-            sno: self.sno(),
-            ino: inode.lookup(name)?,
-        };
+    fn remove_child(self: &Arc<Self>, name: &str, remove_dir: bool) -> SysResult<()> {
+        self.check_child_mutation_perm()?;
+        let child = self.lookup(name)?;
 
-        inode.unlink(name)?;
+        let parent_inode = self.get_inode();
+        if parent_inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+
+        if remove_dir && child.mounted_root().is_some() {
+            return Err(Errno::EBUSY);
+        }
+
+        let child_inode = child.get_inode();
+        let child_is_dir = child_inode.inode_type()? == FileType::Directory;
+        if remove_dir && !child_is_dir {
+            return Err(Errno::ENOTDIR);
+        }
+        if !remove_dir && child_is_dir {
+            return Err(Errno::EISDIR);
+        }
+
+        self.check_sticky_remove_perm(&parent_inode, &child_inode)?;
+
+        parent_inode.unlink(name)?;
 
         self.children.lock().remove(name);
-        vfs().cache.remove(&inode_index);
+        vfs().cache.remove(&child.get_inode_index());
 
         Ok(())
+    }
+
+    pub fn unlink(self: &Arc<Self>, name: &str) -> SysResult<()> {
+        self.remove_child(name, false)
+    }
+
+    pub fn rmdir(self: &Arc<Self>, name: &str) -> SysResult<()> {
+        self.remove_child(name, true)
+    }
+
+    pub fn create_symlink(self: &Arc<Self>, name: &str, target: &str, owner: Owner) -> SysResult<()> {
+        let inode = self.create(name, Mode::S_IFLNK | Mode::from_bits_truncate(0o777), owner)?;
+        inode.symlink(target)
     }
 
     pub fn symlink(self: &Arc<Self>, target: &str) -> SysResult<()> {
@@ -200,6 +344,14 @@ impl Dentry {
     }
 
     pub fn link(self: &Arc<Self>, name: &str, target: &Arc<Dentry>) -> SysResult<()> {
+        self.check_child_mutation_perm()?;
+
+        match self.lookup(name) {
+            Ok(_) => return Err(Errno::EEXIST),
+            Err(Errno::ENOENT) => {}
+            Err(err) => return Err(err),
+        }
+
         let target_inode = target.get_inode();
         self.get_inode().link(name, &target_inode)?;
         vfs().cache.insert(

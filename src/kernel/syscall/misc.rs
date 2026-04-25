@@ -73,6 +73,7 @@ impl UserStruct for RLimit {}
 #[repr(usize)]
 #[derive(TryFromPrimitive)]
 enum RLimitResource {
+    FSIZE = 1,
     STACK = 3,
     CORE = 4,
     NOFILE = 7,
@@ -87,6 +88,23 @@ pub fn prlimit64(
     let resource = RLimitResource::try_from(resource).map_err(|_| Errno::EINVAL)?;
 
     match resource {
+        RLimitResource::FSIZE => {
+            let pcb = current::pcb();
+            if !uptr_old_limit.is_null() {
+                let (rlim_cur, rlim_max) = pcb.file_size_limit();
+                uptr_old_limit.write(RLimit { rlim_cur, rlim_max })?;
+            }
+
+            if !uptr_new_limit.is_null() {
+                let new_limit = uptr_new_limit.read()?;
+                if new_limit.rlim_cur > new_limit.rlim_max {
+                    return Err(Errno::EINVAL);
+                }
+
+                pcb.set_file_size_limit(new_limit.rlim_cur, new_limit.rlim_max);
+            }
+        }
+
         RLimitResource::STACK => {
             if !uptr_old_limit.is_null() {
                 let stack_size = config::USER_STACK_PAGE_COUNT_MAX * arch::PGSIZE;
@@ -124,7 +142,8 @@ pub fn prlimit64(
         }
 
         RLimitResource::NOFILE => {
-            let mut fdtable = current::fdtable().lock();
+            let fdtable = current::fdtable();
+            let mut fdtable = fdtable.lock();
             if !uptr_old_limit.is_null() {
                 let old_limit = RLimit {
                     rlim_cur: fdtable.get_max_fd(),
@@ -375,6 +394,11 @@ pub fn sched_getscheduler(_pid: usize) -> SyscallRet {
 pub fn sched_getparam(_pid: usize, uptr_param: UPtr<u32>) -> SyscallRet {
     // Write sched_priority = 0 (default for SCHED_OTHER)
     uptr_param.write(0)?;
+    Ok(0)
+}
+
+// TODO: implement real reboot syscall
+pub fn reboot() -> SyscallRet {
     Ok(0)
 }
 

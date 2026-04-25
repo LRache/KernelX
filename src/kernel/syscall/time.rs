@@ -1,5 +1,7 @@
 use bitflags::bitflags;
+use core::convert::{TryFrom, TryInto};
 use core::time::Duration;
+use num_enum::TryFromPrimitive;
 
 use crate::driver;
 use crate::driver::chosen::kclock;
@@ -30,10 +32,10 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
         return Ok(0);
     }
 
-    let to_sleep = req.into();
+    let to_sleep = Duration::try_from(req)?;
 
     let start_sleep = kclock::now()?;
-    timer::add_timer(current::task().clone(), to_sleep);
+    let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
     match event {
@@ -44,6 +46,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
+            timer::remove_timer(timer_id);
             Err(Errno::EINTR)
         }
         _ => unreachable!("event={:?}", event),
@@ -56,17 +59,32 @@ bitflags! {
     }
 }
 
+#[derive(TryFromPrimitive, Debug, PartialEq, Eq)]
+#[repr(usize)]
+#[allow(non_camel_case_types)]
+enum ClockId {
+    CLOCK_REALTIME = 0,
+    CLOCK_MONOTONIC = 1,
+    CLOCK_PROCESS_CPUTIME_ID = 2,
+    CLOCK_THREAD_CPUTIME_ID = 3,
+}
+
 pub fn clock_nanosleep(
-    _clockid: usize,
+    clockid: usize,
     flags: usize,
     uptr_req: UPtr<Timespec>,
     uptr_rem: UPtr<Timespec>,
 ) -> SysResult<usize> {
     uptr_req.should_not_null()?;
 
+    let clockid = ClockId::try_from(clockid).map_err(|_| Errno::EINVAL)?;
+    if clockid == ClockId::CLOCK_PROCESS_CPUTIME_ID || clockid == ClockId::CLOCK_THREAD_CPUTIME_ID {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
     let flags = ClockNanosleepFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
-    let req: Duration = uptr_req.read()?.into();
+    let req: Duration = uptr_req.read()?.try_into()?;
 
     let to_sleep = if flags.contains(ClockNanosleepFlags::TIMER_ABSTIME) {
         let now = kclock::now()?;
@@ -82,7 +100,7 @@ pub fn clock_nanosleep(
     };
 
     let start_sleep = kclock::now()?;
-    timer::add_timer(current::task().clone(), to_sleep);
+    let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
     match event {
@@ -93,6 +111,7 @@ pub fn clock_nanosleep(
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
+            timer::remove_timer(timer_id);
             Err(Errno::EINTR)
         }
         _ => unreachable!(),

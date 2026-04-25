@@ -377,7 +377,8 @@ impl Manager {
                 Some(kaddr)
             } else {
                 crate::kinfo!(
-                    "Area at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
+                    "Area {} at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
+                    area.type_name(),
                     area.ubase(),
                     uaddr,
                     access_type
@@ -396,6 +397,10 @@ impl Manager {
 
         if new_ubrk < config::USER_BRK_BASE {
             return Ok(self.userbrk.ubrk);
+        }
+
+        if new_ubrk > config::USER_BRK_MAX {
+            return Err(Errno::ENOMEM);
         }
 
         let new_page_count = if new_ubrk == config::USER_BRK_BASE {

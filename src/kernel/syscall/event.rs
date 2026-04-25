@@ -2,13 +2,15 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use bitflags::bitflags;
+use core::convert::TryInto;
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
 use crate::arch;
 use crate::fs::file::FileOps;
 use crate::kernel::errno::Errno;
-use crate::kernel::event::{Event, FileEvent, PollEventSet, timer};
+use crate::kernel::event::{Event, FileEvent, timer};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet, signum};
 use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::SysResult;
@@ -52,20 +54,14 @@ fn set_select_fd_by_event(
     writefds: &mut Option<FdSet>,
     exceptfds: &mut Option<FdSet>,
 ) {
-    match event {
-        FileEvent::ReadReady => {
-            readfds.as_mut().map(|set| set.set(fd));
-        }
-        FileEvent::WriteReady => {
-            writefds.as_mut().map(|set| set.set(fd));
-        }
-        FileEvent::Priority => {
-            exceptfds.as_mut().map(|set| set.set(fd));
-        }
-        FileEvent::HangUp => {
-            readfds.as_mut().map(|set| set.set(fd));
-            writefds.as_mut().map(|set| set.set(fd));
-        }
+    if event.intersects(FileEvent::READ_READY | FileEvent::HANG_UP) {
+        readfds.as_mut().map(|set| set.set(fd));
+    }
+    if event.intersects(FileEvent::WRITE_READY | FileEvent::HANG_UP) {
+        writefds.as_mut().map(|set| set.set(fd));
+    }
+    if event.contains(FileEvent::PRIORITY) {
+        exceptfds.as_mut().map(|set| set.set(fd));
     }
 }
 
@@ -77,10 +73,22 @@ fn write_back_fdsets(
     writefds: &Option<FdSet>,
     exceptfds: &Option<FdSet>,
 ) -> SysResult<()> {
-    readfds.map(|t| read_ptr.write(t));
-    writefds.map(|t| write_ptr.write(t));
-    exceptfds.map(|t| except_ptr.write(t));
+    if let Some(t) = readfds {
+        read_ptr.write(*t)?;
+    }
+    if let Some(t) = writefds {
+        write_ptr.write(*t)?;
+    }
+    if let Some(t) = exceptfds {
+        except_ptr.write(*t)?;
+    }
     Ok(())
+}
+
+fn has_pending_unmasked_signal() -> bool {
+    let tcb = current::tcb();
+    tcb.recive_pending_signal_from_parent();
+    tcb.state().lock().pending_signal.is_some()
 }
 
 fn select(
@@ -97,7 +105,8 @@ fn select(
     let sigmask = uptr_sigmask.read_optional()?;
 
     let mut files_to_select = Vec::new();
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
 
     for i in 0..nfds {
         let want_read = readfds.as_mut().map_or(false, |set| set.clear(i));
@@ -108,15 +117,15 @@ fn select(
             continue;
         }
 
-        let mut wait_set = PollEventSet::empty();
+        let mut wait_set = FileEvent::empty();
         if want_read {
-            wait_set |= PollEventSet::POLLIN;
+            wait_set |= FileEvent::READ_READY;
         }
         if want_write {
-            wait_set |= PollEventSet::POLLOUT;
+            wait_set |= FileEvent::WRITE_READY;
         }
         if want_except {
-            wait_set |= PollEventSet::POLLPRI;
+            wait_set |= FileEvent::PRIORITY;
         }
 
         let file = fdtable.get(i).map_err(|_| Errno::EBADF)?;
@@ -190,13 +199,29 @@ fn select(
             return Ok(0);
         }
     } else {
-        if waiting_files.is_empty() {
-            return Ok(0);
-        }
         None
     };
 
     let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+
+    if has_pending_unmasked_signal() {
+        old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+        waiting_files.iter().for_each(|file| {
+            file.wait_event_cancel();
+        });
+        timer_id.map(|id| timer::remove_timer(id));
+
+        write_back_fdsets(
+            &uptr_readfds,
+            &uptr_writefds,
+            &uptr_exceptfds,
+            &readfds,
+            &writefds,
+            &exceptfds,
+        )?;
+
+        return Err(Errno::EINTR);
+    }
 
     defer::cancel(defer);
     current::schedule();
@@ -208,31 +233,66 @@ fn select(
 
     let event = tcb.take_wakeup_event().unwrap();
 
-    write_back_fdsets(
-        &uptr_readfds,
-        &uptr_writefds,
-        &uptr_exceptfds,
-        &readfds,
-        &writefds,
-        &exceptfds,
-    )?;
-
     match event {
         Event::Poll { event, waker } => {
+            debug_assert!(waker < files_to_select.len());
             waiting_files.iter().enumerate().for_each(|(i, file)| {
                 if i != waker {
                     file.wait_event_cancel();
                 }
             });
 
-            set_select_fd_by_event(event, waker, &mut readfds, &mut writefds, &mut exceptfds);
+            set_select_fd_by_event(
+                event,
+                files_to_select[waker].0,
+                &mut readfds,
+                &mut writefds,
+                &mut exceptfds,
+            );
             timer_id.map(|id| timer::remove_timer(id));
+
+            write_back_fdsets(
+                &uptr_readfds,
+                &uptr_writefds,
+                &uptr_exceptfds,
+                &readfds,
+                &writefds,
+                &exceptfds,
+            )?;
 
             Ok(1)
         }
-        Event::Timeout => Err(Errno::ETIMEDOUT),
+        Event::Timeout => {
+            waiting_files.iter().for_each(|file| {
+                file.wait_event_cancel();
+            });
+
+            write_back_fdsets(
+                &uptr_readfds,
+                &uptr_writefds,
+                &uptr_exceptfds,
+                &readfds,
+                &writefds,
+                &exceptfds,
+            )?;
+
+            Ok(0)
+        }
         Event::Signal => {
+            waiting_files.iter().for_each(|file| {
+                file.wait_event_cancel();
+            });
             timer_id.map(|id| timer::remove_timer(id));
+
+            write_back_fdsets(
+                &uptr_readfds,
+                &uptr_writefds,
+                &uptr_exceptfds,
+                &readfds,
+                &writefds,
+                &exceptfds,
+            )?;
+
             Err(Errno::EINTR)
         }
         _ => unreachable!("Invalid event type in select: {:?}", event),
@@ -251,17 +311,44 @@ pub fn pselect6_time32(
         return Err(Errno::EINVAL);
     }
 
-    let timeout: Option<Duration> = uptr_timeout.read_optional()?.map(|ts| ts.into());
+    let timeout: Option<Duration> = match uptr_timeout.read_optional()? {
+        Some(ts) => Some(ts.try_into()?),
+        None => None,
+    };
 
     select(nfds, uptr_readfds, uptr_writefds, uptr_exceptfds, timeout, uptr_sigmask)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct PollEventSet: i16 {
+        const POLLIN   = FileEvent::READ_READY.bits();  // There is data to read.
+        const POLLPRI  = FileEvent::PRIORITY.bits();    // There is urgent data to read.
+        const POLLOUT  = FileEvent::WRITE_READY.bits(); // Writing now will not block.
+        const POLLERR  = FileEvent::ERROR.bits();       // Error condition.
+        const POLLHUP  = FileEvent::HANG_UP.bits();     // Hung up.
+        const POLLNVAL = FileEvent::INVALID.bits();     // Invalid request: fd not open.
+    }
+}
+
+impl Into<FileEvent> for PollEventSet {
+    fn into(self) -> FileEvent {
+        FileEvent::from_bits_truncate(self.bits())
+    }
+}
+
+impl From<FileEvent> for PollEventSet {
+    fn from(event: FileEvent) -> Self {
+        PollEventSet::from_bits_truncate(event.bits())
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Pollfd {
-    pub fd: i32,
-    pub events: i16,
-    pub revents: i16,
+    fd: i32,
+    events: PollEventSet,
+    revents: PollEventSet,
 }
 impl UserStruct for Pollfd {}
 
@@ -269,14 +356,19 @@ impl Pollfd {
     pub fn default() -> Self {
         Self {
             fd: -1,
-            events: -1,
-            revents: -1,
+            events: PollEventSet::empty(),
+            revents: PollEventSet::empty(),
         }
     }
 }
 
-fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
-    let mut fdtable = current::fdtable().lock();
+fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<SignalSet>) -> SysResult<usize> {
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
+
+    pollfds.iter_mut().for_each(|pfd| {
+        pfd.revents = PollEventSet::empty();
+    });
 
     let mut count = 0u32;
     let mut i = 0;
@@ -298,19 +390,15 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
             let file = match fdtable.get(pfd.fd as usize) {
                 Ok(f) => f,
                 Err(_) => {
+                    pfd.revents = PollEventSet::POLLNVAL;
                     count += 1;
                     return None;
                 }
             };
 
-            let poll_set = PollEventSet::from_bits_truncate(pfd.events);
-            if let Some(event) = file.wait_event(i, poll_set).unwrap() {
-                pfd.revents = match event {
-                    FileEvent::ReadReady => PollEventSet::POLLIN.bits(),
-                    FileEvent::WriteReady => PollEventSet::POLLOUT.bits(),
-                    FileEvent::Priority => PollEventSet::POLLPRI.bits(),
-                    FileEvent::HangUp => PollEventSet::POLLHUP.bits(),
-                };
+            let wait_set = pfd.events.into();
+            if let Some(event) = file.wait_event(i, wait_set).unwrap() {
+                pfd.revents = event.into();
                 count += 1;
             }
 
@@ -322,15 +410,39 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     drop(fdtable);
 
     if count != 0 {
+        poll_files.iter_mut().for_each(|(file, _)| {
+            file.wait_event_cancel();
+        });
         return Ok(count as usize);
     }
 
-    if let Some(timeout) = timeout {
-        timer::add_timer(current::task().clone(), timeout);
+    let timer_id = match timeout {
+        Some(timeout) if timeout.is_zero() => {
+            poll_files.iter_mut().for_each(|(file, _)| {
+                file.wait_event_cancel();
+            });
+            return Ok(0);
+        }
+        Some(timeout) => Some(timer::add_timer(current::task().clone(), timeout)),
+        None => None,
+    };
+
+    let tcb = current::tcb();
+    let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+
+    if has_pending_unmasked_signal() {
+        old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+        timer_id.map(|id| timer::remove_timer(id));
+        poll_files.iter_mut().for_each(|(file, _)| {
+            file.wait_event_cancel();
+        });
+        return Err(Errno::EINTR);
     }
 
     defer::cancel(defer);
     current::schedule();
+
+    old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
 
     // start polling
     let event = current::task().take_wakeup_event().unwrap();
@@ -344,10 +456,12 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     let (poll_event, waker) = match event {
         Event::Poll { event, waker } => (event, waker),
         Event::Timeout => {
+            timer_id.map(|id| timer::remove_timer(id));
             cancel_all();
             return Ok(0);
         }
         Event::Signal => {
+            timer_id.map(|id| timer::remove_timer(id));
             cancel_all();
             return Err(Errno::EINTR);
         }
@@ -359,16 +473,13 @@ fn poll(pollfds: &mut [Pollfd], timeout: Option<Duration>) -> SysResult<usize> {
     poll_files.iter_mut().enumerate().for_each(|(i, (file, pfd))| {
         if i != waker {
             file.wait_event_cancel();
-            pfd.revents = 0;
+            pfd.revents = PollEventSet::empty();
         }
     });
 
-    poll_files[waker].1.revents = match poll_event {
-        FileEvent::ReadReady => PollEventSet::POLLIN.bits(),
-        FileEvent::WriteReady => PollEventSet::POLLOUT.bits(),
-        FileEvent::Priority => PollEventSet::POLLPRI.bits(),
-        FileEvent::HangUp => PollEventSet::POLLHUP.bits(),
-    };
+    poll_files[waker].1.revents = poll_event.into();
+
+    timer_id.map(|id| timer::remove_timer(id));
 
     Ok(1)
 }
@@ -377,31 +488,39 @@ pub fn ppoll_time32(
     uptr_ufds: UArray<Pollfd>,
     nfds: usize,
     uptr_timeout: UPtr<uapi::Timespec32>,
-    _uptr_sigmask: usize,
-    _sigmask_size: usize,
+    uptr_sigmask: UPtr<SignalSet>,
+    sigmask_size: usize,
 ) -> SysResult<usize> {
-    if nfds == 0 {
-        return Ok(0);
+    if nfds > 0 {
+        uptr_ufds.should_not_null()?;
     }
 
-    uptr_ufds.should_not_null()?;
+    if nfds > current::fdtable().lock().get_max_fd() {
+        return Err(Errno::EINVAL);
+    }
 
     let mut pollfds = vec![Pollfd::default(); nfds];
-    uptr_ufds.read(0, &mut pollfds)?;
+    if nfds > 0 {
+        uptr_ufds.read(0, &mut pollfds)?;
+    }
 
     let timeout = if !uptr_timeout.is_null() {
-        let ts = uptr_timeout.read()?;
-        if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
-            return Err(Errno::EINVAL);
-        }
-        Some(ts.into())
+        Some(uptr_timeout.read()?.try_into()?)
     } else {
         None
     };
 
-    let r = poll(&mut pollfds, timeout)?;
+    if !uptr_sigmask.is_null() && sigmask_size != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
 
-    uptr_ufds.write(0, &pollfds)?;
+    let sigmask = uptr_sigmask.read_optional()?;
+
+    let r = do_poll(&mut pollfds, timeout, sigmask)?;
+
+    if nfds > 0 {
+        uptr_ufds.write(0, &pollfds)?;
+    }
 
     Ok(r)
 }
@@ -433,7 +552,7 @@ fn setitimer_helper(signum: SignalNum, interval: Duration, pcb: Arc<PCB>, which:
         return;
     }
 
-    let _ = pcb.send_signal(signum, SiCode::SI_KERNEL, KSiFields::Empty, None);
+    let _ = pcb.send_signal(signum, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
 
     // Schedule next interval
     let expiry_us = arch::get_time_us() + interval.as_micros() as u64;
@@ -533,7 +652,7 @@ pub fn setitimer(
         timer::add_timer_with_callback(
             value_dur,
             Box::new(move || {
-                let _ = pcb_cb.send_signal(signum, SiCode::SI_KERNEL, KSiFields::Empty, None);
+                let _ = pcb_cb.send_signal(signum, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
                 pcb_cb.itimer_ids.lock()[which] = None;
                 pcb_cb.itimer_expiry_us.lock()[which] = 0;
             }),

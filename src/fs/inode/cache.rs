@@ -19,12 +19,16 @@ impl Cache {
         }
     }
 
-    fn remove_if(&self, mut predicate: impl FnMut(&Arc<dyn InodeOps>) -> bool) -> usize {
+    fn idle_refcount(inode: &Arc<dyn InodeOps>) -> usize {
+        1 + inode.filesystem_refcount_bias()
+    }
+
+    fn remove_if(&self, mut predicate: impl FnMut(&Index, &Arc<dyn InodeOps>) -> bool) -> usize {
         let removed = {
             let mut cache = self.cache.lock();
             let reclaimable: Vec<Index> = cache
                 .iter()
-                .filter_map(|(index, inode)| predicate(inode).then_some(*index))
+                .filter_map(|(index, inode)| predicate(index, inode).then_some(*index))
                 .collect();
             reclaimable
                 .into_iter()
@@ -38,7 +42,7 @@ impl Cache {
     }
 
     fn reclaim(cache: &mut BTreeMap<Index, Arc<dyn InodeOps>>) {
-        cache.retain(|_, inode| Arc::strong_count(inode) > 1);
+        cache.retain(|_, inode| Arc::strong_count(inode) > Self::idle_refcount(inode));
 
         while cache.len() >= config::INODE_CACHE_SIZE {
             let Some(index) = cache.keys().next().copied() else {
@@ -72,7 +76,18 @@ impl Cache {
     }
 
     pub fn prune_unused(&self) -> usize {
-        self.remove_if(|inode| Arc::strong_count(inode) == 1)
+        self.remove_if(|_, inode| Arc::strong_count(inode) <= Self::idle_refcount(inode))
+    }
+
+    pub fn remove_superblock(&self, sno: u32) -> usize {
+        self.remove_if(|index, _| index.sno == sno)
+    }
+
+    pub fn superblock_busy(&self, sno: u32) -> bool {
+        self.cache
+            .lock()
+            .iter()
+            .any(|(index, inode)| index.sno == sno && Arc::strong_count(inode) > Self::idle_refcount(inode))
     }
 
     pub fn sync(&self) -> SysResult<()> {

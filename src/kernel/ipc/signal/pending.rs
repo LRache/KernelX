@@ -7,6 +7,7 @@ use crate::kernel::scheduler::Tid;
 #[derive(Clone, Copy, Debug)]
 pub struct PendingSignal {
     pub signum: SignalNum,
+    pub si_errno: i32,
     pub si_code: SiCode,
     pub fields: KSiFields,
     pub dest: Option<Tid>,

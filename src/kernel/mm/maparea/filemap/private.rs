@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::fs::file::File;
+use crate::fs::file::RandomAccessFile;
 use crate::kernel::mm::maparea::area::Area;
 use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
@@ -14,7 +14,7 @@ pub struct PrivateFileMapArea {
     ubase: usize,
     perm: MapPerm,
 
-    file: Arc<File>,
+    file: Arc<RandomAccessFile>,
     file_offset: usize,
     file_length: usize,
 
@@ -22,7 +22,13 @@ pub struct PrivateFileMapArea {
 }
 
 impl PrivateFileMapArea {
-    pub fn new(ubase: usize, perm: MapPerm, file: Arc<File>, file_offset: usize, file_length: usize) -> Self {
+    pub fn new(
+        ubase: usize,
+        perm: MapPerm,
+        file: Arc<RandomAccessFile>,
+        file_offset: usize,
+        file_length: usize,
+    ) -> Self {
         // File mapping areas should be page-aligned
         debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
         debug_assert!(file_offset % arch::PGSIZE == 0, "file_offset should be page-aligned");
@@ -227,11 +233,6 @@ impl Area for PrivateFileMapArea {
                     // Page is already allocated, this shouldn't happen
                     #[cfg(feature = "swap-memory")]
                     self.handle_memory_fault_on_swapped_allocated(&allocated, addrspace);
-                    #[cfg(not(feature = "swap-memory"))]
-                    {
-                        let _ = allocated;
-                        return None;
-                    }
                     // unreachable!("Memory fault on already allocated file page at address: {:#x}, access={:?}", uaddr, access_type);
                 }
                 FrameState::Cow(_) => {

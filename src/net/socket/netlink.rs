@@ -1,23 +1,17 @@
-//! Minimal AF_NETLINK socket implementation (NETLINK_ROUTE).
-//!
-//! Supports RTM_GETLINK (enumerate interfaces) and RTM_GETADDR (enumerate addresses)
-//! which are the primary queries made by glibc's getifaddrs() and if_nameindex().
-
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
-use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 use crate::net::manager;
 use crate::net::socket::AddressFamily;
-
-// ==================== Netlink constants ====================
 
 #[repr(usize)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
@@ -57,21 +51,25 @@ enum IfAddrAttr {
     Label = 3,
 }
 
-pub const NETLINK_ROUTE: usize = NetlinkProtocol::Route as usize;
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct NlMsgFlags: u16 {
+        const MULTI = 0x02;
+    }
+}
 
-// Netlink flags
-const NLM_F_MULTI: u16 = 0x02;
-
-// Interface flags
-const IFF_UP: u32 = 0x1;
-const IFF_LOOPBACK: u32 = 0x8;
-const IFF_RUNNING: u32 = 0x40;
-const IFF_MULTICAST: u32 = 0x1000;
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct IfFlags: u32 {
+        const UP = 0x1;
+        const LOOPBACK = 0x8;
+        const RUNNING = 0x40;
+        const MULTICAST = 0x1000;
+    }
+}
 
 const NLMSG_HDRLEN: usize = 16;
 const NLA_HDRLEN: usize = 4;
-
-// ==================== Netlink message structures ====================
 
 /// struct nlmsghdr (16 bytes)
 #[repr(C)]
@@ -106,8 +104,6 @@ struct IfAddrMsg {
     ifa_scope: u8,
     ifa_index: u32,
 }
-
-// ==================== NetlinkSocket ====================
 
 pub struct NetlinkSocket {
     rx_buf: SpinLock<VecDeque<u8>>,
@@ -149,11 +145,11 @@ impl NetlinkSocket {
             let mac = iface.mac_address();
             let mtu = iface.mtu() as u32;
 
-            let mut flags: u32 = IFF_UP | IFF_RUNNING;
+            let mut flags = IfFlags::UP | IfFlags::RUNNING;
             if iface.is_loopback() {
-                flags |= IFF_LOOPBACK;
+                flags |= IfFlags::LOOPBACK;
             } else {
-                flags |= IFF_MULTICAST;
+                flags |= IfFlags::MULTICAST;
             }
 
             let ifinfo = IfInfoMsg {
@@ -161,7 +157,7 @@ impl NetlinkSocket {
                 _pad: 0,
                 ifi_type: if iface.is_loopback() { 772 } else { 1 }, // ARPHRD_LOOPBACK / ARPHRD_ETHER
                 ifi_index: index,
-                ifi_flags: flags,
+                ifi_flags: flags.bits(),
                 ifi_change: 0xFFFF_FFFF,
             };
 
@@ -183,7 +179,7 @@ impl NetlinkSocket {
             let hdr = NlMsgHdr {
                 nlmsg_len: msg_len as u32,
                 nlmsg_type: RtMsgType::NewLink as u16,
-                nlmsg_flags: NLM_F_MULTI,
+                nlmsg_flags: NlMsgFlags::MULTI.bits(),
                 nlmsg_seq: seq,
                 nlmsg_pid: pid,
             };
@@ -238,7 +234,7 @@ impl NetlinkSocket {
             let hdr = NlMsgHdr {
                 nlmsg_len: msg_len as u32,
                 nlmsg_type: RtMsgType::NewAddr as u16,
-                nlmsg_flags: NLM_F_MULTI,
+                nlmsg_flags: NlMsgFlags::MULTI.bits(),
                 nlmsg_seq: seq,
                 nlmsg_pid: pid,
             };
@@ -274,7 +270,7 @@ impl NetlinkSocket {
         let hdr = NlMsgHdr {
             nlmsg_len: msg_len as u32,
             nlmsg_type: NlMsgType::Done as u16,
-            nlmsg_flags: NLM_F_MULTI,
+            nlmsg_flags: NlMsgFlags::MULTI.bits(),
             nlmsg_seq: seq,
             nlmsg_pid: pid,
         };
@@ -298,17 +294,9 @@ impl FileOps for NetlinkSocket {
         Ok(n)
     }
 
-    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
-    }
-
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         self.process_request(buf);
         Ok(buf.len())
-    }
-
-    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn flags(&self) -> FileFlags {
@@ -319,10 +307,6 @@ impl FileOps for NetlinkSocket {
             append: false,
             direct: false,
         }
-    }
-
-    fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
@@ -344,14 +328,17 @@ impl FileOps for NetlinkSocket {
         None
     }
 
-    fn wait_event(&self, _waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
-        if event.contains(PollEventSet::POLLIN) && !self.rx_buf.lock().is_empty() {
-            return Ok(Some(FileEvent::ReadReady));
+    fn wait_event(&self, _waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let mut ready = FileEvent::empty();
+
+        if event.contains(FileEvent::READ_READY) && !self.rx_buf.lock().is_empty() {
+            ready |= FileEvent::READ_READY;
         }
-        if event.contains(PollEventSet::POLLOUT) {
-            return Ok(Some(FileEvent::WriteReady));
+        if event.contains(FileEvent::WRITE_READY) {
+            ready |= FileEvent::WRITE_READY;
         }
-        Ok(None)
+
+        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
     fn set_flags(&self, flags: FileFlags) {

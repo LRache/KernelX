@@ -1,9 +1,10 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
-use crate::fs::file::{FileFlags, FileOps, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
@@ -52,34 +53,47 @@ impl Pipe {
     pub fn set_pipe_size(&self, size: usize) -> SysResult<usize> {
         self.inner.set_capacity(size)
     }
+
+    pub fn read_with_blocked(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize> {
+        self.inner.read(buf, blocked)
+    }
+
+    pub fn read_to_user_with_blocked(&self, ubuf: &UAddrSpaceBuffer, blocked: bool) -> SysResult<usize> {
+        self.inner.read_to_user(ubuf, blocked)
+    }
+
+    pub fn write_with_blocked(&self, buf: &[u8], blocked: bool) -> SysResult<usize> {
+        self.inner.write(buf, blocked)
+    }
+
+    pub fn write_from_user_with_blocked(&self, ubuf: &UAddrSpaceBuffer, blocked: bool) -> SysResult<usize> {
+        self.inner.write_from_user(ubuf, blocked)
+    }
+
+    pub fn peek_with_blocked(&self, len: usize, blocked: bool) -> SysResult<Vec<u8>> {
+        self.inner.peek(len, blocked)
+    }
+
+    pub fn is_same_pipe(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
 }
 
 impl FileOps for Pipe {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        self.inner.read(buf, *self.blocked.lock())
-    }
-
-    fn pread(&self, _: &mut [u8], _: usize) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
+        self.read_with_blocked(buf, *self.blocked.lock())
     }
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        let blocked = *self.blocked.lock();
-        self.inner.read_to_user(ubuf, blocked)
+        self.read_to_user_with_blocked(ubuf, *self.blocked.lock())
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
-        let blocked = *self.blocked.lock();
-        self.inner.write(buf, blocked)
-    }
-
-    fn pwrite(&self, _: &[u8], _: usize) -> SysResult<usize> {
-        Err(Errno::EPIPE)
+        self.write_with_blocked(buf, *self.blocked.lock())
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        let blocked = *self.blocked.lock();
-        self.inner.write_from_user(ubuf, blocked)
+        self.write_from_user_with_blocked(ubuf, *self.blocked.lock())
     }
 
     fn flags(&self) -> FileFlags {
@@ -90,10 +104,6 @@ impl FileOps for Pipe {
             append: false,
             direct: false,
         }
-    }
-
-    fn seek(&self, _: isize, _: SeekWhence) -> SysResult<usize> {
-        Err(Errno::ESPIPE)
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
@@ -124,14 +134,14 @@ impl FileOps for Pipe {
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
         // self.meta.as_ref().map(|m| &m.inode)
-        unimplemented!()
+        None
     }
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {
         self.meta.as_ref().map(|m| &m.dentry)
     }
 
-    fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>> {
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
         self.inner.wait_event(waker, event, self.writable)
     }
 

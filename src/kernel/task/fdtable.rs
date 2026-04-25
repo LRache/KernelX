@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use crate::fs::file::FileOps;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::{Tid, current};
 
 #[derive(Clone, Copy)]
 pub struct FDFlags {
@@ -26,13 +27,28 @@ struct FDItem {
 pub struct FDTable {
     table: Vec<Option<FDItem>>,
     max_fd: usize,
+    owner: Tid,
+}
+
+fn release_posix_locks_from_file(file: &Arc<dyn FileOps>, owner: Tid) {
+    let Some(inode) = file.get_inode() else {
+        return;
+    };
+
+    if let Some(lock_state) = inode.lock_state() {
+        let mut lock_state = lock_state.lock();
+        if lock_state.posix.remove_owner(owner) {
+            lock_state.posix.wake_all();
+        }
+    }
 }
 
 impl FDTable {
-    pub fn new() -> Self {
+    pub fn new(owner: Tid) -> Self {
         Self {
             table: vec![None; 32], // Initialize with 32 file descriptors
             max_fd: config::MAX_FD,
+            owner,
         }
     }
 
@@ -52,6 +68,23 @@ impl FDTable {
         if fd >= self.table.len() {
             self.table.resize(fd + 1, None);
         }
+        let needs_install = self.table[fd]
+            .as_ref()
+            .is_none_or(|old_item| !Arc::ptr_eq(&old_item.file, &file));
+
+        if needs_install {
+            file.on_fd_install()?;
+        }
+
+        if let Some(old_item) = self.table[fd].as_ref()
+            && !Arc::ptr_eq(&old_item.file, &file)
+        {
+            if current::has_task() {
+                release_posix_locks_from_file(&old_item.file, current::pid());
+            }
+            old_item.file.on_fd_remove();
+        }
+
         self.table[fd] = Some(FDItem { file, flags });
         Ok(())
     }
@@ -77,38 +110,45 @@ impl FDTable {
 
     pub fn push(&mut self, file: Arc<dyn FileOps>, flags: FDFlags) -> Result<usize, Errno> {
         if let Some(pos) = self.table.iter().position(|f| f.is_none()) {
-            self.table[pos] = Some(FDItem { file, flags });
+            self.set(pos, file, flags)?;
             Ok(pos)
         } else {
             if self.table.len() >= self.max_fd {
                 return Err(Errno::EMFILE);
             }
-            self.table.push(Some(FDItem { file, flags }));
-            Ok(self.table.len() - 1)
+            let pos = self.table.len();
+            self.set(pos, file, flags)?;
+            Ok(pos)
         }
     }
 
-    pub fn dup(&mut self, fd: usize, min_fd: Option<usize>, flags: FDFlags) -> SysResult<usize> {
-        if let Some(min_fd) = min_fd {
-            if let Some(new_fd) = self
-                .table
-                .iter()
-                .skip(min_fd)
-                .position(|f| f.is_none())
-                .map(|p| p + min_fd)
-            {
-                self.table[new_fd] = Some(FDItem {
-                    file: self.get(fd)?,
-                    flags,
-                });
-                Ok(new_fd)
-            } else {
-                Err(Errno::EINVAL)
-            }
+    pub fn dup_min(&mut self, fd: usize, min_fd: usize, flags: FDFlags) -> SysResult<usize> {
+        let file = self.get(fd)?;
+        if let Some(new_fd) = self
+            .table
+            .iter()
+            .skip(min_fd)
+            .position(|f| f.is_none())
+            .map(|p| p + min_fd)
+        {
+            self.set(new_fd, file, flags)?;
+            Ok(new_fd)
         } else {
-            let file = self.get(fd)?;
-            self.push(file, flags)
+            if min_fd >= self.table.len() {
+                if self.table.len() >= self.max_fd {
+                    return Err(Errno::EMFILE);
+                }
+                self.set(min_fd, file, flags)?;
+                Ok(min_fd)
+            } else {
+                self.push(file, flags)
+            }
         }
+    }
+
+    pub fn dup2(&mut self, oldfd: usize, flags: FDFlags) -> SysResult<usize> {
+        let file = self.get(oldfd)?;
+        self.push(file, flags)
     }
 
     pub fn dup3(&mut self, oldfd: usize, newfd: usize, flags: FDFlags) -> SysResult<usize> {
@@ -126,13 +166,8 @@ impl FDTable {
             return Err(Errno::EBADF);
         }
 
-        self.table[newfd] = match self.table[oldfd].as_ref() {
-            Some(fd_item) => Some(FDItem {
-                file: fd_item.file.clone(),
-                flags,
-            }),
-            None => return Err(Errno::EBADF),
-        };
+        let file = self.table[oldfd].as_ref().ok_or(Errno::EBADF)?.file.clone();
+        self.set(newfd, file, flags)?;
 
         Ok(newfd)
     }
@@ -143,35 +178,52 @@ impl FDTable {
                 return Err(Errno::EBADF);
             }
             let file = self.table[fd].take().unwrap().file;
+            if current::has_task() {
+                release_posix_locks_from_file(&file, current::pid());
+            }
+            file.on_fd_remove();
             Ok(file)
         } else {
             Err(Errno::EBADF)
         }
     }
 
-    pub fn fork(&self) -> Self {
+    pub fn fork(&self, owner: Tid) -> SysResult<Self> {
         let new_table = self
             .table
             .iter()
             .map(|item| item.as_ref().map(|fd_item| fd_item.clone()))
             .collect();
 
-        Self {
+        let mut installed = Vec::new();
+        for item in self.table.iter().flatten() {
+            if let Err(err) = item.file.on_fd_install() {
+                installed
+                    .into_iter()
+                    .for_each(|file: Arc<dyn FileOps>| file.on_fd_remove());
+                return Err(err);
+            }
+            installed.push(item.file.clone());
+        }
+
+        Ok(Self {
             table: new_table,
             max_fd: self.max_fd,
-        }
+            owner,
+        })
     }
 
     pub fn cloexec(&mut self) {
         self.table.iter_mut().for_each(|item| {
             if let Some(fd_item) = item {
                 if fd_item.flags.cloexec {
+                    release_posix_locks_from_file(&fd_item.file, current::pid());
+                    fd_item.file.on_fd_remove();
                     *item = None;
                 }
             }
         });
     }
-
     pub fn set_max_fd(&mut self, max_fd: usize) {
         self.max_fd = max_fd;
     }
@@ -186,5 +238,17 @@ impl FDTable {
             .enumerate()
             .filter_map(|(fd, item)| item.as_ref().map(|_| fd))
             .collect()
+    }
+}
+
+impl Drop for FDTable {
+    fn drop(&mut self) {
+        self.table.iter_mut().for_each(|item| {
+            let Some(fd_item) = item.take() else {
+                return;
+            };
+            release_posix_locks_from_file(&fd_item.file, self.owner);
+            fd_item.file.on_fd_remove();
+        });
     }
 }

@@ -38,6 +38,9 @@ impl SocketInner for UdpInner {
         if self.local.is_some() {
             return Err(Errno::EINVAL);
         }
+        if addr.port != 0 && addr.port < 1024 && current::euid() != 0 {
+            return Err(Errno::EACCES);
+        }
 
         let iface = if addr.ip.is_unspecified() {
             manager::default_interface().ok_or(Errno::EADDRNOTAVAIL)?

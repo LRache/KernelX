@@ -4,9 +4,12 @@ mod task;
 mod taskself;
 
 pub use root::{MemInfoInode, MountsInode, RootInode};
-pub use sys::{PidMaxInode, PipeUserPagesSoftInode, SysDirInode, SysFsDirInode, SysKernelDirInode, TaintedInode};
+pub use sys::{
+    PidMaxInode, PipeMaxSizeInode, PipeUserPagesSoftInode, SysDirInode, SysFsDirInode, SysKernelDirInode, TaintedInode,
+};
 pub use task::{
     TaskDirInode, TaskExeInode, TaskFdDirInode, TaskFdEntryInode, TaskMapsInode, TaskStatInode, TaskStatusInode,
+    TaskTaskDirInode, TaskThreadDirInode,
 };
 pub use taskself::TaskDirSelfInode;
 

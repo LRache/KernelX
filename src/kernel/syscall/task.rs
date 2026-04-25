@@ -2,18 +2,22 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
+use num_enum::TryFromPrimitive;
 
-use crate::fs::file::{File, FileFlags};
-use crate::fs::{Perm, PermFlags, vfs};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
+use crate::fs::{FileType, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
-use crate::kernel::ipc::SignalNum;
+use crate::kernel::ipc::{SiCode, SiSigChld, SigInfo, SignalNum, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::task::ExitStatus;
 use crate::kernel::task::def::TaskCloneFlags;
+use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::task::pidfd::PidFile;
+use crate::kernel::task::{ExitStatus, PCB};
+use crate::kernel::uapi::{OpenFlags, Uid};
 use crate::kernel::{config, scheduler, task};
 
 pub fn sched_yield() -> SyscallRet {
@@ -117,6 +121,129 @@ pub fn setsid() -> SyscallRet {
 }
 
 bitflags! {
+    struct PidFdFlags: usize {
+        const NONBLOCK = OpenFlags::O_NONBLOCK.bits();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[repr(usize)]
+enum KcmpType {
+    File = 0,
+}
+
+fn find_process(pid: Tid) -> Option<Arc<task::PCB>> {
+    task::with_initpcb(|init_pcb| init_pcb.find_process(pid))
+}
+
+fn can_access_pidfd_target(target: &task::PCB) -> bool {
+    let caller = current::pcb();
+    if caller.euid() == 0 {
+        return true;
+    }
+
+    let caller_uids = [caller.uid(), caller.euid(), caller.suid()];
+    let target_uids = [target.uid(), target.euid(), target.suid()];
+    if !caller_uids.iter().all(|uid| target_uids.contains(uid)) {
+        return false;
+    }
+
+    let caller_gids = [caller.gid(), caller.egid(), caller.sgid()];
+    let target_gids = [target.gid(), target.egid(), target.sgid()];
+    caller_gids.iter().all(|gid| target_gids.contains(gid))
+}
+
+fn task_for_fdtable(target: &Arc<task::PCB>) -> Option<Arc<task::TCB>> {
+    let tasks = target.tasks.lock();
+    tasks
+        .iter()
+        .find(|task| task.tid() == target.pid())
+        .or_else(|| tasks.first())
+        .cloned()
+}
+
+fn process_fd_file(target: &Arc<task::PCB>, fd: usize) -> SysResult<Arc<dyn FileOps>> {
+    let task = task_for_fdtable(target).ok_or(Errno::ESRCH)?;
+    task.fdtable().lock().get(fd)
+}
+
+fn kcmp_file_result(file1: &Arc<dyn FileOps>, file2: &Arc<dyn FileOps>) -> usize {
+    if Arc::ptr_eq(file1, file2) {
+        return 0;
+    }
+
+    let ptr1 = Arc::as_ptr(file1) as *const () as usize;
+    let ptr2 = Arc::as_ptr(file2) as *const () as usize;
+    if ptr1 < ptr2 { 1 } else { 2 }
+}
+
+pub fn pidfd_open(pid: usize, flags: usize) -> SyscallRet {
+    let pid = pid as Tid;
+    if pid <= 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let flags = PidFdFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let pcb = find_process(pid).ok_or(Errno::ESRCH)?;
+    let pidfd = Arc::new(PidFile::new(
+        &pcb,
+        FileFlags {
+            readable: true,
+            writable: false,
+            blocked: !flags.contains(PidFdFlags::NONBLOCK),
+            append: false,
+            direct: false,
+        },
+    ));
+    let fd = current::fdtable().lock().push(pidfd, FDFlags { cloexec: true })?;
+    Ok(fd)
+}
+
+pub fn pidfd_getfd(pidfd: usize, targetfd: usize, flags: usize) -> SyscallRet {
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let pidfd = current::fdtable()
+        .lock()
+        .get(pidfd)?
+        .downcast_arc::<PidFile>()
+        .map_err(|_| Errno::EBADF)?;
+    let target = pidfd.pcb().ok_or(Errno::ESRCH)?;
+
+    if target.is_exited() {
+        return Err(Errno::ESRCH);
+    }
+    if !can_access_pidfd_target(&target) {
+        return Err(Errno::EPERM);
+    }
+
+    let file = process_fd_file(&target, targetfd)?;
+    let new_fd = current::fdtable().lock().push(file, FDFlags { cloexec: true })?;
+    Ok(new_fd)
+}
+
+pub fn kcmp(pid1: usize, pid2: usize, compare_type: usize, idx1: usize, idx2: usize) -> SyscallRet {
+    let _compare_type = KcmpType::try_from(compare_type).map_err(|_| Errno::EINVAL)?;
+    let pid1 = Tid::try_from(pid1).map_err(|_| Errno::ESRCH)?;
+    let pid2 = Tid::try_from(pid2).map_err(|_| Errno::ESRCH)?;
+    if pid1 <= 0 || pid2 <= 0 {
+        return Err(Errno::ESRCH);
+    }
+
+    let process1 = find_process(pid1).ok_or(Errno::ESRCH)?;
+    let process2 = find_process(pid2).ok_or(Errno::ESRCH)?;
+
+    if !can_access_pidfd_target(&process1) || !can_access_pidfd_target(&process2) {
+        return Err(Errno::EPERM);
+    }
+
+    let file1 = process_fd_file(&process1, idx1)?;
+    let file2 = process_fd_file(&process2, idx2)?;
+    Ok(kcmp_file_result(&file1, &file2))
+}
+
+bitflags! {
     #[derive(Debug)]
     struct CloneFlags: i32 {
         const VM = 0x0000100;
@@ -143,6 +270,7 @@ bitflags! {
     }
 }
 
+#[derive(Debug)]
 struct CloneArgs {
     flags: CloneFlags,
     task_flags: TaskCloneFlags,
@@ -211,6 +339,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
             files: flags.contains(CloneFlags::FILES),
             thread: flags.contains(CloneFlags::THREAD),
             parent: flags.contains(CloneFlags::PARENT),
+            vfork: flags.contains(CloneFlags::VFORK),
         },
         stack,
         tls: if flags.contains(CloneFlags::SETTLS) {
@@ -290,6 +419,7 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
             files: flags.contains(CloneFlags::FILES),
             thread: flags.contains(CloneFlags::THREAD),
             parent: flags.contains(CloneFlags::PARENT),
+            vfork: flags.contains(CloneFlags::VFORK),
         },
         stack,
         tls: if flags.contains(CloneFlags::SETTLS) {
@@ -322,7 +452,12 @@ fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
     Ok(vec)
 }
 
-fn do_execve(file: Arc<File>, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
+fn do_execve(
+    file: Arc<RandomAccessFile>,
+    invoked_path: &str,
+    uptr_argv: UArray<UString>,
+    uptr_envp: UArray<UString>,
+) -> SyscallRet {
     let argv = read_ustring_array(uptr_argv)?;
     let envp = read_ustring_array(uptr_envp)?;
     let mut argv_ref: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
@@ -333,7 +468,7 @@ fn do_execve(file: Arc<File>, uptr_argv: UArray<UString>, uptr_envp: UArray<UStr
         argv_ref.push("");
     }
 
-    current::pcb().exec(current::tcb(), file, &argv_ref, &envp_ref)?;
+    current::pcb().exec(current::tcb(), file, invoked_path, &argv_ref, &envp_ref)?;
     current::tcb().wake_parent_waiting_vfork();
     Ok(0)
 }
@@ -344,11 +479,46 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
     let path = uptr_path.read_fixed()?;
 
     let file =
-        current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
-            .downcast_arc::<File>()
+        current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X)))?
+            .downcast_arc::<RandomAccessFile>()
             .map_err(|_| Errno::ENOEXEC)?;
 
-    do_execve(file, uptr_argv, uptr_envp)
+    do_execve(file, &path, uptr_argv, uptr_envp)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ExecveAtFlags: usize {
+        const AT_SYMLINK_NOFOLLOW = 0x100;
+        const AT_EMPTY_PATH = 0x1000;
+    }
+}
+
+fn open_execveat_file(
+    dir: &Arc<crate::fs::Dentry>,
+    path: &str,
+    flags: ExecveAtFlags,
+    perm: &Perm,
+) -> SysResult<Arc<RandomAccessFile>> {
+    let file = if flags.contains(ExecveAtFlags::AT_SYMLINK_NOFOLLOW) {
+        let dentry = vfs::load_dentry_at_nofollow_with_perm(dir, path, perm)?;
+        let inode = dentry.get_inode();
+        if inode.inode_type()? == FileType::Symlink {
+            return Err(Errno::ELOOP);
+        }
+
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(perm, uid, gid) {
+            return Err(Errno::EACCES);
+        }
+
+        inode.wrap_file(Some(dentry), FileFlags::readonly())
+    } else {
+        vfs::openat_file(dir, path, FileFlags::readonly(), perm)?
+    };
+
+    file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::ENOEXEC)
 }
 
 pub fn execveat(
@@ -360,40 +530,39 @@ pub fn execveat(
 ) -> SyscallRet {
     use super::def::AT_FDCWD;
 
-    const AT_EMPTY_PATH: usize = 0x1000;
+    let flags = ExecveAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let path = uptr_path.should_not_null()?.read_fixed()?;
+    let perm = Perm::current(PermFlags::X);
 
-    let path = if uptr_path.is_null() {
-        None
-    } else {
-        Some(uptr_path.read_fixed()?)
-    };
-    let path = path.as_deref().unwrap_or("");
-
-    let file = if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
+    let (file, invoked_path) = if flags.contains(ExecveAtFlags::AT_EMPTY_PATH) && path.is_empty() {
         current::fdtable()
             .lock()
             .get(dirfd)?
-            .downcast_arc::<File>()
-            .map_err(|_| Errno::ENOEXEC)?
+            .downcast_arc::<RandomAccessFile>()
+            .map_err(|_| Errno::ENOEXEC)
+            .map(|file| {
+                let invoked_path = file.get_dentry().map(|dentry| dentry.get_path()).unwrap_or_default();
+                (file, invoked_path)
+            })?
     } else {
         if path.is_empty() {
             return Err(Errno::ENOENT);
         }
+
         // When pathname is absolute, dirfd can be ignored.
-        if path.starts_with('/') {
-            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+        let file = if path.starts_with('/') {
+            current::with_cwd(|cwd| open_execveat_file(&cwd, &path, flags, &perm))?
         } else if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X)))?
+            current::with_cwd(|cwd| open_execveat_file(&cwd, &path, flags, &perm))?
         } else {
             let dir_file = current::fdtable().lock().get(dirfd)?;
             let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
-            vfs::openat_file(dir, &path, FileFlags::dontcare(), &Perm::current(PermFlags::X))?
-        }
-        .downcast_arc::<File>()
-        .map_err(|_| Errno::ENOEXEC)?
+            open_execveat_file(dir, &path, flags, &perm)?
+        };
+        (file, path.as_str().into())
     };
 
-    do_execve(file, uptr_argv, uptr_envp)
+    do_execve(file, &invoked_path, uptr_argv, uptr_envp)
 }
 
 bitflags! {
@@ -414,18 +583,18 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
 
     if pid == -1 {
         // Wait for any child
-        if let Some(result) = pcb.wait_any_child(!options.contains(WaitOptions::WNOHANG))? {
-            wait_pid = result.0;
-            exit_status = result.1;
+        if let Some((child, status)) = pcb.wait_any_child(!options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = child.pid();
+            exit_status = status;
         } else {
             return Ok(0);
         }
     } else if pid == 0 {
         // Wait for any child whose pgid equals the caller's pgid
         let caller_pgid = pcb.pgid();
-        if let Some(result) = pcb.wait_child_by_pgid(caller_pgid, !options.contains(WaitOptions::WNOHANG))? {
-            wait_pid = result.0;
-            exit_status = result.1;
+        if let Some((child, status)) = pcb.wait_child_by_pgid(caller_pgid, !options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = child.pid();
+            exit_status = status;
         } else {
             return Ok(0);
         }
@@ -438,17 +607,17 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
         // Wait for any child whose pgid equals -pid
         let target_pgid = -pid;
 
-        if let Some(result) = pcb.wait_child_by_pgid(target_pgid, !options.contains(WaitOptions::WNOHANG))? {
-            wait_pid = result.0;
-            exit_status = result.1;
+        if let Some((child, status)) = pcb.wait_child_by_pgid(target_pgid, !options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = child.pid();
+            exit_status = status;
         } else {
             return Ok(0);
         }
     } else {
         // pid > 0: wait for specific child
-        if let Some(result) = pcb.wait_child(pid as i32, !options.contains(WaitOptions::WNOHANG))? {
-            wait_pid = pid as i32;
-            exit_status = result;
+        if let Some((child, status)) = pcb.wait_child(pid as i32, !options.contains(WaitOptions::WNOHANG))? {
+            wait_pid = child.pid();
+            exit_status = status;
         } else {
             return Ok(0);
         }
@@ -459,6 +628,154 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
     }
 
     Ok(wait_pid as usize)
+}
+
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+enum WaitIdType {
+    All = 0,
+    Pid = 1,
+    Pgid = 2,
+    PidFd = 3,
+}
+
+bitflags! {
+    struct WaitIdOptions: usize {
+        const WNOHANG    = 1 << 0;
+        const WEXITED    = 1 << 2;
+        const WSTOPPED   = 1 << 1;
+        const WCONTINUED = 1 << 3;
+        const WNOWAIT    = 1 << 24;
+    }
+}
+
+fn waitid_siginfo(child: &PCB, status: ExitStatus) -> SigInfo {
+    let si_code = match status {
+        ExitStatus::Normal(_) => SiCode::CLD_EXITED,
+        ExitStatus::Signal { coredump: true, .. } => SiCode::CLD_DUMPED,
+        ExitStatus::Signal { coredump: false, .. } => SiCode::CLD_KILLED,
+    };
+
+    SigInfo::sigchld(
+        signum::SIGCHLD.num() as i32,
+        si_code,
+        SiSigChld {
+            si_pid: child.pid(),
+            si_uid: child.uid(),
+            si_status: status.si_status(),
+            si_utime: 0,
+            si_stime: 0,
+        },
+    )
+}
+
+pub fn waitid(
+    idtype: usize,
+    id: usize,
+    uptr_siginfo: UPtr<SigInfo>,
+    options: usize,
+    _user_rusage: usize,
+) -> SyscallRet {
+    let idtype = WaitIdType::try_from(idtype).map_err(|_| Errno::EINVAL)?;
+    let options = WaitIdOptions::from_bits(options).ok_or(Errno::EINVAL)?;
+
+    if !options.contains(WaitIdOptions::WEXITED)
+        || options.intersects(WaitIdOptions::WSTOPPED | WaitIdOptions::WCONTINUED | WaitIdOptions::WNOWAIT)
+    {
+        return Err(Errno::EINVAL);
+    }
+
+    match idtype {
+        WaitIdType::All => {
+            let (child, status) = match current::pcb().wait_any_child(!options.contains(WaitIdOptions::WNOHANG))? {
+                Some(result) => result,
+                None => {
+                    if !uptr_siginfo.is_null() {
+                        uptr_siginfo.write(SigInfo::empty())?;
+                    }
+                    return Ok(0);
+                }
+            };
+
+            if !uptr_siginfo.is_null() {
+                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+            }
+
+            Ok(0)
+        }
+        WaitIdType::Pid => {
+            let target_pid = i32::try_from(id).map_err(|_| Errno::EINVAL)?;
+            let (child, status) =
+                match current::pcb().wait_child(target_pid, !options.contains(WaitIdOptions::WNOHANG))? {
+                    Some(result) => result,
+                    None => {
+                        if !uptr_siginfo.is_null() {
+                            uptr_siginfo.write(SigInfo::empty())?;
+                        }
+                        return Ok(0);
+                    }
+                };
+
+            if !uptr_siginfo.is_null() {
+                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+            }
+
+            Ok(0)
+        }
+        WaitIdType::PidFd => {
+            let pidfd = current::fdtable()
+                .lock()
+                .get(id)?
+                .downcast_arc::<PidFile>()
+                .map_err(|_| Errno::EINVAL)?;
+            let child = pidfd.pcb().ok_or(Errno::ECHILD)?;
+            let child_pid = child.pid() as usize;
+            let block = pidfd.block() && !options.contains(WaitIdOptions::WNOHANG);
+
+            let status = match current::pcb().wait_child(child_pid as i32, block)? {
+                Some(result) => result,
+                None => {
+                    if !uptr_siginfo.is_null() {
+                        uptr_siginfo.write(SigInfo::empty())?;
+                    }
+                    if !pidfd.block() && !options.contains(WaitIdOptions::WNOHANG) {
+                        return Err(Errno::EAGAIN);
+                    }
+                    return Ok(0);
+                }
+            };
+            let (child, status) = status;
+
+            if !uptr_siginfo.is_null() {
+                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+            }
+
+            Ok(0)
+        }
+        WaitIdType::Pgid => {
+            let target_pgid = if id == 0 {
+                current::pcb().pgid()
+            } else {
+                i32::try_from(id).map_err(|_| Errno::EINVAL)?
+            };
+            let (child, status) =
+                match current::pcb().wait_child_by_pgid(target_pgid, !options.contains(WaitIdOptions::WNOHANG))? {
+                    Some(result) => result,
+                    None => {
+                        if !uptr_siginfo.is_null() {
+                            uptr_siginfo.write(SigInfo::empty())?;
+                        }
+                        return Ok(0);
+                    }
+                };
+
+            if !uptr_siginfo.is_null() {
+                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+            }
+
+            Ok(0)
+        }
+    }
 }
 
 pub fn exit(code: usize) -> SyscallRet {
@@ -507,10 +824,26 @@ pub fn fchdir(fd: usize) -> SysResult<usize> {
     Ok(0)
 }
 
-pub fn setfsuid(_fsuid: usize) -> SyscallRet {
-    Ok(0)
+pub fn setfsuid(fsuid: usize) -> SyscallRet {
+    let pcb = current::pcb();
+    let old_fsuid = pcb.fsuid();
+    let fsuid = fsuid as Uid;
+
+    if pcb.euid() == 0 || fsuid == pcb.uid() || fsuid == pcb.euid() || fsuid == pcb.suid() || fsuid == old_fsuid {
+        pcb.set_fsuid(fsuid);
+    }
+
+    Ok(old_fsuid as usize)
 }
 
-pub fn setfsgid(_fsgid: usize) -> SyscallRet {
-    Ok(0)
+pub fn setfsgid(fsgid: usize) -> SyscallRet {
+    let pcb = current::pcb();
+    let old_fsgid = pcb.fsgid();
+    let fsgid = fsgid as Uid;
+
+    if pcb.euid() == 0 || fsgid == pcb.gid() || fsgid == pcb.egid() || fsgid == pcb.sgid() || fsgid == old_fsgid {
+        pcb.set_fsgid(fsgid);
+    }
+
+    Ok(old_fsgid as usize)
 }

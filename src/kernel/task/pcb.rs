@@ -3,10 +3,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use crate::fs::file::File;
-use crate::fs::{Dentry, Mode, vfs};
+use crate::fs::file::RandomAccessFile;
+use crate::fs::{Dentry, InodeOps, Mode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::Event;
+use crate::kernel::event::{Event, FileEvent, WaitQueue};
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, SignalNum, signum};
 use crate::kernel::main::deinit;
 use crate::kernel::scheduler;
@@ -66,11 +66,14 @@ pub struct PCB {
     pub parent: SpinLock<Option<Arc<PCB>>>,
     state: SpinLock<State>,
     exec_path: SpinLock<String>,
+    exec_inode: SpinLock<Option<Arc<dyn InodeOps>>>,
 
     pub tasks: SleepLock<Vec<Arc<TCB>>>,
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
+    file_size_limit: SpinLock<(usize, usize)>,
     waiting_task: SpinLock<Vec<Arc<dyn Task>>>,
+    pidfd_waiters: SpinLock<WaitQueue<Event>>,
 
     signal: Signal,
 
@@ -82,12 +85,15 @@ pub struct PCB {
     /// Interval for repeating itimers
     pub itimer_interval: SpinLock<[Duration; 3]>,
 
+    // TODO: 减少鉴权时候的数据拷贝。
     uid: SpinLock<Uid>,
     euid: SpinLock<Uid>,
     suid: SpinLock<Uid>,
+    fsuid: SpinLock<Uid>,
     gid: SpinLock<Uid>,
     egid: SpinLock<Uid>,
     sgid: SpinLock<Uid>,
+    fsgid: SpinLock<Uid>,
     supplementary_gids: SpinLock<Vec<Uid>>,
 
     pgid: SpinLock<Pid>,
@@ -103,19 +109,27 @@ pub struct PCB {
 
 impl PCB {
     pub fn new(pid: i32, pgid: Pid, parent: &Arc<PCB>, exit_signal: SignalNum) -> Arc<Self> {
+        let exec_inode = parent.exec_inode.lock().clone();
+        if let Some(inode) = exec_inode.as_ref() {
+            inode.increment_exec_count();
+        }
+
         Arc::new(Self {
             pid,
             parent: SpinLock::new(Some(parent.clone()), "PCB::parent"),
             state: SpinLock::new(State::Running, "PCB::state"),
             exec_path: SpinLock::new(parent.exec_path.lock().clone(), "PCB::exec_path"),
+            exec_inode: SpinLock::new(exec_inode, "PCB::exec_inode"),
 
             tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
             cwd: SpinLock::new(parent.cwd.lock().clone(), "PCB::cwd"),
             umask: SpinLock::new(*parent.umask.lock(), "PCB::umask"),
+            file_size_limit: SpinLock::new(*parent.file_size_limit.lock(), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
+            pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
 
             signal: Signal {
-                actions: SpinLock::new(SignalActionTable::new(), "PCB::signal.actions"),
+                actions: SpinLock::new(parent.signal.actions.lock().clone(), "PCB::signal.actions"),
                 pending: SpinLock::new(PendingSignalQueue::new(), "PCB::signal.pending"),
             },
 
@@ -128,9 +142,11 @@ impl PCB {
             uid: SpinLock::new(*parent.uid.lock(), "PCB::uid"),
             euid: SpinLock::new(*parent.euid.lock(), "PCB::euid"),
             suid: SpinLock::new(*parent.suid.lock(), "PCB::suid"),
+            fsuid: SpinLock::new(*parent.fsuid.lock(), "PCB::fsuid"),
             gid: SpinLock::new(*parent.gid.lock(), "PCB::gid"),
             egid: SpinLock::new(*parent.egid.lock(), "PCB::egid"),
             sgid: SpinLock::new(*parent.sgid.lock(), "PCB::sgid"),
+            fsgid: SpinLock::new(*parent.fsgid.lock(), "PCB::fsgid"),
             supplementary_gids: SpinLock::new(parent.supplementary_gids.lock().clone(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(pgid, "PCB::pgid"),
@@ -162,11 +178,14 @@ impl PCB {
             parent: SpinLock::new(None, "PCB::parent"),
             state: SpinLock::new(State::Running, "PCB::state"),
             exec_path: SpinLock::new(String::new(), "PCB::exec_path"),
+            exec_inode: SpinLock::new(None, "PCB::exec_inode"),
 
             tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
             cwd: SpinLock::new(cwd.clone(), "PCB::cwd"),
             umask: SpinLock::new(0o022, "PCB::umask"),
+            file_size_limit: SpinLock::new((usize::MAX, usize::MAX), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
+            pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
 
             signal: Signal {
                 actions: SpinLock::new(SignalActionTable::new(), "PCB::signal.actions"),
@@ -178,9 +197,11 @@ impl PCB {
             uid: SpinLock::new(0, "PCB::uid"),
             euid: SpinLock::new(0, "PCB::euid"),
             suid: SpinLock::new(0, "PCB::suid"),
+            fsuid: SpinLock::new(0, "PCB::fsuid"),
             gid: SpinLock::new(0, "PCB::gid"),
             egid: SpinLock::new(0, "PCB::egid"),
             sgid: SpinLock::new(0, "PCB::sgid"),
+            fsgid: SpinLock::new(0, "PCB::fsgid"),
             supplementary_gids: SpinLock::new(Vec::new(), "PCB::supplementary_gids"),
 
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
@@ -199,9 +220,10 @@ impl PCB {
             ),
         });
 
-        let (first_task, exec_path) = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
+        let (first_task, exec_path, exec_inode) = TCB::new_inittask(new_tid, &pcb, initpath, argv, envp, tty);
         pcb.tasks.lock().push(first_task.clone());
         *pcb.exec_path.lock() = exec_path;
+        pcb.replace_exec_inode(Some(exec_inode));
 
         Ok((pcb, first_task))
     }
@@ -248,6 +270,7 @@ impl PCB {
 
     pub fn set_euid(&self, euid: Uid) {
         *self.euid.lock() = euid;
+        self.set_fsuid(euid);
     }
 
     pub fn suid(&self) -> Uid {
@@ -256,6 +279,14 @@ impl PCB {
 
     pub fn set_suid(&self, suid: Uid) {
         *self.suid.lock() = suid;
+    }
+
+    pub fn fsuid(&self) -> Uid {
+        *self.fsuid.lock()
+    }
+
+    pub fn set_fsuid(&self, fsuid: Uid) {
+        *self.fsuid.lock() = fsuid;
     }
 
     pub fn gid(&self) -> Uid {
@@ -272,6 +303,7 @@ impl PCB {
 
     pub fn set_egid(&self, egid: Uid) {
         *self.egid.lock() = egid;
+        self.set_fsgid(egid);
     }
 
     pub fn sgid(&self) -> Uid {
@@ -280,6 +312,14 @@ impl PCB {
 
     pub fn set_sgid(&self, sgid: Uid) {
         *self.sgid.lock() = sgid;
+    }
+
+    pub fn fsgid(&self) -> Uid {
+        *self.fsgid.lock()
+    }
+
+    pub fn set_fsgid(&self, fsgid: Uid) {
+        *self.fsgid.lock() = fsgid;
     }
 
     pub fn supplementary_gids(&self) -> Vec<Uid> {
@@ -296,6 +336,40 @@ impl PCB {
 
     pub fn is_exited(&self) -> bool {
         matches!(*self.state.lock(), State::Exited(_))
+    }
+
+    pub fn find_process(self: &Arc<Self>, pid: Tid) -> Option<Arc<Self>> {
+        if self.pid() == pid {
+            return Some(self.clone());
+        }
+
+        self.children
+            .lock()
+            .clone()
+            .into_iter()
+            .find_map(|child| child.find_process(pid))
+    }
+
+    pub fn wait_pidfd_event(&self, waker: usize, event: FileEvent) -> Option<FileEvent> {
+        if self.is_exited() {
+            return event.contains(FileEvent::READ_READY).then_some(FileEvent::READ_READY);
+        }
+
+        if event.contains(FileEvent::READ_READY) {
+            self.pidfd_waiters.lock().wait(
+                current::task().clone(),
+                Event::Poll {
+                    event: FileEvent::READ_READY,
+                    waker,
+                },
+            );
+        }
+
+        None
+    }
+
+    pub fn wait_pidfd_event_cancel(&self) {
+        self.pidfd_waiters.lock().remove(current::task());
     }
 
     pub fn wait_for_all_tasks_exited_and_clear(&self) {
@@ -340,6 +414,14 @@ impl PCB {
         *self.umask.lock() = mask & 0o777;
     }
 
+    pub fn file_size_limit(&self) -> (usize, usize) {
+        *self.file_size_limit.lock()
+    }
+
+    pub fn set_file_size_limit(&self, cur: usize, max: usize) {
+        *self.file_size_limit.lock() = (cur, max);
+    }
+
     pub fn clone_task(
         self: &Arc<Self>,
         tcb: &TCB,
@@ -352,18 +434,18 @@ impl PCB {
         let new_tcb;
 
         if flags.thread {
-            new_tcb = tcb.new_clone(new_tid, self, userstack, flags, tls);
+            new_tcb = tcb.new_clone(new_tid, self, userstack, flags, tls)?;
             self.tasks.lock().push(new_tcb.clone());
         } else if flags.parent {
             // CLONE_PARENT: the new process shares the same parent as the caller
             let real_parent = self.parent.lock().clone().ok_or(Errno::EINVAL)?;
             let new_pcb = PCB::new(new_tid, self.pgid(), &real_parent, exit_signal);
-            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls);
+            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             real_parent.children.lock().push(new_pcb);
         } else {
             let new_pcb = PCB::new(new_tid, self.pgid(), self, exit_signal);
-            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls);
+            new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_pcb);
         }
@@ -380,11 +462,18 @@ impl PCB {
         }
     }
 
-    pub fn exec(self: &Arc<Self>, tcb: &TCB, file: Arc<File>, argv: &[&str], envp: &[&str]) -> SysResult<()> {
+    pub fn exec(
+        self: &Arc<Self>,
+        tcb: &TCB,
+        file: Arc<RandomAccessFile>,
+        invoked_path: &str,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> SysResult<()> {
         let filemode = file.mode()?;
         let fileowner = file.owner()?;
 
-        let (first_task, exec_path) = tcb.new_exec(file, argv, envp)?;
+        let (first_task, exec_path, exec_inode) = tcb.new_exec(file, invoked_path, argv, envp)?;
 
         {
             let mut tasks = self.tasks.lock();
@@ -407,6 +496,7 @@ impl PCB {
         self.signal.actions.lock().reset_for_exec();
         *self.execed.lock() = true;
         *self.exec_path.lock() = exec_path;
+        self.replace_exec_inode(Some(exec_inode));
 
         scheduler::push_task(first_task.clone());
         manager::insert(first_task);
@@ -422,7 +512,7 @@ impl PCB {
         // indefinitely and leaving the system hung instead of halting cleanly.
         if self.pid == task::INIT_UTASK_TID {
             self.children.lock().iter().for_each(|child| {
-                let _ = child.send_signal(signum::SIGKILL, SiCode::EMPTY, KSiFields::Empty, None);
+                let _ = child.send_signal(signum::SIGKILL, SiCode::EMPTY, 0, KSiFields::Empty, None);
             });
             loop {
                 if let Some(child) = self.children.lock().pop() {
@@ -454,9 +544,17 @@ impl PCB {
         // and defer their cleanup to when this process is waited on (e.g. waitpid),
         // at which point it is safe to reclaim the resources.
         drop(tasks);
+        self.replace_exec_inode(None);
 
         *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();
         *self.state.lock() = State::Exited(status);
+        self.pidfd_waiters.lock().wake_all(|event| match event {
+            Event::Poll { waker, .. } => Event::Poll {
+                event: FileEvent::READ_READY,
+                waker,
+            },
+            event => event,
+        });
 
         if let Some(parent) = self.parent.lock().as_ref() {
             parent.waiting_task.lock().drain(..).for_each(|t| {
@@ -472,7 +570,7 @@ impl PCB {
             });
             if !self.exit_signal.is_empty() {
                 parent
-                    .send_signal(self.exit_signal, SiCode::SI_KERNEL, fields, None)
+                    .send_signal(self.exit_signal, SiCode::SI_KERNEL, 0, fields, None)
                     .unwrap_or(());
             }
         }
@@ -488,7 +586,18 @@ impl PCB {
         manager::remove(self.pid);
     }
 
-    pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<ExitStatus>, Errno> {
+    fn replace_exec_inode(&self, new_inode: Option<Arc<dyn InodeOps>>) {
+        let old_inode = {
+            let mut exec_inode = self.exec_inode.lock();
+            core::mem::replace(&mut *exec_inode, new_inode)
+        };
+
+        if let Some(old_inode) = old_inode {
+            old_inode.end_exec();
+        }
+    }
+
+    pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<(Arc<PCB>, ExitStatus)>, Errno> {
         let child = {
             let children = self.children.lock();
             children.iter().find(|c| c.pid() == pid).cloned()
@@ -502,7 +611,7 @@ impl PCB {
                 let positon = children.iter().position(|c| c.pid() == pid).unwrap();
                 children.swap_remove(positon);
 
-                return Ok(Some(status));
+                return Ok(Some((child, status)));
             }
 
             if blocked {
@@ -519,7 +628,9 @@ impl PCB {
                         Event::Signal => {
                             return Err(Errno::EINTR);
                         }
-                        _ => unreachable!("Unexpected event in wait_child: {:?}", event),
+                        _ => {
+                            unreachable!("Unexpected event in wait_child: {:?}", event);
+                        }
                     }
                 }
 
@@ -534,7 +645,7 @@ impl PCB {
                 let mut children = self.children.lock();
                 children.retain(|c| c.pid() != pid);
 
-                return Ok(Some(status));
+                return Ok(Some((child, status)));
             } else {
                 return Ok(None);
             }
@@ -544,7 +655,7 @@ impl PCB {
         }
     }
 
-    pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(i32, ExitStatus)>> {
+    pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(Arc<PCB>, ExitStatus)>> {
         if let Some(child) = {
             let mut children = self.children.lock();
             if children.is_empty() {
@@ -561,7 +672,7 @@ impl PCB {
         } {
             if let Some(status) = child.recycle() {
                 self.accumulate_waited_child(&child);
-                return Ok(Some((child.pid(), status)));
+                return Ok(Some((child, status)));
             }
         };
 
@@ -587,7 +698,7 @@ impl PCB {
                     };
                     if let Some(status) = child.recycle() {
                         self.accumulate_waited_child(&child);
-                        return Ok(Some((pid, status)));
+                        return Ok(Some((child, status)));
                     } else {
                         continue; // The child process was recycled by other waiters
                     }
@@ -598,7 +709,7 @@ impl PCB {
         }
     }
 
-    pub fn wait_child_by_pgid(&self, pgid: Tid, blocked: bool) -> SysResult<Option<(Tid, ExitStatus)>> {
+    pub fn wait_child_by_pgid(&self, pgid: Tid, blocked: bool) -> SysResult<Option<(Arc<PCB>, ExitStatus)>> {
         if let Some(child) = {
             let mut children = self.children.lock();
             if !children.iter().any(|c| c.pgid() == pgid) {
@@ -613,7 +724,7 @@ impl PCB {
         } {
             if let Some(status) = child.recycle() {
                 self.accumulate_waited_child(&child);
-                return Ok(Some((child.pid(), status)));
+                return Ok(Some((child, status)));
             }
         };
 
@@ -639,7 +750,7 @@ impl PCB {
                     };
                     if let Some(status) = child.recycle() {
                         self.accumulate_waited_child(&child);
-                        return Ok(Some((pid, status)));
+                        return Ok(Some((child, status)));
                     } else {
                         continue;
                     }
@@ -685,6 +796,15 @@ impl PCB {
         });
 
         (utime, stime)
+    }
+}
+
+impl Drop for PCB {
+    fn drop(&mut self) {
+        let exec_inode = self.exec_inode.lock().take();
+        if let Some(exec_inode) = exec_inode {
+            exec_inode.end_exec();
+        }
     }
 }
 

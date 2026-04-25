@@ -61,11 +61,12 @@ impl SuperBlockInner {
 }
 pub struct SuperBlock<T: StaticFsInfo> {
     inner: Arc<SpinLock<SuperBlockInner>>,
+    read_only: bool,
     _marker: core::marker::PhantomData<T>,
 }
 
 impl<T: StaticFsInfo> SuperBlock<T> {
-    pub fn new() -> Self {
+    pub fn new(read_only: bool) -> Self {
         let inner = Arc::new(SpinLock::new(SuperBlockInner::new(), "SuperBlock::inner"));
 
         {
@@ -80,6 +81,7 @@ impl<T: StaticFsInfo> SuperBlock<T> {
 
         Self {
             inner,
+            read_only,
             _marker: core::marker::PhantomData,
         }
     }
@@ -112,7 +114,7 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
         let mut inner = self.inner.lock();
         let ino = inner.alloc_inode_number();
         let mut meta = InodeMeta::new(mode, ino, self.get_root_ino());
-        meta.owner = (current::euid(), current::egid());
+        meta.owner = (current::fsuid(), current::fsgid());
 
         let inode: Arc<dyn InodeOps> = Arc::new(MemInode::<T>::new(ino, meta, self.inner.clone()));
         inner.insert_inode(ino, inode.clone());
@@ -127,7 +129,12 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
         statfs.f_blocks = 0;
         statfs.f_bfree = 0;
         statfs.f_bavail = 0;
+        statfs.f_flag = self.statfs_flags().bits();
         Ok(statfs)
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.read_only
     }
 
     fn type_name(&self) -> &'static str {

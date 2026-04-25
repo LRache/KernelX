@@ -5,15 +5,141 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
+use crate::klib::SpinLock;
 
+use super::bsd_flock::BsdFlockState;
+use super::posix_flock::PosixFlockState;
 use super::{FileType, Mode, Owner};
+
+pub struct InodeLockState {
+    pub(crate) bsd: BsdFlockState,
+    pub(crate) posix: PosixFlockState,
+    writer_count: u32,
+    exec_count: u32,
+}
+
+impl InodeLockState {
+    pub fn new() -> Self {
+        Self {
+            bsd: BsdFlockState::new(),
+            posix: PosixFlockState::new(),
+            writer_count: 0,
+            exec_count: 0,
+        }
+    }
+
+    pub fn writer_count(&self) -> u32 {
+        self.writer_count
+    }
+
+    pub fn exec_count(&self) -> u32 {
+        self.exec_count
+    }
+
+    pub fn increment_writer_count(&mut self) {
+        self.writer_count = self
+            .writer_count
+            .checked_add(1)
+            .expect("InodeLockState::writer_count overflow");
+    }
+
+    pub fn decrement_writer_count(&mut self) {
+        debug_assert!(self.writer_count > 0, "InodeLockState::writer_count underflow");
+        self.writer_count -= 1;
+    }
+
+    pub fn increment_exec_count(&mut self) {
+        self.exec_count = self
+            .exec_count
+            .checked_add(1)
+            .expect("InodeLockState::exec_count overflow");
+    }
+
+    pub fn decrement_exec_count(&mut self) {
+        debug_assert!(self.exec_count > 0, "InodeLockState::exec_count underflow");
+        self.exec_count -= 1;
+    }
+}
+
+pub fn release_bsd_flock(inode: &Arc<dyn InodeOps>, owner: usize) {
+    let Some(lock_state) = inode.lock_state() else {
+        return;
+    };
+
+    let mut lock_state = lock_state.lock();
+    if lock_state.bsd.remove_owner(owner) {
+        lock_state.bsd.wake_all();
+    }
+}
 
 pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
 
     fn type_name(&self) -> &'static str;
+
+    /// Number of extra `Arc<Self>` references that the filesystem keeps
+    /// even when the inode is otherwise idle. The inode cache itself is
+    /// accounted for separately.
+    fn filesystem_refcount_bias(&self) -> usize {
+        0
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        None
+    }
+
+    fn begin_write_open(&self) -> SysResult<()> {
+        let Some(lock_state) = self.lock_state() else {
+            return Ok(());
+        };
+
+        let mut lock_state = lock_state.lock();
+        if lock_state.exec_count() > 0 {
+            return Err(Errno::ETXTBSY);
+        }
+        lock_state.increment_writer_count();
+        Ok(())
+    }
+
+    fn end_write_open(&self) {
+        let Some(lock_state) = self.lock_state() else {
+            return;
+        };
+
+        lock_state.lock().decrement_writer_count();
+    }
+
+    fn begin_exec(&self) -> SysResult<()> {
+        let Some(lock_state) = self.lock_state() else {
+            return Ok(());
+        };
+
+        let mut lock_state = lock_state.lock();
+        if lock_state.writer_count() > 0 {
+            return Err(Errno::ETXTBSY);
+        }
+        lock_state.increment_exec_count();
+        Ok(())
+    }
+
+    fn increment_exec_count(&self) {
+        let Some(lock_state) = self.lock_state() else {
+            return;
+        };
+
+        lock_state.lock().increment_exec_count();
+    }
+
+    fn end_exec(&self) {
+        let Some(lock_state) = self.lock_state() else {
+            return;
+        };
+
+        lock_state.lock().decrement_exec_count();
+    }
 
     fn create(&self, _name: &str, _mode: Mode, _owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         Err(Errno::EOPNOTSUPP)
@@ -117,6 +243,10 @@ pub trait InodeOps: DowncastSync {
         Ok(())
     }
 
+    fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
+        Err(Errno::ENOSYS)
+    }
+
     fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::default();
         kstat.st_ino = self.get_ino() as u64;
@@ -149,5 +279,3 @@ pub trait InodeOps: DowncastSync {
 }
 
 impl_downcast!(sync InodeOps);
-
-pub type Inode = Arc<dyn InodeOps>;

@@ -7,12 +7,12 @@ use crate::driver::chosen::kclock;
 use crate::fs::ext4::ffi::*;
 use crate::fs::ext4::superblock::{SuperBlockInner, map_error_to_kernel};
 use crate::fs::ext4::util::{get_block_size, revision_tuple};
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
-use crate::fs::inode::{InodeOps, Mode, Owner};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
+use crate::fs::inode::{InodeLockState, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::klib::SleepLock;
+use crate::klib::{SleepLock, SpinLock};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum InodeType {
@@ -296,6 +296,7 @@ fn unlink_from_parent(superblock: &mut SuperBlockInner, parent_ref: &mut ext4_in
 pub struct Ext4Inode {
     ino: u32,
     superblock: Arc<SleepLock<SuperBlockInner>>,
+    lock_state: SpinLock<InodeLockState>,
 }
 
 impl Ext4Inode {
@@ -306,7 +307,11 @@ impl Ext4Inode {
             superblock.put_inode_ref(&mut inode_ref)?;
         }
 
-        Ok(Self { ino, superblock })
+        Ok(Self {
+            ino,
+            superblock,
+            lock_state: SpinLock::new(InodeLockState::new(), "Ext4Inode::lock_state"),
+        })
     }
 
     fn with_ref<R>(&self, f: impl FnOnce(&mut SuperBlockInner, &mut ext4_inode_ref) -> SysResult<R>) -> SysResult<R> {
@@ -335,6 +340,10 @@ impl InodeOps for Ext4Inode {
 
     fn type_name(&self) -> &'static str {
         "ext4"
+    }
+
+    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        Some(&self.lock_state)
     }
 
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
@@ -385,7 +394,7 @@ impl InodeOps for Ext4Inode {
                 }
 
                 let current_mode = inode_mode(&mut child_ref);
-                inode_set_mode(&mut child_ref, (current_mode & !0o777) | (mode.bits() as u32 & 0o777));
+                inode_set_mode(&mut child_ref, (current_mode & !0o7777) | (mode.bits() as u32 & 0o7777));
                 inode_set_owner(&mut child_ref, owner.uid as u16, owner.gid as u16);
 
                 let time = now();
@@ -837,6 +846,6 @@ impl InodeOps for Ext4Inode {
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
     }
 }

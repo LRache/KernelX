@@ -4,8 +4,9 @@ pub const USER_STACK_TOP: usize = 1 << 38; // Example user stack top address
 pub const USER_STACK_PAGE_COUNT_MAX: usize = 2048; // Example user stack page count
 
 pub const USER_BRK_BASE: usize = 0x1_0000_0000; // Base address for user brk
+pub const USER_BRK_MAX: usize = 0x2_0000_0000; // Maximum reachable brk, exclusive heap end boundary
 
-pub const USER_MAP_BASE: usize = 0x2_0000_0000; // Base address for user mappings
+pub const USER_MAP_BASE: usize = USER_BRK_MAX; // Base address for user mappings
 
 pub const USER_EXEC_ADDR_BASE: usize = 0x1_0000;
 pub const USER_LINKER_ADDR_BASE: usize = 0x4000_0000; // Base address for the dynamic linker
@@ -14,7 +15,7 @@ pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
 
 #[cfg(debug_assertions)]
-pub const UTASK_KSTACK_PAGE_COUNT: usize = 32; // Kernel stack page count for user tasks
+pub const UTASK_KSTACK_PAGE_COUNT: usize = 64; // Kernel stack page count for user tasks
 #[cfg(not(debug_assertions))]
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Kernel stack page count for user tasks
 pub const KTASK_KSTACK_PAGE_COUNT: usize = 16; // Kernel stack page count for kernel tasks
@@ -33,6 +34,8 @@ pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process
 
 pub const MAX_FILENAME_LEN: usize = 255;
+pub const MAX_PATH_LEN: usize = 4096;
+pub const MAX_SYMLINK_DEPTH: usize = 40;
 
 // pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer
 pub const PIPE_BUFFER_PAGES: usize = 32; // Number of pages allocated for pipe buffer

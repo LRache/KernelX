@@ -1,27 +1,31 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 use bitflags::bitflags;
 use core::time::Duration;
 use core::usize;
-use fixedstr::str256;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
-use crate::fs::file::{File, FileFlags, FileOps, SeekWhence};
-use crate::fs::{Dentry, Mode, Owner, Perm, PermFlags, vfs};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
+use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
+use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::ipc::Pipe;
+use crate::kernel::event::Event;
+use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
-use crate::kernel::syscall::{SyscallRet, UserStruct};
+use crate::kernel::syscall::{SyscallRet, UserStruct, utils};
 use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::task::pidfd::PidFile;
 use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec, Uid};
 
 use super::def::*;
 
 pub fn dup(oldfd: usize) -> SyscallRet {
-    let mut fdtable = current::fdtable().lock();
-    fdtable.dup(oldfd, None, FDFlags::empty())
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
+    fdtable.dup2(oldfd, FDFlags::empty())
 }
 
 pub fn dup3(oldfd: usize, newfd: usize, flags: usize) -> SyscallRet {
@@ -29,7 +33,8 @@ pub fn dup3(oldfd: usize, newfd: usize, flags: usize) -> SyscallRet {
     let fd_flags = FDFlags {
         cloexec: flags.contains(OpenFlags::O_CLOEXEC),
     };
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     fdtable.dup3(oldfd, newfd, fd_flags)
 }
 
@@ -42,6 +47,12 @@ pub enum FcntlCmd {
     F_SETFD = 2,
     F_GETFL = 3,
     F_SETFL = 4,
+    F_GETLK = 5,
+    F_SETLK = 6,
+    F_SETLKW = 7,
+    F_GETLK64 = 12,
+    F_SETLK64 = 13,
+    F_SETLKW64 = 14,
     F_DUPFD_CLOEXEC = 1030,
     F_SETPIPE_SZ = 1031,
     F_GETPIPE_SZ = 1032,
@@ -54,8 +65,229 @@ bitflags! {
     }
 }
 
+const F_RDLCK: i16 = 0;
+const F_WRLCK: i16 = 1;
+const F_UNLCK: i16 = 2;
+const SEEK_SET: i16 = 0;
+const SEEK_CUR: i16 = 1;
+const SEEK_END: i16 = 2;
+const LOCK_SH: usize = 1;
+const LOCK_EX: usize = 2;
+const LOCK_NB: usize = 4;
+const LOCK_UN: usize = 8;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Flock {
+    l_type: i16,
+    l_whence: i16,
+    __pad0: i32,
+    l_start: i64,
+    l_len: i64,
+    l_pid: i32,
+    __pad1: i32,
+}
+
+impl UserStruct for Flock {}
+
+fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<&Arc<dyn InodeOps>> {
+    let inode = file.get_inode().ok_or(Errno::EINVAL)?;
+    if inode.lock_state().is_none() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(inode)
+}
+
+enum RandomAccess<'a> {
+    File(&'a RandomAccessFile),
+}
+
+impl RandomAccess<'_> {
+    fn readable(&self) -> bool {
+        match self {
+            Self::File(file) => file.readable(),
+        }
+    }
+
+    fn writable(&self) -> bool {
+        match self {
+            Self::File(file) => file.writable(),
+        }
+    }
+
+    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        match self {
+            Self::File(file) => file.pread(buf, offset),
+        }
+    }
+
+    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        match self {
+            Self::File(file) => file.pwrite(buf, offset),
+        }
+    }
+
+    fn get_dent(&self) -> SysResult<Option<(crate::fs::file::DirResult, usize)>> {
+        match self {
+            Self::File(file) => file.get_dent(),
+        }
+    }
+
+    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
+        match self {
+            Self::File(file) => file.seek(offset, whence),
+        }
+    }
+}
+
+fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<RandomAccess<'_>> {
+    if let Some(file) = file.downcast_ref::<RandomAccessFile>() {
+        return Ok(RandomAccess::File(file));
+    }
+    if let Some(file) = file.downcast_ref::<PidFile>()
+        && let Some(file) = file.random_access_file()
+    {
+        return Ok(RandomAccess::File(file));
+    }
+    Err(Errno::ESPIPE)
+}
+
+fn normalize_posix_flock(
+    file: &Arc<dyn FileOps>,
+    inode: &Arc<dyn InodeOps>,
+    flock: &Flock,
+) -> SysResult<(Option<PosixFlockType>, i64, i64)> {
+    let lock_type = match flock.l_type {
+        F_RDLCK => {
+            if !file.readable() {
+                return Err(Errno::EBADF);
+            }
+            Some(PosixFlockType::Read)
+        }
+        F_WRLCK => {
+            if !file.writable() {
+                return Err(Errno::EBADF);
+            }
+            Some(PosixFlockType::Write)
+        }
+        F_UNLCK => None,
+        _ => return Err(Errno::EINVAL),
+    };
+
+    let base = match flock.l_whence {
+        SEEK_SET => 0,
+        SEEK_CUR => i64::try_from(random_access_file(file)?.seek(0, SeekWhence::CUR)?).map_err(|_| Errno::EINVAL)?,
+        SEEK_END => i64::try_from(inode.size()?).map_err(|_| Errno::EINVAL)?,
+        _ => return Err(Errno::EINVAL),
+    };
+
+    let mut start = base.checked_add(flock.l_start).ok_or(Errno::EINVAL)?;
+    if start < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let len = if flock.l_len < 0 {
+        let end = start;
+        start = start.checked_add(flock.l_len).ok_or(Errno::EINVAL)?;
+        if start < 0 {
+            return Err(Errno::EINVAL);
+        }
+        end - start
+    } else if flock.l_len == 0 {
+        0
+    } else {
+        start.checked_add(flock.l_len).ok_or(Errno::EINVAL)?;
+        flock.l_len
+    };
+
+    Ok((lock_type, start, len))
+}
+
+fn flock_from_conflict(conflict: PosixFlock) -> Flock {
+    Flock {
+        l_type: match conflict.lock_type {
+            PosixFlockType::Read => F_RDLCK,
+            PosixFlockType::Write => F_WRLCK,
+        },
+        l_whence: SEEK_SET,
+        __pad0: 0,
+        l_start: conflict.start,
+        l_len: conflict.len,
+        l_pid: conflict.owner,
+        __pad1: 0,
+    }
+}
+
+fn fcntl_getlk(file: &Arc<dyn FileOps>, arg: usize) -> SyscallRet {
+    let uptr_lock: UPtr<Flock> = arg.into();
+    let mut user_lock = uptr_lock.should_not_null()?.read()?;
+    let inode = fcntl_lock_inode(file)?;
+    let (lock_type, start, len) = normalize_posix_flock(file, &inode, &user_lock)?;
+    let lock_type = lock_type.ok_or(Errno::EINVAL)?;
+
+    let conflict = {
+        let state = inode.lock_state().unwrap().lock();
+        state.posix.get_conflict(current::pid(), lock_type, start, len)
+    };
+
+    if let Some(conflict) = conflict {
+        user_lock = flock_from_conflict(conflict);
+    } else {
+        user_lock.l_type = F_UNLCK;
+    }
+
+    uptr_lock.write(user_lock)?;
+    Ok(0)
+}
+
+fn fcntl_setlk(file: &Arc<dyn FileOps>, arg: usize, blocking: bool) -> SyscallRet {
+    let uptr_lock: UPtr<Flock> = arg.into();
+    let user_lock = uptr_lock.should_not_null()?.read()?;
+    let inode = fcntl_lock_inode(file)?;
+    let (lock_type, start, len) = normalize_posix_flock(file, &inode, &user_lock)?;
+    let owner = current::pid();
+    let lock_state = inode.lock_state().unwrap();
+
+    if lock_type.is_none() {
+        let mut state = lock_state.lock();
+        state.posix.apply(owner, None, start, len);
+        state.posix.wake_all();
+        return Ok(0);
+    }
+
+    let request_type = lock_type.unwrap();
+    loop {
+        let mut state = lock_state.lock();
+        if state.posix.get_conflict(owner, request_type, start, len).is_none() {
+            state.posix.apply(owner, Some(request_type), start, len);
+            state.posix.wake_all();
+            return Ok(0);
+        }
+
+        if !blocking {
+            return Err(Errno::EAGAIN);
+        }
+
+        state.posix.wait_current();
+        drop(state);
+
+        current::schedule();
+        match current::task().take_wakeup_event().unwrap() {
+            Event::IOComplete => {}
+            Event::Signal => return Err(Errno::EINTR),
+            event => unreachable!("unexpected event while waiting on fcntl lock: {:?}", event),
+        }
+    }
+}
+
 pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     match FcntlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)? {
+        FcntlCmd::F_DUPFD => {
+            let fdtable = current::fdtable();
+            let mut fdtable = fdtable.lock();
+            fdtable.dup_min(fd, arg, FDFlags::empty())
+        }
+
         FcntlCmd::F_GETFL => {
             let file = current::fdtable().lock().get(fd)?;
             let flags = file.flags();
@@ -92,7 +324,8 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
 
         FcntlCmd::F_GETFD => {
-            let fdtable = current::fdtable().lock();
+            let fdtable = current::fdtable();
+            let fdtable = fdtable.lock();
             let fdflags = fdtable.get_fd_flags(fd)?;
             let mut flags = FDArgs::empty();
             if fdflags.cloexec {
@@ -104,7 +337,8 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         FcntlCmd::F_SETFD => {
             let flags = FDArgs::from_bits(arg).ok_or(Errno::EINVAL)?;
 
-            let mut fdtable = current::fdtable().lock();
+            let fdtable = current::fdtable();
+            let mut fdtable = fdtable.lock();
             let mut fdflags = fdtable.get_fd_flags(fd)?;
             fdflags.cloexec = flags.contains(FDArgs::FD_CLOEXEC);
             fdtable.set_fd_flags(fd, fdflags)?;
@@ -113,8 +347,24 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
 
         FcntlCmd::F_DUPFD_CLOEXEC => {
-            let mut fdtable = current::fdtable().lock();
-            fdtable.dup(fd, Some(arg), FDFlags { cloexec: true })
+            let fdtable = current::fdtable();
+            let mut fdtable = fdtable.lock();
+            fdtable.dup_min(fd, arg, FDFlags { cloexec: true })
+        }
+
+        FcntlCmd::F_GETLK | FcntlCmd::F_GETLK64 => {
+            let file = current::fdtable().lock().get(fd)?;
+            fcntl_getlk(&file, arg)
+        }
+
+        FcntlCmd::F_SETLK | FcntlCmd::F_SETLK64 => {
+            let file = current::fdtable().lock().get(fd)?;
+            fcntl_setlk(&file, arg, false)
+        }
+
+        FcntlCmd::F_SETLKW | FcntlCmd::F_SETLKW64 => {
+            let file = current::fdtable().lock().get(fd)?;
+            fcntl_setlk(&file, arg, true)
         }
 
         FcntlCmd::F_SETPIPE_SZ => {
@@ -128,8 +378,6 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             let pipe = file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
             Ok(pipe.get_pipe_size())
         }
-
-        _ => Err(Errno::EINVAL),
     }
 }
 
@@ -137,6 +385,9 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     uptr_filename.should_not_null()?;
 
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if open_flags.contains(OpenFlags::O_DIRECTORY) && open_flags.contains(OpenFlags::O_CREATE) {
+        return Err(Errno::EINVAL);
+    }
     let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
     let (readable, writable) = match acc_mode {
         0 => (true, false), // O_RDONLY
@@ -164,10 +415,13 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             }
 
             let dentry = vfs::load_dentry_at(parent, &path)?;
+            if dentry.is_superblock_readonly()? {
+                return Err(Errno::EROFS);
+            }
             return vfs::create_temp(
                 &dentry,
                 file_flags,
-                Mode::from_bits(mode as u32 & 0o777).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
+                Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
             );
         }
 
@@ -190,14 +444,18 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                 if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
                     // Create the file
                     let mode =
-                        Mode::from_bits(mode as u32 & 0o777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
+                        Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
                     let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?.unwrap(); // SAFETY: The root must exist
+                    let parent_dentry = parent_dentry.get_mount_to();
+                    if parent_dentry.is_superblock_readonly()? {
+                        return Err(Errno::EROFS);
+                    }
                     vfs::create_file(
                         &parent_dentry,
-                        &child_name,
+                        child_name.as_ref(),
                         file_flags,
                         mode,
-                        Owner::new(current::euid(), current::egid()),
+                        Owner::new(current::fsuid(), current::fsgid()),
                     )
                 } else {
                     Err(e)
@@ -212,7 +470,24 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         helper(vfs::get_root_dentry())?
     };
 
-    let fd = current::fdtable().lock().push(file, fd_flags)?;
+    if open_flags.contains(OpenFlags::O_DIRECTORY) {
+        let inode = file.get_inode().ok_or(Errno::ENOTDIR)?;
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+    }
+
+    let fd = current::fdtable().lock().push(file.clone(), fd_flags)?;
+
+    if writable && open_flags.contains(OpenFlags::O_TRUNC) {
+        if let Some(inode) = file.get_inode()
+            && inode.inode_type()? == FileType::Regular
+            && let Err(err) = inode.truncate(0)
+        {
+            let _ = current::fdtable().lock().take(fd);
+            return Err(err);
+        }
+    }
 
     Ok(fd)
 }
@@ -256,7 +531,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
         )?
     } {
         let mut buffer = [0u8; 255];
-        if let Some(size) = parent.readlink(child, &mut buffer)? {
+        if let Some(size) = parent.readlink(child.as_ref(), &mut buffer)? {
             let path = core::str::from_utf8(&buffer[..size]).map_err(|_| Errno::EINVAL)?;
             let to_write = core::cmp::min(path.len(), bufsize);
             ubuf.write(0, &path.as_bytes()[..to_write])?;
@@ -295,6 +570,10 @@ pub struct IOVec {
 }
 
 impl UserStruct for IOVec {}
+
+fn check_positional_io(file: &Arc<dyn FileOps>) -> SysResult<()> {
+    random_access_file(file).map(|_| ())
+}
 
 pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     if (iovcnt as isize) < 0 {
@@ -377,6 +656,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
     }
 
     let file = current::fdtable().lock().get(fd)?;
+    let file = random_access_file(&file)?;
     if !file.readable() {
         return Err(Errno::EBADF);
     }
@@ -461,11 +741,6 @@ pub fn preadv2(
         return Err(Errno::EOPNOTSUPP);
     }
 
-    let file = current::fdtable().lock().get(fd)?;
-    if !file.readable() {
-        return Err(Errno::EBADF);
-    }
-
     let pos_u64 = (((pos_h & 0xffff_ffff) as u64) << 32) | ((pos_l & 0xffff_ffff) as u64);
     let pos = pos_u64 as usize;
 
@@ -486,6 +761,11 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
 
     if (count as isize) < 0 || (pos as isize) < 0 {
         return Err(Errno::EINVAL);
+    }
+
+    let file = random_access_file(&file)?;
+    if !file.readable() {
+        return Err(Errno::EBADF);
     }
 
     let mut written = 0;
@@ -513,10 +793,21 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
 }
 
 pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet {
-    let file = current::fdtable().lock().get(fd)?;
-
     if count == 0 {
         return Ok(0);
+    }
+
+    if (pos as isize) < 0 || (count as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    if ubuf.is_null() {
+        return Err(Errno::EFAULT);
+    }
+
+    let file = current::fdtable().lock().get(fd)?;
+    let file = random_access_file(&file)?;
+    if !file.writable() {
+        return Err(Errno::EBADF);
     }
 
     let mut written = 0;
@@ -543,12 +834,16 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
     Ok(written)
 }
 
-pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
-    if (iovcnt as isize) < 0 {
+pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> SyscallRet {
+    if (iovcnt as isize) < 0 || (pos as isize) < 0 {
         return Err(Errno::EINVAL);
     }
 
     let file = current::fdtable().lock().get(fd)?;
+    let file = random_access_file(&file)?;
+    if !file.writable() {
+        return Err(Errno::EBADF);
+    }
 
     if iovcnt == 0 {
         return Ok(0);
@@ -556,9 +851,10 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
 
     uptr_iov.should_not_null()?;
 
-    let mut total_written = 0;
+    let mut total_written = 0usize;
+    let mut offset = 0usize;
 
-    'outer: for i in 0..iovcnt {
+    for i in 0..iovcnt {
         let iov = match uptr_iov.add(i).read() {
             Ok(iov) => iov,
             Err(e) => {
@@ -587,22 +883,24 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
             if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
                 if total_written + written > 0 {
-                    break 'outer;
+                    return Ok(total_written + written);
                 }
                 return Err(Errno::EFAULT);
             }
 
-            match file.write(&buffer[..to_write]) {
+            let write_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
+            match file.pwrite(&buffer[..to_write], write_pos) {
                 Ok(bytes_written) => {
                     remaining -= bytes_written;
                     written += bytes_written;
+                    offset = offset.checked_add(bytes_written).ok_or(Errno::EINVAL)?;
                     if bytes_written != to_write {
-                        break; // short write
+                        return Ok(total_written + written);
                     }
                 }
                 Err(e) => {
                     if total_written + written > 0 {
-                        break 'outer;
+                        return Ok(total_written + written);
                     }
                     return Err(e);
                 }
@@ -615,9 +913,111 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     Ok(total_written)
 }
 
+pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
+    if (iovcnt as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let file = current::fdtable().lock().get(fd)?;
+    if !file.writable() {
+        return Err(Errno::EBADF);
+    }
+
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+
+    uptr_iov.should_not_null()?;
+
+    let mut total_written = 0;
+
+    for i in 0..iovcnt {
+        let iov = match uptr_iov.add(i).read() {
+            Ok(iov) => iov,
+            Err(e) => {
+                if total_written > 0 {
+                    break;
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        if iov.len == 0 {
+            continue;
+        }
+        if (iov.len as isize) < 0 {
+            if total_written > 0 {
+                break;
+            }
+            return Err(Errno::EINVAL);
+        }
+
+        let mut written = 0usize;
+        let mut remaining = iov.len;
+        let mut buffer = [0u8; BUFFER_SIZE];
+        while remaining != 0 {
+            let to_write = core::cmp::min(remaining, BUFFER_SIZE);
+            if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
+                if total_written + written > 0 {
+                    return Ok(total_written + written);
+                }
+                return Err(Errno::EFAULT);
+            }
+
+            match file.write(&buffer[..to_write]) {
+                Ok(bytes_written) => {
+                    remaining -= bytes_written;
+                    written += bytes_written;
+                    if bytes_written != to_write {
+                        return Ok(total_written + written);
+                    }
+                }
+                Err(e) => {
+                    if total_written + written > 0 {
+                        return Ok(total_written + written);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        total_written += written;
+    }
+
+    Ok(total_written)
+}
+
+pub fn pwritev2(
+    fd: usize,
+    uptr_iov: UPtr<IOVec>,
+    iovcnt: usize,
+    pos_l: usize,
+    pos_h: usize,
+    flags: usize,
+) -> SyscallRet {
+    if (iovcnt as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    if flags != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
+    let pos_u64 = (((pos_h & 0xffff_ffff) as u64) << 32) | ((pos_l & 0xffff_ffff) as u64);
+    let pos = pos_u64 as usize;
+
+    // Linux pwritev2 semantics: offset == -1 means use and advance the current file offset.
+    if pos == usize::MAX {
+        return writev(fd, uptr_iov, iovcnt);
+    }
+
+    pwritev(fd, uptr_iov, iovcnt, pos)
+}
+
 pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
-
+    let file = random_access_file(&file)?;
     let how = match how {
         0 => SeekWhence::BEG,
         1 => SeekWhence::CUR,
@@ -652,10 +1052,11 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
     let flags = CloseRangeFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     if flags.contains(CloseRangeFlags::UNSHARE) {
-        current::tcb().unshare_fdtable();
+        current::tcb().unshare_fdtable()?;
     }
 
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         for i in fd..=max_fd {
             if let Ok(fdflags) = fdtable.get_fd_flags(i) {
@@ -678,9 +1079,13 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
 }
 
 pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: usize) -> SyscallRet {
-    let mut fdtable = current::fdtable().lock();
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
     let out_file = fdtable.get(out_fd)?;
-    let in_file = fdtable.get(in_fd)?.downcast_arc::<File>().map_err(|_| Errno::EINVAL)?;
+    let in_file = fdtable
+        .get(in_fd)?
+        .downcast_arc::<RandomAccessFile>()
+        .map_err(|_| Errno::EINVAL)?;
     drop(fdtable); // Release lock early
 
     if !out_file.writable() {
@@ -694,7 +1099,7 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     let mut local_offset = if uptr_offset.is_null() {
         in_file_offset
     } else {
-        uptr_offset.read()?
+        utils::should_not_be_negative(uptr_offset.read()?)?
     };
 
     let mut total_sent = 0;
@@ -736,6 +1141,236 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     Ok(total_sent)
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SpliceFlags: usize {
+        const MOVE = 1;
+        const NONBLOCK = 1 << 1;
+        const MORE = 1 << 2;
+        const GIFT = 1 << 3;
+    }
+}
+
+fn splice_offsets(file: &Arc<dyn FileOps>, uptr_offset: UPtr<usize>, is_pipe: bool) -> SysResult<Option<usize>> {
+    if uptr_offset.is_null() {
+        return Ok(None);
+    }
+
+    if is_pipe {
+        return Err(Errno::ESPIPE);
+    }
+
+    let offset = uptr_offset.read()?;
+    if (offset as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    check_positional_io(file)?;
+    Ok(Some(offset))
+}
+
+fn splice_advance_offset(offset: &mut Option<usize>, delta: usize) -> SysResult<()> {
+    if let Some(pos) = offset {
+        *pos = pos.checked_add(delta).ok_or(Errno::EINVAL)?;
+    }
+    Ok(())
+}
+
+fn splice_pipe_blocked(file: &Arc<dyn FileOps>, flags: SpliceFlags) -> Option<bool> {
+    file.downcast_ref::<Pipe>()
+        .map(|_| !flags.contains(SpliceFlags::NONBLOCK))
+}
+
+fn splice_read_chunk(
+    file: &Arc<dyn FileOps>,
+    offset: Option<usize>,
+    flags: SpliceFlags,
+    buf: &mut [u8],
+) -> SysResult<usize> {
+    match offset {
+        Some(pos) => random_access_file(file)?.pread(buf, pos),
+        None => match (file.downcast_ref::<Pipe>(), splice_pipe_blocked(file, flags)) {
+            (Some(pipe), Some(blocked)) => pipe.read_with_blocked(buf, blocked),
+            _ => file.read(buf),
+        },
+    }
+}
+
+fn splice_write_chunk(
+    file: &Arc<dyn FileOps>,
+    offset: Option<usize>,
+    flags: SpliceFlags,
+    buf: &[u8],
+) -> SysResult<usize> {
+    match offset {
+        Some(pos) => random_access_file(file)?.pwrite(buf, pos),
+        None => match (file.downcast_ref::<Pipe>(), splice_pipe_blocked(file, flags)) {
+            (Some(pipe), Some(blocked)) => pipe.write_with_blocked(buf, blocked),
+            _ => file.write(buf),
+        },
+    }
+}
+
+pub fn splice(
+    in_fd: usize,
+    uptr_off_in: UPtr<usize>,
+    out_fd: usize,
+    uptr_off_out: UPtr<usize>,
+    len: usize,
+    flags: usize,
+) -> SyscallRet {
+    let flags = SpliceFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
+    let in_file = fdtable.get(in_fd)?;
+    let out_file = fdtable.get(out_fd)?;
+    drop(fdtable);
+
+    if !in_file.readable() || !out_file.writable() {
+        return Err(Errno::EBADF);
+    }
+    if out_file.flags().append {
+        return Err(Errno::EINVAL);
+    }
+
+    let in_is_pipe = in_file.downcast_ref::<Pipe>().is_some();
+    let out_is_pipe = out_file.downcast_ref::<Pipe>().is_some();
+    if !in_is_pipe && !out_is_pipe {
+        return Err(Errno::EINVAL);
+    }
+
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let mut in_offset = splice_offsets(&in_file, uptr_off_in, in_is_pipe)?;
+    let mut out_offset = splice_offsets(&out_file, uptr_off_out, out_is_pipe)?;
+
+    let mut total_moved = 0usize;
+    let mut left = len;
+    let mut buffer = [0u8; BUFFER_SIZE];
+
+    while left > 0 {
+        let to_read = core::cmp::min(left, BUFFER_SIZE);
+        let bytes_read = match splice_read_chunk(&in_file, in_offset, flags, &mut buffer[..to_read]) {
+            Ok(n) => n,
+            Err(e) => {
+                if total_moved > 0 {
+                    break;
+                }
+                return Err(e);
+            }
+        };
+        if bytes_read == 0 {
+            break;
+        }
+
+        let mut moved_from_chunk = 0usize;
+        while moved_from_chunk < bytes_read {
+            let write_buf = &buffer[moved_from_chunk..bytes_read];
+            let bytes_written = match splice_write_chunk(&out_file, out_offset, flags, write_buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    if total_moved + moved_from_chunk > 0 {
+                        break;
+                    }
+                    return Err(e);
+                }
+            };
+
+            if bytes_written == 0 {
+                break;
+            }
+
+            moved_from_chunk += bytes_written;
+            splice_advance_offset(&mut out_offset, bytes_written)?;
+        }
+
+        splice_advance_offset(&mut in_offset, moved_from_chunk)?;
+        total_moved += moved_from_chunk;
+        left -= moved_from_chunk;
+
+        if moved_from_chunk < bytes_read {
+            if in_offset.is_none() {
+                let unread = bytes_read - moved_from_chunk;
+                if unread > 0 {
+                    if let Ok(file) = random_access_file(&in_file) {
+                        let _ = file.seek(-(unread as isize), SeekWhence::CUR);
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    if !uptr_off_in.is_null() {
+        uptr_off_in.write(in_offset.unwrap())?;
+    }
+    if !uptr_off_out.is_null() {
+        uptr_off_out.write(out_offset.unwrap())?;
+    }
+
+    Ok(total_moved)
+}
+
+pub fn tee(in_fd: usize, out_fd: usize, len: usize, flags: usize) -> SyscallRet {
+    let flags = SpliceFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
+    let in_file = fdtable.get(in_fd)?;
+    let out_file = fdtable.get(out_fd)?;
+    drop(fdtable);
+
+    if !in_file.readable() || !out_file.writable() {
+        return Err(Errno::EBADF);
+    }
+
+    let in_pipe = in_file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
+    let out_pipe = out_file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
+
+    if in_pipe.is_same_pipe(out_pipe) {
+        return Err(Errno::EINVAL);
+    }
+
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let blocked = !flags.contains(SpliceFlags::NONBLOCK);
+    let buffer = in_pipe.peek_with_blocked(len, blocked)?;
+    if buffer.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total_moved = 0usize;
+    while total_moved < buffer.len() {
+        let end = core::cmp::min(total_moved + BUFFER_SIZE, buffer.len());
+        let bytes_written = match out_pipe.write_with_blocked(&buffer[total_moved..end], blocked) {
+            Ok(n) => n,
+            Err(e) => {
+                if total_moved > 0 {
+                    break;
+                }
+                return Err(e);
+            }
+        };
+
+        if bytes_written == 0 {
+            break;
+        }
+
+        total_moved += bytes_written;
+
+        if bytes_written < end - total_moved + bytes_written {
+            break;
+        }
+    }
+
+    Ok(total_moved)
+}
+
 #[repr(usize)]
 #[derive(TryFromPrimitive)]
 enum IOCTLReq {
@@ -757,34 +1392,110 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> SyscallRet {
     }
 }
 
-pub fn faccessat(dirfd: usize, uptr_path: UString, _mode: usize) -> SyscallRet {
-    uptr_path.should_not_null()?;
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AccessMode: usize {
+        const X_OK = 0x1;
+        const W_OK = 0x2;
+        const R_OK = 0x4;
+    }
+}
 
-    let path = uptr_path.read_fixed()?;
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AccessAtFlags: usize {
+        const AT_SYMLINK_NOFOLLOW = 0x100;
+        const AT_EACCESS = 0x200;
+        const AT_EMPTY_PATH = 0x1000;
+    }
+}
 
-    if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+fn access_perm_flags(mode: AccessMode) -> PermFlags {
+    let mut perm = PermFlags::empty();
+    if mode.contains(AccessMode::R_OK) {
+        perm.insert(PermFlags::R);
+    }
+    if mode.contains(AccessMode::W_OK) {
+        perm.insert(PermFlags::W);
+    }
+    if mode.contains(AccessMode::X_OK) {
+        perm.insert(PermFlags::X);
+    }
+    perm
+}
+
+fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_perm: &Perm) -> SysResult<Arc<Dentry>> {
+    if path.is_empty() {
+        if !flags.contains(AccessAtFlags::AT_EMPTY_PATH) {
+            return Err(Errno::ENOENT);
+        }
+
+        let dentry = if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| Ok(cwd))?
+        } else {
+            let file = current::fdtable().lock().get(dirfd)?;
+            file.get_dentry().ok_or(Errno::ENOTDIR)?.clone()
+        };
+        return Ok(dentry.get_mount_to());
+    }
+
+    let helper = if flags.contains(AccessAtFlags::AT_SYMLINK_NOFOLLOW) {
+        vfs::load_dentry_at_nofollow_with_perm
+    } else {
+        vfs::load_dentry_at_with_perm
+    };
+
+    let dentry = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| helper(&cwd, path, search_perm))?
     } else {
         let file = current::fdtable().lock().get(dirfd)?;
-        vfs::load_dentry_at(file.get_dentry().ok_or(Errno::ENOTDIR)?, &path)?;
+        helper(file.get_dentry().ok_or(Errno::ENOTDIR)?, path, search_perm)?
+    };
+
+    Ok(dentry.get_mount_to())
+}
+
+fn last_path_component(path: &str) -> Option<&str> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        trimmed.rsplit('/').next()
+    }
+}
+
+fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFlags) -> SyscallRet {
+    uptr_path.should_not_null()?;
+
+    let mode = AccessMode::from_bits(mode).ok_or(Errno::EINVAL)?;
+    let path = uptr_path.read_fixed()?;
+    let search_perm = Perm::access(PermFlags::X, flags.contains(AccessAtFlags::AT_EACCESS));
+    let perm = Perm::access(access_perm_flags(mode), flags.contains(AccessAtFlags::AT_EACCESS));
+    let dentry = lookup_access_dentry(dirfd, &path, flags, &search_perm)?;
+
+    if !mode.is_empty() {
+        if mode.contains(AccessMode::W_OK) && dentry.is_superblock_readonly()? {
+            return Err(Errno::EROFS);
+        }
+
+        let inode = dentry.get_inode();
+        let mode = inode.mode()?;
+        let (uid, gid) = inode.owner()?;
+        if !mode.check_perm(&perm, uid, gid) {
+            return Err(Errno::EACCES);
+        }
     }
 
     Ok(0)
 }
 
-pub fn faccessat2(dirfd: usize, uptr_path: UString, _mode: usize, _flags: usize) -> SyscallRet {
-    uptr_path.should_not_null()?;
+pub fn faccessat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
+    do_faccessat(dirfd, uptr_path, mode, AccessAtFlags::empty())
+}
 
-    let path = uptr_path.read_fixed()?;
-
-    if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
-    } else {
-        let file = current::fdtable().lock().get(dirfd)?;
-        vfs::load_dentry_at(file.get_dentry().ok_or(Errno::ENOTDIR)?, &path)?;
-    }
-
-    Ok(0)
+pub fn faccessat2(dirfd: usize, uptr_path: UString, mode: usize, flags: usize) -> SyscallRet {
+    let flags = AccessAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    do_faccessat(dirfd, uptr_path, mode, flags)
 }
 
 bitflags! {
@@ -801,7 +1512,7 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
     let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
-        str256::new()
+        String::new()
     } else {
         uptr_path.should_not_null()?;
         uptr_path.read_fixed()?
@@ -865,7 +1576,7 @@ const UTIME_OMIT: u64 = 0x3ffffffe;
 
 pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, _flags: usize) -> SyscallRet {
     let path = if uptr_path.is_null() {
-        str256::new()
+        String::new()
     } else {
         uptr_path.read_fixed()?
     };
@@ -937,7 +1648,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         .ok_or(Errno::EEXIST)?
     };
 
-    parent.create(name, mode, Owner::new(current::euid(), current::egid()))?;
+    parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
 }
@@ -946,7 +1657,7 @@ const DIRENT_NAME_OFFSET: usize = 8 + 8 + 2 + 1; // d_ino + d_off + d_reclen + d
 
 pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
-    let file = file.downcast_arc::<File>().map_err(|_| Errno::EBADF)?;
+    let file = random_access_file(&file)?;
 
     if uptr_dirent == 0 {
         return Err(Errno::EINVAL);
@@ -1001,21 +1712,53 @@ pub fn getdents64(fd: usize, uptr_dirent: usize, count: usize) -> SyscallRet {
     }
 }
 
-pub fn unlinkat(dirfd: usize, uptr_path: UString, _flags: usize) -> SyscallRet {
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct UnlinkAtFlags: usize {
+        const AT_REMOVEDIR = 0x200;
+    }
+}
+
+pub fn unlinkat(dirfd: usize, uptr_path: UString, flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
+    let flags = UnlinkAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let path = uptr_path.read_fixed()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    if flags.contains(UnlinkAtFlags::AT_REMOVEDIR) && last_path_component(&path) == Some(".") {
+        return Err(Errno::EINVAL);
+    }
 
-    let parent_dentry = if dirfd as isize == AT_FDCWD {
+    let parent_dentry = if path.starts_with('/') {
+        vfs::load_parent_dentry(&path)?.ok_or(Errno::EOPNOTSUPP)
+    } else if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&path)?.ok_or(Errno::EOPNOTSUPP)
+        vfs::load_parent_dentry_at(
+            current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?,
+            &path,
+        )?
+        .ok_or(Errno::EOPNOTSUPP)
     }?;
 
-    let parent = parent_dentry.0;
-    let name = &parent_dentry.1;
+    let parent = parent_dentry.0.get_mount_to();
+    let name = parent_dentry.1;
 
-    parent.unlink(name)?;
+    if parent.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    if flags.contains(UnlinkAtFlags::AT_REMOVEDIR) {
+        parent.rmdir(name.as_ref())?;
+    } else {
+        parent.unlink(name.as_ref())?;
+    }
 
     Ok(0)
 }
@@ -1026,14 +1769,27 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
 
     let target = uptr_target.read_fixed()?;
     let new_name = uptr_newname.read_fixed()?;
+    if new_name.is_empty() {
+        return Err(Errno::ENOENT);
+    }
 
-    let new_dentry = if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &new_name))
+    let (parent, name) = if new_name.starts_with('/') {
+        vfs::load_parent_dentry(&new_name)?.ok_or(Errno::EOPNOTSUPP)?
+    } else if newdirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_name))?.ok_or(Errno::EOPNOTSUPP)?
     } else {
-        vfs::load_dentry(&new_name)
-    }?;
+        vfs::load_parent_dentry_at(
+            current::fdtable()
+                .lock()
+                .get(newdirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?,
+            &new_name,
+        )?
+        .ok_or(Errno::EOPNOTSUPP)?
+    };
 
-    new_dentry.symlink(&target)?;
+    parent.create_symlink(name.as_ref(), &target, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
 }
@@ -1065,13 +1821,13 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     }?;
 
     let new_parent = new_parent_dentry.0;
-    let new_name = &new_parent_dentry.1;
+    let new_name = new_parent_dentry.1;
 
     if old_dentry.sno() != new_parent.sno() {
         return Err(Errno::EXDEV); // Cross-device link
     }
 
-    new_parent.link(new_name, &old_dentry)?;
+    new_parent.link(new_name.as_ref(), &old_dentry)?;
 
     Ok(0)
 }
@@ -1118,14 +1874,72 @@ pub fn renameat2(
         return Err(Errno::EXDEV); // Cross-device link
     }
 
-    old_parent.rename(&old_name, &new_parent, &new_name)?;
+    old_parent.rename(old_name.as_ref(), &new_parent, new_name.as_ref())?;
 
     Ok(0)
 }
 
-pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
+fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
+    let dentry = dentry.clone().get_mount_to();
     let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
+    if dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
 
+    let inode = dentry.get_inode();
+    let (inode_uid, inode_gid) = inode.owner()?;
+    let pcb = current::pcb();
+    let fsuid = pcb.fsuid();
+    if fsuid != 0 && fsuid != inode_uid {
+        return Err(Errno::EPERM);
+    }
+
+    if mode.contains(Mode::S_ISGID) && fsuid != 0 {
+        let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
+        if pcb.fsgid() != inode_gid && !in_supplementary_group {
+            mode.remove(Mode::S_ISGID);
+        }
+    }
+
+    inode.chmod(mode)?;
+    Ok(0)
+}
+
+fn do_chown(dentry: &Arc<Dentry>, uid: Option<Uid>, gid: Option<Uid>) -> SyscallRet {
+    let dentry = dentry.clone().get_mount_to();
+    if dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    let inode = dentry.get_inode();
+    let (inode_uid, inode_gid) = inode.owner()?;
+    let pcb = current::pcb();
+    let fsuid = pcb.fsuid();
+
+    if fsuid != 0 {
+        if fsuid != inode_uid {
+            return Err(Errno::EPERM);
+        }
+
+        if uid.is_some_and(|uid| uid != inode_uid) {
+            return Err(Errno::EPERM);
+        }
+
+        if let Some(gid) = gid
+            && gid != inode_gid
+        {
+            let in_supplementary_group = pcb.supplementary_gids().contains(&gid);
+            if pcb.fsgid() != gid && !in_supplementary_group {
+                return Err(Errno::EPERM);
+            }
+        }
+    }
+
+    inode.chown(uid, gid)?;
+    Ok(0)
+}
+
+pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let path = uptr_path.should_not_null()?.read_fixed()?;
     if path.is_empty() {
         return Err(Errno::ENOENT);
@@ -1144,66 +1958,46 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         )?
     };
 
-    let inode = dentry.get_inode();
-    if mode.contains(Mode::S_ISGID) && current::pcb().euid() != 0 {
-        let inode_gid = inode.owner()?.1;
-        let pcb = current::pcb();
-        let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
-        if pcb.egid() != inode_gid && !in_supplementary_group {
-            mode.remove(Mode::S_ISGID);
-        }
-    }
-
-    inode.chmod(mode)?;
-
-    Ok(0)
+    do_chmod(&dentry, mode)
 }
 
 pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
-    let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
-
     let file = current::fdtable().lock().get(fd)?;
-
-    if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
-        if mode.contains(Mode::S_ISGID) && current::pcb().euid() != 0 {
-            let inode_gid = inode.owner()?.1;
-            let pcb = current::pcb();
-            let in_supplementary_group = pcb.supplementary_gids().contains(&inode_gid);
-            if pcb.egid() != inode_gid && !in_supplementary_group {
-                mode.remove(Mode::S_ISGID);
-            }
-        }
-        inode.chmod(mode)?;
-    } else {
-        return Err(Errno::EINVAL);
-    }
-
-    Ok(0)
+    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
+    do_chmod(dentry, mode)
 }
 
 pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags: usize) -> SyscallRet {
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
-        fixedstr::str256::new()
+        String::new()
     } else {
         uptr_path.should_not_null()?;
         uptr_path.read_fixed()?
     };
 
+    if path.is_empty() && !flags.contains(AtFlags::AT_EMPTY_PATH) {
+        return Err(Errno::ENOENT);
+    }
+
     let dentry = if path.is_empty() {
-        current::fdtable()
-            .lock()
-            .get(dirfd)?
-            .get_dentry()
-            .cloned()
-            .ok_or(Errno::EINVAL)?
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| Ok(cwd))?
+        } else {
+            current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .cloned()
+                .ok_or(Errno::EINVAL)?
+        }
     } else {
         let helper = if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
             vfs::load_dentry_at_nofollow
         } else {
             vfs::load_dentry_at
         };
-        if dirfd as isize == AT_FDCWD {
+        if path.starts_with('/') || dirfd as isize == AT_FDCWD {
             current::with_cwd(|cwd| helper(&cwd, &path))?
         } else {
             helper(
@@ -1222,9 +2016,7 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags:
 
     let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
     let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
-    dentry.get_inode().chown(uid, gid)?;
-
-    Ok(0)
+    do_chown(&dentry, uid, gid)
 }
 
 pub fn fchown(fd: usize, uid: usize, gid: usize) -> SyscallRet {
@@ -1233,13 +2025,52 @@ pub fn fchown(fd: usize, uid: usize, gid: usize) -> SyscallRet {
     let uid = uid as Uid;
     let gid = gid as Uid;
 
-    if let Some(inode) = file.get_dentry().and_then(|d| Some(d.get_inode())) {
-        let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
-        let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
-        inode.chown(uid, gid)?;
-    } else {
+    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
+    let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
+    let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
+    do_chown(dentry, uid, gid)
+}
+
+fn truncate_length(length: usize) -> SysResult<u64> {
+    let length = length as i64;
+    if length < 0 {
         return Err(Errno::EINVAL);
     }
+
+    Ok(length as u64)
+}
+
+fn check_file_size_limit(length: u64) -> SysResult<()> {
+    let (rlim_cur, _) = current::pcb().file_size_limit();
+    if rlim_cur != usize::MAX && length > rlim_cur as u64 {
+        let _ = current::pcb().send_signal(signum::SIGXFSZ, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
+        return Err(Errno::EFBIG);
+    }
+
+    Ok(())
+}
+
+pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
+    let path = uptr_path.should_not_null()?.read_fixed()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
+    let length = truncate_length(length)?;
+    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+    let inode = dentry.get_inode();
+    let mode = inode.mode()?;
+    if mode.contains(Mode::S_IFDIR) {
+        return Err(Errno::EISDIR);
+    }
+
+    check_file_size_limit(length)?;
+    let (uid, gid) = inode.owner()?;
+    if !mode.check_perm(&Perm::current(PermFlags::W), uid, gid) {
+        return Err(Errno::EACCES);
+    }
+
+    inode.truncate(length)?;
 
     Ok(0)
 }
@@ -1251,9 +2082,11 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
         return Err(Errno::EBADF);
     }
 
-    file.downcast_arc::<File>()
+    let length = truncate_length(length)?;
+    check_file_size_limit(length)?;
+    file.downcast_arc::<RandomAccessFile>()
         .map_err(|_| Errno::EINVAL)?
-        .ftruncate(length as u64)?;
+        .ftruncate(length)?;
 
     Ok(0)
 }
@@ -1269,7 +2102,7 @@ pub fn fallocate(fd: usize, mode: usize, _offset: usize, _len: usize) -> Syscall
         return Err(Errno::EINVAL);
     }
 
-    // file.downcast_arc::<File>()
+    // file.downcast_arc::<RandomAccessFile>()
     //     .map_err(|_| Errno::EINVAL)?
     //     .fallocate(offset as u64, len as u64)?;
 
@@ -1296,19 +2129,65 @@ pub fn fsync(fd: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn flock(fd: usize, _operation: usize) -> SyscallRet {
-    let _file = current::fdtable().lock().get(fd)?;
-    Ok(0)
+pub fn flock(fd: usize, operation: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+    let inode = file.get_inode().ok_or(Errno::EINVAL)?;
+    let lock_state = inode.lock_state().ok_or(Errno::EINVAL)?;
+
+    let request_type = match operation & (LOCK_SH | LOCK_EX | LOCK_UN) {
+        LOCK_SH => Some(BsdFlockType::Shared),
+        LOCK_EX => Some(BsdFlockType::Exclusive),
+        LOCK_UN => None,
+        _ => return Err(Errno::EINVAL),
+    };
+    if operation & !(LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN) != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let owner = file.flock_owner_id();
+    if request_type.is_none() {
+        let mut state = lock_state.lock();
+        if state.bsd.remove_owner(owner) {
+            state.bsd.wake_all();
+        }
+        return Ok(0);
+    }
+
+    let request_type = request_type.unwrap();
+    let blocking = operation & LOCK_NB == 0;
+    loop {
+        let mut state = lock_state.lock();
+        if state.bsd.get_conflict(owner, request_type).is_none() {
+            state.bsd.apply(owner, Some(request_type));
+            state.bsd.wake_all();
+            return Ok(0);
+        }
+
+        if !blocking {
+            return Err(Errno::EAGAIN);
+        }
+
+        state.bsd.wait_current();
+        drop(state);
+
+        current::schedule();
+        match current::task().take_wakeup_event().unwrap() {
+            Event::IOComplete => {}
+            Event::Signal => return Err(Errno::EINTR),
+            event => unreachable!("unexpected event while waiting on flock lock: {:?}", event),
+        }
+    }
 }
 
 pub fn mount(
     uptr_source: UString,
     uptr_target: UString,
     uptr_fstype: UString,
-    _flags: usize,
+    flags: usize,
     _data: usize,
 ) -> SyscallRet {
     use crate::fs::devfs::devnode::BlockDevInode;
+    const MS_RDONLY: usize = 0x1;
 
     uptr_target.should_not_null()?;
     uptr_fstype.should_not_null()?;
@@ -1330,12 +2209,22 @@ pub fn mount(
         None
     };
 
-    vfs::mount(&target, &fstype, device)?;
+    // crate::kinfo!("mount: target = {:?}, fstype = {:?}, source = {:?}", target, fstype, device.is_none());
+
+    let options = MountOptions::new(flags & MS_RDONLY != 0);
+    current::with_cwd(|cwd| vfs::mount(&cwd, &target, &fstype, device, options))?;
 
     Ok(0)
 }
 
-// TODO: Implement umount2 syscall
-pub fn umount2(_uptr_target: UString, _flags: usize) -> SyscallRet {
-    Err(Errno::ENOSYS)
+pub fn umount2(uptr_target: UString, flags: usize) -> SyscallRet {
+    uptr_target.should_not_null()?;
+
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let target = uptr_target.read_fixed()?;
+    current::with_cwd(|cwd| vfs::unmount(&cwd, &target))?;
+    Ok(0)
 }

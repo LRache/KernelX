@@ -4,7 +4,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::fs::file::FileFlags;
 use crate::fs::{Dentry, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
@@ -18,9 +18,7 @@ pub enum SeekWhence {
 
 pub trait FileOps: DowncastSync {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize>;
-    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize>;
     fn write(&self, buf: &[u8]) -> SysResult<usize>;
-    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize>;
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let mut total_read = 0;
@@ -63,10 +61,6 @@ pub trait FileOps: DowncastSync {
         self.flags().blocked
     }
 
-    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
-        let _ = (offset, whence);
-        Err(Errno::EOPNOTSUPP)
-    }
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
         Err(Errno::ENOSYS)
     }
@@ -83,7 +77,7 @@ pub trait FileOps: DowncastSync {
         None
     }
 
-    fn wait_event(&self, _waker: usize, _event: PollEventSet) -> SysResult<Option<FileEvent>> {
+    fn wait_event(&self, _waker: usize, _event: FileEvent) -> SysResult<Option<FileEvent>> {
         Ok(None)
     }
     fn wait_event_cancel(&self) {}
@@ -95,6 +89,16 @@ pub trait FileOps: DowncastSync {
     fn type_name(&self) -> &'static str {
         "unknown"
     }
+
+    fn flock_owner_id(&self) -> usize {
+        self as *const Self as *const () as usize
+    }
+
+    fn on_fd_install(&self) -> SysResult<()> {
+        Ok(())
+    }
+
+    fn on_fd_remove(&self) {}
 }
 
 impl_downcast!(sync FileOps);
