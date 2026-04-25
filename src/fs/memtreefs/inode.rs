@@ -272,7 +272,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(total_read)
         } else {
-            Err(Errno::EINVAL)
+            Err(Errno::EISDIR)
         }
     }
 
