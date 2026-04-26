@@ -1,5 +1,6 @@
 use crate::fs::filesystem::MountOptions;
 use crate::fs::{Mode, Owner, devfs, vfs};
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::{driver, kinfo};
 
@@ -44,14 +45,16 @@ fn ensure_mountpoint(path: &str) -> SysResult<()> {
 
 #[unsafe(link_section = ".text.init")]
 fn mount_second_device_if_enabled() {
-    const DEFAULT_SECOND_FSTYPE: &str = "ext4";
-    const DEFAULT_SECOND_MOUNTPOINT: &str = "/mnt";
-
-    let Some(device_name) = option_env!("KERNELX_SECOND_DEVICE").filter(|device_name| !device_name.is_empty()) else {
+    let Some(device_name) = config::DEFAULT_SECOND_DEVICE else {
         return;
     };
-    let fs_type = env_or(option_env!("KERNELX_SECOND_FSTYPE"), DEFAULT_SECOND_FSTYPE);
-    let mountpoint = env_or(option_env!("KERNELX_SECOND_MOUNTPOINT"), DEFAULT_SECOND_MOUNTPOINT);
+
+    if device_name.is_empty() {
+        return;
+    }
+
+    let fs_type = config::DEFAULT_SECOND_FSTYPE;
+    let mountpoint = config::DEFAULT_SECOND_MOUNTPOINT;
     let blk_dev = driver::get_block_driver(device_name).unwrap();
 
     ensure_mountpoint(mountpoint).unwrap();

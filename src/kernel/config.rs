@@ -42,10 +42,19 @@ pub const PIPE_BUFFER_PAGES: usize = 32; // Number of pages allocated for pipe b
 pub const PIPE_CAPACITY: usize = PIPE_BUFFER_PAGES * arch::PGSIZE;
 
 /* ------ BOOT ARGS ------- */
-pub const DEFAULT_BOOT_ROOT_FSTYPE: &str = "ext4";
-pub const DEFAULT_BOOT_ROOT: &str = match option_env!("CONFIG_DEFAULT_BOOT_ROOT") {
+pub const DEFAULT_BOOT_ROOT_DEVICE: &str = match option_env!("CONFIG_DEFAULT_BOOT_ROOT_DEVICE") {
     Some(v) => v,
     None => "virtio_block0",
+};
+pub const DEFAULT_BOOT_ROOT_FSTYPE: &str = "ext4";
+pub const DEFAULT_SECOND_DEVICE: Option<&str> = option_env!("CONFIG_SECOND_DEVICE");
+pub const DEFAULT_SECOND_FSTYPE: &str = match option_env!("CONFIG_SECOND_FSTYPE") {
+    Some(v) => v,
+    None => "ext4",
+};
+pub const DEFAULT_SECOND_MOUNTPOINT: &str = match option_env!("CONFIG_SECOND_MOUNTPOINT") {
+    Some(v) => v,
+    None => "/mnt",
 };
 pub const DEFAULT_INITPATH: &str = match option_env!("CONFIG_DEFAULT_INITPATH") {
     Some(v) => v,
