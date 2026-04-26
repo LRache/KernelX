@@ -119,4 +119,6 @@ asm_kvm_guest_trap_return:
 
     LOAD(a0, 10)  # restore the real a0
 
+    hfence.gvma
+
     sret

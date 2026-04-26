@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use num_enum::TryFromPrimitive;
 
-use crate::arch::{KvmRegs, VCpu};
+use crate::arch::{KvmPageFault, KvmRegs, KvmSRegs, VCpu};
 use crate::fs::file::{FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{AddrSpace, MemAccessType};
@@ -9,9 +9,11 @@ use crate::kernel::trap;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SleepLock;
 
+use super::addrspace::KvmAddrSpace;
+
 pub enum VCpuExitReason {
     Timer,
-    MemoryFault(usize, MemAccessType),
+    MemoryFault(usize, MemAccessType, usize),
     ReturnToUser(usize), // Return to user mode
 }
 
@@ -38,28 +40,43 @@ impl Into<usize> for VTaskExitReason {
 
 pub struct VTask {
     vcpu: SleepLock<VCpu>,
-    addrspace: Arc<AddrSpace>,
+    addrspace: Arc<KvmAddrSpace>,
+    page_fault: SleepLock<Option<KvmPageFault>>,
 }
 
 impl VTask {
-    pub fn new(addrspace: Arc<AddrSpace>) -> Self {
+    pub fn new(addrspace: Arc<KvmAddrSpace>) -> Self {
         Self {
             vcpu: SleepLock::new(VCpu::new(), "VTask::vcpu"),
             addrspace,
+            page_fault: SleepLock::new(None, "VTask::page_fault"),
+        }
+    }
+
+    fn access_type_value(access_type: MemAccessType) -> usize {
+        match access_type {
+            MemAccessType::Read => 0,
+            MemAccessType::Write => 1,
+            MemAccessType::Execute => 2,
         }
     }
 
     fn run(&self) -> SysResult<VTaskExitReason> {
         let mut vcpu = self.vcpu.lock();
         loop {
-            match vcpu.run() {
+            match vcpu.run(self.addrspace.pagetable()) {
                 VCpuExitReason::Timer => {
                     trap::timer_interrupt();
                     if trap::handle_signal() {
                         return Err(Errno::EINTR);
                     }
                 }
-                VCpuExitReason::MemoryFault(addr, access_type) => {
+                VCpuExitReason::MemoryFault(addr, access_type, inst) => {
+                    *self.page_fault.lock() = Some(KvmPageFault {
+                        addr,
+                        access_type: Self::access_type_value(access_type),
+                        inst,
+                    });
                     if self.addrspace.try_to_fix_memory_fault(addr, access_type).is_none() {
                         return Ok(VTaskExitReason::MemoryFault(addr, access_type));
                     }
@@ -78,9 +95,22 @@ impl VTask {
         Ok(0)
     }
 
+    fn get_sregs(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
+        let vcpu = self.vcpu.lock();
+        let regs: KvmSRegs = vcpu.sregs();
+        addrspace.copy_to_user(arg, regs)?;
+        Ok(0)
+    }
+
     fn set_regs(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
         let regs = addrspace.copy_from_user::<KvmRegs>(arg)?;
         self.vcpu.lock().set_regs(regs);
+        Ok(0)
+    }
+
+    fn get_page_fault(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
+        let page_fault = (*self.page_fault.lock()).ok_or(Errno::EINVAL)?;
+        addrspace.copy_to_user(arg, page_fault)?;
         Ok(0)
     }
 }
@@ -91,14 +121,6 @@ impl FileOps for VTask {
     }
 
     fn write(&self, _buf: &[u8]) -> SysResult<usize> {
-        Err(Errno::EOPNOTSUPP)
-    }
-
-    fn pread(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
-        Err(Errno::EOPNOTSUPP)
-    }
-
-    fn pwrite(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
         Err(Errno::EOPNOTSUPP)
     }
 
@@ -123,12 +145,16 @@ impl FileOps for VTask {
             Run = 1,
             GetRegs = 2,
             SetRegs = 3,
+            GetSRegs = 4,
+            GetPageFault = 5,
         }
 
         match IoctlRequest::try_from(request) {
             Ok(IoctlRequest::Run) => self.run().map(|exit_reason| exit_reason.into()),
             Ok(IoctlRequest::GetRegs) => self.get_regs(arg, addrspace),
             Ok(IoctlRequest::SetRegs) => self.set_regs(arg, addrspace),
+            Ok(IoctlRequest::GetSRegs) => self.get_sregs(arg, addrspace),
+            Ok(IoctlRequest::GetPageFault) => self.get_page_fault(arg, addrspace),
             Err(_) => Err(Errno::EINVAL),
         }
     }

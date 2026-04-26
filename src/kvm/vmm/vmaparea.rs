@@ -1,16 +1,14 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::arch;
-use crate::arch::{PageTable, PageTableTrait};
-use crate::kernel::mm::maparea::{Area, SwappableNoFileFrame};
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::arch::{KvmPageTable, PageTableTrait};
+use crate::kernel::mm::{MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
 pub enum SharedFrame {
     Unallocated,
-    Allocated(SwappableNoFileFrame),
+    Allocated(PhysPageFrame),
 }
 
 #[derive(Clone)]
@@ -63,45 +61,33 @@ impl SharedFrames {
         let frames = self.frames.lock();
         let frame = frames.get(self.page_index(page_index))?;
         match frame {
-            SharedFrame::Allocated(frame) => frame.get_page(),
+            SharedFrame::Allocated(frame) => Some(frame.get_page()),
             SharedFrame::Unallocated => None,
         }
     }
 
-    pub fn translate(&self, page_index: usize, addrspace: &AddrSpace) -> usize {
+    pub fn translate(&self, page_index: usize) -> usize {
         let mut frames = self.frames.lock();
         let frame = frames.get_mut(self.page_index(page_index)).unwrap();
         match frame {
-            SharedFrame::Allocated(frame) => frame.get_page_swap_in(),
+            SharedFrame::Allocated(frame) => frame.get_page(),
             SharedFrame::Unallocated => {
-                let addr = self.base + page_index * arch::PGSIZE;
-                let (new_frame, kpage) = SwappableNoFileFrame::alloc_zeroed(addr, addrspace);
+                let new_frame = PhysPageFrame::alloc_zeroed();
+                let kpage = new_frame.get_page();
                 *frame = SharedFrame::Allocated(new_frame);
                 kpage
             }
         }
     }
 
-    pub fn try_to_fix_memory_fault(&self, page_index: usize, perm: MapPerm, addrspace: &AddrSpace) -> usize {
+    pub fn try_to_fix_memory_fault(&self, page_index: usize) -> usize {
         let mut frames = self.frames.lock();
         let frame = frames.get_mut(self.page_index(page_index)).unwrap();
         match &*frame {
-            SharedFrame::Allocated(frame) => {
-                let kpage = frame.get_page_swap_in();
-                #[cfg(feature = "swap-memory")]
-                addrspace
-                    .pagetable()
-                    .lock()
-                    .mmap(self.base + page_index * arch::PGSIZE, kpage, perm);
-                kpage
-            }
+            SharedFrame::Allocated(frame) => frame.get_page(),
             SharedFrame::Unallocated => {
-                let addr = self.base + page_index * arch::PGSIZE;
-                let (new_frame, kpage) = SwappableNoFileFrame::alloc_zeroed(addr, addrspace);
-                addrspace
-                    .pagetable()
-                    .lock()
-                    .mmap(self.base + page_index * arch::PGSIZE, kpage, perm);
+                let new_frame = PhysPageFrame::alloc_zeroed();
+                let kpage = new_frame.get_page();
                 *frame = SharedFrame::Allocated(new_frame);
                 kpage
             }
@@ -126,58 +112,44 @@ impl VMMapArea {
     pub fn shared_frames(&self) -> SharedFrames {
         self.frames.clone()
     }
-}
 
-impl Area for VMMapArea {
-    fn try_to_fix_memory_fault(
+    pub fn gbase(&self) -> usize {
+        self.gbase
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn size(&self) -> usize {
+        self.page_count() * arch::PGSIZE
+    }
+
+    pub fn try_to_fix_memory_fault(
         &mut self,
         gaddr: usize,
-        _access_type: MemAccessType,
-        addrspace: &AddrSpace,
+        access_type: MemAccessType,
+        pagetable: &SpinLock<KvmPageTable>,
     ) -> Option<usize> {
-        debug_assert!(gaddr >= self.gbase);
+        if gaddr < self.gbase || !access_type.match_perm(self.perm) {
+            return None;
+        }
 
         let page_index = (gaddr - self.gbase) / arch::PGSIZE;
         if page_index >= self.frames.len() {
             return None;
         }
 
-        Some(self.frames.try_to_fix_memory_fault(page_index, self.perm(), addrspace) + gaddr % arch::PGSIZE)
-    }
+        let gpage = self.gbase + page_index * arch::PGSIZE;
+        let kpage = self.frames.try_to_fix_memory_fault(page_index);
 
-    fn perm(&self) -> MapPerm {
-        MapPerm::R | MapPerm::W | MapPerm::X
-    }
+        let mut pagetable = pagetable.lock();
+        if pagetable.is_mapped(gpage) {
+            pagetable.mmap_replace(gpage, kpage, self.perm);
+        } else {
+            pagetable.mmap(gpage, kpage, self.perm);
+        }
 
-    fn translate_read(&mut self, _: usize, _: &AddrSpace) -> Option<usize> {
-        unreachable!("VMMapArea should not be translated directly")
-    }
-
-    fn translate_write(&mut self, _: usize, _: &AddrSpace) -> Option<usize> {
-        unreachable!("VMMapArea should not be translated directly")
-    }
-
-    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>) {
-        unreachable!("VMMapArea permission should not be changed")
-    }
-
-    fn fork(&mut self, _: &SpinLock<PageTable>, _: &mut PageTable) -> Box<dyn Area> {
-        unreachable!("VMMapArea should not be forked")
-    }
-
-    fn page_count(&self) -> usize {
-        self.frames.len()
-    }
-
-    fn ubase(&self) -> usize {
-        self.gbase
-    }
-
-    fn set_ubase(&mut self, _ubase: usize) {
-        unreachable!("VMMapArea ubase should not be changed")
-    }
-
-    fn split(self: Box<Self>, _uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
-        unreachable!("VMMapArea should not be split")
+        Some(kpage + gaddr % arch::PGSIZE)
     }
 }

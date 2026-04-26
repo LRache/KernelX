@@ -6,6 +6,12 @@ pub enum SstatusFs {
     Dirty,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SstatusSPP {
+    User,
+    Supervisor,
+}
+
 pub struct Sstatus {
     sstatus: usize,
 }
@@ -47,15 +53,18 @@ impl Sstatus {
         self
     }
 
-    pub fn spp(&self) -> bool {
-        (self.sstatus & (1 << 8)) == 0
+    pub fn spp(&self) -> SstatusSPP {
+        if (self.sstatus & (1 << 8)) == 0 {
+            SstatusSPP::User
+        } else {
+            SstatusSPP::Supervisor
+        }
     }
 
-    pub fn set_spp(&mut self, user: bool) -> &mut Self {
-        if user {
-            self.sstatus &= !(1 << 8);
-        } else {
-            self.sstatus |= 1 << 8;
+    pub fn set_spp(&mut self, spp: SstatusSPP) -> &mut Self {
+        match spp {
+            SstatusSPP::User => self.sstatus &= !(1 << 8),
+            SstatusSPP::Supervisor => self.sstatus |= 1 << 8,
         }
         self
     }

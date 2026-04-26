@@ -102,7 +102,10 @@ pub fn usertrap_handler() -> ! {
         Sstatus::read().sie() == false,
         "Interrupts should be disabled when handling user traps"
     );
-    debug_assert!(Sstatus::read().spp() == true, "User trap should come from user mode");
+    debug_assert!(
+        Sstatus::read().spp() == SstatusSPP::User,
+        "User trap should come from user mode"
+    );
 
     set_stvec_to_kerneltrap_handler();
 
@@ -210,7 +213,7 @@ pub fn return_to_user() -> ! {
     Sstatus::read()
         .set_sie(false)
         .set_spie(true) // Enable interrupts in user mode
-        .set_spp(true) // Set previous mode to user
+        .set_spp(SstatusSPP::User)
         .set_fs(SstatusFs::Clean)
         .write();
 
@@ -224,7 +227,7 @@ pub fn kerneltrap_handler() {
         "Interrupts should be disabled when handling kernel traps"
     );
     debug_assert!(
-        Sstatus::read().spp() == false,
+        Sstatus::read().spp() == SstatusSPP::Supervisor,
         "Interrupts should come from supervisor mode when handling kernel traps"
     );
 
@@ -267,7 +270,7 @@ pub fn kerneltrap_handler() {
         scause::Cause::Interrupt(interrupt) => handle_interrupt(interrupt),
     }
 
-    Sstatus::read().set_spp(false).write(); // Set previous mode to supervisor
+    Sstatus::read().set_spp(SstatusSPP::Supervisor).write();
 
     sepc::write(sepc);
 }

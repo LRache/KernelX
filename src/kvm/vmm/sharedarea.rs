@@ -54,8 +54,9 @@ impl KVMSharedArea {
 
 impl Area for KVMSharedArea {
     fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+        let _ = addrspace;
         let (page_index, page_offset) = self.page_index_and_offset(uaddr)?;
-        let kpage = self.frames.translate(page_index, addrspace);
+        let kpage = self.frames.translate(page_index);
 
         Some(kpage + page_offset)
     }
@@ -104,7 +105,7 @@ impl Area for KVMSharedArea {
         addrspace: &AddrSpace,
     ) -> Option<usize> {
         let (page_index, page_offset) = self.page_index_and_offset(uaddr)?;
-        let kpage = self.frames.translate(page_index, addrspace);
+        let kpage = self.frames.translate(page_index);
 
         self.map_page(page_index, kpage, addrspace.pagetable());
         Some(kpage + page_offset)

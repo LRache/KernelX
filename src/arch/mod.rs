@@ -18,7 +18,7 @@ pub type PageTable = arch_impl::PageTable;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "kvm")] {
-        pub use arch_impl::{KvmRegs, VCpu};
+        pub use arch_impl::{KvmPageFault, KvmPageTable, KvmRegs, KvmSRegs, VCpu};
     }
 }
 

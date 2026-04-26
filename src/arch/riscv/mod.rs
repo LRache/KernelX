@@ -16,7 +16,9 @@ pub use task::*;
 cfg_if::cfg_if! {
     if #[cfg(feature = "kvm")] {
         mod kvm;
-        pub use kvm::{KvmRegs, VCpu};
+        pub use kvm::{KvmPageFault, KvmRegs, KvmSRegs, VCpu};
+
+        pub type KvmPageTable = Sv39x4PageTable;
     }
 }
 

@@ -14,8 +14,12 @@ _start:
     j 1b
 
 2:
+    li a7, 8
+    ecall
+
+3:
     wfi
-    j 2b
+    j 3b
 
 .section .rodata
 hello:

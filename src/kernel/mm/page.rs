@@ -34,7 +34,11 @@ impl FrameAllocator {
     }
 
     fn alloc_contiguous(&mut self, pages: usize) -> Option<usize> {
-        let layout = Layout::from_size_align(pages * arch::PGSIZE, arch::PGSIZE).unwrap();
+        self.alloc_contiguous_aligned(pages, arch::PGSIZE)
+    }
+
+    fn alloc_contiguous_aligned(&mut self, pages: usize, align: usize) -> Option<usize> {
+        let layout = Layout::from_size_align(pages * arch::PGSIZE, align).unwrap();
         let addr = self.allocator.alloc_aligned(layout)?;
         self.allocated += pages;
         Some(addr)
@@ -47,7 +51,11 @@ impl FrameAllocator {
     }
 
     fn free_contiguous(&mut self, addr: usize, pages: usize) {
-        let layout = Layout::from_size_align(pages * arch::PGSIZE, arch::PGSIZE).unwrap();
+        self.free_contiguous_aligned(addr, pages, arch::PGSIZE);
+    }
+
+    fn free_contiguous_aligned(&mut self, addr: usize, pages: usize, align: usize) {
+        let layout = Layout::from_size_align(pages * arch::PGSIZE, align).unwrap();
         self.allocator.dealloc_aligned(addr, layout);
         self.allocated -= pages;
     }
@@ -139,6 +147,10 @@ pub fn alloc_contiguous(pages: usize) -> usize {
     page
 }
 
+pub fn alloc_contiguous_aligned(pages: usize, align: usize) -> usize {
+    FRAME_ALLOCATOR.lock().alloc_contiguous_aligned(pages, align).unwrap()
+}
+
 // pub fn alloc_with_meta<T>(meta: T) -> usize {
 //     let page = alloc();
 //     let meta_ptr = page_meta_ref(page);
@@ -159,6 +171,10 @@ pub fn free(page: usize) {
 
 pub fn free_contiguous(addr: usize, pages: usize) {
     FRAME_ALLOCATOR.lock().free_contiguous(addr, pages);
+}
+
+pub fn free_contiguous_aligned(addr: usize, pages: usize, align: usize) {
+    FRAME_ALLOCATOR.lock().free_contiguous_aligned(addr, pages, align);
 }
 
 // fn free_with_meta<T>(page: usize) {

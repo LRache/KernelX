@@ -40,6 +40,24 @@ pub struct KvmRegs {
 impl UserStruct for KvmRegs {}
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct KvmSRegs {
+    pub satp: usize,
+}
+
+impl UserStruct for KvmSRegs {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct KvmPageFault {
+    pub addr: usize,
+    pub access_type: usize,
+    pub inst: usize,
+}
+
+impl UserStruct for KvmPageFault {}
+
+#[repr(C)]
 pub struct VCpuContext {
     /* Guest context */
     /*  0 */ gpr: [usize; 32],

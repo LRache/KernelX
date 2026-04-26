@@ -6,7 +6,7 @@ OUTPUT_DIR = $(BUILD_DIR)/output
 HOST_OUTPUT_DIR = $(OUTPUT_DIR)/host
 GUEST_OUTPUT_DIR = $(OUTPUT_DIR)/guest
 
-.PHONY: all host guest clean
+.PHONY: all host guest package image clean
 
 all: host guest
 	@ mkdir -p $(HOST_OUTPUT_DIR) $(GUEST_OUTPUT_DIR)
@@ -18,6 +18,11 @@ host:
 
 guest:
 	@ $(MAKE) -C guest ARCH=$(ARCH) ISA=$(ISA) all
+
+package: all
+	@ KVM_SKIP_BUILD=1 ARCH=$(ARCH) ISA=$(ISA) ./package.sh
+
+image: package
 
 clean:
 	@ $(MAKE) -C host ARCH=$(ARCH) ISA=$(ISA) clean
