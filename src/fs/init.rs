@@ -18,13 +18,6 @@ fn mount(path: &str, fstype_name: &str) -> SysResult<()> {
     vfs::mount(vfs::get_root_dentry(), path, fstype_name, None, MountOptions::default())
 }
 
-fn env_or(value: Option<&'static str>, default: &'static str) -> &'static str {
-    match value {
-        Some(value) if !value.is_empty() => value,
-        _ => default,
-    }
-}
-
 fn ensure_mountpoint(path: &str) -> SysResult<()> {
     if vfs::load_dentry(path).is_ok() {
         return Ok(());
