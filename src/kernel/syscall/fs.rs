@@ -2192,7 +2192,14 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     let old_path = uptr_oldpath.read_path()?;
     let new_path = uptr_newpath.read_path()?;
 
+    if new_path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
     let old_dentry = if olddirfd as isize == AT_FDCWD {
+        if old_path.is_empty() {
+            return Err(Errno::ENOENT);
+        }
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &old_path))
     } else {
         vfs::load_dentry_at(
@@ -2205,20 +2212,23 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
         )
     }?;
 
-    let new_parent_dentry = if newdirfd as isize == AT_FDCWD {
+    let (new_parent_dentry, new_name) = if newdirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
         vfs::load_parent_dentry(&new_path)?.ok_or(Errno::EOPNOTSUPP)
     }?;
 
-    let new_parent = new_parent_dentry.0;
-    let new_name = new_parent_dentry.1;
+    let new_parent_dentry = new_parent_dentry.get_mount_to();
 
-    if old_dentry.sno() != new_parent.sno() {
+    if new_parent_dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    if old_dentry.sno() != new_parent_dentry.sno() {
         return Err(Errno::EXDEV); // Cross-device link
     }
 
-    new_parent.link(new_name.as_ref(), &old_dentry)?;
+    new_parent_dentry.link(new_name.as_ref(), &old_dentry)?;
 
     Ok(0)
 }
