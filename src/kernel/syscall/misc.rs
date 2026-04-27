@@ -73,12 +73,24 @@ pub struct RLimit {
 impl UserStruct for RLimit {}
 
 #[repr(usize)]
-#[derive(TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive)]
 enum RLimitResource {
+    CPU = 0,
     FSIZE = 1,
+    DATA = 2,
     STACK = 3,
     CORE = 4,
+    RSS = 5,
+    NPROC = 6,
     NOFILE = 7,
+    MEMLOCK = 8,
+    AS = 9,
+    LOCKS = 10,
+    SIGPENDING = 11,
+    MSGQUEUE = 12,
+    NICE = 13,
+    RTPRIO = 14,
+    RTTIME = 15,
 }
 
 pub fn prlimit64(
@@ -127,6 +139,8 @@ pub fn prlimit64(
 
         // TODO: implement real core dump size limit. For now, just allow unlimited core dump size and ignore any new limit.
         RLimitResource::CORE => {
+            crate::kwarn!("prlimit64: RLIMIT_CORE is not fully implemented");
+
             if !uptr_old_limit.is_null() {
                 let old_limit = RLimit {
                     rlim_cur: 0,
@@ -165,6 +179,37 @@ pub fn prlimit64(
                 // }
 
                 fdtable.set_max_fd(new_limit.rlim_max);
+            }
+        }
+
+        // TODO: implement accounting and enforcement for these resource limits.
+        resource @ (RLimitResource::CPU
+        | RLimitResource::DATA
+        | RLimitResource::RSS
+        | RLimitResource::NPROC
+        | RLimitResource::MEMLOCK
+        | RLimitResource::AS
+        | RLimitResource::LOCKS
+        | RLimitResource::SIGPENDING
+        | RLimitResource::MSGQUEUE
+        | RLimitResource::NICE
+        | RLimitResource::RTPRIO
+        | RLimitResource::RTTIME) => {
+            crate::kwarn!("prlimit64: RLIMIT_{:?} is not implemented", resource);
+
+            if !uptr_old_limit.is_null() {
+                let old_limit = RLimit {
+                    rlim_cur: usize::MAX,
+                    rlim_max: usize::MAX,
+                };
+                uptr_old_limit.write(old_limit)?;
+            }
+
+            if !uptr_new_limit.is_null() {
+                let new_limit = uptr_new_limit.read()?;
+                if new_limit.rlim_cur > new_limit.rlim_max {
+                    return Err(Errno::EINVAL);
+                }
             }
         }
     }
@@ -260,6 +305,7 @@ impl Default for Rusage {
 #[derive(TryFromPrimitive, Debug)]
 pub enum RusageWho {
     SELF = 0,
+    CHILDREN = -1isize as usize,
 }
 
 pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
@@ -270,6 +316,11 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
     match who {
         RusageWho::SELF => {
             let (utime, stime) = current::pcb().tasks_usage_time();
+            rusage.ru_utime = utime.into();
+            rusage.ru_stime = stime.into();
+        }
+        RusageWho::CHILDREN => {
+            let (utime, stime) = current::pcb().children_usage_time();
             rusage.ru_utime = utime.into();
             rusage.ru_stime = stime.into();
         }

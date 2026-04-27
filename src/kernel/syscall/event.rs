@@ -666,6 +666,16 @@ fn get_old_itimer(pcb: &Arc<PCB>, which: usize) -> ITimerVal {
     ITimerVal::from_durations(interval, remaining)
 }
 
+pub fn getitimer(which: usize, uptr_value: UPtr<ITimerVal>) -> SysResult<usize> {
+    ITimerWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
+    uptr_value.should_not_null()?;
+
+    let value = get_old_itimer(&current::pcb(), which);
+    uptr_value.write(value)?;
+
+    Ok(0)
+}
+
 pub fn setitimer(which: usize, uptr_new_value: UPtr<ITimerVal>, uptr_old_value: UPtr<ITimerVal>) -> SysResult<usize> {
     let which_enum = ITimerWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
     let pcb = current::pcb();

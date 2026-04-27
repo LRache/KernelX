@@ -183,6 +183,7 @@ macro_rules! syscall_entries {
             85  => event::timerfd_create(2),
             86  => event::timerfd_settime(4),
             87  => event::timerfd_gettime(2),
+            102 => event::getitimer(2),
             103 => event::setitimer(3),
         }
     };
