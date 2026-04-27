@@ -68,14 +68,15 @@ impl VirtualFileSystem {
         current = current.get_mount_to();
         current = current.walk_link_with_perm(symlink_depth, perm)?;
 
-        path.split('/')
-            .filter(|s| !(s.is_empty() || *s == "."))
-            .try_for_each(|part| {
-                let next = current.lookup_with_perm(part, perm)?;
-                current = next.get_mount_to().walk_link_with_perm(symlink_depth, perm)?;
+        for part in path.split('/').filter(|s| !(s.is_empty() || *s == ".")) {
+            if part == ".." {
+                current = Self::lookup_parent_component(current, perm, LookupFlags::empty())?;
+                continue;
+            }
 
-                Ok(())
-            })?;
+            let next = current.lookup_with_perm(part, perm)?;
+            current = next.get_mount_to().walk_link_with_perm(symlink_depth, perm)?;
+        }
 
         Ok(current)
     }
@@ -96,16 +97,17 @@ impl VirtualFileSystem {
         current = self.follow_mount(current, flags)?;
         current = current.walk_link_with_perm_and_flags(symlink_depth, perm, flags)?;
 
-        path.split('/')
-            .filter(|s| !(s.is_empty() || *s == "."))
-            .try_for_each(|part| {
-                let next = current.lookup_with_perm(part, perm)?;
-                current = self
-                    .follow_mount(next, flags)?
-                    .walk_link_with_perm_and_flags(symlink_depth, perm, flags)?;
+        for part in path.split('/').filter(|s| !(s.is_empty() || *s == ".")) {
+            if part == ".." {
+                current = Self::lookup_parent_component(current, perm, flags)?;
+                continue;
+            }
 
-                Ok(())
-            })?;
+            let next = current.lookup_with_perm(part, perm)?;
+            current = self
+                .follow_mount(next, flags)?
+                .walk_link_with_perm_and_flags(symlink_depth, perm, flags)?;
+        }
 
         Ok(current)
     }
@@ -225,6 +227,10 @@ impl VirtualFileSystem {
             if *part == "." {
                 continue;
             }
+            if *part == ".." {
+                current = Self::lookup_parent_component(current, perm, LookupFlags::empty())?;
+                continue;
+            }
             let next = current.lookup_with_perm(part, perm)?;
             current = next.get_mount_to().walk_link_with_perm(symlink_depth, perm)?;
         }
@@ -234,11 +240,11 @@ impl VirtualFileSystem {
             return Ok(Some((current, Cow::Borrowed(name))));
         }
 
-        current.check_search_perm(perm)?;
         let target = if name == "." {
+            current.check_search_perm(perm)?;
             current
         } else {
-            current.get_parent().unwrap_or(current)
+            Self::lookup_parent_component(current, perm, LookupFlags::empty())?
         };
 
         Ok(target
@@ -272,6 +278,10 @@ impl VirtualFileSystem {
             if *part == "." {
                 continue;
             }
+            if *part == ".." {
+                current = Self::lookup_parent_component(current, perm, flags)?;
+                continue;
+            }
             let next = current.lookup_with_perm(part, perm)?;
             current = self
                 .follow_mount(next, flags)?
@@ -283,16 +293,12 @@ impl VirtualFileSystem {
             return Ok(Some((current, Cow::Borrowed(name))));
         }
 
-        current.check_search_perm(perm)?;
-        let current_sno = current.sno();
         let target = if name == "." {
+            current.check_search_perm(perm)?;
             current
         } else {
-            current.get_parent().unwrap_or(current)
+            Self::lookup_parent_component(current, perm, flags)?
         };
-        if flags.contains(LookupFlags::NO_XDEV) && target.sno() != current_sno {
-            return Err(Errno::EXDEV);
-        }
 
         Ok(target
             .get_parent()
@@ -324,6 +330,18 @@ impl VirtualFileSystem {
             return Err(Errno::EXDEV);
         }
         Ok(dentry.get_mount_to())
+    }
+
+    fn lookup_parent_component(current: Arc<Dentry>, perm: &Perm, flags: LookupFlags) -> SysResult<Arc<Dentry>> {
+        current.check_search_perm(perm)?;
+
+        let current_sno = current.sno();
+        let parent = current.get_parent().unwrap_or(current);
+        if flags.contains(LookupFlags::NO_XDEV) && parent.sno() != current_sno {
+            return Err(Errno::EXDEV);
+        }
+
+        Ok(parent)
     }
 
     pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
