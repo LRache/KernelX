@@ -102,7 +102,7 @@ where
 
 pub mod copy_to_user {
     use super::addrspace;
-    use crate::kernel::errno::SysResult;
+    use crate::kernel::errno::{Errno, SysResult};
 
     pub fn buffer(uaddr: usize, buf: &[u8]) -> SysResult<()> {
         addrspace().copy_to_user_buffer(uaddr, buf)
@@ -118,6 +118,9 @@ pub mod copy_to_user {
 
     pub fn string(uaddr: usize, s: &str, max_size: usize) -> SysResult<usize> {
         let bytes = s.as_bytes();
+        if max_size < s.len() + 1 {
+            return Err(Errno::ERANGE);
+        }
         let len = core::cmp::min(bytes.len(), max_size - 1);
         addrspace().copy_to_user_buffer(uaddr, &bytes[..len])?;
         addrspace().copy_to_user_buffer(uaddr + len, &[0u8])?;
