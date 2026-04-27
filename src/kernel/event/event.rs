@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use crate::kernel::ipc::SignalNum;
 use crate::kernel::scheduler::Tid;
 
@@ -18,5 +16,4 @@ pub enum Event {
     VFork,
     IOComplete,
     SleepLock,
-    Net { packet: Vec<u8> },
 }
