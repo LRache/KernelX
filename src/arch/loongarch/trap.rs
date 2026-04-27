@@ -16,6 +16,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::arch::loongarch::csr;
+use crate::arch::loongarch::eiointc;
 use crate::kernel::trap;
 use crate::{kinfo, kwarn};
 
@@ -54,11 +55,20 @@ pub extern "C" fn kerneltrap_handler() {
             trap::timer_interrupt();
         }
 
-        // External IRQs (HWI0..HWI7) arrive on the same Ecode=INT path. No
-        // driver consumes them yet — Phase 6 will wire a LS7A / PCH-PIC
-        // dispatch here. For now just log so we notice if something fires
-        // unexpectedly.
-        let other = is & !(1 << csr::ecfg::LINE_TIMER);
+        // HWI0 is our single exit point for device interrupts (EIOINTC
+        // aggregates every PCH-PIC source onto this line). Drain the
+        // ISR until no more pending bits — multiple devices can race
+        // through a single trap.
+        if is & (1 << csr::ecfg::LINE_HWI0) != 0 {
+            while let Some(irq) = eiointc::claim_irq() {
+                trap::external_interrupt(irq);
+                eiointc::complete_irq(irq);
+            }
+        }
+
+        // Any other HWI we haven't wired up. Shouldn't happen on QEMU
+        // virt in Phase 6 (only HWI0 is used).
+        let other = is & !(1 << csr::ecfg::LINE_TIMER) & !(1 << csr::ecfg::LINE_HWI0);
         if other != 0 {
             kwarn!(
                 "loongarch: unroutable interrupt lines {:#x} @ ERA={:#x}",

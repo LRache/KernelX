@@ -21,6 +21,9 @@ use crate::klib::initcell::InitedCell;
 use super::boot::EARLY_UART;
 use super::context::KernelContext;
 use super::csr;
+use super::eiointc;
+use super::fdt;
+use super::pch_pic;
 use super::task;
 use super::trap;
 
@@ -123,14 +126,22 @@ impl ArchTrait for Arch {
     }
 
     fn enable_device_interrupt(_hartid: usize) {
-        // Phase 6 will route PCH-PIC / HWI0..7 and flip the right ECFG bit.
-        // Phase 4 doesn't subscribe to any device line, so this is deliberately
-        // a no-op (the RISC-V side does SBI+PLIC here; LoongArch doesn't have
-        // a matching "enable seie" concept — it's per-line).
+        // Phase 6: HWI0 is the one line we care about — EIOINTC fans out to
+        // it, so switching HWI0 on at the ECFG.LIE level is enough. Actual
+        // EIOINTC config (MISC bits, ROUTE/IPMAP tables) happens once in
+        // `eiointc::init()` during `scan_device`.
+        //
+        // This runs on every hart via main(), so on SMP it'd need to run
+        // everywhere. Phase 8 territory; single-core for now.
+        let bit = 1usize << csr::ecfg::LINE_HWI0;
+        csr::xchg::<{ csr::num::ECFG }>(bit, bit);
     }
 
-    fn enable_device_interrupt_irq(_irq: u32) {
-        unimplemented!("loongarch: Arch::enable_device_interrupt_irq (Phase 6)");
+    fn enable_device_interrupt_irq(irq: u32) {
+        // Pass-through: PCH-PIC IRQ N → EIOINTC IRQ N. Both layers must
+        // be unmasked for the IRQ to reach the CPU.
+        pch_pic::enable_irq(irq);
+        eiointc::enable_irq(irq);
     }
 
     #[inline(always)]
@@ -168,16 +179,31 @@ impl ArchTrait for Arch {
         //   - `KernelStack::new` on LA silently loses its hardware guard page.
         //     The software overflow check in `KernelStack::check_stack_overflow`
         //     is our only protection.
-        //   - Driver MMIO callers compute `kbase = paddr_to_kaddr(pa)` which
-        //     lands in the DMW1 cached window. That's semantically wrong for
-        //     uncached MMIO, but we don't trip it in Phase 3 (scan_device is
-        //     a no-op). Phase 6 will have to route MMIO through DMW0 — see
-        //     `paddr_to_kaddr` in this file for the fix site.
+        //   - MMIO callers must not reach this — they go through
+        //     `mmio_phys_to_kaddr` instead, which returns the DMW0 mirror
+        //     (uncached) so volatile accesses bypass the cache.
     }
 
     unsafe fn unmap_kernel_addr(_kstart: usize, _size: usize) {
         // See `map_kernel_addr` above. This is intentionally a no-op on
         // LoongArch; there is no kernel page table to edit.
+    }
+
+    fn mmio_phys_to_kaddr(paddr: usize, _size: usize) -> usize {
+        // DMW0 @ 0x8000_0000_0000_0000: VSEG=0x8, MAT=SUC (uncached,
+        // strongly-ordered). Every device MMIO register is reachable by
+        // ORing the PA with this base — no allocation, no TLB flush, no
+        // page-table edit. entry.S programmed DMW0 during early boot so
+        // this mirror is live for the entire kernel lifetime.
+        //
+        // Callers of this function want MMIO semantics; `paddr_to_kaddr`
+        // returns the DMW1 (cached) mirror and MUST NOT be used for
+        // device registers — cache coherency with a DMA-capable device
+        // is not something the OS can enforce on LA without an explicit
+        // barrier + cacheop dance per access.
+        const DMW0_MASK: usize = 0x8000_0000_0000_0000;
+        debug_assert!(paddr < (1usize << 48), "PA {:#x} outside PALEN=48", paddr);
+        paddr | DMW0_MASK
     }
 
     /* ----- Time ----- */
@@ -207,10 +233,13 @@ impl ArchTrait for Arch {
     }
 
     fn scan_device() {
-        // Phase 6 will walk the FDT that QEMU pins at PA 0x100000 and populate
-        // `driver::found_device` + `BOOT_ARGS`. For now a log line so the
-        // absence is visible.
-        crate::kinfo!("loongarch: scan_device is a no-op (Phase 6 will parse the FDT)");
+        // Walks the FDT QEMU's loongarch_direct_kernel_boot path put at
+        // the fixed PA 0x100000 (see fdt.rs::FDT_BASE_PA). Initializes
+        // EIOINTC + PCH-PIC, then registers every other top-level node
+        // via the driver matcher. /chosen/bootargs drives `parse_boot_args`.
+        if let Err(()) = fdt::load_device_tree() {
+            crate::kwarn!("loongarch: FDT walk failed; continuing without devices");
+        }
     }
 
     /* ----- Volatile fences ----- */

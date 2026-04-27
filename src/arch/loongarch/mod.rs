@@ -11,9 +11,13 @@ mod arch;
 mod boot;
 mod context;
 mod csr;
+mod eiointc;
+mod fdt;
+mod iocsr;
 mod pagetable;
+mod pch_pic;
+mod pci;
 mod task;
-pub(super) mod test_init;
 mod trap;
 
 pub use context::{KernelContext, SigContext, UserContext};

@@ -13,21 +13,28 @@
  *   6. Point $sp at __stack_end (in the DMW1 high half).
  *   7. Call `main(hartid, heap_start, memory_top)`.
  *
- * QEMU's aux_boot_code has already handed us:
- *   - $a0 = hartid (always 0 for BSP on the virt machine right now)
- *   - $a1 = FDT pointer (unused for now, Phase 6 will consume it)
- *   - $a2 = 0 (unused)
- *
- * We overwrite $a0/$a1/$a2 before calling into Rust so the signature
- * matches `kernel::main::main(hartid, heap_start, memory_top)`.
+ * QEMU's `loongarch_direct_kernel_boot` path places:
+ *   - $a0 = 1 (not a hartid; a literal magic from init_cmdline)
+ *   - $a1 = cmdline VA (inside the boot ROM, NOT usable as an FDT pointer)
+ *   - $a2 = EFI system table offset
+ * The FDT blob is ROM-loaded at the fixed PA 0x100000 (see QEMU's
+ * include/hw/loongarch/virt.h: `#define FDT_BASE 0x100000`). It is NOT
+ * passed in a register — `src/arch/loongarch/fdt.rs` hard-codes the same
+ * value so each arch owns its own FDT-discovery convention, the way
+ * RISC-V stashes the OpenSBI-supplied PA in `__riscv_copied_fdt`. We
+ * therefore ignore QEMU's register values entirely and assume hartid = 0
+ * (single-core BSP until Phase 8).
  */
 
     .section .text.entry
     .global _entry
     .type _entry, @function
 _entry:
-    /* Save hartid in a callee-saved temporary while we rebuild GPRs. */
-    move    $s0, $a0                  /* $s0 = hartid */
+    /* QEMU's bootloader leaves $a0=1 and $a1=cmdline-vaddr; neither is
+     * what we want. Force hartid=0 (single-core on BSP). FDT discovery
+     * is handled entirely in Rust (`arch::loongarch::fdt`) using a fixed
+     * PA, so there is no register to forward. */
+    move    $s0, $zero                /* $s0 = hartid = 0 */
 
     /* DMW0 @ 0x8000_0000_0000_0000: PLV0=1 (bit0), MAT=SUC (bits 5:4 = 0). */
     ori     $t0, $zero, 0x1

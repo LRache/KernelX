@@ -19,6 +19,7 @@
 use crate::arch::UserContextTrait;
 use crate::arch::loongarch::UserContext;
 use crate::arch::loongarch::csr;
+use crate::arch::loongarch::eiointc;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -89,8 +90,8 @@ fn handle_syscall() {
 }
 
 /// Hardware interrupt arrived while user code was running. Reuse the same
-/// logic as the kernel-trap path (ack timer, log stray lines). Separate
-/// function so usertrap_handler stays readable.
+/// logic as the kernel-trap path (ack timer, drain HWI0 via EIOINTC, log
+/// stray lines). Separate function so usertrap_handler stays readable.
 fn handle_interrupt(estat: usize) {
     let is = estat & csr::estat::IS_MASK;
 
@@ -99,7 +100,14 @@ fn handle_interrupt(estat: usize) {
         trap::timer_interrupt();
     }
 
-    let other = is & !(1 << csr::ecfg::LINE_TIMER);
+    if is & (1 << csr::ecfg::LINE_HWI0) != 0 {
+        while let Some(irq) = eiointc::claim_irq() {
+            trap::external_interrupt(irq);
+            eiointc::complete_irq(irq);
+        }
+    }
+
+    let other = is & !(1 << csr::ecfg::LINE_TIMER) & !(1 << csr::ecfg::LINE_HWI0);
     if other != 0 {
         kwarn!(
             "loongarch: unroutable user-side interrupt lines {:#x}",

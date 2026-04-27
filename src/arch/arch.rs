@@ -54,6 +54,18 @@ pub trait ArchTrait {
     fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm);
     unsafe fn unmap_kernel_addr(kstart: usize, size: usize);
 
+    /// Translate a device MMIO physical address into a kernel-accessible VA
+    /// suitable for volatile reads/writes. The returned address must resolve
+    /// to the same physical region with *uncached* (device / strongly-ordered)
+    /// semantics — cache coherence with DMA engines lives outside kernel
+    /// control for these regions.
+    ///
+    /// - RISC-V: allocates backing kernel pages and installs a `MapPerm::RW`
+    ///   mapping via the kernel page table.
+    /// - LoongArch: returns the DMW0 window mirror of the PA (no allocation,
+    ///   no page-table edits — DMW0 is MAT=SUC, uncached by hardware).
+    fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
+
     fn uptime() -> Duration;
     fn get_time_us() -> u64;
     fn set_next_time_event_us(interval: u64);

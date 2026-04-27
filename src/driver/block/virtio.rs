@@ -2,7 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use virtio_drivers::device::blk::{BlkReq, BlkResp, RespStatus, VirtIOBlk};
-use virtio_drivers::transport::mmio::MmioTransport;
+use virtio_drivers::transport::Transport;
 
 use crate::driver::virtio::VirtIOHal;
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
@@ -12,14 +12,14 @@ use crate::klib::SpinLock;
 
 const BLOCK_SIZE: usize = 512;
 
-pub struct VirtIOBlockDriver {
+pub struct VirtIOBlockDriver<T: Transport + Send + 'static> {
     device_name: String,
-    driver: SpinLock<VirtIOBlk<VirtIOHal, MmioTransport>>,
+    driver: SpinLock<VirtIOBlk<VirtIOHal, T>>,
     inflight: SpinLock<BTreeMap<u16, Arc<dyn Task>>>,
 }
 
-impl VirtIOBlockDriver {
-    pub fn new(device_name: String, transport: MmioTransport) -> Self {
+impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
+    pub fn new(device_name: String, transport: T) -> Self {
         let mut blk = VirtIOBlk::new(transport).unwrap();
         blk.enable_interrupts();
         Self {
@@ -65,7 +65,7 @@ impl VirtIOBlockDriver {
     }
 }
 
-impl DriverOps for VirtIOBlockDriver {
+impl<T: Transport + Send + 'static> DriverOps for VirtIOBlockDriver<T> {
     fn name(&self) -> &str {
         "virtio_blk_driver"
     }
@@ -94,7 +94,7 @@ impl DriverOps for VirtIOBlockDriver {
     }
 }
 
-impl BlockDriverOps for VirtIOBlockDriver {
+impl<T: Transport + Send + 'static> BlockDriverOps for VirtIOBlockDriver<T> {
     fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()> {
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();
