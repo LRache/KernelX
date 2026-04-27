@@ -6,6 +6,7 @@ use core::usize;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
+use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
@@ -370,7 +371,7 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
-    let path = uptr_filename.read_fixed()?;
+    let path = uptr_filename.read_path()?;
 
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
@@ -480,7 +481,7 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
     uptr_path.should_not_null()?;
     ubuf.should_not_null()?;
 
-    let path = uptr_path.read_fixed()?;
+    let path = uptr_path.read_path()?;
 
     if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?
@@ -1432,7 +1433,7 @@ fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFl
     uptr_path.should_not_null()?;
 
     let mode = AccessMode::from_bits(mode).ok_or(Errno::EINVAL)?;
-    let path = uptr_path.read_fixed()?;
+    let path = uptr_path.read_path()?;
     let search_perm = Perm::access(PermFlags::X, flags.contains(AccessAtFlags::AT_EACCESS));
     let perm = Perm::access(access_perm_flags(mode), flags.contains(AccessAtFlags::AT_EACCESS));
     let dentry = lookup_access_dentry(dirfd, &path, flags, &search_perm)?;
@@ -1476,7 +1477,7 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
     let path = if uptr_path.is_null() && flags.contains(AtFlags::AT_EMPTY_PATH) {
         String::new()
     } else {
-        uptr_path.read_fixed()?
+        uptr_path.read_path()?
     };
 
     let fstat = if path.is_empty() {
@@ -1520,7 +1521,7 @@ pub fn statfs64(uptr_path: UString, uptr_buf: UPtr<Statfs>) -> SyscallRet {
     uptr_path.should_not_null()?;
     uptr_buf.should_not_null()?;
 
-    let path = uptr_path.read_fixed()?;
+    let path = uptr_path.read_path()?;
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
 
     let statfs = vfs::statfs(dentry.sno())?;
@@ -1547,7 +1548,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
     let path = if uptr_path.is_null() {
         String::new()
     } else {
-        uptr_path.read_fixed()?
+        uptr_path.read_path()?
     };
     let dentry = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
@@ -1601,7 +1602,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let mode = Mode::from_bits(mode as u32 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFDIR;
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read_fixed()?;
+    let path = uptr_path.read_path()?;
 
     let (parent, name) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EEXIST)?
@@ -1692,7 +1693,7 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, flags: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
 
     let flags = UnlinkAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-    let path = uptr_path.read_fixed()?;
+    let path = uptr_path.read_path()?;
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
@@ -1736,8 +1737,8 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
     uptr_target.should_not_null()?;
     uptr_newname.should_not_null()?;
 
-    let target = uptr_target.read_fixed()?;
-    let new_name = uptr_newname.read_fixed()?;
+    let target = uptr_target.read_path()?;
+    let new_name = uptr_newname.read_path()?;
     if new_name.is_empty() {
         return Err(Errno::ENOENT);
     }
@@ -1767,8 +1768,8 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     uptr_oldpath.should_not_null()?;
     uptr_newpath.should_not_null()?;
 
-    let old_path = uptr_oldpath.read_fixed()?;
-    let new_path = uptr_newpath.read_fixed()?;
+    let old_path = uptr_oldpath.read_path()?;
+    let new_path = uptr_newpath.read_path()?;
 
     let old_dentry = if olddirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &old_path))
@@ -1820,8 +1821,8 @@ pub fn renameat2(
     uptr_oldpath.should_not_null()?;
     uptr_newpath.should_not_null()?;
 
-    let old_path = uptr_oldpath.read_fixed()?;
-    let new_path = uptr_newpath.read_fixed()?;
+    let old_path = uptr_oldpath.read_path()?;
+    let new_path = uptr_newpath.read_path()?;
 
     let old_parent_dentry = if olddirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &old_path))?.ok_or(Errno::EOPNOTSUPP)
@@ -1909,7 +1910,7 @@ fn do_chown(dentry: &Arc<Dentry>, uid: Option<Uid>, gid: Option<Uid>) -> Syscall
 }
 
 pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
-    let path = uptr_path.should_not_null()?.read_fixed()?;
+    let path = uptr_path.should_not_null()?.read_path()?;
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
@@ -1942,7 +1943,7 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags:
         String::new()
     } else {
         uptr_path.should_not_null()?;
-        uptr_path.read_fixed()?
+        uptr_path.read_path()?
     };
 
     if path.is_empty() && !flags.contains(AtFlags::AT_EMPTY_PATH) {
@@ -2020,7 +2021,7 @@ fn check_file_size_limit(length: u64) -> SysResult<()> {
 }
 
 pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
-    let path = uptr_path.should_not_null()?.read_fixed()?;
+    let path = uptr_path.should_not_null()?.read_path()?;
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
@@ -2100,6 +2101,14 @@ pub fn fsync(fd: usize) -> SyscallRet {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct MountFlags: usize {
+        const RDONLY = 0x1;
+        const REMOUNT = 0x20;
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct FlockOperation: usize {
         const SHARED = 1;
         const EXCLUSIVE = 1 << 1;
@@ -2167,17 +2176,23 @@ pub fn mount(
     flags: usize,
     _data: usize,
 ) -> SyscallRet {
-    use crate::fs::devfs::devnode::BlockDevInode;
-    const MS_RDONLY: usize = 0x1;
+    let flags = MountFlags::from_bits_truncate(flags);
 
     uptr_target.should_not_null()?;
-    uptr_fstype.should_not_null()?;
 
-    let target = uptr_target.read_fixed()?;
-    let fstype = uptr_fstype.read_fixed()?;
+    let target = uptr_target.read_path()?;
+    let options = MountOptions::new(flags.contains(MountFlags::RDONLY));
+
+    if flags.contains(MountFlags::REMOUNT) {
+        current::with_cwd(|cwd| vfs::remount(&cwd, &target, options))?;
+        return Ok(0);
+    }
+
+    uptr_fstype.should_not_null()?;
+    let fstype = uptr_fstype.read_string()?;
 
     let device = if !uptr_source.is_null() {
-        let source = uptr_source.read_fixed()?;
+        let source = uptr_source.read_path()?;
         // Resolve the source path to a block device inode
         let dentry = vfs::load_dentry(&source)?;
         let inode = dentry.get_inode();
@@ -2190,9 +2205,6 @@ pub fn mount(
         None
     };
 
-    // crate::kinfo!("mount: target = {:?}, fstype = {:?}, source = {:?}", target, fstype, device.is_none());
-
-    let options = MountOptions::new(flags & MS_RDONLY != 0);
     current::with_cwd(|cwd| vfs::mount(&cwd, &target, &fstype, device, options))?;
 
     Ok(0)
@@ -2205,7 +2217,7 @@ pub fn umount2(uptr_target: UString, flags: usize) -> SyscallRet {
         return Err(Errno::EINVAL);
     }
 
-    let target = uptr_target.read_fixed()?;
+    let target = uptr_target.read_path()?;
     current::with_cwd(|cwd| vfs::unmount(&cwd, &target))?;
     Ok(0)
 }

@@ -36,7 +36,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
 
     let to_sleep = Duration::try_from(req)?;
 
-    let start_sleep = kclock::now()?;
+    let start_sleep = timer::now();
     let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
@@ -44,7 +44,7 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
         Event::Timeout => Ok(0),
         Event::Signal => {
             if !uptr_rem.is_null() {
-                let elapsed = kclock::now()? - start_sleep;
+                let elapsed = timer::now() - start_sleep;
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
@@ -75,6 +75,7 @@ enum ClockId {
     CLOCK_MONOTONIC = 1,
     CLOCK_PROCESS_CPUTIME_ID = 2,
     CLOCK_THREAD_CPUTIME_ID = 3,
+    CLOCK_REALTIME_COARSE = 5,
     CLOCK_BOOTTIME = 7,
     CLOCK_REALTIME_ALARM = 8,
     CLOCK_BOOTTIME_ALARM = 9,
@@ -84,16 +85,15 @@ enum ClockId {
 impl ClockId {
     fn now(&self) -> SysResult<Duration> {
         match self {
-            ClockId::CLOCK_REALTIME | ClockId::CLOCK_REALTIME_ALARM | ClockId::CLOCK_TAI => kclock::now(),
+            ClockId::CLOCK_REALTIME
+            | ClockId::CLOCK_REALTIME_COARSE
+            | ClockId::CLOCK_REALTIME_ALARM
+            | ClockId::CLOCK_TAI => kclock::now(),
             ClockId::CLOCK_MONOTONIC | ClockId::CLOCK_BOOTTIME | ClockId::CLOCK_BOOTTIME_ALARM => Ok(timer::now()),
             ClockId::CLOCK_PROCESS_CPUTIME_ID => Ok(current::pcb().process_cpu_time()),
-            ClockId::CLOCK_THREAD_CPUTIME_ID => Ok(current_thread_cpu_time()),
+            ClockId::CLOCK_THREAD_CPUTIME_ID => Ok(current::tcb().thread_cpu_time()),
         }
     }
-}
-
-fn current_thread_cpu_time() -> Duration {
-    current::tcb().thread_cpu_time()
 }
 
 pub fn clock_nanosleep(
@@ -126,7 +126,7 @@ pub fn clock_nanosleep(
         req
     };
 
-    let start_sleep = clockid.now()?;
+    let start_sleep = timer::now();
     let timer_id = timer::add_timer(current::task().clone(), to_sleep);
     let event = current::block("timer nanosleep");
 
@@ -134,7 +134,7 @@ pub fn clock_nanosleep(
         Event::Timeout => Ok(0),
         Event::Signal => {
             if !uptr_rem.is_null() && !flags.contains(ClockNanosleepFlags::TIMER_ABSTIME) {
-                let elapsed = clockid.now()? - start_sleep;
+                let elapsed = timer::now() - start_sleep;
                 let remaining = to_sleep.checked_sub(elapsed).unwrap_or(Duration::ZERO);
                 uptr_rem.write(remaining.into())?;
             }
