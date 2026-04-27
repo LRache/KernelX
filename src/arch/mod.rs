@@ -5,14 +5,6 @@ cfg_if::cfg_if! {
     } else if #[cfg(target_arch = "loongarch64")] {
         mod loongarch;
         use loongarch as arch_impl;
-
-        /// TEMP(phase7): LoongArch-only hook to sanity-check the Phase 5
-        /// user-mode AddrSpace + page-table plumbing without spawning a
-        /// real TCB. Gets removed once `task::create_initprocess` can
-        /// load a real ELF off a mounted root filesystem.
-        pub fn loongarch_test_init_probe() {
-            arch_impl::test_init::probe();
-        }
     } else {
         compile_error!("Unsupported architecture");
     }
@@ -69,10 +61,10 @@ arch_export! {
 
     get_kernel_stack_top() -> usize;
 
-    // kaddr_offset() -> usize;
     kaddr_to_paddr(kaddr: usize) -> usize;
     paddr_to_kaddr(paddr: usize) -> usize;
     map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
+    mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
 
     get_time_us() -> u64;
     uptime() -> Duration;

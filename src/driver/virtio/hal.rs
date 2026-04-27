@@ -19,8 +19,17 @@ unsafe impl Hal for VirtIOHal {
         0
     }
 
-    unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(paddr as *mut u8).expect("Failed to convert MMIO physical address to virtual address")
+    unsafe fn mmio_phys_to_virt(paddr: PhysAddr, size: usize) -> NonNull<u8> {
+        // The physical address here is in the PCI memory-mapped region
+        // (e.g. a BAR we allocated into the bridge's 32-bit window). It
+        // MUST NOT be accessed cached — the device observes reads and
+        // writes through the same transaction stream as the CPU's stores.
+        // `arch::mmio_phys_to_kaddr` returns:
+        //   - RISC-V: a freshly mapped kernel VA with RW+MMIO semantics.
+        //   - LoongArch: the DMW0 (uncached, strongly-ordered) mirror of
+        //     the PA.
+        let kaddr = arch::mmio_phys_to_kaddr(paddr, size);
+        NonNull::new(kaddr as *mut u8).expect("Failed to convert MMIO physical address to virtual address")
     }
 
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
