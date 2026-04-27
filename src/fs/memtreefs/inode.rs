@@ -1,7 +1,6 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::time::Duration;
 
 use crate::arch;
@@ -24,14 +23,14 @@ struct Timespec {
 }
 
 struct FileMeta {
-    pages: Vec<PhysPageFrame>,
+    pages: BTreeMap<usize, PhysPageFrame>,
     filesize: usize,
 }
 
 impl FileMeta {
     fn new() -> Self {
         Self {
-            pages: Vec::new(),
+            pages: BTreeMap::new(),
             filesize: 0,
         }
     }
@@ -98,6 +97,8 @@ impl<T: StaticFsInfo> Inode<T> {
 
     pub fn add_child(&self, name: String, child: Arc<dyn InodeOps>) -> SysResult<()> {
         if let Meta::Directory(ref mut children) = self.meta.lock().meta {
+            T::check_filename(&name)?;
+
             if children.contains_key(&name) {
                 return Err(Errno::EEXIST);
             }
@@ -112,24 +113,8 @@ impl<T: StaticFsInfo> Inode<T> {
         }
     }
 
-    fn zero_file_range(file_meta: &mut FileMeta, start: usize, end: usize) {
-        if start >= end {
-            return;
-        }
-
-        let mut current = start;
-        while current < end {
-            let page_index = current / arch::PGSIZE;
-            let page_offset = current % arch::PGSIZE;
-            let chunk_end = core::cmp::min(end, (page_index + 1) * arch::PGSIZE);
-
-            while page_index >= file_meta.pages.len() {
-                file_meta.pages.push(PhysPageFrame::alloc_zeroed());
-            }
-
-            file_meta.pages[page_index].slice()[page_offset..page_offset + (chunk_end - current)].fill(0);
-            current = chunk_end;
-        }
+    fn pages_for_size(size: usize) -> usize {
+        size.div_ceil(arch::PGSIZE)
     }
 }
 
@@ -141,6 +126,8 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(ref mut children) = meta.meta {
+            T::check_filename(name)?;
+
             if children.contains_key(name) {
                 return Err(Errno::EEXIST);
             }
@@ -175,11 +162,48 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
         if let Meta::Directory(ref children) = self.meta.lock().meta {
+            T::check_filename(name)?;
+
             if let Some(&ino) = children.get(name) {
                 Ok(ino)
             } else {
                 Err(Errno::ENOENT)
             }
+        } else {
+            Err(Errno::ENOTDIR)
+        }
+    }
+
+    fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
+        let target_inode = target.downcast_ref::<Self>().ok_or(Errno::EXDEV)?;
+        let existing = self.superblock.lock().get_inode(target_inode.get_ino())?;
+        if !Arc::ptr_eq(&existing, target) {
+            return Err(Errno::EXDEV);
+        }
+
+        if target_inode.inode_type()? == FileType::Directory {
+            return Err(Errno::EPERM);
+        }
+
+        let mut meta = self.meta.lock();
+        if let Meta::Directory(ref mut children) = meta.meta {
+            T::check_filename(name)?;
+
+            if children.contains_key(name) {
+                return Err(Errno::EEXIST);
+            }
+
+            children.insert(name.into(), target_inode.get_ino());
+
+            let now = kclock::now().unwrap_or_default();
+            meta.mtime = now;
+            meta.ctime = now;
+
+            let mut target_meta = target_inode.meta.lock();
+            target_meta.links += 1;
+            target_meta.ctime = now;
+
+            Ok(())
         } else {
             Err(Errno::ENOTDIR)
         }
@@ -193,24 +217,22 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             let mut total_read = 0;
             let mut current_offset = offset;
-            let mut left = core::cmp::min(buf.len(), file_meta.filesize - offset);
+            let to_read = core::cmp::min(buf.len(), file_meta.filesize - offset);
 
-            while left > 0 {
+            while total_read < to_read {
                 let page_index = current_offset / arch::PGSIZE;
                 let page_offset = current_offset % arch::PGSIZE;
+                let len = core::cmp::min(to_read - total_read, arch::PGSIZE - page_offset);
+                let dst = &mut buf[total_read..total_read + len];
 
-                if page_index >= file_meta.pages.len() {
-                    break;
+                if let Some(page) = file_meta.pages.get(&page_index) {
+                    page.copy_to_slice(page_offset, dst);
+                } else {
+                    dst.fill(0);
                 }
 
-                let page = &file_meta.pages[page_index];
-                let to_read = core::cmp::min(left, arch::PGSIZE - page_offset);
-
-                page.copy_to_slice(page_offset, &mut buf[total_read..total_read + to_read]);
-
-                left -= to_read;
-                total_read += to_read;
-                current_offset += to_read;
+                total_read += len;
+                current_offset += len;
             }
 
             Ok(total_read)
@@ -252,12 +274,14 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 while copied < target_len {
                     let page_index = current_offset / arch::PGSIZE;
                     let page_offset = current_offset % arch::PGSIZE;
-                    if page_index >= file_meta.pages.len() {
-                        return Ok(total_read);
-                    }
-
                     let to_read = core::cmp::min(target_len - copied, arch::PGSIZE - page_offset);
-                    file_meta.pages[page_index].copy_to_slice(page_offset, &mut kbuf[copied..copied + to_read]);
+                    let dst = &mut kbuf[copied..copied + to_read];
+
+                    if let Some(page) = file_meta.pages.get(&page_index) {
+                        page.copy_to_slice(page_offset, dst);
+                    } else {
+                        dst.fill(0);
+                    }
 
                     copied += to_read;
                     current_offset += to_read;
@@ -278,10 +302,6 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
         if let Meta::File(ref mut meta) = self.meta.lock().meta {
-            if offset > meta.filesize {
-                Self::zero_file_range(meta, meta.filesize, offset);
-            }
-
             let mut written_bytes = 0;
             let mut current_offset = offset;
 
@@ -289,12 +309,8 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 let page_index = current_offset / arch::PGSIZE;
                 let page_offset = current_offset % arch::PGSIZE;
 
-                while page_index >= meta.pages.len() {
-                    meta.pages.push(PhysPageFrame::alloc_zeroed());
-                }
-
-                let page = &meta.pages[page_index];
                 let to_write = core::cmp::min(buf.len() - written_bytes, arch::PGSIZE - page_offset);
+                let page = meta.pages.entry(page_index).or_insert_with(PhysPageFrame::alloc_zeroed);
 
                 page.copy_from_slice(page_offset, &buf[written_bytes..written_bytes + to_write]);
 
@@ -312,10 +328,6 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, _direct: bool) -> SysResult<usize> {
         if let Meta::File(ref mut meta) = self.meta.lock().meta {
-            if offset > meta.filesize {
-                Self::zero_file_range(meta, meta.filesize, offset);
-            }
-
             let mut written_bytes = 0;
             let mut current_offset = offset;
 
@@ -326,12 +338,9 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                     let page_index = current_offset / arch::PGSIZE;
                     let page_offset = current_offset % arch::PGSIZE;
 
-                    while page_index >= meta.pages.len() {
-                        meta.pages.push(PhysPageFrame::alloc_zeroed());
-                    }
-
                     let to_write = core::cmp::min(kbuf.len() - copied, arch::PGSIZE - page_offset);
-                    meta.pages[page_index].copy_from_slice(page_offset, &kbuf[copied..copied + to_write]);
+                    let page = meta.pages.entry(page_index).or_insert_with(PhysPageFrame::alloc_zeroed);
+                    page.copy_from_slice(page_offset, &kbuf[copied..copied + to_write]);
 
                     copied += to_write;
                     current_offset += to_write;
@@ -349,20 +358,36 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn unlink(&self, name: &str) -> SysResult<()> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(children) = &mut meta.meta {
+            T::check_filename(name)?;
+
             let ino = *children.get(name).ok_or(Errno::ENOENT)?;
             let child = self.superblock.lock().get_inode(ino)?;
-            if child.inode_type()? == FileType::Directory {
-                let child_inode = child.downcast_arc::<Self>().map_err(|_| Errno::EIO)?;
-                let child_meta = child_inode.meta.lock();
+            let now = kclock::now().unwrap_or_default();
+
+            let remove_inode = if let Some(child_inode) = child.downcast_ref::<Self>() {
+                let mut child_meta = child_inode.meta.lock();
                 if let Meta::Directory(grandchildren) = &child_meta.meta
                     && grandchildren.len() > 2
                 {
                     return Err(Errno::ENOTEMPTY);
                 }
-            }
+
+                child_meta.links = child_meta.links.saturating_sub(1);
+                child_meta.ctime = now;
+                child_meta.links == 0
+            } else {
+                if child.inode_type()? == FileType::Directory {
+                    return Err(Errno::EIO);
+                }
+                true
+            };
 
             children.remove(name);
-            self.superblock.lock().remove_inode(ino);
+            meta.mtime = now;
+            meta.ctime = now;
+            if remove_inode {
+                self.superblock.lock().remove_inode(ino);
+            }
             Ok(())
         } else {
             Err(Errno::ENOTDIR)
@@ -430,7 +455,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         kstat.st_ino = self.ino as u64;
         kstat.st_mode = meta.mode.bits() as u32;
         kstat.st_blksize = arch::PGSIZE as i32;
-        kstat.st_nlink = 1;
+        kstat.st_nlink = match &meta.meta {
+            Meta::Directory(_) => 1,
+            _ => meta.links,
+        };
         kstat.st_atime_sec = meta.atime.as_secs() as i64;
         kstat.st_atime_nsec = meta.atime.subsec_nanos() as i64;
         kstat.st_mtime_sec = meta.mtime.as_secs() as i64;
@@ -440,8 +468,8 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         kstat.st_uid = meta.owner.0;
         kstat.st_gid = meta.owner.1;
 
-        match meta.meta {
-            Meta::File(ref meta) => {
+        match &meta.meta {
+            Meta::File(meta) => {
                 kstat.st_size = meta.filesize as i64;
                 kstat.st_blocks = meta.pages.len() as u64;
             }
@@ -449,7 +477,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 kstat.st_size = arch::PGSIZE as i64;
                 kstat.st_blocks = 1;
             }
-            Meta::Symlink(ref target) => {
+            Meta::Symlink(target) => {
                 kstat.st_size = target.len() as i64;
                 kstat.st_blocks = 0;
             }
@@ -461,17 +489,16 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn truncate(&self, new_size: u64) -> SysResult<()> {
         let mut meta = self.meta.lock();
         if let Meta::File(ref mut file_meta) = meta.meta {
-            let old_size = file_meta.filesize;
             let new_size = new_size as usize;
-            let new_pages = (new_size + arch::PGSIZE - 1) / arch::PGSIZE;
+            if new_size < file_meta.filesize {
+                let new_pages = Self::pages_for_size(new_size);
+                let _ = file_meta.pages.split_off(&new_pages);
 
-            if new_size > file_meta.filesize {
-                Self::zero_file_range(file_meta, old_size, new_size);
-            } else {
-                Self::zero_file_range(file_meta, new_size, old_size);
-
-                // Shrink: drop excess pages
-                file_meta.pages.truncate(new_pages);
+                if new_size % arch::PGSIZE != 0
+                    && let Some(page) = file_meta.pages.get(&(new_pages - 1))
+                {
+                    page.slice()[new_size % arch::PGSIZE..].fill(0);
+                }
             }
 
             file_meta.filesize = new_size;

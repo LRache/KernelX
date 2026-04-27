@@ -11,7 +11,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::klib::SpinLock;
 
-use super::vfs;
+use super::{LookupFlags, vfs};
 
 pub struct Dentry {
     inode_index: Index,
@@ -207,6 +207,29 @@ impl Dentry {
                 *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
                 let link_dentry = vfs().lookup_dentry_with_depth_and_perm(p, link_name, symlink_depth, perm)?;
+                return Ok(link_dentry);
+            }
+        }
+        Ok(self)
+    }
+
+    pub fn walk_link_with_perm_and_flags(
+        self: Arc<Self>,
+        symlink_depth: &mut usize,
+        perm: &Perm,
+        flags: LookupFlags,
+    ) -> SysResult<Arc<Dentry>> {
+        if let Some(p) = self.parent.as_ref() {
+            let inode = self.get_inode();
+            let mut buffer = [0u8; 255];
+            if let Some(length) = inode.readlink(&mut buffer)? {
+                if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
+                    return Err(Errno::ELOOP);
+                }
+                *symlink_depth += 1;
+                let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
+                let link_dentry =
+                    vfs().lookup_dentry_with_depth_perm_flags(p, link_name, symlink_depth, perm, flags)?;
                 return Ok(link_dentry);
             }
         }

@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use bitflags::bitflags;
+use core::mem::size_of;
 use core::time::Duration;
 use core::usize;
 use num_enum::TryFromPrimitive;
@@ -67,6 +68,18 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct OpenResolveFlags: u64 {
+        const RESOLVE_NO_XDEV = 0x01;
+        const RESOLVE_NO_MAGICLINKS = 0x02;
+        const RESOLVE_NO_SYMLINKS = 0x04;
+        const RESOLVE_BENEATH = 0x08;
+        const RESOLVE_IN_ROOT = 0x10;
+        const RESOLVE_CACHED = 0x20;
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct Flock {
@@ -80,6 +93,18 @@ struct Flock {
 }
 
 impl UserStruct for Flock {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+impl UserStruct for OpenHow {}
+
+const OPEN_HOW_SIZE: usize = size_of::<OpenHow>();
 
 #[derive(TryFromPrimitive)]
 #[repr(i16)]
@@ -346,12 +371,13 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     }
 }
 
-pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -> SyscallRet {
-    uptr_filename.should_not_null()?;
-
+fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRet {
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     if open_flags.contains(OpenFlags::O_DIRECTORY) && open_flags.contains(OpenFlags::O_CREATE) {
         return Err(Errno::EINVAL);
+    }
+    if open_flags.contains(OpenFlags::O_NOATIME) && current::fsuid() != 0 {
+        return Err(Errno::EPERM);
     }
     let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
     let (readable, writable) = match acc_mode {
@@ -371,7 +397,9 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
-    let path = uptr_filename.read_path()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
 
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
@@ -398,7 +426,14 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             perm_flags.insert(PermFlags::W);
         }
 
-        match vfs::openat_file(parent, &path, file_flags, &Perm::current(perm_flags)) {
+        let perm = Perm::current(perm_flags);
+        let file = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+            vfs::openat_file_nofollow(parent, &path, file_flags, &perm)
+        } else {
+            vfs::openat_file(parent, &path, file_flags, &perm)
+        };
+
+        match file {
             Ok(file) => {
                 if open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
                     return Err(Errno::EEXIST);
@@ -429,13 +464,15 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         }
     };
 
-    let file = if dirfd as isize == AT_FDCWD {
+    let file = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| helper(&cwd))?
     } else {
-        helper(vfs::get_root_dentry())?
+        let dir_file = current::fdtable().lock().get(dirfd)?;
+        let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
+        helper(dir)?
     };
 
-    if open_flags.contains(OpenFlags::O_DIRECTORY) {
+    if open_flags.contains(OpenFlags::O_DIRECTORY) && !open_flags.contains(OpenFlags::O_TMPFILE) {
         let inode = file.get_inode().ok_or(Errno::ENOTDIR)?;
         if inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
@@ -455,6 +492,184 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     }
 
     Ok(fd)
+}
+
+fn do_openat_with_lookup_flags(
+    dirfd: usize,
+    path: String,
+    flags: usize,
+    mode: usize,
+    lookup_flags: vfs::LookupFlags,
+) -> SyscallRet {
+    let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if open_flags.contains(OpenFlags::O_DIRECTORY) && open_flags.contains(OpenFlags::O_CREATE) {
+        return Err(Errno::EINVAL);
+    }
+    if open_flags.contains(OpenFlags::O_NOATIME) && current::fsuid() != 0 {
+        return Err(Errno::EPERM);
+    }
+    let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
+    let (readable, writable) = match acc_mode {
+        0 => (true, false), // O_RDONLY
+        1 => (false, true), // O_WRONLY
+        2 => (true, true),  // O_RDWR
+        _ => return Err(Errno::EINVAL),
+    };
+    let file_flags = FileFlags {
+        writable,
+        readable,
+        blocked: !open_flags.contains(OpenFlags::O_NONBLOCK),
+        append: open_flags.contains(OpenFlags::O_APPEND),
+        direct: open_flags.contains(OpenFlags::O_DIRECT),
+    };
+    let fd_flags = FDFlags {
+        cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
+    };
+
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
+    let helper = |parent: &Arc<Dentry>| {
+        if open_flags.contains(OpenFlags::O_TMPFILE) {
+            if !writable {
+                return Err(Errno::EINVAL);
+            }
+
+            let dentry = vfs::load_dentry_at_with_flags(parent, &path, lookup_flags)?;
+            if dentry.is_superblock_readonly()? {
+                return Err(Errno::EROFS);
+            }
+            return vfs::create_temp(
+                &dentry,
+                file_flags,
+                Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
+            );
+        }
+
+        let mut perm_flags = PermFlags::empty();
+        if readable {
+            perm_flags.insert(PermFlags::R);
+        }
+        if writable {
+            perm_flags.insert(PermFlags::W);
+        }
+
+        let perm = Perm::current(perm_flags);
+        let file = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+            vfs::openat_file_nofollow_with_lookup_flags(parent, &path, file_flags, &perm, lookup_flags)
+        } else {
+            vfs::openat_file_with_lookup_flags(parent, &path, file_flags, &perm, lookup_flags)
+        };
+
+        match file {
+            Ok(file) => {
+                if open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
+                    return Err(Errno::EEXIST);
+                }
+                Ok(file)
+            }
+            Err(e) => {
+                if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
+                    // Create the file
+                    let mode =
+                        Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
+                    let (parent_dentry, child_name) =
+                        vfs::load_parent_dentry_at_with_flags(parent, &path, lookup_flags)?.unwrap(); // SAFETY: The root must exist
+                    if parent_dentry.is_superblock_readonly()? {
+                        return Err(Errno::EROFS);
+                    }
+                    vfs::create_file(
+                        &parent_dentry,
+                        child_name.as_ref(),
+                        file_flags,
+                        mode,
+                        Owner::new(current::fsuid(), current::fsgid()),
+                    )
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    let file = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| helper(&cwd))?
+    } else {
+        let dir_file = current::fdtable().lock().get(dirfd)?;
+        let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
+        helper(dir)?
+    };
+
+    if open_flags.contains(OpenFlags::O_DIRECTORY) && !open_flags.contains(OpenFlags::O_TMPFILE) {
+        let inode = file.get_inode().ok_or(Errno::ENOTDIR)?;
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+    }
+
+    let fd = current::fdtable().lock().push(file.clone(), fd_flags)?;
+
+    if writable && open_flags.contains(OpenFlags::O_TRUNC) {
+        if let Some(inode) = file.get_inode()
+            && inode.inode_type()? == FileType::Regular
+            && let Err(err) = inode.truncate(0)
+        {
+            let _ = current::fdtable().lock().take(fd);
+            return Err(err);
+        }
+    }
+
+    Ok(fd)
+}
+
+pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -> SyscallRet {
+    uptr_filename.should_not_null()?;
+    let path = uptr_filename.read_path()?;
+    do_openat(dirfd, path, flags, mode)
+}
+
+fn read_open_how(uptr_how: UPtr<OpenHow>, size: usize) -> SysResult<OpenHow> {
+    if size < OPEN_HOW_SIZE {
+        return Err(Errno::EINVAL);
+    }
+
+    let how = uptr_how.read()?;
+    if size > OPEN_HOW_SIZE {
+        let extra_start = uptr_how.uaddr().checked_add(OPEN_HOW_SIZE).ok_or(Errno::EINVAL)?;
+        let extra_len = size - OPEN_HOW_SIZE;
+        let mut extra = alloc::vec![0u8; extra_len];
+        copy_from_user::slice(extra_start, &mut extra)?;
+        if extra.iter().any(|&byte| byte != 0) {
+            return Err(Errno::E2BIG);
+        }
+    }
+
+    Ok(how)
+}
+
+pub fn openat2(dirfd: usize, uptr_filename: UString, uptr_how: UPtr<OpenHow>, size: usize) -> SyscallRet {
+    let how = read_open_how(uptr_how, size)?;
+    let flags = usize::try_from(how.flags).map_err(|_| Errno::EINVAL)?;
+    let mode = usize::try_from(how.mode).map_err(|_| Errno::EINVAL)?;
+    let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let resolve_flags = OpenResolveFlags::from_bits(how.resolve).ok_or(Errno::EINVAL)?;
+    if !OpenResolveFlags::RESOLVE_NO_XDEV.contains(resolve_flags) {
+        // return Err(Errno::EINVAL);
+    }
+    if !open_flags.intersects(OpenFlags::O_CREATE | OpenFlags::O_TMPFILE) && mode != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if how.mode & !0o7777 != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let path = uptr_filename.read_path()?;
+    if resolve_flags.is_empty() {
+        do_openat(dirfd, path, flags, mode)
+    } else {
+        do_openat_with_lookup_flags(dirfd, path, flags, mode, vfs::LookupFlags::NO_XDEV)
+    }
 }
 
 pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
@@ -1522,6 +1737,9 @@ pub fn statfs64(uptr_path: UString, uptr_buf: UPtr<Statfs>) -> SyscallRet {
     uptr_buf.should_not_null()?;
 
     let path = uptr_path.read_path()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
 
     let statfs = vfs::statfs(dentry.sno())?;
