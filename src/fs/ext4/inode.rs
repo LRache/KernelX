@@ -497,7 +497,6 @@ impl InodeOps for Ext4Inode {
                     &mut rcnt,
                 ))?;
             }
-            inode_set_atime(inode_ref, &now());
             Ok(rcnt)
         })
     }
@@ -509,9 +508,6 @@ impl InodeOps for Ext4Inode {
                 kernelx_ext4_inode_ref_write_at(inode_ref, buf.as_ptr().cast(), buf.len(), offset as u64, &mut wcnt)
             };
             ext4_result(rc)?;
-            let time = now();
-            inode_set_mtime(inode_ref, &time);
-            inode_set_ctime(inode_ref, &time);
             Ok(wcnt)
         })
     }
@@ -801,11 +797,6 @@ impl InodeOps for Ext4Inode {
                 inode_ref.dirty = true;
             }
 
-            if new_size != old_size {
-                let time = now();
-                inode_set_mtime(inode_ref, &time);
-                inode_set_ctime(inode_ref, &time);
-            }
             Ok(())
         })
     }
