@@ -16,12 +16,6 @@ use crate::klib::SpinLock;
 
 use super::superblock::{StaticFsInfo, SuperBlockInner};
 
-#[derive(Default)]
-struct Timespec {
-    tv_sec: u64,
-    tv_nsec: u64,
-}
-
 struct FileMeta {
     pages: BTreeMap<usize, PhysPageFrame>,
     filesize: usize,
@@ -555,6 +549,9 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
         let meta = self.meta.lock();
         if let Meta::Directory(ref children) = meta.meta {
+            if meta.links == 0 {
+                return Err(Errno::ENOENT);
+            }
             if let Some((name, &ino)) = children.iter().nth(index) {
                 if ino == self.ino {
                     // skip "."
