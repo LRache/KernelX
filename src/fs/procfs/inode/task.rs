@@ -17,9 +17,15 @@ use crate::kernel::uapi::{FileStat, Uid};
 
 use super::RootInode;
 
+const CLK_TCK: u64 = 100;
+
 fn process_leader_tid(tid: Tid) -> SysResult<Tid> {
     let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
     Ok(tcb.parent().pid())
+}
+
+fn duration_to_clock_ticks(duration: core::time::Duration) -> usize {
+    (duration.as_millis() as u64 * CLK_TCK / 1000) as usize
 }
 
 fn thread_group_tids(pid: Tid) -> SysResult<Vec<Tid>> {
@@ -617,9 +623,16 @@ impl InodeOps for TaskStatInode {
         let state_set = tcb.state().lock();
         let state_char = Self::state_char(state_set.state(), state_set.is_dead());
         drop(state_set);
+        let (utime, stime) = pcb.tasks_usage_time();
+        let utime = duration_to_clock_ticks(utime);
+        let stime = duration_to_clock_ticks(stime);
 
-        let mut content = fixedstr::str96::new();
-        let _ = write!(content, "{} ({}) {} {} {}\n", pid, comm, state_char, ppid, pgid);
+        let mut content = String::with_capacity(128);
+        let _ = writeln!(
+            content,
+            "{} ({}) {} {} {} 0 0 0 0 0 0 0 0 {} {}",
+            pid, comm, state_char, ppid, pgid, utime, stime
+        );
 
         let content_bytes = content.as_bytes();
         if offset >= content_bytes.len() {
