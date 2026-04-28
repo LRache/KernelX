@@ -284,7 +284,10 @@ fn fcntl_setlk(file: &Arc<dyn FileOps>, arg: usize, blocking: bool) -> SyscallRe
         current::schedule();
         match current::task().take_wakeup_event().unwrap() {
             Event::IOComplete => {}
-            Event::Signal => return Err(Errno::EINTR),
+            Event::Signal => {
+                lock_state.lock().posix.remove_current_waiter();
+                return Err(Errno::EINTR);
+            }
             event => unreachable!("unexpected event while waiting on fcntl lock: {:?}", event),
         }
     }
@@ -2604,7 +2607,10 @@ pub fn flock(fd: usize, operation: usize) -> SyscallRet {
         current::schedule();
         match current::task().take_wakeup_event().unwrap() {
             Event::IOComplete => {}
-            Event::Signal => return Err(Errno::EINTR),
+            Event::Signal => {
+                lock_state.lock().bsd.remove_current_waiter();
+                return Err(Errno::EINTR);
+            }
             event => unreachable!("unexpected event while waiting on flock lock: {:?}", event),
         }
     }

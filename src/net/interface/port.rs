@@ -61,6 +61,12 @@ impl PortMap {
     pub(super) fn has_data(&self, port: u16) -> bool {
         self.ports.get(&port).map_or(false, |q| q.has_data())
     }
+
+    pub(super) fn cancel_wait_current(&mut self, port: u16) {
+        if let Some(q) = self.ports.get_mut(&port) {
+            q.waiters.remove_current();
+        }
+    }
 }
 
 // ---- Interface methods for UDP ----
@@ -106,6 +112,10 @@ impl Interface {
         let mut map = self.udp_rx.lock();
         let q = map.bind(port);
         q.waiters.wait_current(());
+    }
+
+    pub fn cancel_wait_udp(&self, port: u16) {
+        self.udp_rx.lock().cancel_wait_current(port);
     }
 
     /// Allocate an ephemeral port for UDP.
@@ -165,6 +175,10 @@ impl Interface {
         let q = map.bind(port);
         q.waiters.wait_current(());
     }
+
+    pub fn cancel_wait_tcp(&self, port: u16) {
+        self.tcp_rx.lock().cancel_wait_current(port);
+    }
 }
 
 // ---- Interface methods for RAW IPv4 protocol dispatch ----
@@ -192,5 +206,9 @@ impl Interface {
         let mut map = self.raw_rx.lock();
         let q = map.bind(protocol as u16);
         q.waiters.wait_current(());
+    }
+
+    pub fn cancel_wait_raw(&self, protocol: u8) {
+        self.raw_rx.lock().cancel_wait_current(protocol as u16);
     }
 }

@@ -379,6 +379,12 @@ impl PCB {
         self.pidfd_waiters.lock().remove(current::task());
     }
 
+    fn remove_current_waiting_task(&self) {
+        self.waiting_task
+            .lock()
+            .retain(|task| !Arc::ptr_eq(task, current::task()));
+    }
+
     pub fn wait_for_all_tasks_exited_and_clear(&self) {
         loop {
             let mut tasks = self.tasks.lock();
@@ -640,6 +646,7 @@ impl PCB {
                             }
                         }
                         Event::Signal => {
+                            self.remove_current_waiting_task();
                             return Err(Errno::EINTR);
                         }
                         _ => {
@@ -717,7 +724,10 @@ impl PCB {
                         continue; // The child process was recycled by other waiters
                     }
                 }
-                Event::Signal => return Err(Errno::EINTR),
+                Event::Signal => {
+                    self.remove_current_waiting_task();
+                    return Err(Errno::EINTR);
+                }
                 _ => unreachable!(),
             }
         }
@@ -769,7 +779,10 @@ impl PCB {
                         continue;
                     }
                 }
-                Event::Signal => return Err(Errno::EINTR),
+                Event::Signal => {
+                    self.remove_current_waiting_task();
+                    return Err(Errno::EINTR);
+                }
                 _ => unreachable!(),
             }
         }
