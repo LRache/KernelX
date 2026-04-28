@@ -19,7 +19,7 @@ pub const UTASK_KSTACK_PAGE_COUNT: usize = 64; // Kernel stack page count for us
 #[cfg(not(debug_assertions))]
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Kernel stack page count for user tasks
 pub const KTASK_KSTACK_PAGE_COUNT: usize = 16; // Kernel stack page count for kernel tasks
-pub const KERNEL_HEAP_SIZE: usize = 0x4000000;
+pub const KERNEL_HEAP_SIZE: usize = 128 * 1024 * 1024; // Kernel heap size (128 MiB)
 pub const SCHEDULER_KSTACK_PAGE_COUNT: usize = 4; // Scheduler kernel stack size
 
 cfg_if::cfg_if!(
