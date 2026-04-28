@@ -138,7 +138,7 @@ impl Dentry {
         }
     }
 
-    pub(super) fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 

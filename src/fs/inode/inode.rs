@@ -11,6 +11,7 @@ use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::SpinLock;
 
 use super::bsd_flock::BsdFlockState;
+use super::notifier::Notifier;
 use super::posix_flock::PosixFlockState;
 use super::{FileType, Mode, Owner};
 
@@ -88,6 +89,10 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
+        None
+    }
+
+    fn get_notifier(&self) -> Option<&Notifier> {
         None
     }
 

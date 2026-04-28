@@ -6,7 +6,7 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, Mode, Owner};
+use crate::fs::inode::{InodeLockState, Mode, Notifier, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
@@ -74,6 +74,7 @@ pub struct Inode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
     lock_state: SpinLock<InodeLockState>,
+    notifier: Notifier,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
 }
@@ -84,6 +85,7 @@ impl<T: StaticFsInfo> Inode<T> {
             ino,
             meta: SpinLock::new(meta, "Inode::meta"),
             lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
+            notifier: Notifier::new(),
             superblock,
             _marker: core::marker::PhantomData,
         }
@@ -109,6 +111,29 @@ impl<T: StaticFsInfo> Inode<T> {
 
     fn pages_for_size(size: usize) -> usize {
         size.div_ceil(arch::PGSIZE)
+    }
+
+    fn is_ancestor_of(&self, ancestor_ino: u32, mut ino: u32) -> SysResult<bool> {
+        loop {
+            if ino == ancestor_ino {
+                return Ok(true);
+            }
+
+            let inode = self.superblock.lock().get_inode(ino)?;
+            let inode = inode.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+            let parent_ino = {
+                let meta = inode.meta.lock();
+                let Meta::Directory(children) = &meta.meta else {
+                    return Err(Errno::ENOTDIR);
+                };
+                *children.get("..").ok_or(Errno::EIO)?
+            };
+
+            if parent_ino == ino {
+                return Ok(false);
+            }
+            ino = parent_ino;
+        }
     }
 }
 
@@ -152,6 +177,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         Some(&self.lock_state)
+    }
+
+    fn get_notifier(&self) -> Option<&Notifier> {
+        Some(&self.notifier)
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
@@ -201,6 +230,162 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         } else {
             Err(Errno::ENOTDIR)
         }
+    }
+
+    fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
+        if old_name == "." || old_name == ".." || new_name == "." || new_name == ".." {
+            return Err(Errno::EINVAL);
+        }
+
+        T::check_filename(old_name)?;
+        T::check_filename(new_name)?;
+
+        let new_parent = new_parent.downcast_ref::<Self>().ok_or(Errno::EXDEV)?;
+        if !Arc::ptr_eq(&self.superblock, &new_parent.superblock) {
+            return Err(Errno::EXDEV);
+        }
+        if self.ino == new_parent.ino && old_name == new_name {
+            return Ok(());
+        }
+
+        let old_ino = self.lookup(old_name)?;
+        let old_inode = self.superblock.lock().get_inode(old_ino)?;
+        let old_is_dir = old_inode.inode_type()? == FileType::Directory;
+        if old_is_dir && self.ino != new_parent.ino {
+            old_inode.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+            if self.is_ancestor_of(old_ino, new_parent.ino)? {
+                return Err(Errno::EINVAL);
+            }
+        }
+
+        let prepare_overwrite = |new_ino: u32| -> SysResult<Arc<dyn InodeOps>> {
+            let new_inode = self.superblock.lock().get_inode(new_ino)?;
+            let new_is_dir = new_inode.inode_type()? == FileType::Directory;
+            if old_is_dir && !new_is_dir {
+                return Err(Errno::ENOTDIR);
+            }
+            if !old_is_dir && new_is_dir {
+                return Err(Errno::EISDIR);
+            }
+            if new_is_dir {
+                let new_inode = new_inode.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+                let meta = new_inode.meta.lock();
+                let Meta::Directory(children) = &meta.meta else {
+                    return Err(Errno::EIO);
+                };
+                if children.len() > 2 {
+                    return Err(Errno::ENOTEMPTY);
+                }
+            }
+            Ok(new_inode)
+        };
+
+        let now = kclock::now().unwrap_or_default();
+        let finish_overwrite = |new_ino: u32, new_inode: Arc<dyn InodeOps>| {
+            if let Some(new_inode) = new_inode.downcast_ref::<Self>() {
+                let mut meta = new_inode.meta.lock();
+                meta.links = meta.links.saturating_sub(1);
+                meta.ctime = now;
+                if meta.links == 0 {
+                    self.superblock.lock().remove_inode(new_ino);
+                }
+            } else {
+                self.superblock.lock().remove_inode(new_ino);
+            }
+        };
+
+        if self.ino == new_parent.ino {
+            let overwritten = {
+                let mut meta = self.meta.lock();
+                let Meta::Directory(children) = &mut meta.meta else {
+                    return Err(Errno::ENOTDIR);
+                };
+
+                let current_old_ino = *children.get(old_name).ok_or(Errno::ENOENT)?;
+                let overwritten = if let Some(new_ino) = children.get(new_name).copied() {
+                    if new_ino == current_old_ino {
+                        return Ok(());
+                    }
+                    Some((new_ino, prepare_overwrite(new_ino)?))
+                } else {
+                    None
+                };
+
+                old_inode.update_ctime(&now)?;
+                children.remove(old_name);
+                children.insert(new_name.into(), old_ino);
+                meta.mtime = now;
+                meta.ctime = now;
+                overwritten
+            };
+
+            if let Some((new_ino, new_inode)) = overwritten {
+                finish_overwrite(new_ino, new_inode);
+            }
+            return Ok(());
+        }
+
+        let (mut old_meta, mut new_meta);
+        if self.ino < new_parent.ino {
+            old_meta = self.meta.lock();
+            new_meta = new_parent.meta.lock();
+        } else {
+            new_meta = new_parent.meta.lock();
+            old_meta = self.meta.lock();
+        }
+
+        let overwritten = {
+            let Meta::Directory(old_children) = &mut old_meta.meta else {
+                return Err(Errno::ENOTDIR);
+            };
+            let Meta::Directory(new_children) = &mut new_meta.meta else {
+                return Err(Errno::ENOTDIR);
+            };
+
+            let current_old_ino = *old_children.get(old_name).ok_or(Errno::ENOENT)?;
+            if let Some(new_ino) = new_children.get(new_name).copied() {
+                if new_ino == current_old_ino {
+                    return Ok(());
+                }
+                Some((new_ino, prepare_overwrite(new_ino)?))
+            } else {
+                None
+            }
+        };
+
+        if old_is_dir {
+            let old_inode = old_inode.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+            let mut old_inode_meta = old_inode.meta.lock();
+            let Meta::Directory(children) = &mut old_inode_meta.meta else {
+                return Err(Errno::EIO);
+            };
+            children.insert("..".into(), new_parent.ino);
+            old_inode_meta.ctime = now;
+        } else {
+            old_inode.update_ctime(&now)?;
+        }
+
+        {
+            let Meta::Directory(old_children) = &mut old_meta.meta else {
+                return Err(Errno::ENOTDIR);
+            };
+            old_children.remove(old_name);
+            old_meta.mtime = now;
+            old_meta.ctime = now;
+        }
+        {
+            let Meta::Directory(new_children) = &mut new_meta.meta else {
+                return Err(Errno::ENOTDIR);
+            };
+            new_children.insert(new_name.into(), old_ino);
+            new_meta.mtime = now;
+            new_meta.ctime = now;
+        }
+
+        if let Some((new_ino, new_inode)) = overwritten {
+            finish_overwrite(new_ino, new_inode);
+        }
+        Ok(())
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {

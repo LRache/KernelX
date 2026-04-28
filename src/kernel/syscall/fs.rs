@@ -1,7 +1,9 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::mem::size_of;
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use core::usize;
 use num_enum::TryFromPrimitive;
@@ -9,7 +11,7 @@ use num_enum::TryFromPrimitive;
 use crate::driver;
 use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
-use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
+use crate::fs::inode::{BsdFlockType, InotifyEvent, InotifyRecord, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
@@ -105,6 +107,7 @@ pub struct OpenHow {
 impl UserStruct for OpenHow {}
 
 const OPEN_HOW_SIZE: usize = size_of::<OpenHow>();
+static NEXT_INOTIFY_COOKIE: AtomicU32 = AtomicU32::new(1);
 
 #[derive(TryFromPrimitive)]
 #[repr(i16)]
@@ -147,6 +150,7 @@ fn update_file_times(file: &dyn FileOps, time: &Duration, is_write: bool) -> Sys
         if is_write {
             inode.update_mtime(time)?;
             inode.update_ctime(time)?;
+            notify_inotify(Some(inode), InotifyEvent::MODIFY);
         } else {
             inode.update_atime(time)?;
         }
@@ -394,6 +398,76 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     }
 }
 
+fn next_inotify_cookie() -> u32 {
+    loop {
+        let cookie = NEXT_INOTIFY_COOKIE.load(Ordering::Relaxed);
+        let next = cookie.checked_add(1).unwrap_or(1);
+        if NEXT_INOTIFY_COOKIE
+            .compare_exchange(cookie, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return cookie;
+        }
+    }
+}
+
+fn inode_is_dir(inode: &Arc<dyn InodeOps>) -> bool {
+    matches!(inode.inode_type(), Ok(FileType::Directory))
+}
+
+fn event_with_dir_flag(mut event: InotifyEvent, is_dir: bool) -> InotifyEvent {
+    if is_dir && !event.intersects(InotifyEvent::DELETE_SELF | InotifyEvent::MOVE_SELF) {
+        event.insert(InotifyEvent::ISDIR);
+    }
+    event
+}
+
+fn notify_inotify_record(inode: Option<&Arc<dyn InodeOps>>, event: InotifyEvent, cookie: u32, name: &str) {
+    if let Some(inode) = inode
+        && let Some(notifier) = inode.get_notifier()
+    {
+        notifier.notify(InotifyRecord::new(event, cookie, name));
+    }
+}
+
+fn notify_inotify(inode: Option<&Arc<dyn InodeOps>>, event: InotifyEvent) {
+    if let Some(inode) = inode {
+        notify_inotify_record(Some(inode), event_with_dir_flag(event, inode_is_dir(inode)), 0, "");
+    }
+}
+
+fn notify_inotify_child(
+    parent: Option<&Arc<dyn InodeOps>>,
+    child: Option<&Arc<dyn InodeOps>>,
+    event: InotifyEvent,
+    name: &str,
+    cookie: u32,
+) {
+    let event = event_with_dir_flag(event, child.is_some_and(inode_is_dir));
+    notify_inotify_record(parent, event, cookie, name);
+}
+
+fn notify_inotify_dentry(dentry: &Arc<Dentry>, event: InotifyEvent) {
+    let inode = dentry.get_inode();
+    notify_inotify(Some(&inode), event);
+
+    if dentry.name().is_empty() {
+        return;
+    }
+    if let Some(parent) = dentry.get_parent() {
+        let parent_inode = parent.get_inode();
+        notify_inotify_child(Some(&parent_inode), Some(&inode), event, dentry.name(), 0);
+    }
+}
+
+fn notify_inotify_file(file: &dyn FileOps, event: InotifyEvent) {
+    if let Some(dentry) = file.get_dentry() {
+        notify_inotify_dentry(dentry, event);
+    } else {
+        notify_inotify(file.get_inode(), event);
+    }
+}
+
 fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRet {
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     if open_flags.contains(OpenFlags::O_DIRECTORY) && open_flags.contains(OpenFlags::O_CREATE) {
@@ -487,9 +561,19 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
                     let time = driver::chosen::kclock::now()?;
                     update_file_times(file.as_ref(), &time, false)?;
                     update_file_times(file.as_ref(), &time, true)?;
+                    
                     let parent_inode = parent_dentry.get_inode();
                     parent_inode.update_mtime(&time)?;
                     parent_inode.update_ctime(&time)?;
+                    
+                    notify_inotify_child(
+                        Some(&parent_inode),
+                        file.get_inode(),
+                        InotifyEvent::CREATE,
+                        child_name.as_ref(),
+                        0,
+                    );
+                    
                     Ok(file)
                 } else {
                     Err(e)
@@ -533,6 +617,8 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
             }
         }
     }
+
+    notify_inotify_file(file.as_ref(), InotifyEvent::OPEN);
 
     Ok(fd)
 }
@@ -639,6 +725,13 @@ fn do_openat_with_lookup_flags(
                     let parent_inode = parent_dentry.get_inode();
                     parent_inode.update_mtime(&time)?;
                     parent_inode.update_ctime(&time)?;
+                    notify_inotify_child(
+                        Some(&parent_inode),
+                        file.get_inode(),
+                        InotifyEvent::CREATE,
+                        child_name.as_ref(),
+                        0,
+                    );
                     Ok(file)
                 } else {
                     Err(e)
@@ -682,6 +775,8 @@ fn do_openat_with_lookup_flags(
             }
         }
     }
+
+    notify_inotify_file(file.as_ref(), InotifyEvent::OPEN);
 
     Ok(fd)
 }
@@ -752,7 +847,9 @@ pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
 
     let total_read = file.read_to_user(&ubuf)?;
 
-    finish_file_io(file.as_ref(), total_read, false)
+    let ret = finish_file_io(file.as_ref(), total_read, false)?;
+    notify_inotify_file(file.as_ref(), InotifyEvent::READ);
+    Ok(ret)
 }
 
 pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usize) -> SyscallRet {
@@ -1274,7 +1371,12 @@ pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
 pub fn close(fd: usize) -> Result<usize, Errno> {
     // Drop Arc<dyn FileOps> without lock
     let file = current::fdtable().lock().take(fd)?;
-    drop(file);
+
+    if file.writable() {
+        notify_inotify_file(file.as_ref(), InotifyEvent::CLOSE_WRITE);
+    } else {
+        notify_inotify_file(file.as_ref(), InotifyEvent::CLOSE_NOWRITE);
+    }
 
     Ok(0)
 }
@@ -1302,19 +1404,26 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
     let mut fdtable = fdtable.lock();
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         for i in fd..=max_fd {
-            if let Ok(fdflags) = fdtable.get_fd_flags(i) {
-                fdtable.set_fd_flags(
-                    i,
-                    FDFlags {
-                        cloexec: true,
-                        ..fdflags
-                    },
-                )?;
+            if fdtable.get_fd_flags(i).is_ok() {
+                fdtable.set_fd_flags(i, FDFlags { cloexec: true })?;
             }
         }
     } else {
+        let mut closed_files = Vec::new();
         for i in fd..=max_fd {
-            let _ = fdtable.take(i);
+            if let Ok(file) = fdtable.take(i) {
+                closed_files.push(file);
+            }
+        }
+        drop(fdtable);
+
+        for file in closed_files {
+            let event = if file.writable() {
+                InotifyEvent::CLOSE_WRITE
+            } else {
+                InotifyEvent::CLOSE_NOWRITE
+            };
+            notify_inotify_file(file.as_ref(), event);
         }
     }
 
@@ -1993,11 +2102,13 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
     if uptr_times.is_null() {
         inode.update_atime(&now)?;
         inode.update_mtime(&now)?;
+        notify_inotify_dentry(&dentry, InotifyEvent::ATTRIB);
         return Ok(0);
     }
 
     let atime = uptr_times.index(0).read()?;
     let mtime = uptr_times.index(1).read()?;
+    let mut updated = false;
     if atime.tv_nsec != UTIME_OMIT {
         if atime.tv_nsec == UTIME_NOW {
             inode.update_atime(&now)?;
@@ -2005,6 +2116,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
             let duration = Duration::new(atime.tv_sec, atime.tv_nsec as u32);
             inode.update_atime(&duration)?;
         }
+        updated = true;
     }
 
     if mtime.tv_nsec != UTIME_OMIT {
@@ -2014,6 +2126,11 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
             let duration = Duration::new(mtime.tv_sec, mtime.tv_nsec as u32);
             inode.update_mtime(&duration)?;
         }
+        updated = true;
+    }
+
+    if updated {
+        notify_inotify_dentry(&dentry, InotifyEvent::ATTRIB);
     }
 
     Ok(0)
@@ -2042,7 +2159,15 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         .ok_or(Errno::EEXIST)?
     };
 
-    parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
+    let inode = parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
+    let parent_inode = parent.get_inode();
+    notify_inotify_child(
+        Some(&parent_inode),
+        Some(&inode),
+        InotifyEvent::CREATE,
+        name.as_ref(),
+        0,
+    );
 
     Ok(0)
 }
@@ -2148,10 +2273,31 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, flags: usize) -> SyscallRet {
         return Err(Errno::EROFS);
     }
 
+    let child_inode = parent.lookup(name.as_ref()).ok().map(|child| child.get_inode());
+    let child_delete_self = child_inode.as_ref().is_some_and(|inode| {
+        flags.contains(UnlinkAtFlags::AT_REMOVEDIR) || matches!(inode.fstat(), Ok(stat) if stat.st_nlink <= 1)
+    });
+    let parent_inode = parent.get_inode();
+
     if flags.contains(UnlinkAtFlags::AT_REMOVEDIR) {
         parent.rmdir(name.as_ref())?;
     } else {
         parent.unlink(name.as_ref())?;
+    }
+
+    notify_inotify_child(
+        Some(&parent_inode),
+        child_inode.as_ref(),
+        InotifyEvent::DELETE,
+        name.as_ref(),
+        0,
+    );
+
+    if let Some(inode) = child_inode {
+        notify_inotify(Some(&inode), InotifyEvent::ATTRIB);
+        if child_delete_self {
+            notify_inotify(Some(&inode), InotifyEvent::DELETE_SELF);
+        }
     }
 
     Ok(0)
@@ -2184,6 +2330,8 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
     };
 
     parent.create_symlink(name.as_ref(), &target, Owner::new(current::fsuid(), current::fsgid()))?;
+    let parent_inode = parent.get_inode();
+    notify_inotify_child(Some(&parent_inode), None, InotifyEvent::CREATE, name.as_ref(), 0);
 
     Ok(0)
 }
@@ -2231,7 +2379,17 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
         return Err(Errno::EXDEV); // Cross-device link
     }
 
+    let old_inode = old_dentry.get_inode();
     new_parent_dentry.link(new_name.as_ref(), &old_dentry)?;
+    let new_parent_inode = new_parent_dentry.get_inode();
+    notify_inotify_child(
+        Some(&new_parent_inode),
+        Some(&old_inode),
+        InotifyEvent::CREATE,
+        new_name.as_ref(),
+        0,
+    );
+    notify_inotify(Some(&old_inode), InotifyEvent::ATTRIB);
 
     Ok(0)
 }
@@ -2278,7 +2436,35 @@ pub fn renameat2(
         return Err(Errno::EXDEV); // Cross-device link
     }
 
+    if Arc::ptr_eq(&old_parent, &new_parent) && old_name == new_name {
+        return Ok(0);
+    }
+
+    let moved_inode = old_parent
+        .lookup(old_name.as_ref())
+        .ok()
+        .map(|dentry| dentry.get_inode());
+    let old_parent_inode = old_parent.get_inode();
+    let new_parent_inode = new_parent.get_inode();
+
     old_parent.rename(old_name.as_ref(), &new_parent, new_name.as_ref())?;
+
+    let cookie = next_inotify_cookie();
+    notify_inotify_child(
+        Some(&old_parent_inode),
+        moved_inode.as_ref(),
+        InotifyEvent::MOVED_FROM,
+        old_name.as_ref(),
+        cookie,
+    );
+    notify_inotify_child(
+        Some(&new_parent_inode),
+        moved_inode.as_ref(),
+        InotifyEvent::MOVED_TO,
+        new_name.as_ref(),
+        cookie,
+    );
+    notify_inotify(moved_inode.as_ref(), InotifyEvent::MOVE_SELF);
 
     Ok(0)
 }
@@ -2305,7 +2491,11 @@ fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
         }
     }
 
+    let old_mode = inode.mode()?;
     inode.chmod(mode)?;
+    if inode.mode()? != old_mode {
+        notify_inotify_dentry(&dentry, InotifyEvent::ATTRIB);
+    }
     Ok(0)
 }
 
@@ -2339,7 +2529,11 @@ fn do_chown(dentry: &Arc<Dentry>, uid: Option<Uid>, gid: Option<Uid>) -> Syscall
         }
     }
 
+    let old_owner = inode.owner()?;
     inode.chown(uid, gid)?;
+    if inode.owner()? != old_owner {
+        notify_inotify_dentry(&dentry, InotifyEvent::ATTRIB);
+    }
     Ok(0)
 }
 
@@ -2480,6 +2674,8 @@ pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
         let time = driver::chosen::kclock::now()?;
         inode.update_mtime(&time)?;
         inode.update_ctime(&time)?;
+        notify_inotify_dentry(&dentry, InotifyEvent::MODIFY);
+        notify_inotify_dentry(&dentry, InotifyEvent::ATTRIB);
     }
 
     Ok(0)
@@ -2500,6 +2696,7 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     if old_size != length {
         let time = driver::chosen::kclock::now()?;
         update_file_times(file.as_ref(), &time, true)?;
+        notify_inotify_file(file.as_ref(), InotifyEvent::ATTRIB);
     }
 
     Ok(0)

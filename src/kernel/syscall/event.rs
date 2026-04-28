@@ -3,18 +3,20 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::bitflags;
-use core::convert::TryInto;
+use core::convert::{TryFrom, TryInto};
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
 use crate::arch;
 use crate::fs::file::FileOps;
+use crate::fs::inode::InotifyEvent;
+use crate::fs::{FileType, vfs};
 use crate::kernel::errno::Errno;
-use crate::kernel::event::{Event, EventFd, FileEvent, TimerFd, TimerFdClockId, timer};
+use crate::kernel::event::{Event, EventFd, FileEvent, InotifyFd, TimerFd, TimerFdClockId, timer};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet, signum};
 use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::SysResult;
-use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
+use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer, UserStruct};
 use crate::kernel::task::PCB;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::uapi::OpenFlags;
@@ -60,6 +62,57 @@ pub fn eventfd2(initval: usize, flags: usize) -> SysResult<usize> {
         },
     )?;
     Ok(fd)
+}
+
+bitflags! {
+    struct InotifyInitFlags: usize {
+        const IN_NONBLOCK = OpenFlags::O_NONBLOCK.bits();
+        const IN_CLOEXEC = OpenFlags::O_CLOEXEC.bits();
+    }
+}
+
+pub fn inotify_init1(flags: usize) -> SysResult<usize> {
+    let flags = InotifyInitFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let inotify = Arc::new(InotifyFd::new(!flags.contains(InotifyInitFlags::IN_NONBLOCK)));
+    let fd = current::fdtable().lock().push(
+        inotify,
+        FDFlags {
+            cloexec: flags.contains(InotifyInitFlags::IN_CLOEXEC),
+        },
+    )?;
+    Ok(fd)
+}
+
+pub fn inotify_add_watch(fd: usize, uptr_path: UString, mask: usize) -> SysResult<usize> {
+    let mask = u32::try_from(mask)
+        .ok()
+        .and_then(InotifyEvent::from_bits)
+        .ok_or(Errno::EINVAL)?;
+
+    let path = uptr_path.should_not_null()?.read_path()?;
+    let helper = if mask.contains(InotifyEvent::DONT_FOLLOW) {
+        vfs::load_dentry_at_nofollow
+    } else {
+        vfs::load_dentry_at
+    };
+    let dentry = current::with_cwd(|cwd| helper(&cwd, &path))?;
+    let inode = dentry.get_inode();
+    if mask.contains(InotifyEvent::ONLYDIR) && inode.inode_type()? != FileType::Directory {
+        return Err(Errno::ENOTDIR);
+    }
+    let notifier = inode.get_notifier().ok_or(Errno::EINVAL)?;
+
+    let file = current::fdtable().lock().get(fd)?;
+    let inotify = file.downcast_ref::<InotifyFd>().ok_or(Errno::EINVAL)?;
+    inotify.add_watch(notifier, mask)
+}
+
+pub fn inotify_rm_watch(fd: usize, wd: usize) -> SysResult<usize> {
+    let file = current::fdtable().lock().get(fd)?;
+    let inotify = file.downcast_ref::<InotifyFd>().ok_or(Errno::EINVAL)?;
+    let wd = i32::try_from(wd).map_err(|_| Errno::EINVAL)?;
+    inotify.remove_watch(wd)?;
+    Ok(0)
 }
 
 pub fn timerfd_create(clockid: usize, flags: usize) -> SysResult<usize> {
