@@ -7,9 +7,10 @@ use crate::arch;
 use crate::fs::vfs;
 use crate::kernel::config;
 use crate::kernel::errno::Errno;
-use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
+use crate::kernel::task::manager;
 use crate::klib::dmesg;
 use crate::klib::random::random;
 
@@ -521,14 +522,23 @@ enum PriorityWhich {
 
 pub fn getpriority(which: usize, who: usize) -> SyscallRet {
     let which = PriorityWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
-    match which {
-        PriorityWhich::Process | PriorityWhich::Pgrp | PriorityWhich::User => {}
-    }
     if who > i32::MAX as usize {
         return Err(Errno::ESRCH);
     }
 
-    Ok(20)
+    let nice = match which {
+        PriorityWhich::Process => {
+            if who == 0 {
+                current::pcb().nice()
+            } else {
+                let tcb = manager::get(who as Tid).ok_or(Errno::ESRCH)?;
+                tcb.parent().nice()
+            }
+        }
+        PriorityWhich::Pgrp | PriorityWhich::User => current::pcb().nice(),
+    };
+
+    Ok((20 - nice) as usize)
 }
 
 // TODO: implement real scheduling policy setting

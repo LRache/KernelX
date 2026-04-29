@@ -119,6 +119,36 @@ pub fn setsid() -> SyscallRet {
     Ok(pcb.pid() as usize)
 }
 
+pub fn setpriority(which: usize, who: usize, prio: usize) -> SyscallRet {
+    const PRIO_PROCESS: usize = 0;
+    const PRIO_MIN: isize = -20;
+    const PRIO_MAX: isize = 19;
+
+    if which != PRIO_PROCESS {
+        return Err(Errno::EINVAL);
+    }
+
+    let prio = (prio as isize).clamp(PRIO_MIN, PRIO_MAX);
+
+    let caller = current::pcb().clone();
+    let target = if who == 0 {
+        caller.clone()
+    } else {
+        let pid = who as Tid;
+        if pid < 0 {
+            return Err(Errno::EINVAL);
+        }
+        find_process(pid).ok_or(Errno::ESRCH)?
+    };
+
+    if caller.euid() != 0 && prio < target.nice() {
+        return Err(Errno::EPERM);
+    }
+
+    target.set_nice(prio);
+    Ok(0)
+}
+
 bitflags! {
     struct PidFdFlags: usize {
         const NONBLOCK = OpenFlags::O_NONBLOCK.bits();

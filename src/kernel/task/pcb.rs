@@ -101,6 +101,7 @@ pub struct PCB {
     sgid: SpinLock<Uid>,
     fsgid: SpinLock<Uid>,
     supplementary_gids: SpinLock<Vec<Uid>>,
+    nice: SpinLock<isize>,
 
     pgid: SpinLock<Pid>,
     sid: SpinLock<Pid>,
@@ -155,6 +156,7 @@ impl PCB {
             sgid: SpinLock::new(*parent.sgid.lock(), "PCB::sgid"),
             fsgid: SpinLock::new(*parent.fsgid.lock(), "PCB::fsgid"),
             supplementary_gids: SpinLock::new(parent.supplementary_gids.lock().clone(), "PCB::supplementary_gids"),
+            nice: SpinLock::new(*parent.nice.lock(), "PCB::nice"),
 
             pgid: SpinLock::new(pgid, "PCB::pgid"),
             sid: SpinLock::new(parent.sid(), "PCB::sid"),
@@ -211,6 +213,7 @@ impl PCB {
             sgid: SpinLock::new(0, "PCB::sgid"),
             fsgid: SpinLock::new(0, "PCB::fsgid"),
             supplementary_gids: SpinLock::new(Vec::new(), "PCB::supplementary_gids"),
+            nice: SpinLock::new(0, "PCB::nice"),
 
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
             sid: SpinLock::new(new_tid, "PCB::sid"),
@@ -336,6 +339,14 @@ impl PCB {
 
     pub fn set_supplementary_gids(&self, gids: Vec<Uid>) {
         *self.supplementary_gids.lock() = gids;
+    }
+
+    pub fn nice(&self) -> isize {
+        *self.nice.lock()
+    }
+
+    pub fn set_nice(&self, nice: isize) {
+        *self.nice.lock() = nice;
     }
 
     pub fn exec_path(&self) -> String {
