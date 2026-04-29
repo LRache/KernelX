@@ -243,6 +243,30 @@ pub fn pidfd_send_signal(pidfd: usize, signum: usize, info: UPtr<SigInfo>, flags
     Ok(0)
 }
 
+pub fn rt_sigqueueinfo(pid: usize, signum: usize, info: UPtr<SigInfo>) -> SyscallRet {
+    info.should_not_null()?;
+
+    let pid = pid as i32;
+    if pid <= 0 {
+        return Err(Errno::ESRCH);
+    }
+
+    let target_tcb = manager::get(pid).ok_or(Errno::ESRCH)?;
+    let target = target_tcb.parent();
+    let signum = SignalNum::try_from(signum as u32)?;
+    if !can_send_signal(target, signum) {
+        return Err(Errno::EPERM);
+    }
+
+    let (si_code, si_errno, fields) = pidfd_signal_info(target, info)?;
+    if signum.is_empty() {
+        return Ok(0);
+    }
+
+    target.send_signal(signum, si_code, si_errno, fields, None)?;
+    Ok(0)
+}
+
 #[repr(usize)]
 #[derive(Debug, TryFromPrimitive)]
 enum SigProcmaskHow {
@@ -291,6 +315,22 @@ pub fn rt_sigprocmask(how: usize, uptr_set: UPtr<SignalSet>, uptr_oldset: UPtr<S
         uptr_oldset.write(old_set)?;
     }
 
+    Ok(0)
+}
+
+pub fn rt_sigpending(uptr_set: UPtr<SignalSet>, sigsetsize: usize) -> SyscallRet {
+    uptr_set.should_not_null()?;
+    if sigsetsize != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
+
+    let tcb = current::tcb();
+    let mut set = tcb.parent().pending_signals().lock().pending_set(tcb.tid());
+    if let Some(pending) = tcb.state().lock().pending_signal {
+        set |= pending.signum.to_mask_set();
+    }
+
+    uptr_set.write(set)?;
     Ok(0)
 }
 

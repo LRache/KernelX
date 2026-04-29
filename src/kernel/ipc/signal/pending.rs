@@ -27,6 +27,16 @@ impl PendingSignalQueue {
         Ok(())
     }
 
+    pub fn pending_set(&self, tid: Tid) -> SignalSet {
+        let mut set = SignalSet::empty();
+        for signal in &self.pending {
+            if signal.dest == Some(tid) || signal.dest.is_none() {
+                set |= signal.signum.to_mask_set();
+            }
+        }
+        set
+    }
+
     pub fn pop_pending(&mut self, mask: SignalSet, tid: Tid) -> Option<PendingSignal> {
         let mut index = None;
         for (i, signal) in self.pending.iter().enumerate() {
