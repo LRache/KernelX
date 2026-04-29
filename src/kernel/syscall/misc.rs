@@ -431,6 +431,26 @@ pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UBuffer) -> 
     Ok(cpusetsize)
 }
 
+#[derive(TryFromPrimitive)]
+#[repr(usize)]
+enum PriorityWhich {
+    Process = 0,
+    Pgrp = 1,
+    User = 2,
+}
+
+pub fn getpriority(which: usize, who: usize) -> SyscallRet {
+    let which = PriorityWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
+    match which {
+        PriorityWhich::Process | PriorityWhich::Pgrp | PriorityWhich::User => {}
+    }
+    if who > i32::MAX as usize {
+        return Err(Errno::ESRCH);
+    }
+
+    Ok(20)
+}
+
 // TODO: implement real scheduling policy setting
 pub fn sched_setscheduler(_pid: usize, _policy: usize, _uptr_param: UPtr<u32>) -> SyscallRet {
     // Pretend success, always using SCHED_OTHER
