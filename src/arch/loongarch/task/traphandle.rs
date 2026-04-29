@@ -34,6 +34,11 @@ unsafe extern "C" {
 /// on exception entry). We handle the trap, then return_to_user().
 #[unsafe(no_mangle)]
 pub extern "C" fn usertrap_handler() -> ! {
+    // Bookkeeping: the user-time accumulator was started when we last
+    // `ertn`'d into PLV3. Close it out before doing any kernel work,
+    // else `trap::trap_return` below will panic on the missing system_start.
+    trap::trap_enter();
+
     // Cache ERA before anything else — the syscall path needs to advance it,
     // and any inner code running may clobber the CSR if it nests (shouldn't,
     // but defense in depth).
@@ -134,6 +139,14 @@ pub fn return_to_user() -> ! {
     // Tell the next usertrap the UserContext address to save into.
     // asm_usertrap_entry will csrrd $t0, SAVE0.
     csr::write::<{ csr::num::SAVE0 }>(uc as *const UserContext as usize);
+
+    // Stash the kernel's per-CPU pointer (currently in $r21) so the next
+    // user-trap entry can restore it after user code clobbered $r21 at
+    // will. Done every trip rather than at task creation because the
+    // Processor / percpu pointer may differ per hart — on SMP this field
+    // is the right place to carry it across a ertn/trap boundary.
+    use crate::arch::arch::ArchTrait;
+    uc.kernel_percpu = crate::arch::arch::Arch::get_percpu_data();
 
     // Install the user's page-table root in PGDL. HPTW will consult it on
     // the next TLB miss (after we ertn).

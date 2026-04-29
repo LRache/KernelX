@@ -30,11 +30,13 @@
     .global _entry
     .type _entry, @function
 _entry:
-    /* QEMU's bootloader leaves $a0=1 and $a1=cmdline-vaddr; neither is
-     * what we want. Force hartid=0 (single-core on BSP). FDT discovery
-     * is handled entirely in Rust (`arch::loongarch::fdt`) using a fixed
-     * PA, so there is no register to forward. */
+    /* QEMU's bootloader leaves $a0=1 and $a1=cmdline-PA; we keep $a1 for
+     * later (fdt.rs picks it up via the global la_boot_cmdline_pa symbol).
+     * Force hartid=0 (single-core on BSP). FDT discovery is handled
+     * entirely in Rust (`arch::loongarch::fdt`) using a fixed PA, so
+     * there is no FDT pointer to forward. */
     move    $s0, $zero                /* $s0 = hartid = 0 */
+    move    $s1, $a1                  /* $s1 = cmdline PA (QEMU $a1) */
 
     /* DMW0 @ 0x8000_0000_0000_0000: PLV0=1 (bit0), MAT=SUC (bits 5:4 = 0). */
     ori     $t0, $zero, 0x1
@@ -66,6 +68,13 @@ _entry:
     addi.d  $t0, $t0, 8
     b       2b
 3:
+
+    /* Stash the cmdline PA QEMU handed us in $a1. Must come AFTER the
+     * BSS clear, otherwise the zero-pass below stomps it. Defined in
+     * .data so the BSS clear above doesn't touch it; the Rust side
+     * reads it via the global `la_boot_cmdline_pa` symbol. */
+    la.pcrel $t0, la_boot_cmdline_pa
+    st.d    $s1, $t0, 0
 
     /* Kernel stack grows down from __stack_end. */
     la.pcrel $sp, __stack_end
@@ -117,3 +126,16 @@ _entry:
 __la_others_entry:
 1:  idle 0
     b 1b
+
+/*
+ * QEMU's `$a1` on entry holds the physical address of the kernel-cmdline
+ * C-string that `-append` was copied into (or 0 if no cmdline was given).
+ * `_entry` stashes it here so `src/arch/loongarch/fdt.rs` can read it
+ * without plumbing another arg through `main()`. Placed in `.data` so
+ * the BSS zero-pass in `_entry` does not clear it.
+ */
+    .section .data
+    .globl la_boot_cmdline_pa
+    .balign 8
+la_boot_cmdline_pa:
+    .dword 0

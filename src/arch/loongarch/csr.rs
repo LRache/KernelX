@@ -41,6 +41,10 @@ pub mod num {
     pub const TLBRBADV:   u32 = 0x89;
     pub const TLBRERA:    u32 = 0x8a;
     pub const TLBRSAVE:   u32 = 0x8b;
+    pub const TLBRELO0:   u32 = 0x8c;
+    pub const TLBRELO1:   u32 = 0x8d;
+    pub const TLBREHI:    u32 = 0x8e;
+    pub const TLBRPRMD:   u32 = 0x8f;
     pub const DMW0:       u32 = 0x180;
     pub const DMW1:       u32 = 0x181;
     pub const DMW2:       u32 = 0x182;
