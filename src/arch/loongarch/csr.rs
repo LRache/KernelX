@@ -121,7 +121,7 @@ pub mod estat {
     pub const ECODE_SHIFT: usize = 16;
     pub const ECODE_MASK:  usize = 0x3f << ECODE_SHIFT;
     pub const ESUBCODE_SHIFT: usize = 22;
-    pub const ESUBCODE_MASK:  usize = 0x1ff << ESUBCODE_SHIFT;
+    pub const ESUBCODE_MASK:  usize = 0x1ff;
 }
 
 /// Known ESTAT.Ecode values.
