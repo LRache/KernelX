@@ -564,6 +564,11 @@ impl PCB {
         // at which point it is safe to reclaim the resources.
         drop(tasks);
         self.timers.clear();
+        self.itimer_ids.lock().iter().for_each(|id| {
+            if let Some(id) = id {
+                timer::remove_timer(*id);
+            }
+        });
         self.replace_exec_inode(None);
 
         *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();

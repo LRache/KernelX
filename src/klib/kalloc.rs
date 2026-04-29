@@ -2,6 +2,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
 use spin::Mutex;
 
+use crate::klib;
+
 unsafe extern "C" {
     fn init_heap(start: *mut c_void, size: usize);
     fn malloc_aligned(align: usize, size: usize) -> *mut c_void;
@@ -28,12 +30,17 @@ impl HeapAllocator {
 unsafe impl GlobalAlloc for HeapAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = self.mutex.lock();
+        if layout.size() >= 1 * 1024 * 1024 {
+            // 1 MiB threshold for large allocations
+            crate::kwarn!("Large allocation: {} bytes", layout.size());
+            klib::backtrace::print_backtrace();
+        }
         let ptr = unsafe { malloc_aligned(layout.align(), layout.size()) as *mut u8 };
         debug_assert!(!ptr.is_null());
         ptr
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let _ = self.mutex.lock();
         unsafe { free(ptr as *mut c_void) };
     }
