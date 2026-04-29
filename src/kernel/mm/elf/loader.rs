@@ -62,8 +62,11 @@ pub fn load_elf(
         return Err(Errno::ENOEXEC);
     }
 
-    if !ehdr.is_riscv() {
-        println!("Unsupported ELF format: not RISC-V");
+    if !ehdr.is_native() {
+        println!(
+            "Unsupported ELF format: e_machine={:#x} does not match kernel arch",
+            ehdr.e_machine
+        );
         return Err(Errno::ENOEXEC);
     }
 
