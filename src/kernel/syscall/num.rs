@@ -112,6 +112,8 @@ macro_rules! syscall_entries {
             141 => misc::getpriority(2),
             142 => misc::reboot(0),
             160 => misc::newuname(1),
+            161 => misc::sethostname(2),
+            162 => misc::setdomainname(2),
             165 => misc::getrusage(2),
             179 => misc::sysinfo(1),
             236 => misc::get_mempolicy(0),
