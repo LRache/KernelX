@@ -1,21 +1,10 @@
+    .section .text
+    .global asm_usertrap_entry
+    .type   asm_usertrap_entry, @function
+    .global asm_usertrap_return
+    .type   asm_usertrap_return, @function
+
 /*
- * LoongArch user-trap entry / return.
- *
- * Entry: reached from asm_kerneltrap_entry when PRMD.PPLV != 0.
- *   1. `csrrd $t0, SAVE0` — SAVE0 was set by return_to_user to
- *      &UserContext, so $t0 now points at it.
- *   2. Save $r1..$r31 into UserContext.gpr[1..32] (skip $r0; skip $r12
- *      which IS $t0 — recorded as 0, the user's $t0 is lost on the fast
- *      path; Linux does the same).
- *   3. Load kernel_sp and kernel_percpu from UserContext ($r21 is the
- *      per-CPU pointer; user code may have clobbered it).
- *   4. Call usertrap_handler() → tail-calls return_to_user() →
- *      asm_usertrap_return.
- *
- * Return (asm_usertrap_return): caller (return_to_user) has already
- * programmed SAVE0 / PGDL / ERA / PRMD and flushed the TLB. We restore
- * GPRs from UserContext and `ertn`.
- *
  * UserContext layout (src/arch/loongarch/context.rs, #[repr(C)]):
  *     byte off  field
  *     0..256    gpr[0..32]
@@ -25,21 +14,17 @@
  *     280       kernel_pgd
  *     288       usertrap_handler
  *     296..     fpregs / fcc / fcsr / user_entry / fpregs_dirty
+ *
+ * SAVE0 = &UserContext (written by return_to_user).
+ * SAVE1 = user $t0 stashed by asm_kerneltrap_entry before PPLV dispatch.
  */
 
-    .section .text
-    .global asm_usertrap_entry
-    .type   asm_usertrap_entry, @function
-    .global asm_usertrap_return
-    .type   asm_usertrap_return, @function
-
 asm_usertrap_entry:
-    csrrd   $t0, 0x30                /* $t0 = &UserContext (from SAVE0) */
+    csrrd   $t0, 0x30                /* $t0 = &UserContext */
 
-    /* Save $r1..$r31 (skip $r0 and $r12/$t0). */
     st.d    $r1,  $t0,   8
     st.d    $r2,  $t0,  16
-    st.d    $r3,  $t0,  24         /* $r3 = sp */
+    st.d    $r3,  $t0,  24
     st.d    $r4,  $t0,  32
     st.d    $r5,  $t0,  40
     st.d    $r6,  $t0,  48
@@ -68,35 +53,21 @@ asm_usertrap_entry:
     st.d    $r30, $t0, 240
     st.d    $r31, $t0, 248
 
-    /* User's $t0 on the fast path is lost. Record 0 so the slot is defined. */
-    st.d    $zero, $t0, 96
+    /* recover user $t0 from SAVE1 (stashed by kerneltrap dispatch) */
+    csrrd   $t1, 0x31
+    st.d    $t1, $t0, 96
 
-    /* Switch to kernel stack (UserContext.kernel_sp @ 256). */
     ld.d    $sp, $t0, 256
-
-    /* Restore kernel $r21 (per-CPU pointer) from kernel_percpu @ 264.
-     * User code was free to clobber $r21; without this, any code reading
-     * per-CPU data via $r21 would dereference user garbage. */
     ld.d    $r21, $t0, 264
 
     bl      usertrap_handler
-    /* usertrap_handler does not return. */
 1:  idle    0
     b       1b
     .size asm_usertrap_entry, . - asm_usertrap_entry
 
 
-/*
- * fn asm_usertrap_return(user_context: *const UserContext) -> !;
- * $a0 = &UserContext.
- *
- * Caller has already written CSR.{SAVE0, PGDL, ERA, PRMD} and invtlb'd.
- * We restore GPRs and `ertn`. `ertn` atomically does:
- *   CRMD <- PRMD  (PLV=3, IE=1)
- *   PC   <- ERA
- */
 asm_usertrap_return:
-    move    $t0, $a0                /* $t0 = &UserContext */
+    move    $t0, $a0
 
     ld.d    $r1,  $t0,   8
     ld.d    $r2,  $t0,  16
@@ -129,7 +100,6 @@ asm_usertrap_return:
     ld.d    $r30, $t0, 240
     ld.d    $r31, $t0, 248
 
-    /* $t0 last. */
     ld.d    $t0, $t0, 96
 
     ertn
