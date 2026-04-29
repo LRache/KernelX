@@ -38,20 +38,8 @@ fn now() -> Duration {
     kclock::now().unwrap_or(Duration::ZERO)
 }
 
-fn encode_time(dur: &Duration) -> (u32, u32) {
-    let sec = dur.as_secs();
-    let nsec = dur.subsec_nanos();
-    let time = u32::to_le(sec as u32);
-    let extra = u32::to_le((nsec << 2) | (sec >> 32) as u32);
-    (time, extra)
-}
-
-fn decode_time(time: u32, extra: u32) -> Duration {
-    let sec = u32::from_le(time);
-    let extra = u32::from_le(extra);
-    let epoch = extra & 3;
-    let nsec = extra >> 2;
-    Duration::new(sec as u64 + ((epoch as u64) << 32), nsec)
+fn encode_time(dur: &Duration) -> u32 {
+    dur.as_secs() as u32
 }
 
 fn inode_mode(inode_ref: &mut ext4_inode_ref) -> u32 {
@@ -107,28 +95,22 @@ fn inode_set_owner(inode_ref: &mut ext4_inode_ref, uid: u16, gid: u16) {
 }
 
 fn inode_set_atime(inode_ref: &mut ext4_inode_ref, dur: &Duration) {
-    let (time, extra) = encode_time(dur);
     unsafe {
-        (*inode_ref.inode).access_time = time;
-        (*inode_ref.inode).atime_extra = extra;
+        ext4_inode_set_access_time(inode_ref.inode, encode_time(dur));
     }
     inode_ref.dirty = true;
 }
 
 fn inode_set_mtime(inode_ref: &mut ext4_inode_ref, dur: &Duration) {
-    let (time, extra) = encode_time(dur);
     unsafe {
-        (*inode_ref.inode).modification_time = time;
-        (*inode_ref.inode).mtime_extra = extra;
+        ext4_inode_set_modif_time(inode_ref.inode, encode_time(dur));
     }
     inode_ref.dirty = true;
 }
 
 fn inode_set_ctime(inode_ref: &mut ext4_inode_ref, dur: &Duration) {
-    let (time, extra) = encode_time(dur);
     unsafe {
-        (*inode_ref.inode).change_inode_time = time;
-        (*inode_ref.inode).ctime_extra = extra;
+        ext4_inode_set_change_inode_time(inode_ref.inode, encode_time(dur));
     }
     inode_ref.dirty = true;
 }
@@ -757,7 +739,6 @@ impl InodeOps for Ext4Inode {
 
     fn fstat(&self) -> SysResult<FileStat> {
         self.with_ref(|_superblock, inode_ref| {
-            let inode = unsafe { &*inode_ref.inode };
             let sb = unsafe { &(*inode_ref.fs).sb };
             let mut stat = FileStat::default();
             stat.st_ino = self.ino as u64;
@@ -769,12 +750,12 @@ impl InodeOps for Ext4Inode {
             stat.st_size = inode_size(inode_ref) as i64;
             stat.st_blksize = get_block_size(sb) as i32;
             stat.st_blocks = inode_blocks(inode_ref);
-            stat.st_atime_sec = decode_time(inode.access_time, inode.atime_extra).as_secs() as i64;
-            stat.st_atime_nsec = decode_time(inode.access_time, inode.atime_extra).subsec_nanos() as i64;
-            stat.st_mtime_sec = decode_time(inode.modification_time, inode.mtime_extra).as_secs() as i64;
-            stat.st_mtime_nsec = decode_time(inode.modification_time, inode.mtime_extra).subsec_nanos() as i64;
-            stat.st_ctime_sec = decode_time(inode.change_inode_time, inode.ctime_extra).as_secs() as i64;
-            stat.st_ctime_nsec = decode_time(inode.change_inode_time, inode.ctime_extra).subsec_nanos() as i64;
+            stat.st_atime_sec = unsafe { ext4_inode_get_access_time(inode_ref.inode) } as i64;
+            stat.st_atime_nsec = 0;
+            stat.st_mtime_sec = unsafe { ext4_inode_get_modif_time(inode_ref.inode) } as i64;
+            stat.st_mtime_nsec = 0;
+            stat.st_ctime_sec = unsafe { ext4_inode_get_change_inode_time(inode_ref.inode) } as i64;
+            stat.st_ctime_nsec = 0;
             Ok(stat)
         })
     }
