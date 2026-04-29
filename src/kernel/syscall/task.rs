@@ -314,6 +314,12 @@ fn check_clone_flags(flags: &CloneFlags) -> SysResult<()> {
     if flags.contains(CloneFlags::SIGHAND) && !flags.contains(CloneFlags::VM) {
         return Err(Errno::EINVAL);
     }
+    if flags.contains(CloneFlags::NEWUTS) && flags.contains(CloneFlags::THREAD) {
+        return Err(Errno::EINVAL);
+    }
+    if flags.contains(CloneFlags::NEWUTS) && current::pcb().euid() != 0 {
+        return Err(Errno::EPERM);
+    }
     Ok(())
 }
 
@@ -371,6 +377,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
             thread: flags.contains(CloneFlags::THREAD),
             parent: flags.contains(CloneFlags::PARENT),
             vfork: flags.contains(CloneFlags::VFORK),
+            new_uts: flags.contains(CloneFlags::NEWUTS),
         },
         stack,
         tls: if flags.contains(CloneFlags::SETTLS) {
@@ -455,6 +462,7 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
             thread: flags.contains(CloneFlags::THREAD),
             parent: flags.contains(CloneFlags::PARENT),
             vfork: flags.contains(CloneFlags::VFORK),
+            new_uts: flags.contains(CloneFlags::NEWUTS),
         },
         stack,
         tls: if flags.contains(CloneFlags::SETTLS) {

@@ -17,6 +17,7 @@ use crate::kernel::task::{self, manager, with_initpcb};
 use crate::kernel::uapi::Uid;
 use crate::klib::{SleepLock, SpinLock};
 
+use super::UtsNamespace;
 use super::tcb::TCB;
 
 pub type Pid = Tid;
@@ -83,6 +84,7 @@ pub struct PCB {
     file_size_limit: SpinLock<(usize, usize)>,
     waiting_task: SpinLock<Vec<Arc<dyn Task>>>,
     pidfd_waiters: SpinLock<WaitQueue<Event>>,
+    uts: UtsNamespace,
 
     signal: Signal,
 
@@ -117,11 +119,24 @@ pub struct PCB {
 }
 
 impl PCB {
-    pub fn new(pid: i32, pgid: Pid, parent: &Arc<PCB>, exit_signal: SignalNum) -> Arc<Self> {
+    pub fn new(
+        pid: i32,
+        pgid: Pid,
+        parent: &Arc<PCB>,
+        inherit: &Arc<PCB>,
+        exit_signal: SignalNum,
+        new_uts: bool,
+    ) -> Arc<Self> {
         let exec_inode = parent.exec_inode.lock().clone();
         if let Some(inode) = exec_inode.as_ref() {
             inode.increment_exec_count();
         }
+
+        let uts = if new_uts {
+            inherit.uts.fork()
+        } else {
+            inherit.uts.clone()
+        };
 
         Arc::new(Self {
             pid,
@@ -136,6 +151,7 @@ impl PCB {
             file_size_limit: SpinLock::new(*parent.file_size_limit.lock(), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
             pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
+            uts,
 
             signal: Signal {
                 actions: SpinLock::new(parent.signal.actions.lock().clone(), "PCB::signal.actions"),
@@ -196,6 +212,7 @@ impl PCB {
             file_size_limit: SpinLock::new((usize::MAX, usize::MAX), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
             pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
+            uts: UtsNamespace::new(),
 
             signal: Signal {
                 actions: SpinLock::new(SignalActionTable::new(), "PCB::signal.actions"),
@@ -353,6 +370,10 @@ impl PCB {
         self.exec_path.lock().clone()
     }
 
+    pub fn uts(&self) -> &UtsNamespace {
+        &self.uts
+    }
+
     pub fn is_exited(&self) -> bool {
         matches!(*self.state.lock(), State::Exited(_))
     }
@@ -468,12 +489,12 @@ impl PCB {
         } else if flags.parent {
             // CLONE_PARENT: the new process shares the same parent as the caller
             let real_parent = self.parent.lock().clone().ok_or(Errno::EINVAL)?;
-            let new_pcb = PCB::new(new_tid, self.pgid(), &real_parent, exit_signal);
+            let new_pcb = PCB::new(new_tid, self.pgid(), &real_parent, self, exit_signal, flags.new_uts);
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             real_parent.children.lock().push(new_pcb);
         } else {
-            let new_pcb = PCB::new(new_tid, self.pgid(), self, exit_signal);
+            let new_pcb = PCB::new(new_tid, self.pgid(), self, self, exit_signal, flags.new_uts);
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_pcb);

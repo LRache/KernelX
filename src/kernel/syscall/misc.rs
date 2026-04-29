@@ -1,7 +1,6 @@
 use alloc::vec;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
-use spin::{Lazy, RwLock};
 
 use crate::arch;
 use crate::fs::vfs;
@@ -10,46 +9,19 @@ use crate::kernel::errno::Errno;
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::task::manager;
+use crate::kernel::task::{UTS_NAME_MAX, manager};
 use crate::klib::dmesg;
 use crate::klib::random::random;
 
 use super::common::Timeval;
 
 const UTS_FIELD_LEN: usize = 65;
-const UTS_NAME_MAX: usize = UTS_FIELD_LEN - 1;
-const DEFAULT_HOSTNAME: &[u8] = b"kernelx";
-const DEFAULT_DOMAINNAME: &[u8] = b"none";
 
 pub fn rseq() -> Result<usize, Errno> {
     // This syscall is a no-op in the current implementation.
     // It is provided for compatibility with the Linux API.
     Ok(0)
 }
-
-#[derive(Clone, Copy)]
-struct UtsName {
-    bytes: [u8; UTS_NAME_MAX],
-    len: usize,
-}
-
-impl UtsName {
-    fn new(bytes: &[u8]) -> Self {
-        let mut name = UtsName {
-            bytes: [0; UTS_NAME_MAX],
-            len: bytes.len(),
-        };
-        name.bytes[..bytes.len()].copy_from_slice(bytes);
-        name
-    }
-
-    fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-}
-
-static HOSTNAME: Lazy<RwLock<UtsName>> = Lazy::new(|| RwLock::new(UtsName::new(DEFAULT_HOSTNAME)));
-static DOMAINNAME: Lazy<RwLock<UtsName>> = Lazy::new(|| RwLock::new(UtsName::new(DEFAULT_DOMAINNAME)));
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -78,11 +50,9 @@ impl Utsname {
         let sysname = b"Linux";
         ustname.sysname[..sysname.len()].copy_from_slice(sysname);
 
-        let hostname = HOSTNAME.read();
-        ustname.nodename[..hostname.len].copy_from_slice(hostname.as_bytes());
-
-        let domainname = DOMAINNAME.read();
-        ustname.domainname[..domainname.len].copy_from_slice(domainname.as_bytes());
+        let uts = current::pcb().uts();
+        uts.write_hostname_to(&mut ustname.nodename);
+        uts.write_domainname_to(&mut ustname.domainname);
 
         let release = "5.0.0";
         ustname.release[..release.len()].copy_from_slice(release.as_bytes());
@@ -109,15 +79,12 @@ pub fn sethostname(uptr_name: UBuffer, len: usize) -> SyscallRet {
         return Err(Errno::EINVAL);
     }
 
-    let mut hostname = UtsName {
-        bytes: [0; UTS_NAME_MAX],
-        len,
-    };
+    let mut hostname = [0; UTS_NAME_MAX];
     if len > 0 {
-        uptr_name.read(0, &mut hostname.bytes[..len])?;
+        uptr_name.read(0, &mut hostname[..len])?;
     }
 
-    *HOSTNAME.write() = hostname;
+    current::pcb().uts().set_hostname(&hostname[..len]);
 
     Ok(0)
 }
@@ -131,15 +98,12 @@ pub fn setdomainname(uptr_name: UBuffer, len: usize) -> SyscallRet {
         return Err(Errno::EINVAL);
     }
 
-    let mut domainname = UtsName {
-        bytes: [0; UTS_NAME_MAX],
-        len,
-    };
+    let mut domainname = [0; UTS_NAME_MAX];
     if len > 0 {
-        uptr_name.read(0, &mut domainname.bytes[..len])?;
+        uptr_name.read(0, &mut domainname[..len])?;
     }
 
-    *DOMAINNAME.write() = domainname;
+    current::pcb().uts().set_domainname(&domainname[..len]);
 
     Ok(0)
 }
