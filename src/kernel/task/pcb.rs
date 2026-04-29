@@ -26,6 +26,15 @@ struct Signal {
     pending: SpinLock<PendingSignalQueue>,
 }
 
+#[derive(Clone, Copy)]
+pub struct ITimer {
+    pub id: u64,
+    /// Absolute expiry time in microseconds
+    pub expiry_us: u64,
+    /// Interval for repeating itimers
+    pub interval: Duration,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ExitStatus {
     /// Normal exit with exit code (from exit/exit_group syscall)
@@ -79,11 +88,7 @@ pub struct PCB {
 
     children: SleepLock<Vec<Arc<PCB>>>,
 
-    pub itimer_ids: SpinLock<[Option<u64>; 3]>,
-    /// Absolute expiry time in microseconds for each itimer (0 = inactive)
-    pub itimer_expiry_us: SpinLock<[u64; 3]>,
-    /// Interval for repeating itimers
-    pub itimer_interval: SpinLock<[Duration; 3]>,
+    pub itimers: SpinLock<[Option<ITimer>; 3]>,
     pub timers: TimerTable,
 
     // TODO: 减少鉴权时候的数据拷贝。
@@ -138,9 +143,7 @@ impl PCB {
 
             children: SleepLock::new(Vec::new(), "PCB::children"),
 
-            itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
-            itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
-            itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
+            itimers: SpinLock::new([None; 3], "PCB::itimers"),
             timers: TimerTable::new(),
 
             uid: SpinLock::new(*parent.uid.lock(), "PCB::uid"),
@@ -215,9 +218,7 @@ impl PCB {
             exit_signal: signum::SIGCHLD,
 
             tasks_time_usage: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage"),
-            itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
-            itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
-            itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
+            itimers: SpinLock::new([None; 3], "PCB::itimers"),
             timers: TimerTable::new(),
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
@@ -564,9 +565,9 @@ impl PCB {
         // at which point it is safe to reclaim the resources.
         drop(tasks);
         self.timers.clear();
-        self.itimer_ids.lock().iter().for_each(|id| {
-            if let Some(id) = id {
-                timer::remove_timer(*id);
+        self.itimers.lock().iter().for_each(|itimer| {
+            if let Some(itimer) = itimer {
+                timer::remove_timer(itimer.id);
             }
         });
         self.replace_exec_inode(None);

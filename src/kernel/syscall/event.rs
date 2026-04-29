@@ -15,8 +15,8 @@ use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet, signum};
 use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
-use crate::kernel::task::PCB;
 use crate::kernel::task::fdtable::FDFlags;
+use crate::kernel::task::{ITimer, PCB};
 use crate::kernel::uapi::OpenFlags;
 use crate::klib::defer;
 
@@ -626,7 +626,7 @@ fn setitimer_helper(signum: SignalNum, interval: Duration, pcb: Arc<PCB>, which:
     }
 
     // Check if this timer is still active (not cancelled)
-    if pcb.itimer_ids.lock()[which].is_none() {
+    if pcb.itimers.lock()[which].is_none() {
         return;
     }
 
@@ -634,7 +634,6 @@ fn setitimer_helper(signum: SignalNum, interval: Duration, pcb: Arc<PCB>, which:
 
     // Schedule next interval
     let expiry_us = arch::get_time_us() + interval.as_micros() as u64;
-    pcb.itimer_expiry_us.lock()[which] = expiry_us;
 
     let pcb_clone = pcb.clone();
     let timer_id = timer::add_timer_with_callback(
@@ -643,27 +642,31 @@ fn setitimer_helper(signum: SignalNum, interval: Duration, pcb: Arc<PCB>, which:
             setitimer_helper(signum, interval, pcb_clone, which);
         }),
     );
-    pcb.itimer_ids.lock()[which] = Some(timer_id);
+    let mut itimers = pcb.itimers.lock();
+    itimers[which] = Some(ITimer {
+        id: timer_id,
+        expiry_us,
+        interval,
+    });
 }
 
 /// Compute remaining time for an itimer. Returns (remaining value, interval).
 fn get_old_itimer(pcb: &Arc<PCB>, which: usize) -> ITimerVal {
-    let expiry_us = pcb.itimer_expiry_us.lock()[which];
-    let interval = pcb.itimer_interval.lock()[which];
+    let Some(itimer) = pcb.itimers.lock()[which] else {
+        return ITimerVal::from_durations(Duration::ZERO, Duration::ZERO);
+    };
 
-    let remaining = if expiry_us == 0 {
-        Duration::ZERO
-    } else {
+    let remaining = {
         let now = arch::get_time_us();
-        if now >= expiry_us {
+        if now >= itimer.expiry_us {
             Duration::ZERO
         } else {
-            let rem_us = expiry_us - now;
+            let rem_us = itimer.expiry_us - now;
             Duration::from_micros(rem_us)
         }
     };
 
-    ITimerVal::from_durations(interval, remaining)
+    ITimerVal::from_durations(itimer.interval, remaining)
 }
 
 pub fn getitimer(which: usize, uptr_value: UPtr<ITimerVal>) -> SysResult<usize> {
@@ -694,15 +697,10 @@ pub fn setitimer(which: usize, uptr_new_value: UPtr<ITimerVal>, uptr_old_value: 
     let new_value = uptr_new_value.read()?;
 
     // Cancel existing timer
-    {
-        let mut ids = pcb.itimer_ids.lock();
-        if let Some(id) = ids[which] {
-            timer::remove_timer(id);
-        }
-        ids[which] = None;
+    let old_timer_id = pcb.itimers.lock()[which].take().map(|itimer| itimer.id);
+    if let Some(id) = old_timer_id {
+        timer::remove_timer(id);
     }
-    pcb.itimer_expiry_us.lock()[which] = 0;
-    pcb.itimer_interval.lock()[which] = Duration::ZERO;
 
     if new_value.it_value.is_zero() {
         return Ok(0);
@@ -715,15 +713,13 @@ pub fn setitimer(which: usize, uptr_new_value: UPtr<ITimerVal>, uptr_old_value: 
     };
 
     let interval = new_value.it_interval;
-
     if interval.tv_usec >= 1_000_000 {
         return Err(Errno::EINVAL);
     }
+    let interval_dur: Duration = interval.into();
 
     let value_dur: Duration = new_value.it_value.into();
     let expiry_us = arch::get_time_us() + value_dur.as_micros() as u64;
-    pcb.itimer_expiry_us.lock()[which] = expiry_us;
-    pcb.itimer_interval.lock()[which] = interval.into();
 
     let timer_id = if interval.is_zero() {
         let pcb_cb = pcb.clone();
@@ -731,12 +727,10 @@ pub fn setitimer(which: usize, uptr_new_value: UPtr<ITimerVal>, uptr_old_value: 
             value_dur,
             Box::new(move || {
                 let _ = pcb_cb.send_signal(signum, SiCode::SI_KERNEL, 0, KSiFields::Empty, None);
-                pcb_cb.itimer_ids.lock()[which] = None;
-                pcb_cb.itimer_expiry_us.lock()[which] = 0;
+                pcb_cb.itimers.lock()[which] = None;
             }),
         )
     } else {
-        let interval_dur: Duration = interval.into();
         let pcb_cb = pcb.clone();
         timer::add_timer_with_callback(
             value_dur,
@@ -746,7 +740,11 @@ pub fn setitimer(which: usize, uptr_new_value: UPtr<ITimerVal>, uptr_old_value: 
         )
     };
 
-    pcb.itimer_ids.lock()[which] = Some(timer_id);
+    pcb.itimers.lock()[which] = Some(ITimer {
+        id: timer_id,
+        expiry_us,
+        interval: interval_dur,
+    });
 
     Ok(0)
 }
