@@ -1,18 +1,3 @@
-//! LoongArch exception / interrupt dispatcher.
-//!
-//! Phase 4 scope:
-//!   - **kernel** trap entry only. User-space doesn't run yet (that's Phase 5),
-//!     so everything that arrives here came from PLV0. Any page fault is a
-//!     kernel bug — we treat them like `panic!`.
-//!   - Decode ESTAT.{Ecode,IS} and dispatch to:
-//!       · `IS bit 11` / Ecode=0x00 (INT) → timer interrupt
-//!       · anything else → panic with a readable message
-//!   - Timer handler acks TICLR, bumps software timers, and may re-schedule.
-//!
-//! The asm side (`clib/src/arch/loongarch/trap/kerneltrap.S`) saves every
-//! GPR that a C-ABI-safe function might clobber, calls into
-//! `kerneltrap_handler`, restores them, and executes `ertn`.
-
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::arch::loongarch::csr;
@@ -20,24 +5,12 @@ use crate::arch::loongarch::eiointc;
 use crate::kernel::trap;
 use crate::{kinfo, kwarn};
 
-/// Count timer interrupts we've taken. Exposed for observability only —
-/// the scheduler's wall-clock advancement goes through `timer_interrupt()`
-/// into `kernel::event::timer` which has its own bookkeeping.
 static TIMER_TICKS: AtomicUsize = AtomicUsize::new(0);
 
-/// Read-only accessor for debug / tests.
 pub fn timer_tick_count() -> usize {
     TIMER_TICKS.load(Ordering::Relaxed)
 }
 
-/// Called from asm. ra/sp/$r21 are already stashed — the handler sees a
-/// stable kernel stack and can panic/log freely.
-///
-/// Contract with asm:
-///   - interrupts globally disabled on entry (hardware clears CRMD.IE on
-///     exception); we keep them off for the whole handler.
-///   - ERA already holds the PC to return to; we don't adjust it (timer
-///     interrupts don't skip an instruction).
 #[unsafe(no_mangle)]
 pub extern "C" fn kerneltrap_handler() {
     let estat = csr::read::<{ csr::num::ESTAT }>();
@@ -46,19 +19,12 @@ pub extern "C" fn kerneltrap_handler() {
     let era = csr::read::<{ csr::num::ERA }>();
 
     if ecode == csr::ecode::INT {
-        // Interrupt path. Multiple lines can fire together; check each bit.
         if is & (1 << csr::ecfg::LINE_TIMER) != 0 {
-            // Clear the timer's pending bit BEFORE the handler runs. Otherwise
-            // we re-trap immediately on `ertn`.
             csr::write::<{ csr::num::TICLR }>(csr::ticlr::TIMER_ACK);
             TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
             trap::timer_interrupt();
         }
 
-        // HWI0 is our single exit point for device interrupts (EIOINTC
-        // aggregates every PCH-PIC source onto this line). Drain the
-        // ISR until no more pending bits — multiple devices can race
-        // through a single trap.
         if is & (1 << csr::ecfg::LINE_HWI0) != 0 {
             while let Some(irq) = eiointc::claim_irq() {
                 trap::external_interrupt(irq);
@@ -66,8 +32,6 @@ pub extern "C" fn kerneltrap_handler() {
             }
         }
 
-        // Any other HWI we haven't wired up. Shouldn't happen on QEMU
-        // virt in Phase 6 (only HWI0 is used).
         let other = is & !(1 << csr::ecfg::LINE_TIMER) & !(1 << csr::ecfg::LINE_HWI0);
         if other != 0 {
             kwarn!(
@@ -79,8 +43,7 @@ pub extern "C" fn kerneltrap_handler() {
         return;
     }
 
-    // Synchronous exception from kernel mode. Shouldn't happen in Phase 4 —
-    // there's no user code running yet — so every case is a bug.
+    // Synchronous exception from kernel mode — always a bug.
     let badv = csr::read::<{ csr::num::BADV }>();
     let badi = csr::read::<{ csr::num::BADI }>();
     panic!(
@@ -95,8 +58,6 @@ pub extern "C" fn kerneltrap_handler() {
     );
 }
 
-/// Readable label for a given ESTAT.Ecode. Used exclusively by the panic
-/// message so the caller sees "PIS" instead of "2".
 fn ecode_name(ecode: usize) -> &'static str {
     match ecode {
         csr::ecode::INT   => "INT",
@@ -122,11 +83,6 @@ fn ecode_name(ecode: usize) -> &'static str {
     }
 }
 
-/// Install `asm_kerneltrap_entry` into EENTRY and set VS=0 so every exception
-/// lands at the same address. Called from `Arch::init`.
-///
-/// Split out as its own function mainly so the asm extern is local to this
-/// file — no point in polluting `arch.rs` with it.
 pub fn install_trap_entry() {
     unsafe extern "C" {
         fn asm_kerneltrap_entry() -> !;
@@ -141,21 +97,8 @@ pub fn install_trap_entry() {
     );
 
     csr::write::<{ csr::num::EENTRY }>(entry_addr);
-    // VS=0 → single entry (no vectored dispatch).
     csr::xchg::<{ csr::num::ECFG }>(0, csr::ecfg::VS_MASK);
 
-    // Install the TLB refill handler. LoongArch routes TLB-miss exceptions
-    // through a dedicated vector (TLBRENTRY) rather than the generic
-    // EENTRY — and the handler runs with the MMU off, so TLBRENTRY must
-    // hold a physical address. The DMW1 VA we got from `as usize` maps
-    // 1-to-1 onto a PA via `arch::kaddr_to_paddr` (bitmask off the top).
-    //
-    // Without this, every user-mode fetch that misses the TLB (i.e. the
-    // very first one after a context switch) traps to TLBRENTRY=0, which
-    // itself faults, producing an infinite refill storm. That's the
-    // behaviour Phase 7 debugging caught before adding this wiring —
-    // `-d int` showed `pc=0 ERA=<user PC> cause=13 (refill)` repeating
-    // every cycle.
     let refill_va = asm_tlb_refill_entry as usize;
     let refill_pa = crate::arch::kaddr_to_paddr(refill_va);
     debug_assert!(

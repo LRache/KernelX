@@ -1,21 +1,3 @@
-//! User-mode trap dispatch for LoongArch.
-//!
-//! Companion to `clib/src/arch/loongarch/trap/usertrap.S`. The asm side saves
-//! the interrupted PLV3 task's GPRs into its `UserContext`, swaps in the
-//! kernel stack, and calls `usertrap_handler()` below. We decode ESTAT,
-//! route to the right kernel hook, and eventually fall through to
-//! `return_to_user()` — which in turn trampolines back into asm to `ertn`.
-//!
-//! Design mirrors `src/arch/riscv/task/traphandle.rs`. Key LoongArch-specific
-//! bits:
-//!   - Syscall ABI: num in $a7 (gpr[11]), args in $a0..$a6 (gpr[4..11]),
-//!     return in $a0. Hardware does NOT advance ERA past `syscall` — we
-//!     do `user_entry += 4` manually.
-//!   - Page faults: Ecode 0x01..0x07 cover read/write/fetch/modify/PLV
-//!     issues. All routed to `trap::memory_fault` with a best-guess
-//!     access type.
-//!   - No FPU save/restore yet — Phase 9.
-
 use crate::arch::UserContextTrait;
 use crate::arch::loongarch::UserContext;
 use crate::arch::loongarch::csr;
@@ -29,19 +11,14 @@ unsafe extern "C" {
     fn asm_usertrap_return(user_context: *const UserContext) -> !;
 }
 
-/// Called from asm_usertrap_entry after GPRs are saved into the current
-/// task's UserContext. Interrupts are globally disabled (CPU cleared CRMD.IE
-/// on exception entry). We handle the trap, then return_to_user().
+/// Called from asm_usertrap_entry after GPRs are saved into UserContext.
+/// Interrupts are disabled (hardware cleared CRMD.IE on exception entry).
 #[unsafe(no_mangle)]
 pub extern "C" fn usertrap_handler() -> ! {
-    // Bookkeeping: the user-time accumulator was started when we last
-    // `ertn`'d into PLV3. Close it out before doing any kernel work,
-    // else `trap::trap_return` below will panic on the missing system_start.
+    // Close out the user-time accumulator before doing any kernel work
+    // (trap_return will later assert it was opened here).
     trap::trap_enter();
 
-    // Cache ERA before anything else — the syscall path needs to advance it,
-    // and any inner code running may clobber the CSR if it nests (shouldn't,
-    // but defense in depth).
     let era = csr::read::<{ csr::num::ERA }>();
     current::tcb().user_context().set_user_entry(era);
 
@@ -71,17 +48,10 @@ pub extern "C" fn usertrap_handler() -> ! {
     return_to_user();
 }
 
-/// Dispatch a `syscall 0` from user space.
-///
-/// LoongArch LP64D ABI: number in $a7 (gpr[11]), args in $a0..$a6
-/// (gpr[4..11]), return in $a0 (gpr[4]). The `syscall` instruction
-/// does NOT auto-advance ERA, so we bump user_entry by 4 before returning.
 fn handle_syscall() {
     let tcb = current::tcb();
     let uc = tcb.user_context();
 
-    // gpr[4..11] is the 7-arg slice a0..a6; kernel::trap::syscall takes
-    // exactly `&[usize; 7]`. We also pass the original a0 for EINTR restart.
     let args: &[usize; 7] = (&uc.gpr[4..11]).try_into().expect("slice len");
     let num = uc.gpr[11];
     let a0_pre = uc.gpr[4];
@@ -89,14 +59,9 @@ fn handle_syscall() {
     let ret = trap::syscall(num, args, a0_pre);
 
     uc.gpr[4] = ret;
-    // Advance past the `syscall 0` instruction (4 bytes). Using the trait
-    // method so the convention lives in one place (context.rs).
     uc.skip_syscall_instruction();
 }
 
-/// Hardware interrupt arrived while user code was running. Reuse the same
-/// logic as the kernel-trap path (ack timer, drain HWI0 via EIOINTC, log
-/// stray lines). Separate function so usertrap_handler stays readable.
 fn handle_interrupt(estat: usize) {
     let is = estat & csr::estat::IS_MASK;
 
@@ -114,10 +79,7 @@ fn handle_interrupt(estat: usize) {
 
     let other = is & !(1 << csr::ecfg::LINE_TIMER) & !(1 << csr::ecfg::LINE_HWI0);
     if other != 0 {
-        kwarn!(
-            "loongarch: unroutable user-side interrupt lines {:#x}",
-            other
-        );
+        kwarn!("loongarch: unroutable user-side interrupt lines {:#x}", other);
     }
 }
 
@@ -126,45 +88,32 @@ fn handle_memory_fault(access: MemAccessType) {
     trap::memory_fault(badv, access);
 }
 
-/// Prepare CSRs for `ertn` back to PLV3 and jump into the asm return stub.
-///
-/// The asm side does all the GPR restore plus the final `ertn`; we only
-/// touch things the Rust layer cares about.
+/// Program the CSRs for `ertn` back to PLV3 and jump into the asm stub.
 pub fn return_to_user() -> ! {
     trap::trap_return();
 
     let tcb = current::tcb();
     let uc = tcb.user_context();
 
-    // Tell the next usertrap the UserContext address to save into.
-    // asm_usertrap_entry will csrrd $t0, SAVE0.
+    // The next usertrap entry reads SAVE0 to find UserContext.
     csr::write::<{ csr::num::SAVE0 }>(uc as *const UserContext as usize);
 
-    // Stash the kernel's per-CPU pointer (currently in $r21) so the next
-    // user-trap entry can restore it after user code clobbered $r21 at
-    // will. Done every trip rather than at task creation because the
-    // Processor / percpu pointer may differ per hart — on SMP this field
-    // is the right place to carry it across a ertn/trap boundary.
+    // Stash the kernel's per-CPU ptr ($r21). User code is free to clobber
+    // it; usertrap.S restores from UserContext.kernel_percpu on the way in.
     use crate::arch::arch::ArchTrait;
     uc.kernel_percpu = crate::arch::arch::Arch::get_percpu_data();
 
-    // Install the user's page-table root in PGDL. HPTW will consult it on
-    // the next TLB miss (after we ertn).
-    //
-    // PGDL takes a physical address, page-aligned. `set_addrspace()` stashed
-    // that value on the UserContext when the task was created.
+    // User page-table root. HPTW consults it on the next TLB miss.
     csr::write::<{ csr::num::PGDL }>(uc.user_pgd);
 
-    // Flush the TLB unconditionally — cheap and correct. Phase 9 will move
-    // to ASID-per-process + targeted invalidation.
+    // Unconditional TLB flush — ASID-per-process is future work.
     unsafe {
         core::arch::asm!("invtlb 0x00, $zero, $zero", options(nostack, preserves_flags));
     }
 
-    // ERA = user PC; PRMD = {PLV=3, PIE=1} so `ertn` restores CRMD.IE=1.
+    // ERA = user PC; PRMD = {PLV=3, PIE=1}.
     csr::write::<{ csr::num::ERA  }>(uc.get_user_entry());
     csr::write::<{ csr::num::PRMD }>(csr::prmd::USERFRAME);
 
-    // Jump into asm to restore the GPRs and `ertn`.
     unsafe { asm_usertrap_return(uc as *const UserContext) }
 }

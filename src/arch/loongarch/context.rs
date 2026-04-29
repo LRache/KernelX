@@ -1,38 +1,25 @@
-//! User / kernel / signal context definitions for LoongArch64.
-//!
-//! Register layout follows the LoongArch LP64D psABI:
-//!   $r0 = zero, $r1 = ra, $r2 = tp, $r3 = sp, $r4..$r11 = a0..a7,
-//!   $r21 = kernel-reserved (we use it for per-CPU data, analogous to
-//!   RISC-V's `tp`), $r22 = fp.
-//!
-//! For Phase 1 we only need the shape to be correct so that code in
-//! `src/kernel/**` and `src/arch/loongarch/arch.rs` type-checks. Real trap
-//! save / restore will land in Phase 4/5.
 
 use crate::arch::arch::UserContextTrait;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::KernelStack;
 
-/// User-space register + bookkeeping context saved on every kernel entry.
+/// User-space register state saved on every kernel entry.
 ///
-/// The exact field layout is not yet frozen — ASM will consult `#[repr(C)]`
-/// offsets in Phase 4, at which point `kernel_sp`/`kernel_pgd`/
-/// `usertrap_handler` must stay at stable offsets. For now the layout only
-/// needs to be a super-set of what the generic `UserContextTrait` API asks
-/// for.
+/// Offsets are consumed by the asm in `clib/.../usertrap.S`:
+/// `kernel_sp` must stay at byte 256, `kernel_percpu` at 264.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UserContext {
     /*  0 */ pub gpr: [usize; 32],
     /* 32 */ pub kernel_sp: usize,
-    /* 33 */ pub kernel_percpu: usize, // saved copy of $r21 (per-CPU pointer)
-    /* 34 */ pub user_pgd: usize,      // PGDL value for user space
-    /* 35 */ pub kernel_pgd: usize,    // PGDL value for kernel (mostly DMW, unused)
+    /* 33 */ pub kernel_percpu: usize, // saved $r21 across trap boundary
+    /* 34 */ pub user_pgd: usize,      // PGDL value for user
+    /* 35 */ pub kernel_pgd: usize,    // unused; DMW covers kernel
     /* 36 */ pub usertrap_handler: usize,
-    /* 37 */ pub fpregs: [u64; 32], // $f0..$f31
-    pub fcc: u64,                   // condition-flag regs packed
-    pub fcsr: u64,                  // floating control/status
-    pub user_entry: usize,          // ERA on next `ertn`
+    /* 37 */ pub fpregs: [u64; 32],
+    pub fcc: u64,
+    pub fcsr: u64,
+    pub user_entry: usize,
     pub fpregs_dirty: bool,
 }
 
@@ -58,13 +45,13 @@ impl UserContextTrait for UserContext {
         new_context.kernel_sp = 0;
         new_context.kernel_percpu = 0;
         new_context.user_pgd = 0;
-        // clone(2) returns 0 to the child — a0 is $r4.
+        // clone(2) returns 0 to the child; a0 is $r4.
         new_context.gpr[4] = 0;
         new_context
     }
 
     fn get_user_stack_top(&self) -> usize {
-        self.gpr[3] // sp == $r3
+        self.gpr[3] // sp
     }
 
     fn set_user_stack_top(&mut self, user_stack_top: usize) {
@@ -82,13 +69,13 @@ impl UserContextTrait for UserContext {
     }
 
     fn set_sigaction_restorer(&mut self, uptr_restorer: usize) -> &mut Self {
-        self.gpr[1] = uptr_restorer; // ra == $r1
+        self.gpr[1] = uptr_restorer; // ra
         self
     }
 
     fn set_arg(&mut self, index: usize, arg: usize) -> &mut Self {
         debug_assert!(index <= 7);
-        self.gpr[4 + index] = arg; // a0..a7 == $r4..$r11
+        self.gpr[4 + index] = arg; // a0..a7
         self
     }
 
@@ -111,8 +98,7 @@ impl UserContextTrait for UserContext {
     }
 
     fn skip_syscall_instruction(&mut self) {
-        // LoongArch `syscall` is a 4-byte instruction.
-        self.user_entry += 4;
+        self.user_entry += 4; // `syscall` is 4 bytes
     }
 
     fn move_back_to_syscall_instruction(&mut self) {
@@ -120,46 +106,30 @@ impl UserContextTrait for UserContext {
     }
 
     fn set_tls(&mut self, tls: usize) {
-        self.gpr[2] = tls; // tp == $r2 per psABI
+        self.gpr[2] = tls; // tp
     }
 
     fn set_syscall_retval(&mut self, retval: usize) {
-        self.gpr[4] = retval; // a0 == $r4
+        self.gpr[4] = retval; // a0
     }
 }
 
 unsafe impl Send for UserContext {}
 unsafe impl Sync for UserContext {}
 
-/// Callee-saved kernel context for `kernel_switch`.
-///
-/// LoongArch LP64 has $s0..$s8 (9 regs) callee-saved plus $fp and $ra/$sp,
-/// matching what we need to preserve across a cooperative switch. Keep $ra
-/// at offset 0 so the eventual asm stub is trivial (`st.d $ra, $from, 0`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct KernelContext {
     ra: usize,
     sp: usize,
     fp: usize,        // $r22
-    s: [usize; 9],    // $s0..$s8 == $r23..$r31
-    a0: usize,        // $r4: first arg to thread entry
+    s: [usize; 9],    // $s0..$s8
+    a0: usize,        // $r4: first arg to entry
 }
 
 impl KernelContext {
     pub fn new(kernel_stack: &KernelStack) -> Self {
         KernelContext {
-            // First-switch entry: when the scheduler pops a freshly-created
-            // user task, `kernel_switch` loads this into $ra and `ret`s.
-            // We want to land in `return_to_user`, which prepares the CSRs
-            // and jumps to `asm_usertrap_return` — i.e. performs the first
-            // `ertn` into PLV3. Subsequent switches go through the normal
-            // trap save/restore and reuse whatever $ra was saved.
-            //
-            // Kernel threads overwrite this via `set_entry(kthread_trampoline)`
-            // in `kthread::spawn`; leaving the default as `return_to_user`
-            // keeps user tasks correct without requiring every TCB constructor
-            // to touch the kernel context.
             ra: super::task::traphandle::return_to_user as usize,
             sp: kernel_stack.get_top(),
             fp: 0,
@@ -196,15 +166,14 @@ impl KernelContext {
 unsafe impl Send for KernelContext {}
 unsafe impl Sync for KernelContext {}
 
-/// Snapshot of user state saved during signal delivery. Layout kept small
-/// and deterministic so a future vDSO `rt_sigreturn` can reconstruct it.
+/// Snapshot of user state saved during signal delivery.
 #[repr(C)]
 #[repr(align(16))]
 #[derive(Clone, Copy, Debug)]
 pub struct SigContext {
     pub pc: usize,
     pub gregs: [usize; 31], // $r1..$r31
-    pub fpregs: [u64; 32],  // $f0..$f31
+    pub fpregs: [u64; 32],
     pub fcc: u64,
     pub fcsr: u64,
 }

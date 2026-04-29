@@ -1,67 +1,21 @@
-//! Platform Controller Hub — Programmable Interrupt Controller (PCH-PIC).
-//!
-//! PCH-PIC is the "south-bridge" interrupt aggregator on the LS7A / LA
-//! QEMU virt machine. Devices assert their legacy INTx line to PCH-PIC,
-//! which then routes each input to an EIOINTC vector via per-IRQ
-//! `HTMSI_VEC(irq)` (EIOINTC line index) and `ROUTE_ENTRY(irq)` (HT
-//! output line bitmap — ignored by QEMU for EIOINTC delivery) register
-//! bytes.
-//!
-//! We take the identity (pass-through) routing policy: PCH-PIC IRQ N
-//! fires EIOINTC IRQ N, so every device's FDT-declared `interrupts = <N>`
-//! propagates straight through. `enable_device_interrupt_irq(N)` calls
-//! `pch_pic::enable_irq(N)` followed by `eiointc::enable_irq(N)`.
-//!
-//! ## Register map (QEMU `hw/intc/loongarch_pic_common.h`)
-//!
-//! | Offset  | Width        | Name           | Purpose                        |
-//! |---------|--------------|----------------|--------------------------------|
-//! | `0x00`  | 8            | INT_ID         | Chip identifier + version      |
-//! | `0x20`  | 8            | INT_MASK       | bit=1 → masked (reset: all 1s) |
-//! | `0x40`  | 8            | HTMSI_EN       | bit=1 → MSI for that line      |
-//! | `0x60`  | 8            | INT_EDGE       | bit=1 → edge-triggered         |
-//! | `0x80`  | 8            | INT_CLEAR      | W1C ack for edge sources       |
-//! | `0x100` | 64 × 1 B     | ROUTE_ENTRY    | HT line bitmap per IRQ         |
-//! | `0x200` | 64 × 1 B     | HTMSI_VEC      | EIOINTC vector per IRQ         |
-//! | `0x3e0` | 8            | INT_POL        | Polarity (1 = low-active)      |
-//!
-//! The important bit we missed originally: **HTMSI_VEC (0x200) is what
-//! QEMU consults to decide which EIOINTC IRQ to raise**, not ROUTE_ENTRY
-//! (which picks the HT output line — QEMU only plumbs one line, so the
-//! value is moot). If HTMSI_VEC stays at the reset default (0), every
-//! PCH-PIC IRQ collapses onto EIOINTC IRQ 0 and the drivers' unmasked
-//! lines never fire.
-//!
-//! References:
-//!   - QEMU: `hw/intc/loongarch_pch_pic.c` `pch_pic_update_irq` / `pch_pic_irq_handler`
-//!   - QEMU: `include/hw/intc/loongarch_pic_common.h` (register offsets)
-//!   - Linux: `drivers/irqchip/irq-loongson-pch-pic.c`
-
 use crate::arch;
 use crate::kinfo;
 
-/// Number of PCH-PIC inputs. The 7A1000 exposes 64 but QEMU virt uses the
-/// low 32; sizing to 64 costs nothing and matches Linux.
+/// 7A1000 exposes 64 inputs; sizing to 64 matches Linux.
 const NR_IRQS: usize = 64;
 
 mod reg {
-    pub const MASK:        usize = 0x20;  // 8 bytes (64 bits)
+    pub const MASK:        usize = 0x20;
     pub const HTMSI_EN:    usize = 0x40;
-    // pub const EDGE:     usize = 0x60;  // 0 = level (default, what we want)
     pub const CLEAR:       usize = 0x80;
-    pub const ROUTE_BASE:  usize = 0x100; // 64 × u8 — HT output line bitmap per IRQ
-    pub const HTVEC_BASE:  usize = 0x200; // 64 × u8 — EIOINTC vector number per IRQ
+    pub const ROUTE_BASE:  usize = 0x100;
+    pub const HTVEC_BASE:  usize = 0x200;
 }
 
-/// Kernel-visible MMIO base (DMW0 mirror). Set by `init()`.
 static mut BASE: usize = 0;
 
 #[inline]
 fn base() -> usize {
-    // SAFETY: BASE is written once in `init()` during single-core boot and
-    // never mutated afterward. Every read comes after `init()` returns.
-    // Any caller who reads BASE before init() will get 0 and dereference
-    // null, which trips the debug_assert below.
     unsafe { BASE }
 }
 
@@ -86,42 +40,16 @@ fn write_b(off: usize, value: u8) {
     unsafe { arch::write_volatile((base + off) as *mut u8, value) }
 }
 
-/// Initialize PCH-PIC.
-///
-/// - `mmio_pa` / `_mmio_size` come from the FDT `reg` property of the
-///   `loongson,pch-pic-1.0` node (typically 0x10000000 + 0x400 on QEMU virt).
-/// - All IRQs start masked; drivers unmask their lines via
-///   `Arch::enable_device_interrupt_irq`.
 pub fn init(mmio_pa: usize, mmio_size: usize) {
-    // SAFETY: Single-core, called once from Arch::scan_device before any
-    // other pch_pic::* function runs. No racing reader is possible here.
     let kaddr = arch::mmio_phys_to_kaddr(mmio_pa, mmio_size);
     unsafe { BASE = kaddr };
 
-    // MMIO mirror via DMW0. We rely on mmio_phys_to_kaddr returning the
-    // uncached view on LA — that's a postcondition of the trait.
     debug_assert!(kaddr >> 60 == 0x8, "PCH-PIC kaddr {:#x} not in DMW0", kaddr);
 
-    // Mask everything. Linux does the same: rely on drivers to unmask
-    // their specific IRQ before consuming it.
     write_d(reg::MASK, !0u64);
-
-    // Disable MSI routing for legacy INTx use.
     write_d(reg::HTMSI_EN, 0);
-
-    // Clear any pending edge-triggered lines that may have latched.
     write_d(reg::CLEAR, !0u64);
 
-    // HTMSI_VEC(n) = n: tell PCH-PIC to forward IRQ n to EIOINTC
-    // line n (pass-through). This is the byte QEMU actually reads
-    // when deciding which EIOINTC input to drive — if we leave it at
-    // the reset default 0, every PCH-PIC line collapses onto EIOINTC
-    // line 0 and the per-device IRQs we unmask never fire.
-    //
-    // ROUTE_ENTRY(n) = 0x01: HT output line 0. QEMU virt only plumbs
-    // one HT line into EIOINTC, but setting bit 0 explicitly matches
-    // what Linux does and keeps us compatible if QEMU later wires up
-    // additional lines.
     for n in 0..NR_IRQS {
         write_b(reg::HTVEC_BASE + n, n as u8);
         write_b(reg::ROUTE_BASE + n, 0x01);
@@ -133,7 +61,6 @@ pub fn init(mmio_pa: usize, mmio_size: usize) {
     );
 }
 
-/// Unmask IRQ `n` on PCH-PIC. The write is bit-granular: MASK bit=0 → unmasked.
 pub fn enable_irq(irq: u32) {
     debug_assert!((irq as usize) < NR_IRQS, "PCH-PIC irq {} out of range", irq);
     let bit = 1u64 << irq;
@@ -142,7 +69,6 @@ pub fn enable_irq(irq: u32) {
     write_d(reg::MASK, cur);
 }
 
-/// Mask IRQ `n` on PCH-PIC.
 #[allow(dead_code)]
 pub fn disable_irq(irq: u32) {
     debug_assert!((irq as usize) < NR_IRQS, "PCH-PIC irq {} out of range", irq);
@@ -152,10 +78,6 @@ pub fn disable_irq(irq: u32) {
     write_d(reg::MASK, cur);
 }
 
-/// Acknowledge an edge-triggered IRQ. For level-triggered sources (most
-/// of the QEMU virt devices) this is a no-op — the source device deasserts
-/// when its driver reads the status register. Kept as a hook for future
-/// edge-triggered drivers.
 #[allow(dead_code)]
 pub fn ack_irq(irq: u32) {
     debug_assert!((irq as usize) < NR_IRQS, "PCH-PIC irq {} out of range", irq);

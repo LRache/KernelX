@@ -1,22 +1,20 @@
 /*
- * LoongArch64 kernel linker script for KernelX.
+ * LoongArch64 kernel linker script.
  *
- * QEMU `-M virt` memory layout we target (verified via `-machine dumpdtb`):
- *   - RAM:        PA 0x00000000..(m-1)           (256 MiB default, size configurable)
- *   - boot_info:  PA 0x00000000..0x000fffff      (QEMU writes cmdline/systab here)
- *   - FDT:        PA 0x00100000..0x001fffff      (FDT_BASE = 0x100000, up to 1 MiB)
- *   - UART0:      PA 0x1fe001e0                  (ns16550a, access via DMW0)
- *   - Flash0:     PA 0x1c000000..0x1cffffff      (aux_boot_code lives here at reset)
+ * QEMU `-M virt` layout (from `-machine dumpdtb`):
+ *   RAM:       PA 0..(m-1)
+ *   boot_info: PA 0..0x000fffff     (QEMU writes cmdline/systab here)
+ *   FDT:       PA 0x00100000..0x001fffff
+ *   UART0:     PA 0x1fe001e0
+ *   Flash0:    PA 0x1c000000..0x1cffffff
  *
- * So the first usable PA for the kernel is 0x200000 (2 MiB mark). Anything
- * lower overlaps with FDT / boot_info and QEMU refuses to run.
+ * First kernel-usable PA is 0x200000.
  *
- * Virtual layout: DMW1 = VSEG 0x9, MAT=CC, PLV0, so VA = PA | 0x9000_0000_0000_0000.
- * That keeps `virt = phys + 0x9000_0000_0000_0000` throughout the kernel image and
- * lets `arch::paddr_to_kaddr` / `kaddr_to_paddr` be pure bit-OR / bit-AND operations.
+ * Virtual = physical | 0x9000_0000_0000_0000 (DMW1, MAT=CC). This keeps
+ * `arch::paddr_to_kaddr` / `kaddr_to_paddr` as pure bit-OR / bit-AND.
  *
- * NOTE: Section names are kept identical to scripts/linker/riscv64.ld so generic
- * kernel code (which references __init_start / __bss_end / __trampoline_start) works.
+ * Section names match scripts/linker/riscv64.ld so generic kernel code
+ * can reference __init_start / __bss_end / __trampoline_start uniformly.
  */
 
 PHYS_BASE = 0x200000;
@@ -41,11 +39,8 @@ SECTIONS {
 
     .text : {
         __text_start = .;
-        /*
-         * Generic text. Exclude the TLB refill page (handled in its own
-         * section below) so the 4 KiB-alignment guarantee there doesn't
-         * depend on whatever came before in link order.
-         */
+        /* Exclude TLB refill (pinned to its own 4 KiB section below) so
+         * its alignment is independent of link-order of preceding text. */
         *(EXCLUDE_FILE(*tlbrefill*) .text)
         *(EXCLUDE_FILE(*tlbrefill*) .text.*)
         . = ALIGN(4K);
@@ -56,13 +51,9 @@ SECTIONS {
         __trampoline_end = .;
     }
 
-    /*
-     * LoongArch TLB refill handler (TLBRENTRY target). Hardware requires
-     * the CSR to hold a 4 KiB-aligned PA, and the handler executes with
-     * the MMU off. We pin this section to its own 4 KiB page and expose
-     * `__tlbrefill_start`; Rust's Arch::init masks off the DMW1 high
-     * bits and writes the resulting PA into TLBRENTRY.
-     */
+    /* TLB refill handler (TLBRENTRY target). Runs with MMU off; needs a
+     * 4 KiB-aligned PA. Arch::init writes `__tlbrefill_start & PA_MASK`
+     * into TLBRENTRY. */
     . = ALIGN(4K);
     __tlbrefill_start = .;
     .tlbrefill : {
