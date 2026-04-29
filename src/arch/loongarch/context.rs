@@ -149,8 +149,18 @@ pub struct KernelContext {
 impl KernelContext {
     pub fn new(kernel_stack: &KernelStack) -> Self {
         KernelContext {
-            // Phase 5 will swap this for the real return_to_user entry point.
-            ra: 0,
+            // First-switch entry: when the scheduler pops a freshly-created
+            // user task, `kernel_switch` loads this into $ra and `ret`s.
+            // We want to land in `return_to_user`, which prepares the CSRs
+            // and jumps to `asm_usertrap_return` — i.e. performs the first
+            // `ertn` into PLV3. Subsequent switches go through the normal
+            // trap save/restore and reuse whatever $ra was saved.
+            //
+            // Kernel threads overwrite this via `set_entry(kthread_trampoline)`
+            // in `kthread::spawn`; leaving the default as `return_to_user`
+            // keeps user tasks correct without requiring every TCB constructor
+            // to touch the kernel context.
+            ra: super::task::traphandle::return_to_user as usize,
             sp: kernel_stack.get_top(),
             fp: 0,
             s: [0; 9],

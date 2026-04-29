@@ -13,10 +13,29 @@
 //! This module does not itself create drivers. `scan_pcie_bus` discovers
 //! virtio-PCI functions and hands a ready-to-use `PciTransport` to
 //! `driver::virtio::matcher::try_match_pci`.
+//!
+//! ## INTx routing
+//!
+//! Each PCIe function has a legacy INTx assertion (INTA..INTD). The PCIe
+//! bridge DT node carries `interrupt-map-mask` + `interrupt-map` properties
+//! that describe how `(bus:dev:fn, pin)` translates to a PCH-PIC IRQ number.
+//! On QEMU virt the layout is fixed:
+//!
+//!   mask = <0x1800 0 0 0x07>   // dev[4:3] and pin[2:0]
+//!   map  = for every dev in 0..4, for every pin in 1..5:
+//!            parent-spec = <0x8003  (dev+pin-1) mod 4 + 0x10  4>
+//!
+//! i.e. classic PCI swizzle rooted at PCH-PIC IRQ 0x10. We parse the FDT
+//! map into a 4×4 lookup table and, for every enumerated function, read
+//! Interrupt Pin from config space offset 0x3D, index into the table, and
+//! register the resulting IRQ with `driver::manager::INTERRUPT_MAP` +
+//! `Arch::enable_device_interrupt_irq`.
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use fdt::node::FdtNode;
+use spin::Mutex;
 use virtio_drivers::transport::pci::bus::{
     BarInfo, Cam, Command, DeviceFunction, MemoryBarType, PciRoot,
 };
@@ -27,6 +46,7 @@ use virtio_drivers::transport::{DeviceType as VirtioDeviceType, Transport};
 use crate::arch;
 use crate::driver::block::VirtIOBlockDriver;
 use crate::driver::virtio::VirtIOHal;
+use crate::driver::{DriverOps, register_irq_handler};
 use crate::{kinfo, kwarn};
 
 /// Walks the PCIe bridge described by `node`, allocates BARs from the
@@ -48,6 +68,8 @@ pub fn scan_pcie_bus(node: &FdtNode) {
             return;
         }
     };
+
+    let irq_table = IntxTable::from_fdt(node);
 
     kinfo!(
         "loongarch: PCIe ECAM @ {:#x}..{:#x}, MMIO window {:#x}..{:#x}",
@@ -91,14 +113,22 @@ pub fn scan_pcie_bus(node: &FdtNode) {
         }
 
         // Enable I/O + memory space + bus master so the device responds.
+        // Also clear the INTx-disable bit so legacy interrupts propagate;
+        // QEMU may set it after reset on some virtio-pci models.
         root.set_command(df, Command::IO_SPACE | Command::MEMORY_SPACE | Command::BUS_MASTER);
 
         // Virtio? Hand to the virtio matcher.
         if let Some(vdev_type) = virtio_device_type(&info) {
+            // Resolve legacy INTx IRQ via the parsed interrupt-map. Must
+            // be done BEFORE PciTransport::new consumes the root ref,
+            // because read_interrupt_pin needs raw ECAM access.
+            let pin = read_interrupt_pin(ecam_kaddr, df);
+            let irq = irq_table.lookup(df.device, pin);
+
             match PciTransport::new::<VirtIOHal>(&mut root, df) {
                 Ok(transport) => {
                     let name = device_name(df, vdev_type);
-                    register_virtio_pci_device(name, transport, vdev_type);
+                    register_virtio_pci_device(name, transport, vdev_type, irq);
                 }
                 Err(e) => {
                     kwarn!(
@@ -118,17 +148,28 @@ fn register_virtio_pci_device(
     name: alloc::string::String,
     transport: PciTransport,
     vdev_type: VirtioDeviceType,
+    irq: Option<u32>,
 ) {
     match vdev_type {
         VirtioDeviceType::Block => {
-            let driver = Arc::new(VirtIOBlockDriver::new(name.clone(), transport));
-            kinfo!("loongarch: PCIe block device registered as `{}`", name);
+            let driver: Arc<dyn DriverOps> =
+                Arc::new(VirtIOBlockDriver::new(name.clone(), transport));
+            kinfo!(
+                "loongarch: PCIe block device registered as `{}` (INTx IRQ {:?})",
+                name, irq,
+            );
             crate::driver::register_matched_driver(driver.clone());
+            if let Some(irq) = irq {
+                register_irq_handler(irq, driver.clone());
+                arch::enable_device_interrupt_irq(irq);
+            } else {
+                kwarn!("loongarch: `{}` has no INTx IRQ; device will not receive interrupts", name);
+            }
             crate::fs::devfs::add_device(name, driver);
         }
         VirtioDeviceType::Network => {
-            // Phase 6 target is block only; leave networking for Phase 7.
-            kwarn!("loongarch: PCIe virtio-net ignored (Phase 7 will handle networking)");
+            // Phase 6 target is block only; leave networking for later.
+            kwarn!("loongarch: PCIe virtio-net ignored (networking deferred)");
         }
         other => {
             kwarn!("loongarch: unsupported virtio-pci device type: {:?}", other);
@@ -136,6 +177,7 @@ fn register_virtio_pci_device(
     }
 }
 
+#[allow(dead_code)]
 fn transport_device_type(t: &PciTransport) -> VirtioDeviceType {
     t.device_type()
 }
@@ -156,8 +198,9 @@ fn device_name(_df: DeviceFunction, vdev_type: VirtioDeviceType) -> alloc::strin
             let _ = write!(&mut s, "virtio_block{}", idx);
         }
         VirtioDeviceType::Network => {
-            // Networking stays disabled on LoongArch until Phase 7; name
-            // is only used for the warn message, no uniqueness needed.
+            // Networking stays disabled on LoongArch until we ship a
+            // virtio-net driver; name is only used for the warn message,
+            // no uniqueness needed.
             let _ = write!(&mut s, "virtio_net");
         }
         other => {
@@ -271,3 +314,94 @@ fn parse_mmio_range(node: &FdtNode) -> Option<(usize, usize)> {
     // Prefer a 32-bit-addressable window if present (first candidate).
     candidates.into_iter().next()
 }
+
+/// Read PCI config byte 0x3D (Interrupt Pin) directly from ECAM. Returns
+/// the raw 1..4 INTx pin, or None if the device reports "no interrupt".
+///
+/// We bypass `PciRoot::config_read_word` because it's `pub(crate)` in the
+/// virtio-drivers crate. ECAM is simple enough that direct pointer math
+/// is cheaper than pulling in another abstraction:
+///
+///   offset = (bus << 20) | (dev << 15) | (func << 12) | register
+///
+/// For 4 KiB CAM slots this matches what QEMU exposes at 0x2000_0000.
+fn read_interrupt_pin(ecam_kaddr: usize, df: DeviceFunction) -> u8 {
+    let slot_off = ((df.bus as usize) << 20)
+        | ((df.device as usize) << 15)
+        | ((df.function as usize) << 12);
+    // Register 0x3C holds Interrupt Line (low byte) and Interrupt Pin (second byte).
+    let byte_ptr = (ecam_kaddr + slot_off + 0x3D) as *const u8;
+    unsafe { arch::read_volatile(byte_ptr) }
+}
+
+/// Parsed `interrupt-map` for the PCIe root complex — mapping
+/// `(device, pin)` → PCH-PIC IRQ. pin is 1-based (INTA = 1).
+///
+/// On QEMU LoongArch virt the map is a classic PCI swizzle:
+///   irq = 0x10 + (device + pin - 1) mod 4
+///
+/// but we parse the FDT-provided table rather than hard-coding the
+/// formula, so that any future QEMU re-routing survives the port.
+struct IntxTable {
+    /// Map key: `(device_mask, pin)`. `device_mask` is the raw 3-byte PCI
+    /// child-spec with the interrupt-map mask applied, i.e.
+    /// `0x0000`, `0x0800`, `0x1000`, `0x1800` for dev 0..3.
+    /// Value: PCH-PIC IRQ number.
+    entries: BTreeMap<(u32, u32), u32>,
+}
+
+impl IntxTable {
+    fn from_fdt(node: &FdtNode) -> Self {
+        let mut entries = BTreeMap::new();
+        let Some(mask_prop) = node.property("interrupt-map-mask") else {
+            kwarn!("loongarch: PCIe node missing interrupt-map-mask; INTx will not work");
+            return Self { entries };
+        };
+        let Some(map_prop) = node.property("interrupt-map") else {
+            kwarn!("loongarch: PCIe node missing interrupt-map; INTx will not work");
+            return Self { entries };
+        };
+        let mask_bytes = mask_prop.value;
+        let map_bytes = map_prop.value;
+        if mask_bytes.len() < 16 {
+            return Self { entries };
+        }
+        // child-spec = 3 cells (12 B), child-intr = 1 cell (4 B) per QEMU,
+        // parent-spec = 1 cell phandle + 2 cells intr specifier per
+        // `#interrupt-cells = <2>` on PCH-PIC. Total: 7 cells = 28 B.
+        let dev_mask = u32::from_be_bytes(mask_bytes[0..4].try_into().unwrap());
+        let pin_mask = u32::from_be_bytes(mask_bytes[12..16].try_into().unwrap());
+        const ENTRY_LEN: usize = 28;
+        for chunk in map_bytes.chunks_exact(ENTRY_LEN) {
+            // 3-cell child spec: we care only about the first cell (bus/dev/fn).
+            let child0 = u32::from_be_bytes(chunk[0..4].try_into().unwrap());
+            let pin = u32::from_be_bytes(chunk[12..16].try_into().unwrap());
+            // 1-cell phandle at [16..20], 2-cell parent spec at [20..28].
+            let parent_irq = u32::from_be_bytes(chunk[20..24].try_into().unwrap());
+            let dev_key = child0 & dev_mask;
+            let pin_key = pin & pin_mask;
+            entries.insert((dev_key, pin_key), parent_irq);
+        }
+        Self { entries }
+    }
+
+    /// Look up the PCH-PIC IRQ for `device` / `pin`. `pin` is the INTx pin
+    /// value from PCI config space byte 0x3D (1..4); 0 means the device
+    /// doesn't use legacy interrupts.
+    fn lookup(&self, device: u8, pin: u8) -> Option<u32> {
+        if !(1..=4).contains(&pin) {
+            return None;
+        }
+        // child0's dev field sits at bits 11:15; mirror how QEMU generates
+        // `(dev << 11)` in the interrupt-map.
+        let dev_key = (device as u32) << 11;
+        let pin_key = pin as u32;
+        self.entries.get(&(dev_key, pin_key)).copied()
+    }
+}
+
+// Keep a live reference to the parsed table. Useful for debugging from a
+// debugger; not strictly necessary since lookup happens only during
+// scan_pcie_bus.
+#[allow(dead_code)]
+static LAST_TABLE: Mutex<Option<BTreeMap<(u32, u32), u32>>> = Mutex::new(None);

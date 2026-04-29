@@ -61,6 +61,21 @@ impl ArchTrait for Arch {
         csr::write::<{ csr::num::PWCH   }>(csr::pwch::NONE);
         csr::write::<{ csr::num::ASID   }>(0);
 
+        // TLBREHI.PS drives the page size of the entry `tlbfill` writes
+        // when invoked from inside the TLB refill handler (TLBRENTRY path).
+        // Note: this is *distinct* from TLBIDX.PS, which controls `tlbfill`
+        // on the normal EENTRY path. The hardware uses the shadow CSR set
+        // (TLBRELO0/1, TLBREHI, TLBRERA, TLBRBADV) while servicing a refill
+        // exception, and our asm handler does not touch TLBREHI.PS itself —
+        // so we set it once here. Reset value is architecturally undefined;
+        // QEMU leaves it at 0, which makes `tlbfill` write a PS=0 entry
+        // that matches almost no VA, so refill re-fires forever and user
+        // code never makes progress.
+        //
+        // 12 = log2(4 KiB). Field lives in TLBREHI[29:24] per Vol.1 §7.4.3.
+        const TLBREHI_PS_SHIFT: usize = 24;
+        csr::write::<{ csr::num::TLBREHI }>(12usize << TLBREHI_PS_SHIFT);
+
         // Cache the stable-counter frequency for get_time_us. Must be done
         // before any code path calls uptime() / timer::now().
         STABLE_COUNTER_FREQ_HZ.init(csr::stable_counter_freq());

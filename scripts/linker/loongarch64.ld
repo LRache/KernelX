@@ -41,7 +41,13 @@ SECTIONS {
 
     .text : {
         __text_start = .;
-        *(.text*)
+        /*
+         * Generic text. Exclude the TLB refill page (handled in its own
+         * section below) so the 4 KiB-alignment guarantee there doesn't
+         * depend on whatever came before in link order.
+         */
+        *(EXCLUDE_FILE(*tlbrefill*) .text)
+        *(EXCLUDE_FILE(*tlbrefill*) .text.*)
         . = ALIGN(4K);
         __text_end = .;
         __trampoline_start = .;
@@ -49,6 +55,21 @@ SECTIONS {
         . = ALIGN(4K);
         __trampoline_end = .;
     }
+
+    /*
+     * LoongArch TLB refill handler (TLBRENTRY target). Hardware requires
+     * the CSR to hold a 4 KiB-aligned PA, and the handler executes with
+     * the MMU off. We pin this section to its own 4 KiB page and expose
+     * `__tlbrefill_start`; Rust's Arch::init masks off the DMW1 high
+     * bits and writes the resulting PA into TLBRENTRY.
+     */
+    . = ALIGN(4K);
+    __tlbrefill_start = .;
+    .tlbrefill : {
+        KEEP(*(.text.tlbrefill))
+    }
+    . = ALIGN(4K);
+    __tlbrefill_end = .;
 
     .rodata : {
         __rodata_start = .;

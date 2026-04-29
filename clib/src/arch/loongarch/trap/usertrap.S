@@ -112,6 +112,15 @@ asm_usertrap_entry:
     /* Switch to kernel stack. UserContext.kernel_sp is at byte 256. */
     ld.d    $sp, $t0, 256
 
+    /* Restore the kernel's $r21 (per-CPU pointer). User code was free to
+     * clobber $r21 (LP64D ABI has no caller/callee convention for it;
+     * we're the only one who needs its "kernel per-CPU data" semantics),
+     * so we stashed the kernel value in UserContext.kernel_percpu
+     * (byte 264) from return_to_user. Without this, any code that reads
+     * per-CPU data (e.g. current::tcb via $r21+N) dereferences the
+     * user's garbage and null-faults. */
+    ld.d    $r21, $t0, 264
+
     /* Call the Rust handler. It does NOT return — it tail-calls back into
      * asm_usertrap_return via return_to_user(). */
     bl      usertrap_handler

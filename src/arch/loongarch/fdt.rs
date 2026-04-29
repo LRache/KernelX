@@ -100,12 +100,24 @@ pub fn load_device_tree() -> Result<(), ()> {
         handle_root_child(&child);
     }
 
-    // 3. Consume /chosen/bootargs. QEMU's `-append` gets stuffed here.
+    // 3. Consume the kernel cmdline. On LoongArch QEMU virt, `-append` does
+    //    **not** go into /chosen/bootargs — QEMU places the C-string in
+    //    RAM and hands the PA in `$a1` at kernel entry (the LoongArch
+    //    BPI protocol). entry.S stashes that PA into `la_boot_cmdline_pa`
+    //    so we can retrieve it here. A zero value means "no cmdline";
+    //    an all-zero string has the same effect as fallback.
+    //
+    //    FDT `/chosen/bootargs` is still checked first as a nicety — if
+    //    ever QEMU (or a future hand-crafted DTB) does provide it,
+    //    respect it.
     let chosen = fdt.chosen();
-    if let Some(prop) = chosen.bootargs() {
+    if let Some(prop) = chosen.bootargs().filter(|s| !s.is_empty()) {
         parse_boot_args(prop);
+    } else if let Some(cmdline) = read_boot_cmdline() {
+        kinfo!("loongarch: cmdline from QEMU $a1: {:?}", cmdline);
+        parse_boot_args(cmdline);
     } else {
-        kwarn!("loongarch: no /chosen/bootargs in FDT — falling back to config defaults");
+        kwarn!("loongarch: no bootargs from FDT or $a1 — falling back to config defaults");
         // Seed an empty BOOT_ARGS so `kinit`'s BOOT_ARGS.get(...)
         // short-circuits to config::DEFAULT_* rather than deref'ing an
         // uninitialized InitedCell.
@@ -207,4 +219,47 @@ fn find_by_compatible<'a, 'b>(fdt: &'b Fdt<'a>, candidates: &[&str]) -> Option<F
         }
     }
     None
+}
+
+// `la_boot_cmdline_pa` is written by `clib/src/arch/loongarch/entry/entry.S`
+// immediately after BSS is cleared. It holds the PA QEMU stored the
+// `-append` string at (see `hw/loongarch/boot.c::init_cmdline`). A value
+// of 0 is ambiguous (QEMU places the string at PA 0 when it's the first
+// blob), so `read_boot_cmdline` always attempts to dereference and falls
+// back only if the string at that PA is empty.
+unsafe extern "C" {
+    static la_boot_cmdline_pa: u64;
+}
+
+/// Read the NUL-terminated C-string QEMU placed at `la_boot_cmdline_pa`.
+/// Returns the cmdline without the NUL, or `None` if empty / unreadable.
+///
+/// ## Safety & PA validity
+///
+/// - The PA comes from QEMU's ROM loader; bogus values are not expected.
+/// - DMW1 (cached) is the right view: the cmdline lives in low-memory
+///   RAM (sub-256 MiB), not MMIO, so cached reads are fine.
+/// - We cap the length at `COMMAND_LINE_SIZE = 512` which matches
+///   QEMU's `init_cmdline` copy size.
+fn read_boot_cmdline() -> Option<&'static str> {
+    let pa = unsafe { core::ptr::read_volatile(&raw const la_boot_cmdline_pa) };
+    if pa > (1u64 << 48) {
+        // Suspicious PA; bail rather than deref garbage.
+        return None;
+    }
+    let kaddr = arch::paddr_to_kaddr(pa as usize);
+    let base = kaddr as *const u8;
+    let mut len = 0usize;
+    while len < 512 {
+        let b = unsafe { core::ptr::read_volatile(base.add(len)) };
+        if b == 0 {
+            break;
+        }
+        len += 1;
+    }
+    if len == 0 {
+        return None;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(base, len) };
+    core::str::from_utf8(slice).ok()
 }

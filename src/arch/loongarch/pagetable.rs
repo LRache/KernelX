@@ -252,6 +252,14 @@ impl PTE {
         PTEFlags::from_bits_truncate(self.bits & FLAG_BITS_MASK)
     }
 
+    /// Full raw 64-bit PTE image as it will be written back to the page
+    /// table entry slot. Useful for trace / debug prints when verifying
+    /// hardware expectations against what we've constructed.
+    #[allow(dead_code)]
+    pub const fn image(&self) -> u64 {
+        self.bits
+    }
+
     pub fn set_flags(&mut self, flags: PTEFlags) -> &mut Self {
         self.bits = (self.bits & !FLAG_BITS_MASK) | flags.bits();
         self
@@ -268,9 +276,15 @@ impl PTE {
     }
 
     /// Descend into the next-level table this PTE points to. Only sensible
-    /// on intermediate levels — walker asserts that.
+    /// on intermediate levels — walker asserts that a child table has been
+    /// installed.
+    ///
+    /// Note the assertion checks `ppn().value() != 0`, NOT `is_valid()`.
+    /// Intermediate entries on LoongArch don't use the V bit because `lddir`
+    /// treats the whole 64-bit slot as the child-table base PA (AND'd with
+    /// the PALEN mask). A non-zero PPN is our "installed" signal.
     pub fn next_level(&self) -> PTETable {
-        debug_assert!(self.is_valid());
+        debug_assert!(self.ppn().value() != 0);
         PTETable::new(self.ppn().to_addr().ptr())
     }
 
@@ -429,12 +443,18 @@ impl PageTable {
 
         for (level, vpn) in vpns.iter().enumerate() {
             let pte = ptetable.get(*vpn);
-            if !pte.is_valid() {
-                return None;
-            }
 
             if level == LEAF_LEVEL {
-                return Some(pte);
+                // Leaf: V bit decides presence, matching what `ldpte` will
+                // enforce.
+                return if pte.is_valid() { Some(pte) } else { None };
+            }
+
+            // Intermediate: "installed" means the slot holds a non-zero
+            // child-table PA. See `find_pte_or_create` for why we don't
+            // set V on intermediate entries.
+            if pte.ppn().value() == 0 {
+                return None;
             }
 
             ptetable = pte.next_level();
@@ -459,15 +479,27 @@ impl PageTable {
                 return pte;
             }
 
-            if !pte.is_valid() {
-                // Alloc new intermediate directory and link it in. The PPN
-                // recorded here is a *paddr*-shifted value; the PTE itself
-                // needs V set so our walker treats it as live (HPTW will
-                // follow any non-zero PPN; it doesn't check V on intermediate
-                // nodes, but the walker does).
+            // Intermediate-level "not installed" is indicated by a zero PPN
+            // in the slot, NOT by a cleared V bit — see the long comment
+            // below for why V must stay off on intermediate entries.
+            if pte.ppn().value() == 0 {
+                // Allocate the next-level directory and write a pure PA
+                // pointer into this entry. On LoongArch, `lddir` uses the
+                // WHOLE 64-bit entry as the child-table base (AND'd with
+                // the PALEN mask) — it does NOT shift out a PPN field or
+                // check any validity bit on intermediate levels. So we
+                // must store the child-table PA with the low 12 bits clear
+                // and nothing else set. In particular, setting V (bit 0)
+                // here would misalign the subsequent `lddir` load by 1
+                // byte; setting any flag bit other than HUGE / LEVEL would
+                // likewise corrupt the address. QEMU's `helper_lddir`
+                // confirms this: it just AND's with the PALEN mask before
+                // the indexed read.
                 let new_table_kaddr = mm::page::alloc_zero();
-                pte.set_ppn(Addr::from_kaddr(new_table_kaddr).ppn());
-                pte.set_flags(PTEFlags::V);
+                let child_pa = kaddr_to_paddr(new_table_kaddr);
+                debug_assert!(child_pa & PGMASK == 0, "child table PA must be page-aligned");
+                pte.set_flags(PTEFlags::empty());
+                pte.set_ppn(PPN::from_paddr(child_pa));
                 ptetable.set(vpns[level], pte);
             }
 
@@ -483,7 +515,10 @@ impl PageTable {
         if level != LEAF_LEVEL {
             for i in 0..ENTRIES_PER_TABLE {
                 let pte = ptetable.get(i);
-                if pte.is_valid() {
+                // Intermediate slots use non-zero PPN as the "installed"
+                // marker; leaf slots use V. We're only recursing through
+                // intermediate levels here (guarded by `level != LEAF_LEVEL`).
+                if pte.ppn().value() != 0 {
                     self.free_pagetable(&pte.next_level(), level + 1);
                 }
             }

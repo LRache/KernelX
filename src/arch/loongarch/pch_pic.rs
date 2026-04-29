@@ -3,29 +3,39 @@
 //! PCH-PIC is the "south-bridge" interrupt aggregator on the LS7A / LA
 //! QEMU virt machine. Devices assert their legacy INTx line to PCH-PIC,
 //! which then routes each input to an EIOINTC vector via per-IRQ
-//! `HTVEC(irq)` and `INT_ROUTE(irq)` register bytes.
+//! `HTMSI_VEC(irq)` (EIOINTC line index) and `ROUTE_ENTRY(irq)` (HT
+//! output line bitmap — ignored by QEMU for EIOINTC delivery) register
+//! bytes.
 //!
 //! We take the identity (pass-through) routing policy: PCH-PIC IRQ N
 //! fires EIOINTC IRQ N, so every device's FDT-declared `interrupts = <N>`
 //! propagates straight through. `enable_device_interrupt_irq(N)` calls
 //! `pch_pic::enable_irq(N)` followed by `eiointc::enable_irq(N)`.
 //!
-//! ## Register map (64 bytes of per-IRQ metadata + a handful of headers)
+//! ## Register map (QEMU `hw/intc/loongarch_pic_common.h`)
 //!
-//! | Offset       | Width | Purpose                                     |
-//! |--------------|-------|---------------------------------------------|
-//! | `0x00` ID    | 8     | Chip identifier + version                   |
-//! | `0x20` MASK  | 8     | bit=1 → line masked (reset = all masked)    |
-//! | `0x30` HTMSI | 8     | bit=1 → use MSI for that line (we force 0) |
-//! | `0x40` EDGE  | 8     | bit=1 → edge-triggered                      |
-//! | `0x50` CLEAR | 8     | W1C ack for edge-triggered sources          |
-//! | `0x60` AUTO0 | 8     | auto-routing group 0 (leave 0)              |
-//! | `0x68` AUTO1 | 8     | auto-routing group 1 (leave 0)              |
-//! | `0x100+n` HTVEC | 1 per IRQ | EIOINTC vector to raise (we set = n)  |
-//! | `0x200+n` ROUTE | 1 per IRQ | HT line bitmap to deliver on (we set = 1) |
+//! | Offset  | Width        | Name           | Purpose                        |
+//! |---------|--------------|----------------|--------------------------------|
+//! | `0x00`  | 8            | INT_ID         | Chip identifier + version      |
+//! | `0x20`  | 8            | INT_MASK       | bit=1 → masked (reset: all 1s) |
+//! | `0x40`  | 8            | HTMSI_EN       | bit=1 → MSI for that line      |
+//! | `0x60`  | 8            | INT_EDGE       | bit=1 → edge-triggered         |
+//! | `0x80`  | 8            | INT_CLEAR      | W1C ack for edge sources       |
+//! | `0x100` | 64 × 1 B     | ROUTE_ENTRY    | HT line bitmap per IRQ         |
+//! | `0x200` | 64 × 1 B     | HTMSI_VEC      | EIOINTC vector per IRQ         |
+//! | `0x3e0` | 8            | INT_POL        | Polarity (1 = low-active)      |
 //!
-//! Reference: Loongson 7A1000 bridge manual §5; Linux
-//! drivers/irqchip/irq-loongson-pch-pic.c.
+//! The important bit we missed originally: **HTMSI_VEC (0x200) is what
+//! QEMU consults to decide which EIOINTC IRQ to raise**, not ROUTE_ENTRY
+//! (which picks the HT output line — QEMU only plumbs one line, so the
+//! value is moot). If HTMSI_VEC stays at the reset default (0), every
+//! PCH-PIC IRQ collapses onto EIOINTC IRQ 0 and the drivers' unmasked
+//! lines never fire.
+//!
+//! References:
+//!   - QEMU: `hw/intc/loongarch_pch_pic.c` `pch_pic_update_irq` / `pch_pic_irq_handler`
+//!   - QEMU: `include/hw/intc/loongarch_pic_common.h` (register offsets)
+//!   - Linux: `drivers/irqchip/irq-loongson-pch-pic.c`
 
 use crate::arch;
 use crate::kinfo;
@@ -35,12 +45,12 @@ use crate::kinfo;
 const NR_IRQS: usize = 64;
 
 mod reg {
-    pub const MASK:   usize = 0x20;  // 8 bytes (64 bits)
-    pub const HTMSI:  usize = 0x30;
-    // pub const EDGE:   usize = 0x40;
-    pub const CLEAR:  usize = 0x50;
-    pub const HTVEC_BASE: usize = 0x100;
-    pub const ROUTE_BASE: usize = 0x200;
+    pub const MASK:        usize = 0x20;  // 8 bytes (64 bits)
+    pub const HTMSI_EN:    usize = 0x40;
+    // pub const EDGE:     usize = 0x60;  // 0 = level (default, what we want)
+    pub const CLEAR:       usize = 0x80;
+    pub const ROUTE_BASE:  usize = 0x100; // 64 × u8 — HT output line bitmap per IRQ
+    pub const HTVEC_BASE:  usize = 0x200; // 64 × u8 — EIOINTC vector number per IRQ
 }
 
 /// Kernel-visible MMIO base (DMW0 mirror). Set by `init()`.
@@ -97,14 +107,21 @@ pub fn init(mmio_pa: usize, mmio_size: usize) {
     write_d(reg::MASK, !0u64);
 
     // Disable MSI routing for legacy INTx use.
-    write_d(reg::HTMSI, 0);
+    write_d(reg::HTMSI_EN, 0);
 
     // Clear any pending edge-triggered lines that may have latched.
     write_d(reg::CLEAR, !0u64);
 
-    // Pass-through HTVEC: PCH-PIC IRQ n → EIOINTC vector n.
-    // Pass-through ROUTE:  IRQ n → HT line 0 (bit 0). Single HT line to
-    // EIOINTC input; QEMU virt has exactly one.
+    // HTMSI_VEC(n) = n: tell PCH-PIC to forward IRQ n to EIOINTC
+    // line n (pass-through). This is the byte QEMU actually reads
+    // when deciding which EIOINTC input to drive — if we leave it at
+    // the reset default 0, every PCH-PIC line collapses onto EIOINTC
+    // line 0 and the per-device IRQs we unmask never fire.
+    //
+    // ROUTE_ENTRY(n) = 0x01: HT output line 0. QEMU virt only plumbs
+    // one HT line into EIOINTC, but setting bit 0 explicitly matches
+    // what Linux does and keeps us compatible if QEMU later wires up
+    // additional lines.
     for n in 0..NR_IRQS {
         write_b(reg::HTVEC_BASE + n, n as u8);
         write_b(reg::ROUTE_BASE + n, 0x01);

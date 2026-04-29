@@ -130,6 +130,7 @@ fn ecode_name(ecode: usize) -> &'static str {
 pub fn install_trap_entry() {
     unsafe extern "C" {
         fn asm_kerneltrap_entry() -> !;
+        fn asm_tlb_refill_entry() -> !;
     }
 
     let entry_addr = asm_kerneltrap_entry as usize;
@@ -143,8 +144,30 @@ pub fn install_trap_entry() {
     // VS=0 → single entry (no vectored dispatch).
     csr::xchg::<{ csr::num::ECFG }>(0, csr::ecfg::VS_MASK);
 
+    // Install the TLB refill handler. LoongArch routes TLB-miss exceptions
+    // through a dedicated vector (TLBRENTRY) rather than the generic
+    // EENTRY — and the handler runs with the MMU off, so TLBRENTRY must
+    // hold a physical address. The DMW1 VA we got from `as usize` maps
+    // 1-to-1 onto a PA via `arch::kaddr_to_paddr` (bitmask off the top).
+    //
+    // Without this, every user-mode fetch that misses the TLB (i.e. the
+    // very first one after a context switch) traps to TLBRENTRY=0, which
+    // itself faults, producing an infinite refill storm. That's the
+    // behaviour Phase 7 debugging caught before adding this wiring —
+    // `-d int` showed `pc=0 ERA=<user PC> cause=13 (refill)` repeating
+    // every cycle.
+    let refill_va = asm_tlb_refill_entry as usize;
+    let refill_pa = crate::arch::kaddr_to_paddr(refill_va);
+    debug_assert!(
+        refill_pa & 0xfff == 0,
+        "TLBRENTRY must be 4 KiB-aligned, got {:#x}",
+        refill_pa,
+    );
+    csr::write::<{ csr::num::TLBRENTRY }>(refill_pa);
+
     kinfo!(
-        "loongarch: EENTRY = {:#x} (single-entry, Ecode-dispatched)",
-        entry_addr
+        "loongarch: EENTRY = {:#x} (single-entry, Ecode-dispatched), \
+         TLBRENTRY = {:#x} (PA of refill handler at VA {:#x})",
+        entry_addr, refill_pa, refill_va,
     );
 }
