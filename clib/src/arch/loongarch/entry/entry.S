@@ -1,66 +1,51 @@
 /*
  * LoongArch64 boot entry.
  *
- * Responsibilities in the current phase:
- *   1. Set DMW0 (VSEG 0x8, MAT=SUC) to cover MMIO (UART, PIC, RTC, ...).
- *   2. Set DMW1 (VSEG 0x9, MAT=CC)  to cover cached RAM (kernel image + heap).
- *   3. Jump from the low-half identity region into the DMW1 mirror of our
- *      own code. This is safe while CRMD.DA is still 1 because the CPU
- *      masks the top bits off for fetch/load/store.
- *   4. Flip CRMD.PG=1 / DA=0. From here on MMU is on, but DMW1 keeps
- *      every VA of ours mapped to the same PA, so we can keep executing.
- *   5. Clear BSS.
- *   6. Point $sp at __stack_end (in the DMW1 high half).
- *   7. Call `main(hartid, heap_start, memory_top)`.
+ * 1. Set DMW0 (VSEG 0x8, MAT=SUC) covering MMIO.
+ * 2. Set DMW1 (VSEG 0x9, MAT=CC)  covering cached RAM.
+ * 3. Jump into the DMW1 mirror of our own code (safe while CRMD.DA=1
+ *    because the CPU masks top bits for fetch/load/store).
+ * 4. CRMD.PG=1 / DA=0: MMU on. DMW1 keeps every kernel VA mapped to
+ *    the same PA, so fetching continues smoothly.
+ * 5. Clear BSS, point $sp at __stack_end, call main().
  *
- * QEMU's `loongarch_direct_kernel_boot` path places:
- *   - $a0 = 1 (not a hartid; a literal magic from init_cmdline)
- *   - $a1 = cmdline VA (inside the boot ROM, NOT usable as an FDT pointer)
- *   - $a2 = EFI system table offset
+ * QEMU's `loongarch_direct_kernel_boot` path hands us:
+ *   $a0 = 1 (magic, not a hartid)
+ *   $a1 = cmdline PA (LoongArch BPI; not an FDT pointer)
+ *   $a2 = EFI sys table offset
  * The FDT blob is ROM-loaded at the fixed PA 0x100000 (see QEMU's
- * include/hw/loongarch/virt.h: `#define FDT_BASE 0x100000`). It is NOT
- * passed in a register — `src/arch/loongarch/fdt.rs` hard-codes the same
- * value so each arch owns its own FDT-discovery convention, the way
- * RISC-V stashes the OpenSBI-supplied PA in `__riscv_copied_fdt`. We
- * therefore ignore QEMU's register values entirely and assume hartid = 0
- * (single-core BSP until Phase 8).
+ * include/hw/loongarch/virt.h). We ignore $a0 (force hartid=0) and
+ * stash $a1 into `la_boot_cmdline_pa` for fdt.rs.
  */
 
     .section .text.entry
     .global _entry
     .type _entry, @function
 _entry:
-    /* QEMU's bootloader leaves $a0=1 and $a1=cmdline-PA; we keep $a1 for
-     * later (fdt.rs picks it up via the global la_boot_cmdline_pa symbol).
-     * Force hartid=0 (single-core on BSP). FDT discovery is handled
-     * entirely in Rust (`arch::loongarch::fdt`) using a fixed PA, so
-     * there is no FDT pointer to forward. */
-    move    $s0, $zero                /* $s0 = hartid = 0 */
-    move    $s1, $a1                  /* $s1 = cmdline PA (QEMU $a1) */
+    move    $s0, $zero                /* $s0 = hartid = 0 (forced) */
+    move    $s1, $a1                  /* $s1 = cmdline PA */
 
-    /* DMW0 @ 0x8000_0000_0000_0000: PLV0=1 (bit0), MAT=SUC (bits 5:4 = 0). */
+    /* DMW0 @ 0x8000_...: PLV0, MAT=SUC. */
     ori     $t0, $zero, 0x1
-    lu52i.d $t0, $t0, -2048           /* bits 63:52 = 0x800 */
+    lu52i.d $t0, $t0, -2048
     csrwr   $t0, 0x180                /* CSR_DMW0 */
 
-    /* DMW1 @ 0x9000_0000_0000_0000: PLV0=1 (bit0), MAT=CC (bits 5:4 = 1). */
+    /* DMW1 @ 0x9000_...: PLV0, MAT=CC. */
     ori     $t0, $zero, 0x11
-    lu52i.d $t0, $t0, -1792           /* bits 63:52 = 0x900 */
+    lu52i.d $t0, $t0, -1792
     csrwr   $t0, 0x181                /* CSR_DMW1 */
 
-    /* Jump into DMW1 high half. DA=1 still; the CPU masks the top bits
-     * off for the fetch but PC itself keeps them, so after we flip PG on
-     * the next fetch the MMU resolves via DMW1 cleanly. */
+    /* Jump into DMW1 high half so the next fetch resolves via DMW1
+     * once PG is on. */
     pcaddi  $t0, 3
-    lu52i.d $t0, $t0, -1792           /* |= 0x9000 << 48 */
+    lu52i.d $t0, $t0, -1792
     jr      $t0
 1:
-    /* CRMD: PLV=0, IE=0, DA=0, PG=1 (bit4), DATF=CC (bits6:5=01),
-     *       DATM=CC (bits8:7=01).  value = 0x10 | 0x20 | 0x80 = 0xb0 */
+    /* CRMD: PLV=0, IE=0, DA=0, PG=1, DATF=CC, DATM=CC. */
     ori     $t0, $zero, 0xb0
     csrwr   $t0, 0x0                  /* CSR_CRMD */
 
-    /* Clear BSS. __bss_start/__bss_end are linker-provided VAs in DMW1. */
+    /* Clear BSS. */
     la.pcrel $t0, __bss_start
     la.pcrel $t1, __bss_end
 2:  beq     $t0, $t1, 3f
@@ -69,10 +54,8 @@ _entry:
     b       2b
 3:
 
-    /* Stash the cmdline PA QEMU handed us in $a1. Must come AFTER the
-     * BSS clear, otherwise the zero-pass below stomps it. Defined in
-     * .data so the BSS clear above doesn't touch it; the Rust side
-     * reads it via the global `la_boot_cmdline_pa` symbol. */
+    /* Stash cmdline PA AFTER BSS clear (BSS zero-pass would otherwise
+     * stomp it). Lives in .data so it's already preserved. */
     la.pcrel $t0, la_boot_cmdline_pa
     st.d    $s1, $t0, 0
 
@@ -80,46 +63,29 @@ _entry:
     la.pcrel $sp, __stack_end
 
     /*
-     * Build the argument triple for Rust main:
-     *   a0 = hartid          (preserved in $s0)
-     *   a1 = heap_start      (__kernel_end, aligned to 4 KiB)
-     *   a2 = memory_top      (DMW1 base + 256 MiB; Phase 6 will read this from FDT)
+     * main(hartid, heap_start, memory_top). heap_start and memory_top
+     * are VAs in the DMW1 high half — kernel arithmetic stays in the
+     * 64-bit linked space.
      *
-     * heap_start and memory_top are VAs in the DMW1 high half so that the
-     * kernel's address-arithmetic stays in the same 64-bit space it was
-     * linked at. `kaddr_to_paddr` / `paddr_to_kaddr` will do the translation
-     * on demand later.
+     * memory_top = 0x9000_..._0000 | 0x1000_0000 (256 MiB). QEMU `-M virt`
+     * gives 256 MiB at PA [0, 0x1000_0000); past that is MMIO and cached
+     * loads there would raise ADE through DMW1. The frame allocator must
+     * respect this cap.
      */
     move    $a0, $s0
     la.pcrel $a1, __kernel_end
-    /*
-     * memory_top = 0x9000_0000_0000_0000 | 0x1000_0000  (256 MiB)
-     *
-     * QEMU `-M virt` gives us 256 MiB at PA [0, 0x1000_0000). Everything
-     * past that (up to the high-memory bank at 0x8000_0000) is MMIO —
-     * cached loads into that region raise ADE under DMW1. We rely on the
-     * frame allocator to respect this upper bound and never hand out a
-     * frame at or past 0x0fff_f000. Phase 6 will replace this with a
-     * value read from the FDT.
-     */
     lu12i.w $a2, 0x10000                /* 0x1000_0000 */
-    lu52i.d $a2, $a2, -1792             /* |= 0x9000 << 48 */
+    lu52i.d $a2, $a2, -1792             /* | 0x9000_..._0000 */
 
-    /* Hand off to Rust. `main` is declared `extern "C" fn main(...)` in
-     * src/kernel/main.rs. pcaddu18i + jirl reaches anywhere within +-128 MiB
-     * which is plenty. la.global does the same but goes through GOT. */
     la.global $t0, main
     jirl    $zero, $t0, 0
 
-    /* Unreachable: main() never returns. Park if it does. */
+    /* main() never returns. */
 4:  idle    0
     b       4b
     .size _entry, . - _entry
 
-/*
- * Placeholder for secondary-core entry, referenced by Phase 8's SMP bring-up.
- * Keep as a weak symbol until then so linking still works.
- */
+/* Secondary-core entry stub for SMP; weak until we have real bring-up. */
     .section .text.entry
     .global __la_others_entry
     .weak __la_others_entry
@@ -127,13 +93,8 @@ __la_others_entry:
 1:  idle 0
     b 1b
 
-/*
- * QEMU's `$a1` on entry holds the physical address of the kernel-cmdline
- * C-string that `-append` was copied into (or 0 if no cmdline was given).
- * `_entry` stashes it here so `src/arch/loongarch/fdt.rs` can read it
- * without plumbing another arg through `main()`. Placed in `.data` so
- * the BSS zero-pass in `_entry` does not clear it.
- */
+/* Written by _entry after BSS clear; read by fdt.rs as the global
+ * `la_boot_cmdline_pa`. In `.data` so BSS zero-pass leaves it alone. */
     .section .data
     .globl la_boot_cmdline_pa
     .balign 8

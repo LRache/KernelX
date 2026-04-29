@@ -1,32 +1,3 @@
-//! LoongArch64 three-level page table (9-9-9-12, 48-bit VA, 48-bit PA).
-//!
-//! Shape-for-shape port of `src/arch/riscv/pagetable/` with the encoding
-//! swapped out for LoongArch LA64 rules. The walker (`find_pte_or_create`,
-//! `free_pagetable`) is mechanically identical to RISC-V — LoongArch happens
-//! to share the same 9-9-9-12 geometry at 4 KiB pages.
-//!
-//! What's different from RISC-V:
-//!   - PTE entries are **64-bit** and flags live across the whole word
-//!     (NR/NX/RPLV are in bits 61-63). We therefore keep `PTEFlags` as u64
-//!     directly — no u16 mirror of the high bits — so write-back is a plain
-//!     `bits() | (ppn << 12)` and not three XORs.
-//!   - No hardware A bit. We substitute a software P (present) bit in the
-//!     bits 7-11 reserved range. Hardware does set D on first store; we read
-//!     and clear it the same way RISC-V does.
-//!   - PPN occupies bits [47:12] (36-bit PPN given PALEN=48) instead of
-//!     RISC-V's [53:10].
-//!   - Priv control is a 2-bit PLV field (0=kernel, 3=user), not a single
-//!     U bit. `MapPerm::U` -> PLV3; absence -> PLV0.
-//!   - Read/Exec are **negative** (NR / NX) — so `MapPerm::R` means clear NR.
-//!
-//! What's the same:
-//!   - VPN slicing: `[ (v>>30)&0x1ff, (v>>21)&0x1ff, (v>>12)&0x1ff ]`.
-//!   - Walker alloc-on-demand, Drop recursively free.
-//!   - 4 KiB base page, 512 entries per directory.
-//!
-//! CSR-side bring-up (PGDL/PGDH/PWCL/PWCH/STLBPS) is Phase 4/5 — Phase 3
-//! only builds the data structures.
-
 use bitflags::bitflags;
 use core::fmt;
 use core::ptr::NonNull;
@@ -41,52 +12,46 @@ const LEAF_LEVEL: usize = 2;
 const ENTRIES_PER_TABLE: usize = PGSIZE / core::mem::size_of::<u64>(); // 512
 
 bitflags! {
-    /// Real LoongArch PTE bit layout (PALEN=48, 4 KiB pages, RPLV=0 everywhere
-    /// we care about). Bit positions match hardware directly; there is no
-    /// separate "mirror" representation. Vol.1 §8.5.1.
+    /// PTE bit layout (PALEN=48, 4 KiB pages, RPLV=0). Matches hardware
+    /// directly — no separate mirror. Vol.1 §8.5.1.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct PTEFlags: u64 {
-        /// Valid — set on any PTE that participates in translation. Software
-        /// walker uses this to detect "table not yet allocated" at intermediate
-        /// levels too; see `find_pte_or_create`.
+        /// Valid. On leaf entries only — intermediate entries store a bare PA.
         const V    = 1 << 0;
-        /// Dirty — hardware sets this on the first store through the mapping.
+        /// Dirty. Set by hardware on first store.
         const D    = 1 << 1;
-        /// PLV = 0 (kernel-only access).
+        /// PLV = 0 (kernel-only).
         const PLV0 = 0 << 2;
         /// PLV = 3 (user-accessible).
         const PLV3 = 3 << 2;
-        /// MAT = 0: strongly uncached. Use only for MMIO mapped through
-        /// page tables (Phase 3 currently relies on DMW0 for all MMIO).
+        /// MAT=0, strongly uncached. MMIO via DMW0, so unused in TLB.
         const SUC  = 0 << 4;
-        /// MAT = 1: cached coherent. This is what every normal RAM page wants.
+        /// MAT=1, cached coherent. Normal RAM pages.
         const CC   = 1 << 4;
-        /// MAT = 2: weakly uncached. Rarely used.
+        /// MAT=2, weakly uncached.
         const WUC  = 2 << 4;
         /// Global — translation shared across ASIDs.
         const G    = 1 << 6;
-        /// Software-used "present" bit. LoongArch has no hardware Accessed
-        /// bit; we repurpose bit 7 (reserved in the hardware PTE) to stand in
-        /// for RISC-V's PTEFlags::A. Cleared by `take_access_dirty_bit`.
+        /// Software Accessed bit (LoongArch has no hardware A).
+        /// Lives in the reserved bits 7-11 range. Cleared by
+        /// `take_access_dirty_bit`.
         const P    = 1 << 7;
-        /// Software "writable" tracking. LoongArch's hardware writable bit is
-        /// bit 8 per some references; we keep the same position and treat it
-        /// as the single source of truth for "will a store succeed".
+        /// Software writable tracking. Source of truth for "will a store
+        /// succeed" from the kernel's view.
         const W    = 1 << 8;
-        /// Not readable — when set, a load through this PTE raises PIL.
+        /// Not readable: load raises PIL.
         const NR   = 1 << 61;
-        /// Not executable — when set, an ifetch through this PTE raises PIF.
+        /// Not executable: ifetch raises PIF.
         const NX   = 1 << 62;
-        /// Restrict PLV — when set, only the exact PLV in the PTE may access.
+        /// Restrict PLV to the exact value in the PTE.
         const RPLV = 1 << 63;
     }
 }
 
 impl From<MapPerm> for PTEFlags {
     fn from(perm: MapPerm) -> Self {
-        // Base: valid + cached + present. We add R/W/X "by subtraction" via
-        // NR/NX for non-read/non-exec. MapPerm is always a positive-permission
-        // set, so start from "no access" and OR in the allowed directions.
+        // Start from "no access"; OR in allowed directions. R/X are negative
+        // on LoongArch (NR/NX), so absence in MapPerm sets them.
         let mut flags = PTEFlags::V | PTEFlags::P | PTEFlags::CC;
 
         if perm.contains(MapPerm::W) {
@@ -124,11 +89,6 @@ impl From<PTEFlags> for MapPerm {
     }
 }
 
-// -------- Address helpers (mirrors `src/arch/riscv/pagetable/pte.rs`) --------
-
-/// A thin wrapper that carries an address plus an interpretation. We cross
-/// freely between kaddr (DMW1) and paddr here — every `alloc_zero` we call
-/// returns a kaddr, and every PPN we store in a PTE is a paddr-shifted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Addr(usize);
 
@@ -157,8 +117,7 @@ impl Addr {
         self.0 & PGMASK
     }
 
-    /// 48-bit VA split into three 9-bit indices (top to bottom). Same geometry
-    /// as RISC-V Sv39, which is why we can mechanically port the walker.
+    /// 48-bit VA split into three 9-bit indices (top to bottom).
     pub const fn vpn(self) -> [usize; PAGE_TABLE_LEVELS] {
         [
             (self.0 >> 30) & 0x1ff,
@@ -167,8 +126,7 @@ impl Addr {
         ]
     }
 
-    /// Turn this (kernel-view) address into a PPN suitable for embedding in
-    /// a PTE. Paddr is taken first so that DMW1 high bits are not left in.
+    /// PPN for embedding in a PTE. PA is taken first so DMW1 bits don't leak.
     pub fn ppn(self) -> PPN {
         PPN::from_paddr(self.paddr())
     }
@@ -208,34 +166,23 @@ impl fmt::Display for PPN {
     }
 }
 
-// ------------------------------ PTE ------------------------------
-
-/// Single page-table entry. Carries its own write-back pointer so the walker
-/// can return a PTE by value and the caller still mutates the in-memory slot.
-///
-/// Read-modify-write flow (see any `PageTableTrait` impl below):
-///     let mut pte = self.find_pte_or_create(vaddr);
-///     pte.set_flags(new_flags);
-///     pte.set_ppn(new_ppn);
-///     pte.write_back().expect("...");
+/// Single page-table entry. Carries the source pointer so `write_back`
+/// can mutate the in-memory slot after a read-modify-write.
 #[derive(Debug, Clone, Copy)]
 pub struct PTE {
     bits: u64,
     ptr: Option<NonNull<u64>>,
 }
 
-/// PPN bit mask inside the hardware PTE, pre-shifted: bits [47:12], i.e.
-/// 36 contiguous bits at position 12.
+/// PPN bits [47:12] (36-bit PPN, PALEN=48).
 const PPN_SHIFT: u64 = PGBITS as u64;
-const PPN_BITS: u64 = 36; // PALEN (48) - PGBITS (12)
+const PPN_BITS: u64 = 36;
 const PPN_MASK_IN_PTE: u64 = ((1u64 << PPN_BITS) - 1) << PPN_SHIFT;
-/// Combined mask of all bits PTEFlags claims. Used to strip flags before
-/// writing a fresh PPN.
+/// Mask of every bit `PTEFlags` claims, used to strip flags before writing
+/// a fresh PPN.
 const FLAG_BITS_MASK: u64 = PTEFlags::all().bits();
 
 impl PTE {
-    /// Load from a 64-bit slot. Panics on null pointer (walker never produces
-    /// one; only misuse would).
     pub fn from_ptr(ptr: NonNull<u64>) -> Self {
         let bits = unsafe { ptr.as_ptr().read_volatile() };
         Self {
@@ -252,9 +199,7 @@ impl PTE {
         PTEFlags::from_bits_truncate(self.bits & FLAG_BITS_MASK)
     }
 
-    /// Full raw 64-bit PTE image as it will be written back to the page
-    /// table entry slot. Useful for trace / debug prints when verifying
-    /// hardware expectations against what we've constructed.
+    /// Raw 64-bit PTE image. Useful for trace prints.
     #[allow(dead_code)]
     pub const fn image(&self) -> u64 {
         self.bits
@@ -275,14 +220,6 @@ impl PTE {
         self
     }
 
-    /// Descend into the next-level table this PTE points to. Only sensible
-    /// on intermediate levels — walker asserts that a child table has been
-    /// installed.
-    ///
-    /// Note the assertion checks `ppn().value() != 0`, NOT `is_valid()`.
-    /// Intermediate entries on LoongArch don't use the V bit because `lddir`
-    /// treats the whole 64-bit slot as the child-table base PA (AND'd with
-    /// the PALEN mask). A non-zero PPN is our "installed" signal.
     pub fn next_level(&self) -> PTETable {
         debug_assert!(self.ppn().value() != 0);
         PTETable::new(self.ppn().to_addr().ptr())
@@ -309,11 +246,6 @@ impl fmt::Display for PTE {
     }
 }
 
-// ------------------------------ PTETable ------------------------------
-
-/// View onto a 4 KiB page treated as an array of 512 `u64` PTE slots. The
-/// base pointer is a kernel address (DMW1) — reading and writing through
-/// it goes via DMW with cache-coherent attributes (MAT=CC).
 pub struct PTETable {
     base: *mut u64,
 }
@@ -337,16 +269,7 @@ impl PTETable {
     }
 }
 
-// ------------------------------ PageTable ------------------------------
-
 pub struct PageTable {
-    /// Kernel-view pointer to the root directory (allocated via
-    /// `mm::page::alloc_zero`, which hands out a kaddr in DMW1). Stored as
-    /// `usize` to keep the struct field-compatible with the RISC-V port.
-    ///
-    /// A value of `0` means the page table is not yet backed (post-`new`,
-    /// pre-`create`). `Drop` checks for that so a never-used `PageTable` is
-    /// cheap.
     pub root: usize,
 }
 
@@ -355,24 +278,17 @@ impl PageTable {
         Self { root: 0 }
     }
 
-    /// Wrap an existing root (reserved for a hypothetical kernel-pagetable
-    /// use case). Currently unused on LoongArch because DMW obviates the need
-    /// for a kernel page table.
     #[allow(dead_code)]
     pub fn from_root(root: usize) -> Self {
         debug_assert!(root != 0, "PageTable root cannot be zero");
         Self { root }
     }
 
-    /// Allocate a zeroed page and install it as the root. Called by
-    /// `AddrSpace::new`.
     pub fn create(&mut self) {
         debug_assert!(self.root == 0, "PageTable::create called twice");
         self.root = mm::page::alloc_zero();
     }
 
-    /// Value to program into CSR.PGDL / CSR.PGDH at context switch (Phase 5).
-    /// The CSR wants a physical address of the root directory, page-aligned.
     pub fn get_pgd(&self) -> usize {
         debug_assert!(self.root != 0);
         kaddr_to_paddr(self.root) & !PGMASK
@@ -390,9 +306,7 @@ impl PageTable {
         self.find_pte(uaddr).map(|pte| pte.flags().into())
     }
 
-    /// Software accessed emulation. LoongArch has no hardware A bit; we use
-    /// `PTEFlags::P` as a stand-in and the fault handler (Phase 4) will set
-    /// it on first touch.
+    /// Software Accessed emulation (PTEFlags::P stands in).
     pub fn mark_page_accessed(&mut self, uaddr: usize) -> bool {
         if let Some(mut pte) = self.find_pte(uaddr) {
             let flags = pte.flags();
@@ -419,9 +333,6 @@ impl PageTable {
         false
     }
 
-    /// Used by kernel-range mappings; currently unreachable on LoongArch
-    /// because `Arch::map_kernel_addr` is a no-op (DMW1 covers all of RAM).
-    /// Kept for API parity and future MMIO-via-pagetable cases.
     #[allow(dead_code)]
     pub fn mmap_kernel(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
@@ -445,14 +356,10 @@ impl PageTable {
             let pte = ptetable.get(*vpn);
 
             if level == LEAF_LEVEL {
-                // Leaf: V bit decides presence, matching what `ldpte` will
-                // enforce.
                 return if pte.is_valid() { Some(pte) } else { None };
             }
 
-            // Intermediate: "installed" means the slot holds a non-zero
-            // child-table PA. See `find_pte_or_create` for why we don't
-            // set V on intermediate entries.
+            // Intermediate slot: non-zero PPN means "installed".
             if pte.ppn().value() == 0 {
                 return None;
             }
@@ -463,9 +370,6 @@ impl PageTable {
         unreachable!("find_pte walker should always return within the loop")
     }
 
-    /// Walk the three-level table, allocating intermediate directories on
-    /// demand. Returns the leaf PTE's loaded-and-pointable view; the caller
-    /// mutates via `set_flags`/`set_ppn` and `write_back`.
     fn find_pte_or_create(&mut self, vaddr: usize) -> PTE {
         debug_assert!(self.root != 0);
         let vpns = Addr::from_vaddr(vaddr).vpn();
@@ -479,22 +383,7 @@ impl PageTable {
                 return pte;
             }
 
-            // Intermediate-level "not installed" is indicated by a zero PPN
-            // in the slot, NOT by a cleared V bit — see the long comment
-            // below for why V must stay off on intermediate entries.
             if pte.ppn().value() == 0 {
-                // Allocate the next-level directory and write a pure PA
-                // pointer into this entry. On LoongArch, `lddir` uses the
-                // WHOLE 64-bit entry as the child-table base (AND'd with
-                // the PALEN mask) — it does NOT shift out a PPN field or
-                // check any validity bit on intermediate levels. So we
-                // must store the child-table PA with the low 12 bits clear
-                // and nothing else set. In particular, setting V (bit 0)
-                // here would misalign the subsequent `lddir` load by 1
-                // byte; setting any flag bit other than HUGE / LEVEL would
-                // likewise corrupt the address. QEMU's `helper_lddir`
-                // confirms this: it just AND's with the PALEN mask before
-                // the indexed read.
                 let new_table_kaddr = mm::page::alloc_zero();
                 let child_pa = kaddr_to_paddr(new_table_kaddr);
                 debug_assert!(child_pa & PGMASK == 0, "child table PA must be page-aligned");
@@ -509,15 +398,10 @@ impl PageTable {
         unreachable!("find_pte_or_create walker should always return within the loop")
     }
 
-    /// Recursively free every directory allocated by the walker (interior
-    /// nodes and the root), then the root slot. Called from `Drop`.
     fn free_pagetable(&mut self, ptetable: &PTETable, level: usize) {
         if level != LEAF_LEVEL {
             for i in 0..ENTRIES_PER_TABLE {
                 let pte = ptetable.get(i);
-                // Intermediate slots use non-zero PPN as the "installed"
-                // marker; leaf slots use V. We're only recursing through
-                // intermediate levels here (guarded by `level != LEAF_LEVEL`).
                 if pte.ppn().value() != 0 {
                     self.free_pagetable(&pte.next_level(), level + 1);
                 }
@@ -530,9 +414,6 @@ impl PageTable {
 
 impl Drop for PageTable {
     fn drop(&mut self) {
-        // Stub / "never created" case: nothing to free. This protects against
-        // `PageTable::new()` being dropped without any `create`, which RISC-V
-        // does not guard against but we cheaply can.
         if self.root == 0 {
             return;
         }
@@ -545,12 +426,6 @@ impl Drop for PageTable {
 unsafe impl Send for PageTable {}
 unsafe impl Sync for PageTable {}
 
-// ------------------------ PageTableTrait impls ------------------------
-//
-// Shape copied from `src/arch/riscv/pagetable/pagetable.rs:200-295`. The only
-// semantic difference is the "pre-populate access/dirty" trick: RISC-V sets
-// A|D up front so the CPU doesn't trap on first access; on LoongArch we set
-// P|D instead (P is our software accessed stand-in).
 
 impl PageTableTrait for PageTable {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {

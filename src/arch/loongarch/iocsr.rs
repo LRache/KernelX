@@ -1,16 +1,3 @@
-//! LoongArch I/O CSR (IOCSR) access primitives.
-//!
-//! The EIOINTC lives entirely in IOCSR space — it does **not** sit on the
-//! MMIO bus and has no entry in the FDT `reg` of a bus node. Its registers
-//! are reached with `iocsrrd.{w,d}` / `iocsrwr.{w,d}` instructions, where
-//! the offset is a runtime register operand (unlike regular CSRs which
-//! require an immediate).
-//!
-//! We keep this a small separate module rather than tacking it onto
-//! `csr.rs`: the CSR module is already large, and IOCSR has a different
-//! instruction family / addressing model.
-
-/// Read a 64-bit IOCSR register.
 #[inline]
 pub fn iocsr_read_d(offset: usize) -> u64 {
     let v: u64;
@@ -68,7 +55,7 @@ pub fn iocsr_write_w(offset: usize, value: u32) {
     }
 }
 
-/// Write a single byte to IOCSR (used for per-IRQ route/vec tables).
+/// Write a single byte (for per-IRQ route/vec tables).
 #[inline]
 pub fn iocsr_write_b(offset: usize, value: u8) {
     unsafe {
