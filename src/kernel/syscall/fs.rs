@@ -1302,14 +1302,8 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
     let mut fdtable = fdtable.lock();
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         for i in fd..=max_fd {
-            if let Ok(fdflags) = fdtable.get_fd_flags(i) {
-                fdtable.set_fd_flags(
-                    i,
-                    FDFlags {
-                        cloexec: true,
-                        ..fdflags
-                    },
-                )?;
+            if let Ok(_) = fdtable.get_fd_flags(i) {
+                fdtable.set_fd_flags(i, FDFlags { cloexec: true })?;
             }
         }
     } else {
@@ -2489,13 +2483,13 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     if !file.writable() {
-        return Err(Errno::EBADF);
+        return Err(Errno::EINVAL);
     }
 
     let length = truncate_length(length)?;
     check_file_size_limit(length)?;
     let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::EINVAL)?;
-    let old_size = file.get_inode().ok_or(Errno::EINVAL)?.size()?;
+    let old_size = file.get_inode().ok_or(Errno::EBADF)?.size()?;
     file.ftruncate(length)?;
     if old_size != length {
         let time = driver::chosen::kclock::now()?;
