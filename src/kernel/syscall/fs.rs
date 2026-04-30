@@ -2036,6 +2036,11 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         .ok_or(Errno::EEXIST)?
     };
 
+    let parent = parent.get_mount_to();
+    if parent.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
     parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
 
     Ok(0)
