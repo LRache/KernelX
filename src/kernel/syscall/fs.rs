@@ -1302,12 +1302,11 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
     let mut fdtable = fdtable.lock();
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         for i in fd..=max_fd {
-            if let Ok(fdflags) = fdtable.get_fd_flags(i) {
+            if let Ok(_) = fdtable.get_fd_flags(i) {
                 fdtable.set_fd_flags(
                     i,
                     FDFlags {
                         cloexec: true,
-                        ..fdflags
                     },
                 )?;
             }
@@ -1947,6 +1946,19 @@ pub fn statfs64(uptr_path: UString, uptr_buf: UPtr<Statfs>) -> SyscallRet {
         return Err(Errno::ENOENT);
     }
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+
+    let statfs = vfs::statfs(dentry.sno())?;
+
+    uptr_buf.write(statfs)?;
+
+    Ok(0)
+}
+
+pub fn fstatfs64(fd: usize, uptr_buf: UPtr<Statfs>) -> SyscallRet {
+    uptr_buf.should_not_null()?;
+
+    let file = current::fdtable().lock().get(fd)?;
+    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
 
     let statfs = vfs::statfs(dentry.sno())?;
 
