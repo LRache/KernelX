@@ -10,9 +10,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/output")
 
 add_executable(minimal_vm
     src/minimal_vm.cpp
-    src/bus.cpp
-    src/mmio.cpp
-    src/uart.cpp
+    src/linux_dtb.cpp
+    src/device/bus.cpp
+    src/device/mmio.cpp
+    src/device/uart.cpp
+    src/device/plic.cpp
     src/kvm.cpp
     src/vcpu/vcpu.cpp
     src/vcpu/abi.cpp

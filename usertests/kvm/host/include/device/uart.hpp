@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "mmio.hpp"
+#include "device/mmio.hpp"
 
 #include <cstddef>
 #include <cstdint>

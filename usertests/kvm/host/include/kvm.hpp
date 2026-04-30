@@ -1,6 +1,6 @@
 #pragma once
 
-#include "bus.hpp"
+#include "device/bus.hpp"
 #include "vcpu.hpp"
 
 #include <cstdint>

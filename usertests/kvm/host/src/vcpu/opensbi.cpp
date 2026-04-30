@@ -6,17 +6,25 @@
 namespace kvm_host {
 static constexpr std::uintptr_t RISCV_SBI_LEGACY_SET_TIMER_EID = 0x0;
 static constexpr std::uintptr_t RISCV_SBI_LEGACY_CONSOLE_PUTCHAR_EID = 0x1;
+static constexpr std::uintptr_t RISCV_SBI_LEGACY_CONSOLE_GETCHAR_EID = 0x2;
 static constexpr std::uintptr_t RISCV_SBI_LEGACY_SHUTDOWN_EID = 0x8;
 
 static constexpr std::uintptr_t SBI_EXT_BASE = 0x10;
+static constexpr std::uintptr_t SBI_EXT_TIME = 0x54494d45;
+static constexpr std::uintptr_t SBI_EXT_SRST = 0x53525354;
 static constexpr std::uintptr_t SBI_EXT_DBCN = 0x4442434e;
 
 static constexpr std::uintptr_t SBI_BASE_GET_SPEC_VERSION = 0;
 static constexpr std::uintptr_t SBI_BASE_GET_IMPL_ID = 1;
 static constexpr std::uintptr_t SBI_BASE_GET_IMPL_VERSION = 2;
 static constexpr std::uintptr_t SBI_BASE_PROBE_EXTENSION = 3;
+static constexpr std::uintptr_t SBI_BASE_GET_MVENDORID = 4;
+static constexpr std::uintptr_t SBI_BASE_GET_MARCHID = 5;
+static constexpr std::uintptr_t SBI_BASE_GET_MIMPID = 6;
 
+static constexpr std::uintptr_t SBI_TIME_SET_TIMER = 0;
 static constexpr std::uintptr_t SBI_DBCN_CONSOLE_WRITE = 0;
+static constexpr std::uintptr_t SBI_SRST_RESET = 0;
 
 static constexpr std::intptr_t SBI_SUCCESS = 0;
 static constexpr std::intptr_t SBI_ERR_NOT_SUPPORTED = -2;
@@ -65,9 +73,12 @@ static bool write_guest_buffer_to_stdout(const KvmCpu &cpu, std::uintptr_t guest
 static bool is_extension_supported(std::uintptr_t extension_id) {
     switch (extension_id) {
         case SBI_EXT_BASE:
+        case SBI_EXT_TIME:
+        case SBI_EXT_SRST:
         case SBI_EXT_DBCN:
         case RISCV_SBI_LEGACY_SET_TIMER_EID:
         case RISCV_SBI_LEGACY_CONSOLE_PUTCHAR_EID:
+        case RISCV_SBI_LEGACY_CONSOLE_GETCHAR_EID:
         case RISCV_SBI_LEGACY_SHUTDOWN_EID:
             return true;
         default:
@@ -91,11 +102,25 @@ static bool handle_base_extension(const KvmCpu &cpu, const KvmRegs &regs) {
         case SBI_BASE_PROBE_EXTENSION:
             value = is_extension_supported(regs.a0) ? 1 : 0;
             break;
+        case SBI_BASE_GET_MVENDORID:
+        case SBI_BASE_GET_MARCHID:
+        case SBI_BASE_GET_MIMPID:
+            value = 0;
+            break;
         default:
             return finish_sbi_call(cpu, regs, SBI_ERR_NOT_SUPPORTED, 0);
     }
 
     return finish_sbi_call(cpu, regs, SBI_SUCCESS, value);
+}
+
+static bool handle_time_extension(const KvmCpu &cpu, const KvmRegs &regs) {
+    switch (regs.a6) {
+        case SBI_TIME_SET_TIMER:
+            return finish_sbi_call(cpu, regs, SBI_SUCCESS, 0);
+        default:
+            return finish_sbi_call(cpu, regs, SBI_ERR_NOT_SUPPORTED, 0);
+    }
 }
 
 static bool handle_debug_console_extension(const KvmCpu &cpu, const KvmRegs &regs) {
@@ -110,6 +135,17 @@ static bool handle_debug_console_extension(const KvmCpu &cpu, const KvmRegs &reg
     }
 }
 
+static bool handle_system_reset_extension(const KvmCpu &cpu, const KvmRegs &regs) {
+    switch (regs.a6) {
+        case SBI_SRST_RESET:
+            std::printf("kvm exit: riscv sbi system reset type=%lu reason=%lu\n",
+                        static_cast<unsigned long>(regs.a0), static_cast<unsigned long>(regs.a1));
+            return finish_sbi_call(cpu, regs, SBI_SUCCESS, 0);
+        default:
+            return finish_sbi_call(cpu, regs, SBI_ERR_NOT_SUPPORTED, 0);
+    }
+}
+
 KvmCpu::SbiCallResult KvmCpu::handle_sbi_call(const KvmRegs &regs) const {
     switch (regs.a7) {
         case RISCV_SBI_LEGACY_SET_TIMER_EID:
@@ -118,13 +154,26 @@ KvmCpu::SbiCallResult KvmCpu::handle_sbi_call(const KvmRegs &regs) const {
             std::fputc(static_cast<unsigned char>(regs.a0), stdout);
             std::fflush(stdout);
             return finish_legacy_call(*this, regs) ? SbiCallResult::Resume : SbiCallResult::Failed;
+        case RISCV_SBI_LEGACY_CONSOLE_GETCHAR_EID: {
+            KvmRegs next = regs;
+            next.pc += 4;
+            next.a0 = static_cast<std::uintptr_t>(-1);
+            return set_regs(next) ? SbiCallResult::Resume : SbiCallResult::Failed;
+        }
         case RISCV_SBI_LEGACY_SHUTDOWN_EID:
             std::printf("kvm exit: riscv sbi shutdown\n");
             return SbiCallResult::Shutdown;
         case SBI_EXT_BASE:
             return handle_base_extension(*this, regs) ? SbiCallResult::Resume : SbiCallResult::Failed;
+        case SBI_EXT_TIME:
+            return handle_time_extension(*this, regs) ? SbiCallResult::Resume : SbiCallResult::Failed;
         case SBI_EXT_DBCN:
             return handle_debug_console_extension(*this, regs) ? SbiCallResult::Resume : SbiCallResult::Failed;
+        case SBI_EXT_SRST:
+            if (!handle_system_reset_extension(*this, regs)) {
+                return SbiCallResult::Failed;
+            }
+            return SbiCallResult::Shutdown;
         default:
             if (regs.a7 >= SBI_EXT_BASE) {
                 return finish_sbi_call(*this, regs, SBI_ERR_NOT_SUPPORTED, 0) ? SbiCallResult::Resume

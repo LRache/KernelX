@@ -1,6 +1,6 @@
 #include "vcpu.hpp"
 
-#include "bus.hpp"
+#include "device/bus.hpp"
 
 #include <cstdio>
 #include <memory>
@@ -59,6 +59,10 @@ KvmCpu::~KvmCpu() {
 
 bool KvmCpu::run(std::uintptr_t *exit_reason) const {
     while (true) {
+        if (bus_ != nullptr) {
+            bus_->update();
+        }
+
         std::uintptr_t reason = 0;
         if (!run_once(&reason)) {
             return false;

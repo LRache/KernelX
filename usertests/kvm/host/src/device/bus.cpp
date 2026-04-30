@@ -3,7 +3,7 @@
 // Original project: KXemu (MIT License), Copyright (c) 2024 HD-CSKX.
 // Source repository: git@github.com:HD-CSKX/KXemu.git
 
-#include "bus.hpp"
+#include "device/bus.hpp"
 
 #include "kvm.hpp"
 
@@ -167,6 +167,18 @@ const Bus::Area *Bus::find_area(std::uintptr_t guest_addr, std::uintptr_t length
     }
 
     return nullptr;
+}
+
+const Bus::MmioRegion *Bus::mmio_region_at(std::size_t index) const {
+    if (index >= mmio_device_count_) {
+        return nullptr;
+    }
+
+    return &mmio_regions_[index];
+}
+
+std::size_t Bus::mmio_device_count() const {
+    return mmio_device_count_;
 }
 
 const Bus::MmioRegion *Bus::find_mmio_region(std::uintptr_t guest_addr, std::uintptr_t length) const {

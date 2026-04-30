@@ -1,6 +1,6 @@
 #include "vcpu.hpp"
 
-#include "bus.hpp"
+#include "device/bus.hpp"
 
 #include <cstddef>
 #include <cstdint>

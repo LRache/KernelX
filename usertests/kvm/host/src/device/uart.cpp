@@ -3,7 +3,7 @@
 // Original project: KXemu (MIT License), Copyright (c) 2024 HD-CSKX.
 // Source repository: git@github.com:HD-CSKX/KXemu.git
 
-#include "uart.hpp"
+#include "device/uart.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -132,6 +132,17 @@ bool Uart16650Device::write(std::uintptr_t offset, std::size_t width, std::uint6
             }
 
             ier_ = byte;
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex_);
+                if (!queue_.empty() && queue_.size() >= recv_fifo_trigger_byte_count_ &&
+                    (ier_ & UART_IER_RX_AVAILABLE) != 0) {
+                    iir_ = 0b11000010;
+                    interrupt_ = true;
+                } else if ((ier_ & UART_IER_RX_AVAILABLE) == 0 && (iir_ & 0x3f) == 0x02) {
+                    iir_ = 0b11000001;
+                    interrupt_ = false;
+                }
+            }
             return true;
         case UART_IIR_FCR:
             if ((byte & (1u << 1)) != 0) {
@@ -140,6 +151,8 @@ bool Uart16650Device::write(std::uintptr_t offset, std::size_t width, std::uint6
                     queue_.pop();
                 }
                 lsr_ &= static_cast<std::uint8_t>(~UART_LSR_DATA_READY);
+                iir_ = 0b11000001;
+                interrupt_ = false;
             }
 
             switch ((byte >> 6) & 0x3) {
@@ -202,6 +215,14 @@ bool Uart16650Device::interrupt_pending() {
 }
 
 void Uart16650Device::clear_interrupt() {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    if (!queue_.empty() && queue_.size() >= recv_fifo_trigger_byte_count_ && (ier_ & UART_IER_RX_AVAILABLE) != 0) {
+        iir_ = 0b11000010;
+        interrupt_ = true;
+        return;
+    }
+
+    iir_ = 0b11000001;
     interrupt_ = false;
 }
 
@@ -213,6 +234,10 @@ bool Uart16650Device::putch(std::uint8_t data) {
 
     queue_.push(data);
     lsr_ |= UART_LSR_DATA_READY;
+    if (queue_.size() >= recv_fifo_trigger_byte_count_ && (ier_ & UART_IER_RX_AVAILABLE) != 0) {
+        iir_ = 0b11000010;
+        interrupt_ = true;
+    }
     return true;
 }
 

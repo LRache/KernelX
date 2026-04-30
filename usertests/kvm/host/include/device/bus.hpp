@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "mmio.hpp"
+#include "device/mmio.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -42,6 +42,8 @@ public:
     bool write_mmio(std::uintptr_t guest_addr, std::size_t width, std::uint64_t value) const;
     std::uint8_t *translate(std::uintptr_t guest_addr, std::uintptr_t length) const;
     const Area *find_area(std::uintptr_t guest_addr, std::uintptr_t length) const;
+    const MmioRegion *mmio_region_at(std::size_t index) const;
+    std::size_t mmio_device_count() const;
     void update();
     std::size_t area_count() const;
 
