@@ -8,7 +8,7 @@ use num_enum::TryFromPrimitive;
 use crate::arch;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
-use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
+use crate::kernel::ipc::shm::IpcGetFlag;
 use crate::kernel::ipc::{
     KSiFields, PendingSignal, Pipe, SiCode, SigInfo, SignalAction, SignalNum, SignalSet, SignalStackFlags, shm, signum,
 };
@@ -550,33 +550,112 @@ pub fn sigtimedwait(
 
 pub fn shmget(key: usize, size: usize, shmflg: usize) -> SyscallRet {
     let flags = IpcGetFlag::from_bits_truncate(shmflg);
-    let shmid = shm::get_or_create_shm(key, size, flags)?;
+    let mode = (shmflg & 0o777) as u32;
+    let shmid = shm::get_or_create_shm(key, size, flags, mode, current::euid(), current::egid(), current::pid())?;
     Ok(shmid)
 }
 
 pub fn shmat(shmid: usize, shmaddr: usize, shmflg: usize) -> SyscallRet {
-    let addr_space = current::addrspace();
+    let flags = shm::ShmFlag::from_bits_truncate(shmflg);  
+    let addrspace = current::addrspace();
     let pid = current::pid();
-    let flags = shm::ShmFlag::from_bits_truncate(shmflg);
-    let addr = shm::attach_shm(shmid, pid, addr_space, shmaddr, flags)?;
+    let addr = shm::attach_shm(shmid, pid, current::euid(), current::egid(), addrspace, shmaddr, flags)?;
     Ok(addr)
 }
 
-pub fn shmctl(shmid: usize, cmd: usize, _buf: usize) -> SyscallRet {
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserIpcPerm {
+    key: i32,
+    uid: u32,
+    gid: u32,
+    cuid: u32,
+    cgid: u32,
+    mode: u32,
+    seq: u16,
+    pad2: u16,
+    reserved1: usize,
+    reserved2: usize,
+}
+
+impl UserStruct for UserIpcPerm {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserShmidDs {
+    shm_perm: UserIpcPerm,
+    shm_segsz: usize,
+    shm_atime: i64,
+    shm_dtime: i64,
+    shm_ctime: i64,
+    shm_cpid: i32,
+    shm_lpid: i32,
+    shm_nattch: usize,
+    reserved5: usize,
+    reserved6: usize,
+}
+
+impl UserStruct for UserShmidDs {}
+
+impl From<shm::ShmStat> for UserShmidDs {
+    fn from(stat: shm::ShmStat) -> Self {
+        Self {
+            shm_perm: UserIpcPerm {
+                key: stat.ds.key as i32,
+                uid: stat.ds.uid,
+                gid: stat.ds.gid,
+                cuid: stat.ds.cuid,
+                cgid: stat.ds.cgid,
+                mode: stat.ds.mode,
+                seq: 0,
+                pad2: 0,
+                reserved1: 0,
+                reserved2: 0,
+            },
+            shm_segsz: stat.ds.size,
+            shm_atime: stat.ds.atime as i64,
+            shm_dtime: stat.ds.dtime as i64,
+            shm_ctime: stat.ds.ctime as i64,
+            shm_cpid: stat.ds.cpid,
+            shm_lpid: stat.ds.lpid,
+            shm_nattch: stat.nattch,
+            reserved5: 0,
+            reserved6: 0,
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[repr(usize)]
+#[derive(Debug, TryFromPrimitive)]
+enum ShmCtlCmd {
+    IPC_RMID = 0,
+    IPC_SET = 1,
+    IPC_STAT = 2,
+    IPC_INFO = 3,
+}
+
+pub fn shmctl(shmid: usize, cmd: usize, buf: usize) -> SyscallRet {
+    let cmd = ShmCtlCmd::try_from(cmd).map_err(|_| Errno::EINVAL)?;
+
     match cmd {
-        IPC_RMID => {
+        ShmCtlCmd::IPC_RMID => {
             shm::mark_remove_shm(shmid)?;
             Ok(0)
         }
-        IPC_STAT => {
-            // TODO: Implement IPC_STAT
-            Err(Errno::ENOSYS)
+        ShmCtlCmd::IPC_STAT => {
+            let uptr_buf = UPtr::<UserShmidDs>::from_uaddr(buf);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            uptr_buf.write(shm::stat_shm(shmid)?.into())?;
+            Ok(0)
         }
-        IPC_SET => {
+        ShmCtlCmd::IPC_SET => {
             // TODO: Implement IPC_SET
             Err(Errno::ENOSYS)
         }
-        _ => Err(Errno::EINVAL),
+        ShmCtlCmd::IPC_INFO => Err(Errno::EINVAL),
     }
 }
 
