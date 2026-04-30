@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use bitflags::bitflags;
+use core::mem::size_of;
 use core::time::Duration;
 use core::usize;
 use num_enum::TryFromPrimitive;
@@ -19,8 +20,9 @@ use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct, utils};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::pidfd::PidFile;
-use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Timespec, Uid};
+use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Uid};
 
+use super::common::Timespec;
 use super::def::*;
 
 pub fn dup(oldfd: usize) -> SyscallRet {
@@ -66,6 +68,18 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct OpenResolveFlags: u64 {
+        const RESOLVE_NO_XDEV = 0x01;
+        const RESOLVE_NO_MAGICLINKS = 0x02;
+        const RESOLVE_NO_SYMLINKS = 0x04;
+        const RESOLVE_BENEATH = 0x08;
+        const RESOLVE_IN_ROOT = 0x10;
+        const RESOLVE_CACHED = 0x20;
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct Flock {
@@ -79,6 +93,18 @@ struct Flock {
 }
 
 impl UserStruct for Flock {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+impl UserStruct for OpenHow {}
+
+const OPEN_HOW_SIZE: usize = size_of::<OpenHow>();
 
 #[derive(TryFromPrimitive)]
 #[repr(i16)]
@@ -114,6 +140,26 @@ fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<&RandomAccessFile> {
         return Ok(file);
     }
     Err(Errno::ESPIPE)
+}
+
+fn update_file_times(file: &dyn FileOps, time: &Duration, is_write: bool) -> SysResult<()> {
+    if let Some(inode) = file.get_inode() {
+        if is_write {
+            inode.update_mtime(time)?;
+            inode.update_ctime(time)?;
+        } else {
+            inode.update_atime(time)?;
+        }
+    }
+    Ok(())
+}
+
+fn finish_file_io(file: &dyn FileOps, bytes: usize, is_write: bool) -> SyscallRet {
+    if bytes > 0 {
+        let time = driver::chosen::kclock::now()?;
+        update_file_times(file, &time, is_write)?;
+    }
+    Ok(bytes)
 }
 
 fn normalize_posix_flock(
@@ -238,7 +284,10 @@ fn fcntl_setlk(file: &Arc<dyn FileOps>, arg: usize, blocking: bool) -> SyscallRe
         current::schedule();
         match current::task().take_wakeup_event().unwrap() {
             Event::IOComplete => {}
-            Event::Signal => return Err(Errno::EINTR),
+            Event::Signal => {
+                lock_state.lock().posix.remove_current_waiter();
+                return Err(Errno::EINTR);
+            }
             event => unreachable!("unexpected event while waiting on fcntl lock: {:?}", event),
         }
     }
@@ -345,19 +394,25 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     }
 }
 
-pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -> SyscallRet {
-    uptr_filename.should_not_null()?;
-
+fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRet {
     let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     if open_flags.contains(OpenFlags::O_DIRECTORY) && open_flags.contains(OpenFlags::O_CREATE) {
         return Err(Errno::EINVAL);
     }
+    if open_flags.contains(OpenFlags::O_NOATIME) && current::fsuid() != 0 {
+        return Err(Errno::EPERM);
+    }
+    let is_path_open = open_flags.contains(OpenFlags::O_PATH);
     let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
-    let (readable, writable) = match acc_mode {
-        0 => (true, false), // O_RDONLY
-        1 => (false, true), // O_WRONLY
-        2 => (true, true),  // O_RDWR
-        _ => return Err(Errno::EINVAL),
+    let (readable, writable) = if is_path_open {
+        (false, false)
+    } else {
+        match acc_mode {
+            0 => (true, false), // O_RDONLY
+            1 => (false, true), // O_WRONLY
+            2 => (true, true),  // O_RDWR
+            _ => return Err(Errno::EINVAL),
+        }
     };
     let file_flags = FileFlags {
         writable,
@@ -370,7 +425,9 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
     };
 
-    let path = uptr_filename.read_path()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
 
     let helper = |parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
@@ -382,11 +439,15 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             if dentry.is_superblock_readonly()? {
                 return Err(Errno::EROFS);
             }
-            return vfs::create_temp(
+            let file = vfs::create_temp(
                 &dentry,
                 file_flags,
                 Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
-            );
+            )?;
+            let time = driver::chosen::kclock::now()?;
+            update_file_times(file.as_ref(), &time, false)?;
+            update_file_times(file.as_ref(), &time, true)?;
+            return Ok(file);
         }
 
         let mut perm_flags = PermFlags::empty();
@@ -397,15 +458,30 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
             perm_flags.insert(PermFlags::W);
         }
 
-        match vfs::openat_file(parent, &path, file_flags, &Perm::current(perm_flags)) {
+        let perm = Perm::current(perm_flags);
+        let file: SysResult<Arc<dyn FileOps>> = if is_path_open {
+            let dentry = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow(parent, &path)?
+            } else {
+                vfs::load_dentry_at(parent, &path)?
+            };
+            let inode = dentry.get_inode();
+            Ok(inode.wrap_file(Some(dentry), file_flags))
+        } else if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+            vfs::openat_file_nofollow(parent, &path, file_flags, &perm)
+        } else {
+            vfs::openat_file(parent, &path, file_flags, &perm)
+        };
+
+        match file {
             Ok(file) => {
-                if open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
+                if !is_path_open && open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
                     return Err(Errno::EEXIST);
                 }
                 Ok(file)
             }
             Err(e) => {
-                if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
+                if !is_path_open && e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
                     // Create the file
                     let mode =
                         Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
@@ -414,13 +490,20 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
                     if parent_dentry.is_superblock_readonly()? {
                         return Err(Errno::EROFS);
                     }
-                    vfs::create_file(
+                    let file = vfs::create_file(
                         &parent_dentry,
                         child_name.as_ref(),
                         file_flags,
                         mode,
                         Owner::new(current::fsuid(), current::fsgid()),
-                    )
+                    )?;
+                    let time = driver::chosen::kclock::now()?;
+                    update_file_times(file.as_ref(), &time, false)?;
+                    update_file_times(file.as_ref(), &time, true)?;
+                    let parent_inode = parent_dentry.get_inode();
+                    parent_inode.update_mtime(&time)?;
+                    parent_inode.update_ctime(&time)?;
+                    Ok(file)
                 } else {
                     Err(e)
                 }
@@ -428,13 +511,15 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
         }
     };
 
-    let file = if dirfd as isize == AT_FDCWD {
+    let file = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| helper(&cwd))?
     } else {
-        helper(vfs::get_root_dentry())?
+        let dir_file = current::fdtable().lock().get(dirfd)?;
+        let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
+        helper(dir)?
     };
 
-    if open_flags.contains(OpenFlags::O_DIRECTORY) {
+    if open_flags.contains(OpenFlags::O_DIRECTORY) && !open_flags.contains(OpenFlags::O_TMPFILE) {
         let inode = file.get_inode().ok_or(Errno::ENOTDIR)?;
         if inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
@@ -446,14 +531,234 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     if writable && open_flags.contains(OpenFlags::O_TRUNC) {
         if let Some(inode) = file.get_inode()
             && inode.inode_type()? == FileType::Regular
-            && let Err(err) = inode.truncate(0)
         {
-            let _ = current::fdtable().lock().take(fd);
-            return Err(err);
+            let old_size = inode.size()?;
+            if let Err(err) = inode.truncate(0) {
+                let _ = current::fdtable().lock().take(fd);
+                return Err(err);
+            }
+            if old_size != 0 {
+                let time = driver::chosen::kclock::now()?;
+                if let Err(err) = update_file_times(file.as_ref(), &time, true) {
+                    let _ = current::fdtable().lock().take(fd);
+                    return Err(err);
+                }
+            }
         }
     }
 
     Ok(fd)
+}
+
+fn do_openat_with_lookup_flags(
+    dirfd: usize,
+    path: String,
+    flags: usize,
+    mode: usize,
+    lookup_flags: vfs::LookupFlags,
+) -> SyscallRet {
+    let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if open_flags.contains(OpenFlags::O_DIRECTORY) && open_flags.contains(OpenFlags::O_CREATE) {
+        return Err(Errno::EINVAL);
+    }
+    if open_flags.contains(OpenFlags::O_NOATIME) && current::fsuid() != 0 {
+        return Err(Errno::EPERM);
+    }
+    let is_path_open = open_flags.contains(OpenFlags::O_PATH);
+    let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
+    let (readable, writable) = if is_path_open {
+        (false, false)
+    } else {
+        match acc_mode {
+            0 => (true, false), // O_RDONLY
+            1 => (false, true), // O_WRONLY
+            2 => (true, true),  // O_RDWR
+            _ => return Err(Errno::EINVAL),
+        }
+    };
+    let file_flags = FileFlags {
+        writable,
+        readable,
+        blocked: !open_flags.contains(OpenFlags::O_NONBLOCK),
+        append: open_flags.contains(OpenFlags::O_APPEND),
+        direct: open_flags.contains(OpenFlags::O_DIRECT),
+    };
+    let fd_flags = FDFlags {
+        cloexec: open_flags.contains(OpenFlags::O_CLOEXEC),
+    };
+
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
+    let helper = |parent: &Arc<Dentry>| {
+        if open_flags.contains(OpenFlags::O_TMPFILE) {
+            if !writable {
+                return Err(Errno::EINVAL);
+            }
+
+            let dentry = vfs::load_dentry_at_with_flags(parent, &path, lookup_flags)?;
+            if dentry.is_superblock_readonly()? {
+                return Err(Errno::EROFS);
+            }
+            let file = vfs::create_temp(
+                &dentry,
+                file_flags,
+                Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
+            )?;
+            let time = driver::chosen::kclock::now()?;
+            update_file_times(file.as_ref(), &time, false)?;
+            update_file_times(file.as_ref(), &time, true)?;
+            return Ok(file);
+        }
+
+        let mut perm_flags = PermFlags::empty();
+        if readable {
+            perm_flags.insert(PermFlags::R);
+        }
+        if writable {
+            perm_flags.insert(PermFlags::W);
+        }
+
+        let perm = Perm::current(perm_flags);
+        let file: SysResult<Arc<dyn FileOps>> = if is_path_open {
+            let dentry = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow_with_perm_and_flags(parent, &path, &perm, lookup_flags)?
+            } else {
+                vfs::load_dentry_at_with_flags(parent, &path, lookup_flags)?
+            };
+            let inode = dentry.get_inode();
+            Ok(inode.wrap_file(Some(dentry), file_flags))
+        } else if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+            vfs::openat_file_nofollow_with_lookup_flags(parent, &path, file_flags, &perm, lookup_flags)
+        } else {
+            vfs::openat_file_with_lookup_flags(parent, &path, file_flags, &perm, lookup_flags)
+        };
+
+        match file {
+            Ok(file) => {
+                if !is_path_open && open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
+                    return Err(Errno::EEXIST);
+                }
+                Ok(file)
+            }
+            Err(e) => {
+                if !is_path_open && e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
+                    // Create the file
+                    let mode =
+                        Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
+                    let (parent_dentry, child_name) =
+                        vfs::load_parent_dentry_at_with_flags(parent, &path, lookup_flags)?.unwrap(); // SAFETY: The root must exist
+                    if parent_dentry.is_superblock_readonly()? {
+                        return Err(Errno::EROFS);
+                    }
+                    let file = vfs::create_file(
+                        &parent_dentry,
+                        child_name.as_ref(),
+                        file_flags,
+                        mode,
+                        Owner::new(current::fsuid(), current::fsgid()),
+                    )?;
+                    let time = driver::chosen::kclock::now()?;
+                    update_file_times(file.as_ref(), &time, false)?;
+                    update_file_times(file.as_ref(), &time, true)?;
+                    let parent_inode = parent_dentry.get_inode();
+                    parent_inode.update_mtime(&time)?;
+                    parent_inode.update_ctime(&time)?;
+                    Ok(file)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    let file = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        current::with_cwd(|cwd| helper(&cwd))?
+    } else {
+        let dir_file = current::fdtable().lock().get(dirfd)?;
+        let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
+        helper(dir)?
+    };
+
+    if open_flags.contains(OpenFlags::O_DIRECTORY) && !open_flags.contains(OpenFlags::O_TMPFILE) {
+        let inode = file.get_inode().ok_or(Errno::ENOTDIR)?;
+        if inode.inode_type()? != FileType::Directory {
+            return Err(Errno::ENOTDIR);
+        }
+    }
+
+    let fd = current::fdtable().lock().push(file.clone(), fd_flags)?;
+
+    if writable && open_flags.contains(OpenFlags::O_TRUNC) {
+        if let Some(inode) = file.get_inode()
+            && inode.inode_type()? == FileType::Regular
+        {
+            let old_size = inode.size()?;
+            if let Err(err) = inode.truncate(0) {
+                let _ = current::fdtable().lock().take(fd);
+                return Err(err);
+            }
+            if old_size != 0 {
+                let time = driver::chosen::kclock::now()?;
+                if let Err(err) = update_file_times(file.as_ref(), &time, true) {
+                    let _ = current::fdtable().lock().take(fd);
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    Ok(fd)
+}
+
+pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -> SyscallRet {
+    uptr_filename.should_not_null()?;
+    let path = uptr_filename.read_path()?;
+    do_openat(dirfd, path, flags, mode)
+}
+
+fn read_open_how(uptr_how: UPtr<OpenHow>, size: usize) -> SysResult<OpenHow> {
+    if size < OPEN_HOW_SIZE {
+        return Err(Errno::EINVAL);
+    }
+
+    let how = uptr_how.read()?;
+    if size > OPEN_HOW_SIZE {
+        let extra_start = uptr_how.uaddr().checked_add(OPEN_HOW_SIZE).ok_or(Errno::EINVAL)?;
+        let extra_len = size - OPEN_HOW_SIZE;
+        let mut extra = alloc::vec![0u8; extra_len];
+        copy_from_user::slice(extra_start, &mut extra)?;
+        if extra.iter().any(|&byte| byte != 0) {
+            return Err(Errno::E2BIG);
+        }
+    }
+
+    Ok(how)
+}
+
+pub fn openat2(dirfd: usize, uptr_filename: UString, uptr_how: UPtr<OpenHow>, size: usize) -> SyscallRet {
+    let how = read_open_how(uptr_how, size)?;
+    let flags = usize::try_from(how.flags).map_err(|_| Errno::EINVAL)?;
+    let mode = usize::try_from(how.mode).map_err(|_| Errno::EINVAL)?;
+    let open_flags = OpenFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let resolve_flags = OpenResolveFlags::from_bits(how.resolve).ok_or(Errno::EINVAL)?;
+    if !OpenResolveFlags::RESOLVE_NO_XDEV.contains(resolve_flags) {
+        // return Err(Errno::EINVAL);
+    }
+    if !open_flags.intersects(OpenFlags::O_CREATE | OpenFlags::O_TMPFILE) && mode != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if how.mode & !0o7777 != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let path = uptr_filename.read_path()?;
+    if resolve_flags.is_empty() {
+        do_openat(dirfd, path, flags, mode)
+    } else {
+        do_openat_with_lookup_flags(dirfd, path, flags, mode, vfs::LookupFlags::NO_XDEV)
+    }
 }
 
 pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
@@ -473,16 +778,28 @@ pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
 
     let total_read = file.read_to_user(&ubuf)?;
 
-    Ok(total_read)
+    finish_file_io(file.as_ref(), total_read, false)
 }
 
 pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
     ubuf.should_not_null()?;
 
+    if (bufsize as isize) <= 0 {
+        return Err(Errno::EINVAL);
+    }
+
     let path = uptr_path.read_path()?;
 
-    if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
+    let mut buffer = [0u8; 255];
+    let link_size = if path.is_empty() {
+        if dirfd as isize == AT_FDCWD {
+            return Err(Errno::ENOENT);
+        }
+        let file = current::fdtable().lock().get(dirfd)?;
+        let inode = file.get_inode().ok_or(Errno::EINVAL)?;
+        inode.readlink(&mut buffer)?
+    } else if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?
     } else {
         vfs::load_parent_dentry_at(
@@ -494,17 +811,18 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
             &path,
         )?
     } {
-        let mut buffer = [0u8; 255];
-        if let Some(size) = parent.readlink(child.as_ref(), &mut buffer)? {
-            let path = core::str::from_utf8(&buffer[..size]).map_err(|_| Errno::EINVAL)?;
-            let to_write = core::cmp::min(path.len(), bufsize);
-            ubuf.write(0, &path.as_bytes()[..to_write])?;
-            return Ok(to_write);
-        } else {
-            return Err(Errno::EINVAL); // Not a symlink
-        }
+        parent.readlink(child.as_ref(), &mut buffer)?
     } else {
         return Err(Errno::EINVAL); // Root is a directory, cannot be a symlink
+    };
+
+    if let Some(size) = link_size {
+        let path = core::str::from_utf8(&buffer[..size]).map_err(|_| Errno::EINVAL)?;
+        let to_write = core::cmp::min(path.len(), bufsize);
+        ubuf.write(0, &path.as_bytes()[..to_write])?;
+        Ok(to_write)
+    } else {
+        Err(Errno::EINVAL) // Not a symlink
     }
 }
 
@@ -523,7 +841,7 @@ pub fn write(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
     let ubuf = ubuf.to_uaddrspace_buffer(count);
     let written = file.write_from_user(&ubuf)?;
 
-    Ok(written)
+    finish_file_io(file.as_ref(), written, true)
 }
 
 #[repr(C)]
@@ -588,7 +906,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
                 Ok(n) => n,
                 Err(e) => {
                     if total_read + read > 0 {
-                        return Ok(total_read + read);
+                        return finish_file_io(file.as_ref(), total_read + read, false);
                     }
                     return Err(e);
                 }
@@ -599,7 +917,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
 
             if copy_to_user::buffer(iov.base + read, &buffer[..bytes_read]).is_err() {
                 if total_read + read > 0 {
-                    return Ok(total_read + read);
+                    return finish_file_io(file.as_ref(), total_read + read, false);
                 }
                 return Err(Errno::EFAULT);
             }
@@ -611,7 +929,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
         total_read += read;
     }
 
-    Ok(total_read)
+    finish_file_io(file.as_ref(), total_read, false)
 }
 
 pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> SyscallRet {
@@ -662,7 +980,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
                 Ok(n) => n,
                 Err(e) => {
                     if total_read + read > 0 {
-                        return Ok(total_read + read);
+                        return finish_file_io(file, total_read + read, false);
                     }
                     return Err(e);
                 }
@@ -673,7 +991,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
 
             if copy_to_user::buffer(iov.base + read, &buffer[..bytes_read]).is_err() {
                 if total_read + read > 0 {
-                    return Ok(total_read + read);
+                    return finish_file_io(file, total_read + read, false);
                 }
                 return Err(Errno::EFAULT);
             }
@@ -686,7 +1004,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
         total_read += read;
     }
 
-    Ok(total_read)
+    finish_file_io(file, total_read, false)
 }
 
 pub fn preadv2(
@@ -753,7 +1071,7 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
         }
     }
 
-    Ok(written)
+    finish_file_io(file, written, false)
 }
 
 pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet {
@@ -795,7 +1113,7 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
         }
     }
 
-    Ok(written)
+    finish_file_io(file, written, true)
 }
 
 pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> SyscallRet {
@@ -847,7 +1165,7 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
             if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
                 if total_written + written > 0 {
-                    return Ok(total_written + written);
+                    return finish_file_io(file, total_written + written, true);
                 }
                 return Err(Errno::EFAULT);
             }
@@ -859,12 +1177,12 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
                     written += bytes_written;
                     offset = offset.checked_add(bytes_written).ok_or(Errno::EINVAL)?;
                     if bytes_written != to_write {
-                        return Ok(total_written + written);
+                        return finish_file_io(file, total_written + written, true);
                     }
                 }
                 Err(e) => {
                     if total_written + written > 0 {
-                        return Ok(total_written + written);
+                        return finish_file_io(file, total_written + written, true);
                     }
                     return Err(e);
                 }
@@ -874,7 +1192,7 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
         total_written += written;
     }
 
-    Ok(total_written)
+    finish_file_io(file, total_written, true)
 }
 
 pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
@@ -924,7 +1242,7 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
             if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
                 if total_written + written > 0 {
-                    return Ok(total_written + written);
+                    return finish_file_io(file.as_ref(), total_written + written, true);
                 }
                 return Err(Errno::EFAULT);
             }
@@ -934,12 +1252,12 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
                     remaining -= bytes_written;
                     written += bytes_written;
                     if bytes_written != to_write {
-                        return Ok(total_written + written);
+                        return finish_file_io(file.as_ref(), total_written + written, true);
                     }
                 }
                 Err(e) => {
                     if total_written + written > 0 {
-                        return Ok(total_written + written);
+                        return finish_file_io(file.as_ref(), total_written + written, true);
                     }
                     return Err(e);
                 }
@@ -949,7 +1267,7 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
         total_written += written;
     }
 
-    Ok(total_written)
+    finish_file_io(file.as_ref(), total_written, true)
 }
 
 pub fn pwritev2(
@@ -1023,14 +1341,8 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
     let mut fdtable = fdtable.lock();
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         for i in fd..=max_fd {
-            if let Ok(fdflags) = fdtable.get_fd_flags(i) {
-                fdtable.set_fd_flags(
-                    i,
-                    FDFlags {
-                        cloexec: true,
-                        ..fdflags
-                    },
-                )?;
+            if let Ok(_) = fdtable.get_fd_flags(i) {
+                fdtable.set_fd_flags(i, FDFlags { cloexec: true })?;
             }
         }
     } else {
@@ -1096,6 +1408,12 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
         }
     }
 
+    if total_sent > 0 {
+        let time = driver::chosen::kclock::now()?;
+        update_file_times(in_file.as_ref(), &time, false)?;
+        update_file_times(out_file.as_ref(), &time, true)?;
+    }
+
     if uptr_offset.is_null() {
         in_file.seek(local_offset as isize, SeekWhence::BEG)?;
     } else {
@@ -1103,6 +1421,137 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     }
 
     Ok(total_sent)
+}
+
+pub fn copy_file_range(
+    fd_in: usize,
+    uptr_off_in: UPtr<usize>,
+    fd_out: usize,
+    uptr_off_out: UPtr<usize>,
+    len: usize,
+    flags: usize,
+) -> SyscallRet {
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let fdtable = current::fdtable();
+    let mut fdtable = fdtable.lock();
+    let in_file = fdtable.get(fd_in)?;
+    let out_file = fdtable.get(fd_out)?;
+    drop(fdtable);
+
+    if !in_file.readable() || !out_file.writable() {
+        return Err(Errno::EBADF);
+    }
+    if out_file.flags().append {
+        return Err(Errno::EBADF);
+    }
+
+    let in_inode = in_file.get_inode().ok_or(Errno::EINVAL)?;
+    let out_inode = out_file.get_inode().ok_or(Errno::EINVAL)?;
+    let in_mode = in_inode.mode()? & Mode::S_IFMT;
+    let out_mode = out_inode.mode()? & Mode::S_IFMT;
+    if in_mode == Mode::S_IFDIR || out_mode == Mode::S_IFDIR {
+        return Err(Errno::EISDIR);
+    }
+    if in_mode != Mode::S_IFREG || out_mode != Mode::S_IFREG {
+        return Err(Errno::EINVAL);
+    }
+
+    let in_file = random_access_file(&in_file)?;
+    let out_file = random_access_file(&out_file)?;
+
+    let mut in_offset = if uptr_off_in.is_null() {
+        in_file.seek(0, SeekWhence::CUR)?
+    } else {
+        utils::should_not_be_negative(uptr_off_in.read()?)?
+    };
+    let mut out_offset = if uptr_off_out.is_null() {
+        out_file.seek(0, SeekWhence::CUR)?
+    } else {
+        utils::should_not_be_negative(uptr_off_out.read()?)?
+    };
+
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let in_end = in_offset.checked_add(len).ok_or(Errno::EINVAL)?;
+    let out_end = out_offset.checked_add(len).ok_or(Errno::EINVAL)?;
+    utils::should_not_be_negative(in_end)?;
+    utils::should_not_be_negative(out_end)?;
+
+    let same_file = match (in_file.get_dentry(), out_file.get_dentry()) {
+        (Some(in_dentry), Some(out_dentry)) => {
+            in_dentry.sno() == out_dentry.sno() && in_dentry.ino() == out_dentry.ino()
+        }
+        _ => Arc::ptr_eq(in_inode, out_inode),
+    };
+    if same_file && in_offset < out_end && out_offset < in_end {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut total_copied = 0usize;
+    let mut left = len;
+    let mut buffer = [0u8; BUFFER_SIZE];
+
+    while left > 0 {
+        let to_read = core::cmp::min(left, BUFFER_SIZE);
+        let bytes_read = match in_file.pread(&mut buffer[..to_read], in_offset) {
+            Ok(n) => n,
+            Err(e) => {
+                if total_copied > 0 {
+                    break;
+                }
+                return Err(e);
+            }
+        };
+        if bytes_read == 0 {
+            break;
+        }
+
+        let bytes_written = match out_file.pwrite(&buffer[..bytes_read], out_offset) {
+            Ok(n) => n,
+            Err(e) => {
+                if total_copied > 0 {
+                    break;
+                }
+                return Err(e);
+            }
+        };
+        if bytes_written == 0 {
+            break;
+        }
+
+        in_offset = in_offset.checked_add(bytes_written).ok_or(Errno::EINVAL)?;
+        out_offset = out_offset.checked_add(bytes_written).ok_or(Errno::EINVAL)?;
+        total_copied += bytes_written;
+        left -= bytes_written;
+
+        if bytes_read < to_read || bytes_written < bytes_read {
+            break;
+        }
+    }
+
+    if total_copied > 0 {
+        let time = driver::chosen::kclock::now()?;
+        update_file_times(in_file, &time, false)?;
+        update_file_times(out_file, &time, true)?;
+    }
+
+    if uptr_off_in.is_null() {
+        in_file.seek(in_offset as isize, SeekWhence::BEG)?;
+    } else {
+        uptr_off_in.write(in_offset)?;
+    }
+    if uptr_off_out.is_null() {
+        out_file.seek(out_offset as isize, SeekWhence::BEG)?;
+    } else {
+        uptr_off_out.write(out_offset)?;
+    }
+
+    Ok(total_copied)
 }
 
 bitflags! {
@@ -1266,6 +1715,12 @@ pub fn splice(
             }
             break;
         }
+    }
+
+    if total_moved > 0 {
+        let time = driver::chosen::kclock::now()?;
+        update_file_times(in_file.as_ref(), &time, false)?;
+        update_file_times(out_file.as_ref(), &time, true)?;
     }
 
     if !uptr_off_in.is_null() {
@@ -1521,7 +1976,23 @@ pub fn statfs64(uptr_path: UString, uptr_buf: UPtr<Statfs>) -> SyscallRet {
     uptr_buf.should_not_null()?;
 
     let path = uptr_path.read_path()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
     let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+
+    let statfs = vfs::statfs(dentry.sno())?;
+
+    uptr_buf.write(statfs)?;
+
+    Ok(0)
+}
+
+pub fn fstatfs64(fd: usize, uptr_buf: UPtr<Statfs>) -> SyscallRet {
+    uptr_buf.should_not_null()?;
+
+    let file = current::fdtable().lock().get(fd)?;
+    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
 
     let statfs = vfs::statfs(dentry.sno())?;
 
@@ -1616,6 +2087,11 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         )?
         .ok_or(Errno::EEXIST)?
     };
+
+    let parent = parent.get_mount_to();
+    if parent.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
 
     parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
 
@@ -1770,7 +2246,14 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     let old_path = uptr_oldpath.read_path()?;
     let new_path = uptr_newpath.read_path()?;
 
+    if new_path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
     let old_dentry = if olddirfd as isize == AT_FDCWD {
+        if old_path.is_empty() {
+            return Err(Errno::ENOENT);
+        }
         current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &old_path))
     } else {
         vfs::load_dentry_at(
@@ -1783,20 +2266,23 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
         )
     }?;
 
-    let new_parent_dentry = if newdirfd as isize == AT_FDCWD {
+    let (new_parent_dentry, new_name) = if newdirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
         vfs::load_parent_dentry(&new_path)?.ok_or(Errno::EOPNOTSUPP)
     }?;
 
-    let new_parent = new_parent_dentry.0;
-    let new_name = new_parent_dentry.1;
+    let new_parent_dentry = new_parent_dentry.get_mount_to();
 
-    if old_dentry.sno() != new_parent.sno() {
+    if new_parent_dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    if old_dentry.sno() != new_parent_dentry.sno() {
         return Err(Errno::EXDEV); // Cross-device link
     }
 
-    new_parent.link(new_name.as_ref(), &old_dentry)?;
+    new_parent_dentry.link(new_name.as_ref(), &old_dentry)?;
 
     Ok(0)
 }
@@ -2039,7 +2525,13 @@ pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
         return Err(Errno::EACCES);
     }
 
+    let old_size = inode.size()?;
     inode.truncate(length)?;
+    if old_size != length {
+        let time = driver::chosen::kclock::now()?;
+        inode.update_mtime(&time)?;
+        inode.update_ctime(&time)?;
+    }
 
     Ok(0)
 }
@@ -2048,14 +2540,18 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     if !file.writable() {
-        return Err(Errno::EBADF);
+        return Err(Errno::EINVAL);
     }
 
     let length = truncate_length(length)?;
     check_file_size_limit(length)?;
-    file.downcast_arc::<RandomAccessFile>()
-        .map_err(|_| Errno::EINVAL)?
-        .ftruncate(length)?;
+    let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::EINVAL)?;
+    let old_size = file.get_inode().ok_or(Errno::EBADF)?.size()?;
+    file.ftruncate(length)?;
+    if old_size != length {
+        let time = driver::chosen::kclock::now()?;
+        update_file_times(file.as_ref(), &time, true)?;
+    }
 
     Ok(0)
 }
@@ -2162,7 +2658,10 @@ pub fn flock(fd: usize, operation: usize) -> SyscallRet {
         current::schedule();
         match current::task().take_wakeup_event().unwrap() {
             Event::IOComplete => {}
-            Event::Signal => return Err(Errno::EINTR),
+            Event::Signal => {
+                lock_state.lock().bsd.remove_current_waiter();
+                return Err(Errno::EINTR);
+            }
             event => unreachable!("unexpected event while waiting on flock lock: {:?}", event),
         }
     }

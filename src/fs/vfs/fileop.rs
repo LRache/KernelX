@@ -2,12 +2,12 @@ use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{Mode, Owner};
+use crate::fs::inode::{FileType, Mode, Owner};
 use crate::fs::perm::Perm;
 use crate::fs::vfs::dentry::{self, Dentry};
 use crate::kernel::errno::{Errno, SysResult};
 
-use super::vfs;
+use super::{LookupFlags, vfs};
 
 fn new_file(dentry: Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Arc<dyn FileOps>> {
     let inode = dentry.get_inode();
@@ -46,6 +46,10 @@ pub fn load_dentry_at(dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
     vfs().lookup_dentry(dir, path)
 }
 
+pub fn load_dentry_at_with_flags(dir: &Arc<Dentry>, path: &str, flags: LookupFlags) -> SysResult<Arc<Dentry>> {
+    vfs().lookup_dentry_with_flags(dir, path, flags)
+}
+
 pub fn load_dentry_at_with_perm(dir: &Arc<Dentry>, path: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
     vfs().lookup_dentry_with_perm(dir, path, perm)
 }
@@ -60,12 +64,68 @@ pub fn load_dentry_at_nofollow_with_perm(dir: &Arc<Dentry>, path: &str, perm: &P
     Ok(dentry)
 }
 
+pub fn load_dentry_at_nofollow_with_perm_and_flags(
+    dir: &Arc<Dentry>,
+    path: &str,
+    perm: &Perm,
+    flags: LookupFlags,
+) -> SysResult<Arc<Dentry>> {
+    let dentry = vfs().lookup_dentry_nofollow_with_perm_and_flags(dir, path, perm, flags)?;
+    Ok(dentry)
+}
+
 pub fn load_parent_dentry_at<'a>(dir: &Arc<Dentry>, path: &'a str) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
     vfs().lookup_parent_dentry(dir, path)
 }
 
+pub fn load_parent_dentry_at_with_flags<'a>(
+    dir: &Arc<Dentry>,
+    path: &'a str,
+    flags: LookupFlags,
+) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
+    vfs().lookup_parent_dentry_with_flags(dir, path, flags)
+}
+
 pub fn openat_file(dir: &Arc<Dentry>, path: &str, flags: FileFlags, perm: &Perm) -> SysResult<Arc<dyn FileOps>> {
     let dentry = vfs().lookup_dentry(dir, path)?;
+    new_file(dentry, flags, perm)
+}
+
+pub fn openat_file_with_lookup_flags(
+    dir: &Arc<Dentry>,
+    path: &str,
+    flags: FileFlags,
+    perm: &Perm,
+    lookup_flags: LookupFlags,
+) -> SysResult<Arc<dyn FileOps>> {
+    let dentry = vfs().lookup_dentry_with_perm_and_flags(dir, path, perm, lookup_flags)?;
+    new_file(dentry, flags, perm)
+}
+
+pub fn openat_file_nofollow(
+    dir: &Arc<Dentry>,
+    path: &str,
+    flags: FileFlags,
+    perm: &Perm,
+) -> SysResult<Arc<dyn FileOps>> {
+    let dentry = vfs().lookup_dentry_nofollow(dir, path)?;
+    if dentry.get_inode().inode_type()? == FileType::Symlink {
+        return Err(Errno::ELOOP);
+    }
+    new_file(dentry, flags, perm)
+}
+
+pub fn openat_file_nofollow_with_lookup_flags(
+    dir: &Arc<Dentry>,
+    path: &str,
+    flags: FileFlags,
+    perm: &Perm,
+    lookup_flags: LookupFlags,
+) -> SysResult<Arc<dyn FileOps>> {
+    let dentry = vfs().lookup_dentry_nofollow_with_perm_and_flags(dir, path, perm, lookup_flags)?;
+    if dentry.get_inode().inode_type()? == FileType::Symlink {
+        return Err(Errno::ELOOP);
+    }
     new_file(dentry, flags, perm)
 }
 

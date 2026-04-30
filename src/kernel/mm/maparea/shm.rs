@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::sync::Arc;
 
 use crate::arch::{self, PageTable, PageTableTrait};
@@ -6,7 +7,7 @@ use crate::kernel::ipc::shm::{ShmFrames, on_shm_area_drop};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
-use super::Area;
+use super::{Area, MapAreaInfo, MemoryFaultSignal};
 
 pub struct ShmArea {
     ubase: usize,
@@ -80,12 +81,12 @@ impl Area for ShmArea {
         uaddr: usize,
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize> {
+    ) -> Result<usize, MemoryFaultSignal> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index >= frames.len() {
-            return None;
+            return Err(MemoryFaultSignal::Segv);
         }
 
         let frame = &frames[page_index];
@@ -94,18 +95,27 @@ impl Area for ShmArea {
             .pagetable()
             .lock()
             .mmap(uaddr & !arch::PGMASK, kpage, self.perm);
-        Some(kpage + page_offset)
+        Ok(kpage + page_offset)
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         let mut pt = pagetable.lock();
         let frames = self.frames.frames.lock();
         for i in 0..frames.len() {
-            pt.munmap(self.ubase + i * arch::PGSIZE);
+            let uaddr = self.ubase + i * arch::PGSIZE;
+            let kaddr = frames[i].get_page();
+            pt.munmap_with_check(uaddr, kaddr);
         }
     }
 
     fn type_name(&self) -> &'static str {
         "ShmArea"
+    }
+
+    fn map_area_info(&self) -> MapAreaInfo {
+        let mut info = MapAreaInfo::new(self.ubase(), self.ubase() + self.size(), self.perm);
+        info.shared = true;
+        info.path = Some(format!("[shm:{}]", self.shmid));
+        info
     }
 }

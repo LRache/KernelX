@@ -4,8 +4,8 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::fs::file::RandomAccessFile;
-use crate::kernel::mm::maparea::area::Area;
+use crate::fs::file::{FileOps, RandomAccessFile};
+use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
@@ -220,7 +220,7 @@ impl Area for PrivateFileMapArea {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize> {
+    ) -> Result<usize, MemoryFaultSignal> {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -245,12 +245,12 @@ impl Area for PrivateFileMapArea {
                 }
             }
             if access_type == MemAccessType::Write {
-                self.translate_write(uaddr, addrspace)
+                self.translate_write(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
             } else {
-                self.translate_read(uaddr, addrspace)
+                self.translate_read(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
             }
         } else {
-            None
+            Err(MemoryFaultSignal::Segv)
         }
     }
 
@@ -325,5 +325,19 @@ impl Area for PrivateFileMapArea {
 
     fn type_name(&self) -> &'static str {
         "PrivateFileMapArea"
+    }
+
+    fn map_area_info(&self) -> MapAreaInfo {
+        let mut info = MapAreaInfo::new(self.ubase(), self.ubase() + self.size(), self.perm);
+        info.offset = self.file_offset;
+        (info.dev_major, info.dev_minor) = self.file.get_dentry().map(|dentry| (0, dentry.sno())).unwrap_or((0, 0));
+        info.inode = self
+            .file
+            .get_dentry()
+            .map(|dentry| dentry.ino() as u64)
+            .or_else(|| self.file.get_inode().map(|inode| inode.get_ino() as u64))
+            .unwrap_or(0);
+        info.path = self.file.get_dentry().map(|dentry| dentry.get_path());
+        info
     }
 }

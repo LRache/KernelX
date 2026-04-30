@@ -25,6 +25,7 @@ cfg_if::cfg_if! {
 pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;
 pub const TRAMPOLINE_BASE: usize = arch_impl::TRAMPOLINE_BASE;
+pub const USEREND: usize = arch_impl::USEREND;
 
 mod arch;
 use arch::{Arch, ArchTrait};

@@ -298,7 +298,10 @@ impl CharDriverOps for Stty {
                 self.waiters.lock().wait_current(Event::ReadReady);
                 match current::block("read_stty") {
                     Event::ReadReady => {}
-                    Event::Signal => return Err(Errno::EINTR),
+                    Event::Signal => {
+                        self.waiters.lock().remove_current();
+                        return Err(Errno::EINTR);
+                    }
                     _ => unreachable!(),
                 }
             }

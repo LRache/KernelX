@@ -6,4 +6,5 @@ pub struct TaskCloneFlags {
     pub thread: bool,
     pub parent: bool,
     pub vfork: bool,
+    pub new_uts: bool,
 }

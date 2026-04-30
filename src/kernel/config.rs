@@ -19,7 +19,7 @@ pub const UTASK_KSTACK_PAGE_COUNT: usize = 64; // Kernel stack page count for us
 #[cfg(not(debug_assertions))]
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Kernel stack page count for user tasks
 pub const KTASK_KSTACK_PAGE_COUNT: usize = 16; // Kernel stack page count for kernel tasks
-pub const KERNEL_HEAP_SIZE: usize = 0x4000000;
+pub const KERNEL_HEAP_SIZE: usize = 128 * 1024 * 1024; // Kernel heap size (128 MiB)
 pub const SCHEDULER_KSTACK_PAGE_COUNT: usize = 4; // Scheduler kernel stack size
 
 cfg_if::cfg_if!(
@@ -42,9 +42,30 @@ pub const PIPE_BUFFER_PAGES: usize = 32; // Number of pages allocated for pipe b
 pub const PIPE_CAPACITY: usize = PIPE_BUFFER_PAGES * arch::PGSIZE;
 
 /* ------ BOOT ARGS ------- */
+pub const DEFAULT_BOOT_ROOT_DEVICE: &str = match option_env!("CONFIG_DEFAULT_BOOT_ROOT_DEVICE") {
+    Some(v) => v,
+    None => "virtio_block0",
+};
 pub const DEFAULT_BOOT_ROOT_FSTYPE: &str = "ext4";
-pub const DEFAULT_BOOT_ROOT: &str = "virtio_block0";
-pub const DEFAULT_INITPATH: &str = "/init";
-pub const DEFAULT_INITCWD: &str = "/";
-pub const DEFAULT_INITTTY: &str = "/dev/serial@10000000";
+pub const DEFAULT_SECOND_DEVICE: Option<&str> = option_env!("CONFIG_SECOND_DEVICE");
+pub const DEFAULT_SECOND_FSTYPE: &str = match option_env!("CONFIG_SECOND_FSTYPE") {
+    Some(v) => v,
+    None => "ext4",
+};
+pub const DEFAULT_SECOND_MOUNTPOINT: &str = match option_env!("CONFIG_SECOND_MOUNTPOINT") {
+    Some(v) => v,
+    None => "/mnt",
+};
+pub const DEFAULT_INITPATH: &str = match option_env!("CONFIG_DEFAULT_INITPATH") {
+    Some(v) => v,
+    None => "/init",
+};
+pub const DEFAULT_INITCWD: &str = match option_env!("CONFIG_DEFAULT_INITCWD") {
+    Some(v) => v,
+    None => "/",
+};
+pub const DEFAULT_INITTTY: &str = match option_env!("CONFIG_DEFAULT_INITTTY") {
+    Some(v) => v,
+    None => "/dev/serial@10000000",
+};
 /* ------ BOOT ARGS ------- */

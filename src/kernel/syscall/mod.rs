@@ -1,3 +1,4 @@
+mod common;
 mod def;
 mod event;
 mod fs;

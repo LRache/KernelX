@@ -51,13 +51,26 @@ bitflags! {
         const DENYWRITE = 0x800; // Deny write access
         const NORESERVE = 0x4000; // Do not reserve swap space
         const MAP_STACK = 0x20000;
+        const FIXED_NOREPLACE = 0x100000; // Fixed address mapping without replacing existing mappings
     }
 }
 
 pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, offset: usize) -> SyscallRet {
-    let flags = MMapFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let flags = MMapFlags::from_bits(flags).ok_or(Errno::EOPNOTSUPP)?;
+    let fixed = flags.contains(MMapFlags::FIXED);
+    let fixed_noreplace = flags.contains(MMapFlags::FIXED_NOREPLACE);
 
     if addr % arch::PGSIZE != 0 || length == 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    if addr >= arch::USEREND {
+        return Err(Errno::EINVAL);
+    }
+
+    let page_count = arch::page_count(length);
+    let map_size = page_count.checked_mul(arch::PGSIZE).ok_or(Errno::ENOMEM)?;
+    if addr.checked_add(map_size - 1).ok_or(Errno::EINVAL)? > arch::USEREND {
         return Err(Errno::EINVAL);
     }
 
@@ -74,52 +87,88 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         perm |= MapPerm::X;
     }
 
+    let shared = if flags.contains(MMapFlags::SHARED) {
+        true
+    } else if flags.contains(MMapFlags::PRIVATE) {
+        false
+    } else {
+        return Err(Errno::EINVAL);
+    };
+
     let mut area: Box<dyn Area> = if flags.contains(MMapFlags::ANONYMOUS) {
-        let page_count = (length + arch::PGSIZE - 1) / arch::PGSIZE;
-        if flags.contains(MMapFlags::SHARED) {
+        if fixed_noreplace
+            && current::addrspace().with_map_manager_mut(|map_manager| map_manager.is_range_mapped(addr, map_size))
+        {
+            return Err(Errno::EEXIST);
+        }
+
+        if shared {
             Box::new(SharedAnonymousArea::new(0, perm, page_count))
         } else {
             Box::new(PrivateAnonymousArea::new(0, perm, page_count))
         }
     } else {
+        let file = current::fdtable().lock().get(fd)?;
+
         if offset % arch::PGSIZE != 0 {
             return Err(Errno::EINVAL);
         }
 
-        let file = current::fdtable()
-            .lock()
-            .get(fd)?
-            .downcast_arc::<RandomAccessFile>()
-            .map_err(|_| Errno::EINVAL)?;
+        let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::EBADF)?;
 
+        if !file.flags.readable {
+            return Err(Errno::EACCES);
+        }
+        if flags.contains(MMapFlags::SHARED) && prot.contains(MMapProt::WRITE) && !file.flags.writable {
+            return Err(Errno::EACCES);
+        }
+
+        if fixed_noreplace
+            && current::addrspace().with_map_manager_mut(|map_manager| map_manager.is_range_mapped(addr, map_size))
+        {
+            return Err(Errno::EEXIST);
+        }
+
+        let dentry = file.get_dentry().unwrap();
         let inode = file.get_inode().unwrap().clone();
-        let index = file.get_dentry().unwrap().get_inode_index();
+        let index = dentry.get_inode_index();
 
-        if flags.contains(MMapFlags::SHARED) {
+        if shared {
             // if length % arch::PGSIZE != 0 {
             //     return Err(Errno::EINVAL);
             // }
 
-            let pagecount = (length + arch::PGSIZE - 1) / arch::PGSIZE;
-            Box::new(SharedFileMapArea::new(0, perm, inode, index, offset, pagecount))
+            Box::new(SharedFileMapArea::new(
+                0,
+                perm,
+                inode,
+                index,
+                offset,
+                page_count,
+                dentry.get_path(),
+            ))
         } else {
             Box::new(PrivateFileMapArea::new(0, perm, file, offset, length))
         }
     };
 
     current::addrspace().with_map_manager_mut(|map_manager| {
-        let fixed = flags.contains(MMapFlags::FIXED);
-        let ubase = if addr == 0 || (!fixed && map_manager.is_range_mapped(addr, length)) {
-            map_manager
-                .find_mmap_ubase((length + arch::PGSIZE - 1) / arch::PGSIZE)
-                .ok_or(Errno::ENOMEM)?
+        let ubase = if fixed_noreplace {
+            if map_manager.is_range_mapped(addr, map_size) {
+                return Err(Errno::EEXIST);
+            }
+            addr
+        } else if fixed {
+            addr
+        } else if addr == 0 || map_manager.is_range_mapped(addr, map_size) {
+            map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)?
         } else {
             addr
         };
 
         area.set_ubase(ubase);
 
-        if fixed {
+        if fixed && !fixed_noreplace {
             map_manager.map_area_fixed(ubase, area, current::addrspace().pagetable());
         } else {
             map_manager.map_area(ubase, area);

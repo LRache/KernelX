@@ -4,6 +4,7 @@ use crate::kernel::errno::Errno;
 use crate::kernel::event::timer;
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::MemAccessType;
+use crate::kernel::mm::maparea::MemoryFaultSignal;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall;
 
@@ -92,15 +93,17 @@ pub fn syscall(num: usize, args: &syscall::Args, ret_arg_value: usize) -> usize 
 }
 
 pub fn memory_fault(addr: usize, access_type: MemAccessType) {
-    let fixed_kaddr = current::addrspace().try_to_fix_memory_fault(addr, access_type);
+    let signal = match current::addrspace().try_to_fix_memory_fault(addr, access_type) {
+        Ok(_) => return,
+        Err(MemoryFaultSignal::Segv) => signum::SIGSEGV,
+        Err(MemoryFaultSignal::Bus) => signum::SIGBUS,
+    };
 
-    if fixed_kaddr.is_none() {
-        // TODO: Implement the sicode and fields for memory fault
-        current::pcb()
-            .send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, 0, KSiFields::Empty, None)
-            .unwrap();
-        current::schedule();
-    }
+    // TODO: Implement the sicode and fields for memory fault
+    current::pcb()
+        .send_signal(signal, SiCode::SI_KERNEL, 0, KSiFields::Empty, None)
+        .unwrap();
+    current::schedule();
 }
 
 pub fn illegal_inst() {

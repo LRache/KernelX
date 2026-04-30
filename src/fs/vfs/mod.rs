@@ -13,6 +13,7 @@ pub use fsop::*;
 pub use init::{init, spawn_inode_cache_reaper};
 
 use crate::klib::InitedCell;
+pub use vfs::LookupFlags;
 use vfs::VirtualFileSystem;
 
 static VFS: InitedCell<VirtualFileSystem> = InitedCell::uninit();

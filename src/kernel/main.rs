@@ -37,7 +37,7 @@ fn kinit() {
     mm::vdso::init();
 
     fs::mount_init_fs(
-        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT),
+        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT_DEVICE),
         BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE),
     );
 

@@ -12,8 +12,17 @@ use crate::klib::SpinLock;
 use super::inode::{Inode as MemInode, InodeMeta};
 
 pub trait StaticFsInfo: Send + Sync + 'static {
+    const MAX_FILENAME_LEN: Option<usize> = None;
+
     fn statfs_magic() -> u64;
     fn type_name() -> &'static str;
+
+    fn check_filename(name: &str) -> SysResult<()> {
+        if Self::MAX_FILENAME_LEN.is_some_and(|max_len| name.len() > max_len) {
+            return Err(Errno::ENAMETOOLONG);
+        }
+        Ok(())
+    }
 }
 
 pub struct SuperBlockInner {

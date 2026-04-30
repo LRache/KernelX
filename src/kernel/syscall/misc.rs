@@ -4,13 +4,18 @@ use num_enum::TryFromPrimitive;
 
 use crate::arch;
 use crate::fs::vfs;
+use crate::kernel::config;
 use crate::kernel::errno::Errno;
-use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::{config, uapi};
+use crate::kernel::task::{UTS_NAME_MAX, manager};
 use crate::klib::dmesg;
 use crate::klib::random::random;
+
+use super::common::Timeval;
+
+const UTS_FIELD_LEN: usize = 65;
 
 pub fn rseq() -> Result<usize, Errno> {
     // This syscall is a no-op in the current implementation.
@@ -21,12 +26,12 @@ pub fn rseq() -> Result<usize, Errno> {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Utsname {
-    pub sysname: [u8; 65],
-    pub nodename: [u8; 65],
-    pub release: [u8; 65],
-    pub version: [u8; 65],
-    pub machine: [u8; 65],
-    pub domainname: [u8; 65],
+    pub sysname: [u8; UTS_FIELD_LEN],
+    pub nodename: [u8; UTS_FIELD_LEN],
+    pub release: [u8; UTS_FIELD_LEN],
+    pub version: [u8; UTS_FIELD_LEN],
+    pub machine: [u8; UTS_FIELD_LEN],
+    pub domainname: [u8; UTS_FIELD_LEN],
 }
 
 impl UserStruct for Utsname {}
@@ -34,16 +39,20 @@ impl UserStruct for Utsname {}
 impl Utsname {
     pub fn new() -> Self {
         let mut ustname = Utsname {
-            sysname: [0; 65],
-            nodename: [0; 65],
-            release: [0; 65],
-            version: [0; 65],
-            machine: [0; 65],
-            domainname: [0; 65],
+            sysname: [0; UTS_FIELD_LEN],
+            nodename: [0; UTS_FIELD_LEN],
+            release: [0; UTS_FIELD_LEN],
+            version: [0; UTS_FIELD_LEN],
+            machine: [0; UTS_FIELD_LEN],
+            domainname: [0; UTS_FIELD_LEN],
         };
         // let sysname = b"KernelX";
         let sysname = b"Linux";
         ustname.sysname[..sysname.len()].copy_from_slice(sysname);
+
+        let uts = current::pcb().uts();
+        uts.write_hostname_to(&mut ustname.nodename);
+        uts.write_domainname_to(&mut ustname.domainname);
 
         let release = "5.0.0";
         ustname.release[..release.len()].copy_from_slice(release.as_bytes());
@@ -61,6 +70,44 @@ pub fn newuname(uptr_uname: UPtr<Utsname>) -> Result<usize, Errno> {
     Ok(0)
 }
 
+pub fn sethostname(uptr_name: UBuffer, len: usize) -> SyscallRet {
+    if current::pcb().euid() != 0 {
+        return Err(Errno::EPERM);
+    }
+
+    if len > UTS_NAME_MAX {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut hostname = [0; UTS_NAME_MAX];
+    if len > 0 {
+        uptr_name.read(0, &mut hostname[..len])?;
+    }
+
+    current::pcb().uts().set_hostname(&hostname[..len]);
+
+    Ok(0)
+}
+
+pub fn setdomainname(uptr_name: UBuffer, len: usize) -> SyscallRet {
+    if current::pcb().euid() != 0 {
+        return Err(Errno::EPERM);
+    }
+
+    if len > UTS_NAME_MAX {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut domainname = [0; UTS_NAME_MAX];
+    if len > 0 {
+        uptr_name.read(0, &mut domainname[..len])?;
+    }
+
+    current::pcb().uts().set_domainname(&domainname[..len]);
+
+    Ok(0)
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RLimit {
@@ -71,12 +118,24 @@ pub struct RLimit {
 impl UserStruct for RLimit {}
 
 #[repr(usize)]
-#[derive(TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive)]
 enum RLimitResource {
+    CPU = 0,
     FSIZE = 1,
+    DATA = 2,
     STACK = 3,
     CORE = 4,
+    RSS = 5,
+    NPROC = 6,
     NOFILE = 7,
+    MEMLOCK = 8,
+    AS = 9,
+    LOCKS = 10,
+    SIGPENDING = 11,
+    MSGQUEUE = 12,
+    NICE = 13,
+    RTPRIO = 14,
+    RTTIME = 15,
 }
 
 pub fn prlimit64(
@@ -125,6 +184,8 @@ pub fn prlimit64(
 
         // TODO: implement real core dump size limit. For now, just allow unlimited core dump size and ignore any new limit.
         RLimitResource::CORE => {
+            crate::kwarn!("prlimit64: RLIMIT_CORE is not fully implemented");
+
             if !uptr_old_limit.is_null() {
                 let old_limit = RLimit {
                     rlim_cur: 0,
@@ -163,6 +224,37 @@ pub fn prlimit64(
                 // }
 
                 fdtable.set_max_fd(new_limit.rlim_max);
+            }
+        }
+
+        // TODO: implement accounting and enforcement for these resource limits.
+        resource @ (RLimitResource::CPU
+        | RLimitResource::DATA
+        | RLimitResource::RSS
+        | RLimitResource::NPROC
+        | RLimitResource::MEMLOCK
+        | RLimitResource::AS
+        | RLimitResource::LOCKS
+        | RLimitResource::SIGPENDING
+        | RLimitResource::MSGQUEUE
+        | RLimitResource::NICE
+        | RLimitResource::RTPRIO
+        | RLimitResource::RTTIME) => {
+            crate::kwarn!("prlimit64: RLIMIT_{:?} is not implemented", resource);
+
+            if !uptr_old_limit.is_null() {
+                let old_limit = RLimit {
+                    rlim_cur: usize::MAX,
+                    rlim_max: usize::MAX,
+                };
+                uptr_old_limit.write(old_limit)?;
+            }
+
+            if !uptr_new_limit.is_null() {
+                let new_limit = uptr_new_limit.read()?;
+                if new_limit.rlim_cur > new_limit.rlim_max {
+                    return Err(Errno::EINVAL);
+                }
             }
         }
     }
@@ -211,22 +303,22 @@ pub fn get_mempolicy() -> SyscallRet {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Rusage {
-    ru_utime: uapi::TimeVal, // user CPU time used
-    ru_stime: uapi::TimeVal, // system CPU time used
-    ru_maxrss: isize,        // maximum resident set size
-    ru_ixrss: isize,         // integral shared memory size
-    ru_idrss: isize,         // integral unshared data size
-    ru_isrss: isize,         // integral unshared stack size
-    ru_minflt: isize,        // page reclaims (soft page faults)
-    ru_majflt: isize,        // page faults (hard page faults)
-    ru_nswap: isize,         // swaps
-    ru_inblock: isize,       // block input operations
-    ru_oublock: isize,       // block output operations
-    ru_msgsnd: isize,        // IPC messages sent
-    ru_msgrcv: isize,        // IPC messages received
-    ru_nsignals: isize,      // signals received
-    ru_nvcsw: isize,         // voluntary context switches
-    ru_nivcsw: isize,        // involuntary context switches
+    ru_utime: Timeval,  // user CPU time used
+    ru_stime: Timeval,  // system CPU time used
+    ru_maxrss: isize,   // maximum resident set size
+    ru_ixrss: isize,    // integral shared memory size
+    ru_idrss: isize,    // integral unshared data size
+    ru_isrss: isize,    // integral unshared stack size
+    ru_minflt: isize,   // page reclaims (soft page faults)
+    ru_majflt: isize,   // page faults (hard page faults)
+    ru_nswap: isize,    // swaps
+    ru_inblock: isize,  // block input operations
+    ru_oublock: isize,  // block output operations
+    ru_msgsnd: isize,   // IPC messages sent
+    ru_msgrcv: isize,   // IPC messages received
+    ru_nsignals: isize, // signals received
+    ru_nvcsw: isize,    // voluntary context switches
+    ru_nivcsw: isize,   // involuntary context switches
 }
 
 impl UserStruct for Rusage {}
@@ -234,8 +326,8 @@ impl UserStruct for Rusage {}
 impl Default for Rusage {
     fn default() -> Self {
         Rusage {
-            ru_utime: uapi::TimeVal { tv_sec: 0, tv_usec: 0 },
-            ru_stime: uapi::TimeVal { tv_sec: 0, tv_usec: 0 },
+            ru_utime: Timeval::ZERO,
+            ru_stime: Timeval::ZERO,
             ru_maxrss: 0,
             ru_ixrss: 0,
             ru_idrss: 0,
@@ -258,6 +350,7 @@ impl Default for Rusage {
 #[derive(TryFromPrimitive, Debug)]
 pub enum RusageWho {
     SELF = 0,
+    CHILDREN = -1isize as usize,
 }
 
 pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
@@ -268,6 +361,11 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
     match who {
         RusageWho::SELF => {
             let (utime, stime) = current::pcb().tasks_usage_time();
+            rusage.ru_utime = utime.into();
+            rusage.ru_stime = stime.into();
+        }
+        RusageWho::CHILDREN => {
+            let (utime, stime) = current::pcb().children_usage_time();
             rusage.ru_utime = utime.into();
             rusage.ru_stime = stime.into();
         }
@@ -376,6 +474,35 @@ pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UBuffer) -> 
     uptr_mask.write(0, &cpuset_buffer)?;
 
     Ok(cpusetsize)
+}
+
+#[derive(TryFromPrimitive)]
+#[repr(usize)]
+enum PriorityWhich {
+    Process = 0,
+    Pgrp = 1,
+    User = 2,
+}
+
+pub fn getpriority(which: usize, who: usize) -> SyscallRet {
+    let which = PriorityWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
+    if who > i32::MAX as usize {
+        return Err(Errno::ESRCH);
+    }
+
+    let nice = match which {
+        PriorityWhich::Process => {
+            if who == 0 {
+                current::pcb().nice()
+            } else {
+                let tcb = manager::get(who as Tid).ok_or(Errno::ESRCH)?;
+                tcb.parent().nice()
+            }
+        }
+        PriorityWhich::Pgrp | PriorityWhich::User => current::pcb().nice(),
+    };
+
+    Ok((20 - nice) as usize)
 }
 
 // TODO: implement real scheduling policy setting

@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use bitflags::bitflags;
 use core::time::Duration;
 
 use crate::fs::file::RandomAccessFile;
@@ -17,13 +18,55 @@ use crate::kernel::task::{self, manager, with_initpcb};
 use crate::kernel::uapi::Uid;
 use crate::klib::{SleepLock, SpinLock};
 
+use super::UtsNamespace;
 use super::tcb::TCB;
 
 pub type Pid = Tid;
 
+bitflags! {
+    #[derive(Clone, Copy)]
+    pub struct CapabilitySet: u32 {
+        const SYS_TIME = 1 << 25;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ProcessCapabilities {
+    pub effective: CapabilitySet,
+    pub permitted: CapabilitySet,
+    pub inheritable: CapabilitySet,
+}
+
+impl ProcessCapabilities {
+    pub fn empty() -> Self {
+        Self {
+            effective: CapabilitySet::empty(),
+            permitted: CapabilitySet::empty(),
+            inheritable: CapabilitySet::empty(),
+        }
+    }
+
+    pub fn init() -> Self {
+        Self {
+            effective: CapabilitySet::SYS_TIME,
+            permitted: CapabilitySet::SYS_TIME,
+            inheritable: CapabilitySet::empty(),
+        }
+    }
+}
+
 struct Signal {
     actions: SpinLock<SignalActionTable>,
     pending: SpinLock<PendingSignalQueue>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ITimer {
+    pub id: u64,
+    /// Absolute expiry time in microseconds
+    pub expiry_us: u64,
+    /// Interval for repeating itimers
+    pub interval: Duration,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,16 +117,13 @@ pub struct PCB {
     file_size_limit: SpinLock<(usize, usize)>,
     waiting_task: SpinLock<Vec<Arc<dyn Task>>>,
     pidfd_waiters: SpinLock<WaitQueue<Event>>,
+    uts: UtsNamespace,
 
     signal: Signal,
 
     children: SleepLock<Vec<Arc<PCB>>>,
 
-    pub itimer_ids: SpinLock<[Option<u64>; 3]>,
-    /// Absolute expiry time in microseconds for each itimer (0 = inactive)
-    pub itimer_expiry_us: SpinLock<[u64; 3]>,
-    /// Interval for repeating itimers
-    pub itimer_interval: SpinLock<[Duration; 3]>,
+    pub itimers: SpinLock<[Option<ITimer>; 3]>,
     pub timers: TimerTable,
 
     // TODO: 减少鉴权时候的数据拷贝。
@@ -96,6 +136,8 @@ pub struct PCB {
     sgid: SpinLock<Uid>,
     fsgid: SpinLock<Uid>,
     supplementary_gids: SpinLock<Vec<Uid>>,
+    nice: SpinLock<isize>,
+    capabilities: SpinLock<ProcessCapabilities>,
 
     pgid: SpinLock<Pid>,
     sid: SpinLock<Pid>,
@@ -111,11 +153,24 @@ pub struct PCB {
 }
 
 impl PCB {
-    pub fn new(pid: i32, pgid: Pid, parent: &Arc<PCB>, exit_signal: SignalNum) -> Arc<Self> {
+    pub fn new(
+        pid: i32,
+        pgid: Pid,
+        parent: &Arc<PCB>,
+        inherit: &Arc<PCB>,
+        exit_signal: SignalNum,
+        new_uts: bool,
+    ) -> Arc<Self> {
         let exec_inode = parent.exec_inode.lock().clone();
         if let Some(inode) = exec_inode.as_ref() {
             inode.increment_exec_count();
         }
+
+        let uts = if new_uts {
+            inherit.uts.fork()
+        } else {
+            inherit.uts.clone()
+        };
 
         Arc::new(Self {
             pid,
@@ -130,6 +185,7 @@ impl PCB {
             file_size_limit: SpinLock::new(*parent.file_size_limit.lock(), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
             pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
+            uts,
 
             signal: Signal {
                 actions: SpinLock::new(parent.signal.actions.lock().clone(), "PCB::signal.actions"),
@@ -138,9 +194,7 @@ impl PCB {
 
             children: SleepLock::new(Vec::new(), "PCB::children"),
 
-            itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
-            itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
-            itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
+            itimers: SpinLock::new([None; 3], "PCB::itimers"),
             timers: TimerTable::new(),
 
             uid: SpinLock::new(*parent.uid.lock(), "PCB::uid"),
@@ -152,6 +206,8 @@ impl PCB {
             sgid: SpinLock::new(*parent.sgid.lock(), "PCB::sgid"),
             fsgid: SpinLock::new(*parent.fsgid.lock(), "PCB::fsgid"),
             supplementary_gids: SpinLock::new(parent.supplementary_gids.lock().clone(), "PCB::supplementary_gids"),
+            nice: SpinLock::new(*parent.nice.lock(), "PCB::nice"),
+            capabilities: SpinLock::new(*parent.capabilities.lock(), "PCB::capabilities"),
 
             pgid: SpinLock::new(pgid, "PCB::pgid"),
             sid: SpinLock::new(parent.sid(), "PCB::sid"),
@@ -191,6 +247,7 @@ impl PCB {
             file_size_limit: SpinLock::new((usize::MAX, usize::MAX), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
             pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
+            uts: UtsNamespace::new(),
 
             signal: Signal {
                 actions: SpinLock::new(SignalActionTable::new(), "PCB::signal.actions"),
@@ -208,6 +265,8 @@ impl PCB {
             sgid: SpinLock::new(0, "PCB::sgid"),
             fsgid: SpinLock::new(0, "PCB::fsgid"),
             supplementary_gids: SpinLock::new(Vec::new(), "PCB::supplementary_gids"),
+            nice: SpinLock::new(0, "PCB::nice"),
+            capabilities: SpinLock::new(ProcessCapabilities::init(), "PCB::capabilities"),
 
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
             sid: SpinLock::new(new_tid, "PCB::sid"),
@@ -215,9 +274,7 @@ impl PCB {
             exit_signal: signum::SIGCHLD,
 
             tasks_time_usage: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage"),
-            itimer_ids: SpinLock::new([None; 3], "PCB::itimer_ids"),
-            itimer_expiry_us: SpinLock::new([0; 3], "PCB::itimer_expiry_us"),
-            itimer_interval: SpinLock::new([Duration::ZERO; 3], "PCB::itimer_interval"),
+            itimers: SpinLock::new([None; 3], "PCB::itimers"),
             timers: TimerTable::new(),
 
             tasks_time_usage_capture: SpinLock::new((Duration::ZERO, Duration::ZERO), "PCB::tasks_time_usage_capture"),
@@ -337,8 +394,28 @@ impl PCB {
         *self.supplementary_gids.lock() = gids;
     }
 
+    pub fn nice(&self) -> isize {
+        *self.nice.lock()
+    }
+
+    pub fn set_nice(&self, nice: isize) {
+        *self.nice.lock() = nice;
+    }
+
+    pub fn capabilities(&self) -> ProcessCapabilities {
+        *self.capabilities.lock()
+    }
+
+    pub fn set_capabilities(&self, capabilities: ProcessCapabilities) {
+        *self.capabilities.lock() = capabilities;
+    }
+
     pub fn exec_path(&self) -> String {
         self.exec_path.lock().clone()
+    }
+
+    pub fn uts(&self) -> &UtsNamespace {
+        &self.uts
     }
 
     pub fn is_exited(&self) -> bool {
@@ -377,6 +454,12 @@ impl PCB {
 
     pub fn wait_pidfd_event_cancel(&self) {
         self.pidfd_waiters.lock().remove(current::task());
+    }
+
+    fn remove_current_waiting_task(&self) {
+        self.waiting_task
+            .lock()
+            .retain(|task| !Arc::ptr_eq(task, current::task()));
     }
 
     pub fn wait_for_all_tasks_exited_and_clear(&self) {
@@ -450,12 +533,12 @@ impl PCB {
         } else if flags.parent {
             // CLONE_PARENT: the new process shares the same parent as the caller
             let real_parent = self.parent.lock().clone().ok_or(Errno::EINVAL)?;
-            let new_pcb = PCB::new(new_tid, self.pgid(), &real_parent, exit_signal);
+            let new_pcb = PCB::new(new_tid, self.pgid(), &real_parent, self, exit_signal, flags.new_uts);
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             real_parent.children.lock().push(new_pcb);
         } else {
-            let new_pcb = PCB::new(new_tid, self.pgid(), self, exit_signal);
+            let new_pcb = PCB::new(new_tid, self.pgid(), self, self, exit_signal, flags.new_uts);
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_pcb);
@@ -558,6 +641,11 @@ impl PCB {
         // at which point it is safe to reclaim the resources.
         drop(tasks);
         self.timers.clear();
+        self.itimers.lock().iter().for_each(|itimer| {
+            if let Some(itimer) = itimer {
+                timer::remove_timer(itimer.id);
+            }
+        });
         self.replace_exec_inode(None);
 
         *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();
@@ -640,6 +728,7 @@ impl PCB {
                             }
                         }
                         Event::Signal => {
+                            self.remove_current_waiting_task();
                             return Err(Errno::EINTR);
                         }
                         _ => {
@@ -717,7 +806,10 @@ impl PCB {
                         continue; // The child process was recycled by other waiters
                     }
                 }
-                Event::Signal => return Err(Errno::EINTR),
+                Event::Signal => {
+                    self.remove_current_waiting_task();
+                    return Err(Errno::EINTR);
+                }
                 _ => unreachable!(),
             }
         }
@@ -769,7 +861,10 @@ impl PCB {
                         continue;
                     }
                 }
-                Event::Signal => return Err(Errno::EINTR),
+                Event::Signal => {
+                    self.remove_current_waiting_task();
+                    return Err(Errno::EINTR);
+                }
                 _ => unreachable!(),
             }
         }

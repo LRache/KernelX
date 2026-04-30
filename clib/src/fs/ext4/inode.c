@@ -60,6 +60,15 @@
 #include <ext4_inode.h>
 
 #if CONFIG_META_CSUM_ENABLE
+static bool kernelx_ext4_inode_has_checksum_hi(struct ext4_inode_ref *inode_ref)
+{
+    struct ext4_sblock *sb = &inode_ref->fs->sb;
+
+    return ext4_inode_get_extra_isize(sb, inode_ref->inode) >=
+           sizeof(inode_ref->inode->extra_isize) +
+               sizeof(inode_ref->inode->checksum_hi);
+}
+
 static uint32_t kernelx_ext4_inode_checksum(struct ext4_inode_ref *inode_ref)
 {
     uint32_t checksum = 0;
@@ -81,7 +90,7 @@ static uint32_t kernelx_ext4_inode_checksum(struct ext4_inode_ref *inode_ref)
         checksum = ext4_crc32c(checksum, inode_ref->inode, inode_size);
         ext4_inode_set_csum(sb, inode_ref->inode, orig_checksum);
 
-        if (inode_size == EXT4_GOOD_OLD_INODE_SIZE) {
+        if (!kernelx_ext4_inode_has_checksum_hi(inode_ref)) {
             checksum &= 0xFFFF;
         }
     }
