@@ -402,12 +402,17 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
     if open_flags.contains(OpenFlags::O_NOATIME) && current::fsuid() != 0 {
         return Err(Errno::EPERM);
     }
+    let is_path_open = open_flags.contains(OpenFlags::O_PATH);
     let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
-    let (readable, writable) = match acc_mode {
-        0 => (true, false), // O_RDONLY
-        1 => (false, true), // O_WRONLY
-        2 => (true, true),  // O_RDWR
-        _ => return Err(Errno::EINVAL),
+    let (readable, writable) = if is_path_open {
+        (false, false)
+    } else {
+        match acc_mode {
+            0 => (true, false), // O_RDONLY
+            1 => (false, true), // O_WRONLY
+            2 => (true, true),  // O_RDWR
+            _ => return Err(Errno::EINVAL),
+        }
     };
     let file_flags = FileFlags {
         writable,
@@ -454,7 +459,15 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
         }
 
         let perm = Perm::current(perm_flags);
-        let file = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+        let file: SysResult<Arc<dyn FileOps>> = if is_path_open {
+            let dentry = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow(parent, &path)?
+            } else {
+                vfs::load_dentry_at(parent, &path)?
+            };
+            let inode = dentry.get_inode();
+            Ok(inode.wrap_file(Some(dentry), file_flags))
+        } else if open_flags.contains(OpenFlags::O_NOFOLLOW) {
             vfs::openat_file_nofollow(parent, &path, file_flags, &perm)
         } else {
             vfs::openat_file(parent, &path, file_flags, &perm)
@@ -462,13 +475,13 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
 
         match file {
             Ok(file) => {
-                if open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
+                if !is_path_open && open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
                     return Err(Errno::EEXIST);
                 }
                 Ok(file)
             }
             Err(e) => {
-                if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
+                if !is_path_open && e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
                     // Create the file
                     let mode =
                         Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
@@ -551,12 +564,17 @@ fn do_openat_with_lookup_flags(
     if open_flags.contains(OpenFlags::O_NOATIME) && current::fsuid() != 0 {
         return Err(Errno::EPERM);
     }
+    let is_path_open = open_flags.contains(OpenFlags::O_PATH);
     let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
-    let (readable, writable) = match acc_mode {
-        0 => (true, false), // O_RDONLY
-        1 => (false, true), // O_WRONLY
-        2 => (true, true),  // O_RDWR
-        _ => return Err(Errno::EINVAL),
+    let (readable, writable) = if is_path_open {
+        (false, false)
+    } else {
+        match acc_mode {
+            0 => (true, false), // O_RDONLY
+            1 => (false, true), // O_WRONLY
+            2 => (true, true),  // O_RDWR
+            _ => return Err(Errno::EINVAL),
+        }
     };
     let file_flags = FileFlags {
         writable,
@@ -603,7 +621,15 @@ fn do_openat_with_lookup_flags(
         }
 
         let perm = Perm::current(perm_flags);
-        let file = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+        let file: SysResult<Arc<dyn FileOps>> = if is_path_open {
+            let dentry = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow_with_perm_and_flags(parent, &path, &perm, lookup_flags)?
+            } else {
+                vfs::load_dentry_at_with_flags(parent, &path, lookup_flags)?
+            };
+            let inode = dentry.get_inode();
+            Ok(inode.wrap_file(Some(dentry), file_flags))
+        } else if open_flags.contains(OpenFlags::O_NOFOLLOW) {
             vfs::openat_file_nofollow_with_lookup_flags(parent, &path, file_flags, &perm, lookup_flags)
         } else {
             vfs::openat_file_with_lookup_flags(parent, &path, file_flags, &perm, lookup_flags)
@@ -611,13 +637,13 @@ fn do_openat_with_lookup_flags(
 
         match file {
             Ok(file) => {
-                if open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
+                if !is_path_open && open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
                     return Err(Errno::EEXIST);
                 }
                 Ok(file)
             }
             Err(e) => {
-                if e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
+                if !is_path_open && e == Errno::ENOENT && open_flags.contains(OpenFlags::O_CREATE) {
                     // Create the file
                     let mode =
                         Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
@@ -759,9 +785,21 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
     uptr_path.should_not_null()?;
     ubuf.should_not_null()?;
 
+    if (bufsize as isize) <= 0 {
+        return Err(Errno::EINVAL);
+    }
+
     let path = uptr_path.read_path()?;
 
-    if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
+    let mut buffer = [0u8; 255];
+    let link_size = if path.is_empty() {
+        if dirfd as isize == AT_FDCWD {
+            return Err(Errno::ENOENT);
+        }
+        let file = current::fdtable().lock().get(dirfd)?;
+        let inode = file.get_inode().ok_or(Errno::EINVAL)?;
+        inode.readlink(&mut buffer)?
+    } else if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
         current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?
     } else {
         vfs::load_parent_dentry_at(
@@ -773,17 +811,18 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
             &path,
         )?
     } {
-        let mut buffer = [0u8; 255];
-        if let Some(size) = parent.readlink(child.as_ref(), &mut buffer)? {
-            let path = core::str::from_utf8(&buffer[..size]).map_err(|_| Errno::EINVAL)?;
-            let to_write = core::cmp::min(path.len(), bufsize);
-            ubuf.write(0, &path.as_bytes()[..to_write])?;
-            return Ok(to_write);
-        } else {
-            return Err(Errno::EINVAL); // Not a symlink
-        }
+        parent.readlink(child.as_ref(), &mut buffer)?
     } else {
         return Err(Errno::EINVAL); // Root is a directory, cannot be a symlink
+    };
+
+    if let Some(size) = link_size {
+        let path = core::str::from_utf8(&buffer[..size]).map_err(|_| Errno::EINVAL)?;
+        let to_write = core::cmp::min(path.len(), bufsize);
+        ubuf.write(0, &path.as_bytes()[..to_write])?;
+        Ok(to_write)
+    } else {
+        Err(Errno::EINVAL) // Not a symlink
     }
 }
 

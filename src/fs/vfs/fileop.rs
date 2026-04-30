@@ -64,6 +64,16 @@ pub fn load_dentry_at_nofollow_with_perm(dir: &Arc<Dentry>, path: &str, perm: &P
     Ok(dentry)
 }
 
+pub fn load_dentry_at_nofollow_with_perm_and_flags(
+    dir: &Arc<Dentry>,
+    path: &str,
+    perm: &Perm,
+    flags: LookupFlags,
+) -> SysResult<Arc<Dentry>> {
+    let dentry = vfs().lookup_dentry_nofollow_with_perm_and_flags(dir, path, perm, flags)?;
+    Ok(dentry)
+}
+
 pub fn load_parent_dentry_at<'a>(dir: &Arc<Dentry>, path: &'a str) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
     vfs().lookup_parent_dentry(dir, path)
 }

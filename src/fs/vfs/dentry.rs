@@ -421,6 +421,8 @@ impl Dentry {
     }
 
     pub fn readlink(&self, child: &str, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        self.check_search_perm(&Perm::current(PermFlags::X))?;
+
         let lookup_ino = self.get_inode().lookup(child)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
