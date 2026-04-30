@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::kernel::mm::maparea::area::Area;
+use crate::kernel::mm::maparea::area::{Area, MemoryFaultSignal};
 use crate::kernel::mm::maparea::nofilemap::FrameState;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
@@ -181,7 +181,7 @@ impl Area for PrivateAnonymousArea {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize> {
+    ) -> Result<usize, MemoryFaultSignal> {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -209,12 +209,12 @@ impl Area for PrivateAnonymousArea {
                 }
             }
             if access_type == MemAccessType::Write {
-                self.translate_write(uaddr, addrspace)
+                self.translate_write(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
             } else {
-                self.translate_read(uaddr, addrspace)
+                self.translate_read(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
             }
         } else {
-            None
+            Err(MemoryFaultSignal::Segv)
         }
     }
 

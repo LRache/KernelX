@@ -10,17 +10,9 @@ use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 use crate::{ktrace, print};
 
-use super::area::Area;
+use super::area::{Area, MapAreaInfo, MemoryFaultSignal};
 use super::userbrk::UserBrk;
 use super::userstack::{Auxv, UserStack};
-
-#[derive(Clone, Copy, Debug)]
-pub struct MapAreaInfo {
-    pub start: usize,
-    pub end: usize,
-    pub perm: MapPerm,
-    pub name: &'static str,
-}
 
 pub struct Manager {
     areas: BTreeMap<usize, Box<dyn Area>>,
@@ -120,11 +112,14 @@ impl Manager {
         }
     }
 
+    fn overlap_scan_start(&self, start: usize) -> usize {
+        self.areas.range(..=start).next_back().map(|(k, _)| *k).unwrap_or(start)
+    }
+
     pub fn is_map_range_overlapped(&self, start: usize, page_count: usize) -> bool {
-        let iter_start = self.areas.range(..=start).next().map(|(k, _)| *k).unwrap_or(0);
         let end = start + page_count * arch::PGSIZE;
 
-        for (&area_base, area) in self.areas.range(iter_start..) {
+        for (&area_base, area) in self.areas.range(self.overlap_scan_start(start)..) {
             if end <= area_base {
                 break;
             }
@@ -151,20 +146,30 @@ impl Manager {
     pub fn snapshot(&self) -> Vec<MapAreaInfo> {
         self.areas
             .iter()
-            .map(|(&start, area)| MapAreaInfo {
-                start,
-                end: start + area.size(),
-                perm: area.perm(),
-                name: area.type_name(),
+            .map(|(&start, area)| {
+                let mut info = area.map_area_info();
+                info.start = start;
+                info.end = start + area.size();
+                info.perm = area.perm();
+
+                if info.path.is_none() && self.is_userbrk_area(info.start, info.end) {
+                    info.path = Some("[heap]".into());
+                }
+
+                info
             })
             .collect()
     }
 
+    fn is_userbrk_area(&self, start: usize, end: usize) -> bool {
+        let heap_end = config::USER_BRK_BASE + self.userbrk.page_count * arch::PGSIZE;
+        start >= config::USER_BRK_BASE && end <= heap_end
+    }
+
     fn find_overlapped_areas(&self, start: usize, end: usize) -> Vec<usize> {
         let mut overlapped_areas = Vec::new();
-        let iter_start = self.areas.range(..=start).next().map(|(k, _)| *k).unwrap_or(0);
 
-        for (&area_base, area) in self.areas.range(iter_start..) {
+        for (&area_base, area) in self.areas.range(self.overlap_scan_start(start)..) {
             if end <= area_base {
                 break;
             }
@@ -368,25 +373,26 @@ impl Manager {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize> {
+    ) -> Result<usize, MemoryFaultSignal> {
         if let Some((_ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
             if !access_type.match_perm(area.perm()) {
-                return None;
+                return Err(MemoryFaultSignal::Segv);
             }
-            if let Some(kaddr) = area.try_to_fix_memory_fault(uaddr, access_type, addrspace) {
-                Some(kaddr)
-            } else {
-                crate::kinfo!(
-                    "Area {} at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
-                    area.type_name(),
-                    area.ubase(),
-                    uaddr,
-                    access_type
-                );
-                None
+            match area.try_to_fix_memory_fault(uaddr, access_type, addrspace) {
+                Ok(kaddr) => Ok(kaddr),
+                Err(signal) => {
+                    // crate::kinfo!(
+                    //     "Area {} at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
+                    //     area.type_name(),
+                    //     area.ubase(),
+                    //     uaddr,
+                    //     access_type
+                    // );
+                    Err(signal)
+                }
             }
         } else {
-            None
+            Err(MemoryFaultSignal::Segv)
         }
     }
 
@@ -477,7 +483,7 @@ impl Manager {
     pub fn is_range_mapped(&self, uaddr: usize, size: usize) -> bool {
         let end_addr = uaddr + size;
 
-        for (&area_base, area) in &self.areas {
+        for (&area_base, area) in self.areas.range(self.overlap_scan_start(uaddr)..) {
             let area_end = area_base + area.size();
 
             // Check if the range overlaps with this area

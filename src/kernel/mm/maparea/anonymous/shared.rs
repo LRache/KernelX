@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::kernel::mm::maparea::area::{Area, Frame};
+use crate::kernel::mm::maparea::area::{Area, Frame, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -131,7 +131,7 @@ impl Area for SharedAnonymousArea {
         uaddr: usize,
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize> {
+    ) -> Result<usize, MemoryFaultSignal> {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -157,9 +157,9 @@ impl Area for SharedAnonymousArea {
                     Frame::Cow(_) => unreachable!("SharedAnonymousArea should not have CoW frames"),
                 }
             };
-            Some(kpage + page_offset)
+            Ok(kpage + page_offset)
         } else {
-            None
+            Err(MemoryFaultSignal::Segv)
         }
     }
 
@@ -224,5 +224,11 @@ impl Area for SharedAnonymousArea {
 
     fn type_name(&self) -> &'static str {
         "shared-anonymous"
+    }
+
+    fn map_area_info(&self) -> MapAreaInfo {
+        let mut info = MapAreaInfo::new(self.ubase(), self.ubase() + self.size(), self.perm);
+        info.shared = true;
+        info
     }
 }

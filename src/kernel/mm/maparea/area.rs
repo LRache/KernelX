@@ -1,9 +1,39 @@
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::arch::PageTable;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
+
+#[derive(Clone, Debug)]
+pub struct MapAreaInfo {
+    pub start: usize,
+    pub end: usize,
+    pub perm: MapPerm,
+    pub shared: bool,
+    pub offset: usize,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+    pub inode: u64,
+    pub path: Option<String>,
+}
+
+impl MapAreaInfo {
+    pub fn new(start: usize, end: usize, perm: MapPerm) -> Self {
+        Self {
+            start,
+            end,
+            perm,
+            shared: false,
+            offset: 0,
+            dev_major: 0,
+            dev_minor: 0,
+            inode: 0,
+            path: None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Frame {
@@ -41,7 +71,7 @@ pub trait Area {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize>;
+    ) -> Result<usize, MemoryFaultSignal>;
 
     fn page_count(&self) -> usize;
     fn size(&self) -> usize {
@@ -63,4 +93,14 @@ pub trait Area {
     fn type_name(&self) -> &'static str {
         "Area"
     }
+
+    fn map_area_info(&self) -> MapAreaInfo {
+        MapAreaInfo::new(self.ubase(), self.ubase() + self.size(), self.perm())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryFaultSignal {
+    Segv,
+    Bus,
 }
