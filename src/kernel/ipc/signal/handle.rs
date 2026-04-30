@@ -36,6 +36,16 @@ impl TCB {
             return true;
         }
 
+        if signal.si_code == SiCode::SI_TIMER {
+            if let KSiFields::Timer(timer_info) = signal.fields {
+                if timer_info.si_tid >= 0 {
+                    if let Some(timer) = self.parent().timers.get(timer_info.si_tid as usize) {
+                        timer.set_delivered_overrun(timer_info.si_overrun.max(0) as u64);
+                    }
+                }
+            }
+        }
+
         let action = self.parent().signal_actions().lock().get(signal.signum);
 
         if action.is_default() {

@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use fixedstr::tstr;
 use spin::Lazy;
 
 use crate::arch::{PageTable, PageTableTrait, TRAMPOLINE_BASE, UserContext};
@@ -215,12 +216,59 @@ impl AddrSpace {
         Ok(value)
     }
 
-    pub fn get_user_string(&self, mut uaddr: usize) -> Result<String, Errno> {
-        self.get_user_string_limited(&mut uaddr, 255, Errno::EINVAL)
+    pub fn get_user_string(&self, mut uaddr: usize) -> Result<tstr<255>, Errno> {
+        self.get_user_tstr_limited(&mut uaddr, Errno::ENAMETOOLONG)
     }
 
-    pub fn get_user_string_fixed(&self, mut uaddr: usize) -> Result<String, Errno> {
+    pub fn get_user_string_fixed<const N: usize>(&self, mut uaddr: usize) -> Result<tstr<N>, Errno> {
+        self.get_user_tstr_limited(&mut uaddr, Errno::ENAMETOOLONG)
+    }
+
+    pub fn get_user_path_string(&self, mut uaddr: usize) -> Result<String, Errno> {
         self.get_user_string_limited(&mut uaddr, MAX_PATH_LEN, Errno::ENAMETOOLONG)
+    }
+
+    fn get_user_tstr_limited<const N: usize>(
+        &self,
+        uaddr: &mut usize,
+        too_long_errno: Errno,
+    ) -> Result<tstr<N>, Errno> {
+        if N == 0 || N > 256 {
+            return Err(Errno::EINVAL);
+        }
+
+        let max_size = N - 1;
+        let mut map_manager = self.map_manager.lock();
+        let mut result = tstr::<N>::new();
+
+        loop {
+            let page_offset = *uaddr & arch::PGMASK;
+            let to_read = arch::PGSIZE - page_offset;
+            let kaddr = map_manager.translate_read(*uaddr, self).ok_or(Errno::EFAULT)?;
+
+            let slice = unsafe { core::slice::from_raw_parts(kaddr as *const u8, to_read) };
+            let (bytes, done) = match slice.iter().position(|&b| b == 0) {
+                Some(pos) => (&slice[..pos], true),
+                None => (slice, false),
+            };
+
+            let part = core::str::from_utf8(bytes).map_err(|_| Errno::EINVAL)?;
+            if result.len() + part.len() > max_size {
+                return Err(too_long_errno);
+            }
+
+            if !result.push_str(part).is_empty() {
+                return Err(too_long_errno);
+            }
+
+            if done {
+                break;
+            }
+
+            *uaddr += to_read;
+        }
+
+        Ok(result)
     }
 
     fn get_user_string_limited(

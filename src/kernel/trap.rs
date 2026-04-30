@@ -15,21 +15,32 @@ pub fn handle_signal() -> bool {
 
 pub fn trap_enter() {
     let tcb = current::tcb();
-    let counter = &mut tcb.time_counter.lock();
-    counter.system_start = Some(timer::now());
+    let now = timer::now();
+    let mut counter = tcb.time_counter.lock();
+    counter.system_start = Some(now);
     let user_start = counter.user_start.take().unwrap();
-    counter.user_time += timer::now() - user_start;
+    let user_delta = now.checked_sub(user_start).unwrap_or_default();
+    counter.user_time += user_delta;
+    drop(counter);
+
+    tcb.parent().add_task_time(user_delta, core::time::Duration::ZERO);
+    tcb.check_cpu_timers();
 }
 
 pub fn trap_return() {
     handle_signal();
 
     let tcb = current::tcb();
+    let now = timer::now();
     let mut counter = tcb.time_counter.lock();
-    counter.user_start = Some(timer::now());
+    counter.user_start = Some(now);
     let system_start = counter.system_start.take().unwrap();
-    counter.system_time += timer::now() - system_start;
+    let system_delta = now.checked_sub(system_start).unwrap_or_default();
+    counter.system_time += system_delta;
     drop(counter);
+
+    tcb.parent().add_task_time(core::time::Duration::ZERO, system_delta);
+    tcb.check_cpu_timers();
 
     #[cfg(feature = "deadlock-detect")]
     {

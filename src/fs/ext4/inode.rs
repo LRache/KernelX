@@ -210,20 +210,14 @@ fn has_children(inode_ref: &mut ext4_inode_ref) -> SysResult<bool> {
 }
 
 fn filetype_from_mode(mode: Mode) -> i32 {
-    if mode.contains(Mode::S_IFDIR) {
-        EXT4_DE_DIR as i32
-    } else if mode.contains(Mode::S_IFREG) {
-        EXT4_DE_REG_FILE as i32
-    } else if mode.contains(Mode::S_IFLNK) {
-        EXT4_DE_SYMLINK as i32
-    } else if mode.contains(Mode::S_IFCHR) {
-        EXT4_DE_CHRDEV as i32
-    } else if mode.contains(Mode::S_IFBLK) {
-        EXT4_DE_BLKDEV as i32
-    } else if mode.contains(Mode::S_IFIFO) {
-        EXT4_DE_FIFO as i32
-    } else {
-        EXT4_DE_UNKNOWN as i32
+    match mode & Mode::S_IFMT {
+        Mode::S_IFDIR => EXT4_DE_DIR as i32,
+        Mode::S_IFREG => EXT4_DE_REG_FILE as i32,
+        Mode::S_IFLNK => EXT4_DE_SYMLINK as i32,
+        Mode::S_IFCHR => EXT4_DE_CHRDEV as i32,
+        Mode::S_IFBLK => EXT4_DE_BLKDEV as i32,
+        Mode::S_IFIFO => EXT4_DE_FIFO as i32,
+        _ => EXT4_DE_UNKNOWN as i32,
     }
 }
 

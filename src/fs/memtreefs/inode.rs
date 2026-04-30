@@ -55,15 +55,15 @@ pub struct InodeMeta {
 
 impl InodeMeta {
     pub fn new(mode: Mode, ino: u32, parent_ino: u32) -> Self {
-        let meta = if mode.contains(Mode::S_IFDIR) {
-            let mut children = BTreeMap::new();
-            children.insert(".".into(), ino);
-            children.insert("..".into(), parent_ino);
-            Meta::Directory(children)
-        } else if mode.contains(Mode::S_IFLNK) {
-            Meta::Symlink(String::new())
-        } else {
-            Meta::File(FileMeta::new())
+        let meta = match mode & Mode::S_IFMT {
+            Mode::S_IFDIR => {
+                let mut children = BTreeMap::new();
+                children.insert(".".into(), ino);
+                children.insert("..".into(), parent_ino);
+                Meta::Directory(children)
+            }
+            Mode::S_IFLNK => Meta::Symlink(String::new()),
+            _ => Meta::File(FileMeta::new()),
         };
         Self {
             meta,
@@ -215,7 +215,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(total_read)
         } else {
-            Err(Errno::EINVAL)
+            Err(Errno::EISDIR)
         }
     }
 
@@ -272,7 +272,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
             Ok(total_read)
         } else {
-            Err(Errno::EINVAL)
+            Err(Errno::EISDIR)
         }
     }
 
@@ -548,16 +548,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 let file_type = {
                     let sb = self.superblock.lock();
                     let inode = sb.get_inode(ino)?;
-                    let mode = inode.mode()?;
-                    if mode.contains(Mode::S_IFDIR) {
-                        FileType::Directory
-                    } else if mode.contains(Mode::S_IFREG) {
-                        FileType::Regular
-                    } else if mode.contains(Mode::S_IFLNK) {
-                        FileType::Symlink
-                    } else {
-                        FileType::Unknown
-                    }
+                    inode.inode_type()?
                 };
 
                 let result = DirResult { ino, name, file_type };

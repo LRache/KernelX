@@ -1,6 +1,7 @@
 use alloc::string::String;
 use core::fmt::Debug;
 use core::mem::size_of;
+use fixedstr::tstr;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -155,14 +156,13 @@ pub struct UString {
 }
 
 impl UString {
-    pub fn read(&self) -> SysResult<String> {
+    pub fn read_string(&self) -> SysResult<tstr<255>> {
         debug_assert!(!self.is_null());
         copy_from_user::string(self.uaddr)
     }
 
-    pub fn read_fixed(&self) -> SysResult<String> {
-        debug_assert!(!self.is_null());
-        copy_from_user::string_fixed(self.uaddr)
+    pub fn read_path(&self) -> SysResult<String> {
+        copy_from_user::path_string(self.uaddr)
     }
 
     pub fn write(&self, s: &str, max_size: usize) -> SysResult<usize> {

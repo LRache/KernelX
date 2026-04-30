@@ -10,16 +10,125 @@ use num_enum::TryFromPrimitive;
 use crate::arch;
 use crate::fs::file::FileOps;
 use crate::kernel::errno::Errno;
-use crate::kernel::event::{Event, FileEvent, timer};
+use crate::kernel::event::{Event, EventFd, FileEvent, TimerFd, TimerFdClockId, TimerFdTime, timer};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet, signum};
 use crate::kernel::scheduler::{Task, current};
 use crate::kernel::syscall::SysResult;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
 use crate::kernel::task::PCB;
+use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::uapi;
+use crate::kernel::uapi::OpenFlags;
 use crate::klib::defer;
 
 const FD_SET_SIZE: usize = 1024;
+
+bitflags! {
+    struct EventFdFlags: usize {
+        const EFD_SEMAPHORE = 1;
+        const EFD_NONBLOCK = OpenFlags::O_NONBLOCK.bits();
+        const EFD_CLOEXEC = OpenFlags::O_CLOEXEC.bits();
+    }
+}
+
+bitflags! {
+    struct TimerFdCreateFlags: usize {
+        const TFD_NONBLOCK = OpenFlags::O_NONBLOCK.bits();
+        const TFD_CLOEXEC = OpenFlags::O_CLOEXEC.bits();
+    }
+}
+
+bitflags! {
+    struct TimerFdSetTimeFlags: usize {
+        const TFD_TIMER_ABSTIME = 1;
+        const TFD_TIMER_CANCEL_ON_SET = 1 << 1;
+    }
+}
+
+pub fn eventfd2(initval: usize, flags: usize) -> SysResult<usize> {
+    let flags = EventFdFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let eventfd = Arc::new(EventFd::new(
+        initval as u32 as u64,
+        !flags.contains(EventFdFlags::EFD_NONBLOCK),
+        flags.contains(EventFdFlags::EFD_SEMAPHORE),
+    ));
+    let fd = current::fdtable().lock().push(
+        eventfd,
+        FDFlags {
+            cloexec: flags.contains(EventFdFlags::EFD_CLOEXEC),
+        },
+    )?;
+    Ok(fd)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TimerFdSpec {
+    it_interval: uapi::Timespec,
+    it_value: uapi::Timespec,
+}
+
+impl UserStruct for TimerFdSpec {}
+
+impl TimerFdSpec {
+    fn into_durations(self) -> SysResult<(Duration, Duration)> {
+        Ok((self.it_value.try_into()?, self.it_interval.try_into()?))
+    }
+}
+
+impl From<TimerFdTime> for TimerFdSpec {
+    fn from(time: TimerFdTime) -> Self {
+        Self {
+            it_interval: time.interval.into(),
+            it_value: time.value.into(),
+        }
+    }
+}
+
+pub fn timerfd_create(clockid: usize, flags: usize) -> SysResult<usize> {
+    let clock_id = TimerFdClockId::try_from(clockid).map_err(|_| Errno::EINVAL)?;
+    let flags = TimerFdCreateFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let timerfd = Arc::new(TimerFd::new(
+        clock_id,
+        !flags.contains(TimerFdCreateFlags::TFD_NONBLOCK),
+    ));
+    let fd = current::fdtable().lock().push(
+        timerfd,
+        FDFlags {
+            cloexec: flags.contains(TimerFdCreateFlags::TFD_CLOEXEC),
+        },
+    )?;
+    Ok(fd)
+}
+
+pub fn timerfd_settime(
+    fd: usize,
+    flags: usize,
+    uptr_new_value: UPtr<TimerFdSpec>,
+    uptr_old_value: UPtr<TimerFdSpec>,
+) -> SysResult<usize> {
+    uptr_new_value.should_not_null()?;
+
+    let flags = TimerFdSetTimeFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let (value, interval) = uptr_new_value.read()?.into_durations()?;
+    let file = current::fdtable().lock().get(fd)?;
+    let timerfd = file.downcast_ref::<TimerFd>().ok_or(Errno::EINVAL)?;
+
+    let old = timerfd.set_time(value, interval, flags.contains(TimerFdSetTimeFlags::TFD_TIMER_ABSTIME))?;
+    if !uptr_old_value.is_null() {
+        uptr_old_value.write(old.into())?;
+    }
+
+    Ok(0)
+}
+
+pub fn timerfd_gettime(fd: usize, uptr_value: UPtr<TimerFdSpec>) -> SysResult<usize> {
+    let file = current::fdtable().lock().get(fd)?;
+    let timerfd = file.downcast_ref::<TimerFd>().ok_or(Errno::EINVAL)?;
+    uptr_value.write(timerfd.get_time().into())?;
+
+    Ok(0)
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

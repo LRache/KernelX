@@ -13,7 +13,7 @@ fn new_file(dentry: Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Arc
     let inode = dentry.get_inode();
     let mode = inode.mode()?;
 
-    if flags.writable && mode.contains(Mode::S_IFDIR) {
+    if flags.writable && (mode & Mode::S_IFMT) == Mode::S_IFDIR {
         return Err(Errno::EISDIR);
     }
 

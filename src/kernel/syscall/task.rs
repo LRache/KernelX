@@ -1,4 +1,3 @@
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
@@ -16,7 +15,7 @@ use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::pidfd::PidFile;
-use crate::kernel::task::{ExitStatus, PCB};
+use crate::kernel::task::{ExitStatus, PCB, manager};
 use crate::kernel::uapi::{OpenFlags, Uid};
 use crate::kernel::{config, scheduler, task};
 
@@ -126,14 +125,8 @@ bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-#[repr(usize)]
-enum KcmpType {
-    File = 0,
-}
-
 fn find_process(pid: Tid) -> Option<Arc<task::PCB>> {
-    task::with_initpcb(|init_pcb| init_pcb.find_process(pid))
+    manager::get(pid).map(|tcb| tcb.parent().clone())
 }
 
 fn can_access_pidfd_target(target: &task::PCB) -> bool {
@@ -153,28 +146,18 @@ fn can_access_pidfd_target(target: &task::PCB) -> bool {
     caller_gids.iter().all(|gid| target_gids.contains(gid))
 }
 
-fn task_for_fdtable(target: &Arc<task::PCB>) -> Option<Arc<task::TCB>> {
-    let tasks = target.tasks.lock();
-    tasks
-        .iter()
-        .find(|task| task.tid() == target.pid())
-        .or_else(|| tasks.first())
-        .cloned()
-}
-
-fn process_fd_file(target: &Arc<task::PCB>, fd: usize) -> SysResult<Arc<dyn FileOps>> {
-    let task = task_for_fdtable(target).ok_or(Errno::ESRCH)?;
-    task.fdtable().lock().get(fd)
-}
-
-fn kcmp_file_result(file1: &Arc<dyn FileOps>, file2: &Arc<dyn FileOps>) -> usize {
-    if Arc::ptr_eq(file1, file2) {
-        return 0;
-    }
-
-    let ptr1 = Arc::as_ptr(file1) as *const () as usize;
-    let ptr2 = Arc::as_ptr(file2) as *const () as usize;
-    if ptr1 < ptr2 { 1 } else { 2 }
+fn install_pidfd(pcb: &Arc<PCB>, blocked: bool) -> SysResult<usize> {
+    let pidfd = Arc::new(PidFile::new(
+        pcb,
+        FileFlags {
+            readable: true,
+            writable: false,
+            blocked,
+            append: false,
+            direct: false,
+        },
+    ));
+    current::fdtable().lock().push(pidfd, FDFlags { cloexec: true })
 }
 
 pub fn pidfd_open(pid: usize, flags: usize) -> SyscallRet {
@@ -185,18 +168,7 @@ pub fn pidfd_open(pid: usize, flags: usize) -> SyscallRet {
 
     let flags = PidFdFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let pcb = find_process(pid).ok_or(Errno::ESRCH)?;
-    let pidfd = Arc::new(PidFile::new(
-        &pcb,
-        FileFlags {
-            readable: true,
-            writable: false,
-            blocked: !flags.contains(PidFdFlags::NONBLOCK),
-            append: false,
-            direct: false,
-        },
-    ));
-    let fd = current::fdtable().lock().push(pidfd, FDFlags { cloexec: true })?;
-    Ok(fd)
+    install_pidfd(&pcb, !flags.contains(PidFdFlags::NONBLOCK))
 }
 
 pub fn pidfd_getfd(pidfd: usize, targetfd: usize, flags: usize) -> SyscallRet {
@@ -218,29 +190,49 @@ pub fn pidfd_getfd(pidfd: usize, targetfd: usize, flags: usize) -> SyscallRet {
         return Err(Errno::EPERM);
     }
 
-    let file = process_fd_file(&target, targetfd)?;
+    let file = target.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(targetfd)?;
     let new_fd = current::fdtable().lock().push(file, FDFlags { cloexec: true })?;
     Ok(new_fd)
 }
 
+fn kcmp_object<T: ?Sized>(obj1: &Arc<T>, obj2: &Arc<T>) -> usize {
+    match Arc::as_ptr(obj1).addr().cmp(&Arc::as_ptr(obj2).addr()) {
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Less => 1,
+        core::cmp::Ordering::Greater => 2,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[repr(usize)]
+enum KcmpType {
+    File = 0,
+    VM = 1,
+}
+
 pub fn kcmp(pid1: usize, pid2: usize, compare_type: usize, idx1: usize, idx2: usize) -> SyscallRet {
-    let _compare_type = KcmpType::try_from(compare_type).map_err(|_| Errno::EINVAL)?;
+    let compare_type = KcmpType::try_from(compare_type).map_err(|_| Errno::EINVAL)?;
     let pid1 = Tid::try_from(pid1).map_err(|_| Errno::ESRCH)?;
     let pid2 = Tid::try_from(pid2).map_err(|_| Errno::ESRCH)?;
     if pid1 <= 0 || pid2 <= 0 {
         return Err(Errno::ESRCH);
     }
 
-    let process1 = find_process(pid1).ok_or(Errno::ESRCH)?;
-    let process2 = find_process(pid2).ok_or(Errno::ESRCH)?;
+    let pcb1 = find_process(pid1).ok_or(Errno::ESRCH)?;
+    let pcb2 = find_process(pid2).ok_or(Errno::ESRCH)?;
 
-    if !can_access_pidfd_target(&process1) || !can_access_pidfd_target(&process2) {
-        return Err(Errno::EPERM);
-    }
+    let r = match compare_type {
+        KcmpType::File => kcmp_object(
+            &pcb1.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx1)?,
+            &pcb2.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx2)?,
+        ),
+        KcmpType::VM => kcmp_object(
+            pcb1.leader().ok_or(Errno::ESRCH)?.get_addrspace(),
+            pcb2.leader().ok_or(Errno::ESRCH)?.get_addrspace(),
+        ),
+    };
 
-    let file1 = process_fd_file(&process1, idx1)?;
-    let file2 = process_fd_file(&process2, idx2)?;
-    Ok(kcmp_file_result(&file1, &file2))
+    Ok(r)
 }
 
 bitflags! {
@@ -278,6 +270,7 @@ struct CloneArgs {
     tls: Option<usize>,
     parent_tid_addr: UPtr<Tid>,
     child_tid_addr: usize,
+    pidfd_addr: Option<UPtr<Tid>>,
     exit_signal: SignalNum,
 }
 
@@ -308,6 +301,14 @@ fn do_clone(args: CloneArgs) -> SyscallRet {
 
     if args.flags.contains(CloneFlags::PARENT_SETTID) {
         args.parent_tid_addr.write(child_tid)?;
+    }
+
+    if let Some(pidfd_addr) = args.pidfd_addr {
+        let pidfd = install_pidfd(child.parent(), true)?;
+        if let Err(err) = pidfd_addr.write(pidfd as Tid) {
+            let _ = current::fdtable().lock().take(pidfd);
+            return Err(err);
+        }
     }
 
     if args.flags.contains(CloneFlags::VFORK) {
@@ -349,6 +350,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize,
         },
         parent_tid_addr: uptr_parent_tid.into(),
         child_tid_addr: uptr_child_tid,
+        pidfd_addr: None,
         flags,
         exit_signal,
     })
@@ -397,10 +399,13 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
     check_clone_flags(&flags)?;
 
     // Validate pidfd address if CLONE_PIDFD is set
-    if flags.contains(CloneFlags::PIDFD) {
-        let pidfd_uptr: UPtr<i32> = (kargs.pidfd as usize).into();
+    let pidfd_addr = if flags.contains(CloneFlags::PIDFD) {
+        let pidfd_uptr: UPtr<Tid> = (kargs.pidfd as usize).into();
         pidfd_uptr.read()?;
-    }
+        Some(pidfd_uptr)
+    } else {
+        None
+    };
 
     // stack and stack_size must both be zero or both be non-zero
     if (kargs.stack == 0) != (kargs.stack_size == 0) {
@@ -429,12 +434,13 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
         },
         parent_tid_addr: (kargs.parent_tid as usize).into(),
         child_tid_addr: kargs.child_tid as usize,
+        pidfd_addr,
         exit_signal,
         flags,
     })
 }
 
-fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
+fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<fixedstr::tstr<255>>> {
     if uarray.is_null() {
         return Ok(Vec::new());
     }
@@ -446,7 +452,7 @@ fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
         if p.is_null() {
             break;
         }
-        vec.push(p.read()?);
+        vec.push(p.read_string()?);
         i += 1;
     }
     Ok(vec)
@@ -476,7 +482,7 @@ fn do_execve(
 pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read_fixed()?;
+    let path = uptr_path.read_string()?;
 
     let file =
         current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X)))?
@@ -531,7 +537,7 @@ pub fn execveat(
     use super::def::AT_FDCWD;
 
     let flags = ExecveAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-    let path = uptr_path.should_not_null()?.read_fixed()?;
+    let path = uptr_path.should_not_null()?.read_path()?;
     let perm = Perm::current(PermFlags::X);
 
     let (file, invoked_path) = if flags.contains(ExecveAtFlags::AT_EMPTY_PATH) && path.is_empty() {
@@ -808,7 +814,7 @@ pub fn getcwd(ubuf: usize, size: usize) -> SysResult<usize> {
 }
 
 pub fn chdir(uptr_path: UString) -> SysResult<usize> {
-    let path = uptr_path.should_not_null()?.read_fixed()?;
+    let path = uptr_path.should_not_null()?.read_path()?;
     if path.len() >= config::MAX_FILENAME_LEN {
         return Err(Errno::ENAMETOOLONG);
     }
@@ -829,7 +835,9 @@ pub fn setfsuid(fsuid: usize) -> SyscallRet {
     let old_fsuid = pcb.fsuid();
     let fsuid = fsuid as Uid;
 
-    if pcb.euid() == 0 || fsuid == pcb.uid() || fsuid == pcb.euid() || fsuid == pcb.suid() || fsuid == old_fsuid {
+    if fsuid != Uid::MAX
+        && (pcb.euid() == 0 || fsuid == pcb.uid() || fsuid == pcb.euid() || fsuid == pcb.suid() || fsuid == old_fsuid)
+    {
         pcb.set_fsuid(fsuid);
     }
 
@@ -841,7 +849,9 @@ pub fn setfsgid(fsgid: usize) -> SyscallRet {
     let old_fsgid = pcb.fsgid();
     let fsgid = fsgid as Uid;
 
-    if pcb.euid() == 0 || fsgid == pcb.gid() || fsgid == pcb.egid() || fsgid == pcb.sgid() || fsgid == old_fsgid {
+    if fsgid != Uid::MAX
+        && (pcb.euid() == 0 || fsgid == pcb.gid() || fsgid == pcb.egid() || fsgid == pcb.sgid() || fsgid == old_fsgid)
+    {
         pcb.set_fsgid(fsgid);
     }
 
