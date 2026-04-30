@@ -10,7 +10,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::shm::{IPC_RMID, IPC_SET, IPC_STAT, IpcGetFlag};
 use crate::kernel::ipc::{
-    KSiFields, Pipe, SiCode, SigInfo, SignalAction, SignalNum, SignalSet, SignalStackFlags, shm, signum,
+    KSiFields, PendingSignal, Pipe, SiCode, SigInfo, SignalAction, SignalNum, SignalSet, SignalStackFlags, shm, signum,
 };
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
@@ -461,34 +461,88 @@ pub fn rt_sig_return() -> SyscallRet {
     arch::return_to_user();
 }
 
-pub fn sigtimedwait(uptr_set: UPtr<SignalSet>, _uptr_info: UPtr<()>, uptr_timeout: UPtr<Timespec>) -> SyscallRet {
+fn siginfo_from_pending_signal(pending: PendingSignal) -> SigInfo {
+    let mut info = SigInfo::empty();
+    info.si_signo = Into::<u32>::into(pending.signum) as i32;
+    info.si_errno = pending.si_errno;
+    info.si_code = pending.si_code;
+    info.fields = pending.fields.into();
+    info
+}
+
+fn finish_sigtimedwait(pending: PendingSignal, uptr_info: UPtr<SigInfo>) -> SyscallRet {
+    if !uptr_info.is_null() {
+        uptr_info.write(siginfo_from_pending_signal(pending))?;
+    }
+
+    Ok(pending.signum.into())
+}
+
+pub fn sigtimedwait(
+    uptr_set: UPtr<SignalSet>,
+    uptr_info: UPtr<SigInfo>,
+    uptr_timeout: UPtr<Timespec>,
+    sigsetsize: usize,
+) -> SyscallRet {
     uptr_set.should_not_null()?;
+    if sigsetsize != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
 
     let timeout = uptr_timeout.read_optional()?;
-    let signal_set = uptr_set.read()?;
+    let signal_set = uptr_set.read()?.without_unblockable();
+    let tcb = current::tcb();
 
-    let mut state = current::tcb().state().lock();
-    if let Some(pending) = state.pending_signal {
-        if signal_set.contains(pending.signum) {
-            state.pending_signal.take();
-            return Ok(pending.signum.into());
+    tcb.recive_pending_signal_from_parent();
+
+    if let Some(pending) = {
+        let mut state = tcb.state().lock();
+        if let Some(pending) = state.pending_signal {
+            if signal_set.contains(pending.signum) {
+                state.pending_signal.take()
+            } else {
+                return Err(Errno::EINTR);
+            }
+        } else {
+            None
         }
+    } {
+        return finish_sigtimedwait(pending, uptr_info);
     }
 
-    if let Some(ts) = timeout {
+    if let Some(pending) = tcb.parent().pending_signals().lock().pop_waiting(signal_set, tcb.tid()) {
+        return finish_sigtimedwait(pending, uptr_info);
+    }
+
+    let timer_id = if let Some(ts) = timeout {
         let timeout_duration: Duration = ts.try_into()?;
-        timer::add_timer(current::task().clone(), timeout_duration);
-    }
+        if timeout_duration.is_zero() {
+            return Err(Errno::EAGAIN);
+        }
+        Some(timer::add_timer(current::task().clone(), timeout_duration))
+    } else {
+        None
+    };
 
-    state.signal_to_wait = signal_set;
-
-    drop(state);
+    tcb.state().lock().signal_to_wait = signal_set;
 
     let event = current::block("sigtimedwait");
+    tcb.state().lock().signal_to_wait = SignalSet::empty();
 
     match event {
-        Event::WaitSignal { signum } => Ok(signum.into()),
-        Event::Signal => Err(Errno::EINTR),
+        Event::WaitSignal { signum } => {
+            timer_id.map(|id| timer::remove_timer(id));
+            let pending = tcb.state().lock().pending_signal.take();
+            if let Some(pending) = pending {
+                finish_sigtimedwait(pending, uptr_info)
+            } else {
+                Ok(signum.into())
+            }
+        }
+        Event::Signal => {
+            timer_id.map(|id| timer::remove_timer(id));
+            Err(Errno::EINTR)
+        }
         Event::Timeout => Err(Errno::EAGAIN),
         _ => unreachable!(),
     }

@@ -20,7 +20,7 @@ use crate::kernel::task::{ITimer, PCB};
 use crate::kernel::uapi::OpenFlags;
 use crate::klib::defer;
 
-use super::common::{ITimerSpec, ITimerVal, Timespec32};
+use super::common::{ITimerSpec, ITimerVal, Timespec, Timespec32};
 
 const FD_SET_SIZE: usize = 1024;
 
@@ -392,6 +392,26 @@ pub fn pselect6_time32(
     uptr_writefds: UPtr<FdSet>,
     uptr_exceptfds: UPtr<FdSet>,
     uptr_timeout: UPtr<Timespec32>,
+    uptr_sigmask: UPtr<SignalSet>,
+) -> SysResult<usize> {
+    if nfds > FD_SET_SIZE {
+        return Err(Errno::EINVAL);
+    }
+
+    let timeout: Option<Duration> = match uptr_timeout.read_optional()? {
+        Some(ts) => Some(ts.try_into()?),
+        None => None,
+    };
+
+    select(nfds, uptr_readfds, uptr_writefds, uptr_exceptfds, timeout, uptr_sigmask)
+}
+
+pub fn pselect6_time64(
+    nfds: usize,
+    uptr_readfds: UPtr<FdSet>,
+    uptr_writefds: UPtr<FdSet>,
+    uptr_exceptfds: UPtr<FdSet>,
+    uptr_timeout: UPtr<Timespec>,
     uptr_sigmask: UPtr<SignalSet>,
 ) -> SysResult<usize> {
     if nfds > FD_SET_SIZE {

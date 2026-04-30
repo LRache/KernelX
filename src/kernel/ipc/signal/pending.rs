@@ -37,6 +37,21 @@ impl PendingSignalQueue {
         set
     }
 
+    pub fn pop_waiting(&mut self, set: SignalSet, tid: Tid) -> Option<PendingSignal> {
+        let mut index = None;
+        for (i, signal) in self.pending.iter().enumerate() {
+            if set.contains(signal.signum) && (signal.dest == Some(tid) || signal.dest.is_none()) {
+                index = Some(i);
+                break;
+            }
+        }
+        if let Some(i) = index {
+            Some(self.pending.remove(i))
+        } else {
+            None
+        }
+    }
+
     pub fn pop_pending(&mut self, mask: SignalSet, tid: Tid) -> Option<PendingSignal> {
         let mut index = None;
         for (i, signal) in self.pending.iter().enumerate() {
