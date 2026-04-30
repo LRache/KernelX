@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use bitflags::bitflags;
 use core::time::Duration;
 
 use crate::fs::file::RandomAccessFile;
@@ -21,6 +22,38 @@ use super::UtsNamespace;
 use super::tcb::TCB;
 
 pub type Pid = Tid;
+
+bitflags! {
+    #[derive(Clone, Copy)]
+    pub struct CapabilitySet: u32 {
+        const SYS_TIME = 1 << 25;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ProcessCapabilities {
+    pub effective: CapabilitySet,
+    pub permitted: CapabilitySet,
+    pub inheritable: CapabilitySet,
+}
+
+impl ProcessCapabilities {
+    pub fn empty() -> Self {
+        Self {
+            effective: CapabilitySet::empty(),
+            permitted: CapabilitySet::empty(),
+            inheritable: CapabilitySet::empty(),
+        }
+    }
+
+    pub fn init() -> Self {
+        Self {
+            effective: CapabilitySet::SYS_TIME,
+            permitted: CapabilitySet::SYS_TIME,
+            inheritable: CapabilitySet::empty(),
+        }
+    }
+}
 
 struct Signal {
     actions: SpinLock<SignalActionTable>,
@@ -104,6 +137,7 @@ pub struct PCB {
     fsgid: SpinLock<Uid>,
     supplementary_gids: SpinLock<Vec<Uid>>,
     nice: SpinLock<isize>,
+    capabilities: SpinLock<ProcessCapabilities>,
 
     pgid: SpinLock<Pid>,
     sid: SpinLock<Pid>,
@@ -173,6 +207,7 @@ impl PCB {
             fsgid: SpinLock::new(*parent.fsgid.lock(), "PCB::fsgid"),
             supplementary_gids: SpinLock::new(parent.supplementary_gids.lock().clone(), "PCB::supplementary_gids"),
             nice: SpinLock::new(*parent.nice.lock(), "PCB::nice"),
+            capabilities: SpinLock::new(*parent.capabilities.lock(), "PCB::capabilities"),
 
             pgid: SpinLock::new(pgid, "PCB::pgid"),
             sid: SpinLock::new(parent.sid(), "PCB::sid"),
@@ -231,6 +266,7 @@ impl PCB {
             fsgid: SpinLock::new(0, "PCB::fsgid"),
             supplementary_gids: SpinLock::new(Vec::new(), "PCB::supplementary_gids"),
             nice: SpinLock::new(0, "PCB::nice"),
+            capabilities: SpinLock::new(ProcessCapabilities::init(), "PCB::capabilities"),
 
             pgid: SpinLock::new(new_tid, "PCB::pgid"),
             sid: SpinLock::new(new_tid, "PCB::sid"),
@@ -364,6 +400,14 @@ impl PCB {
 
     pub fn set_nice(&self, nice: isize) {
         *self.nice.lock() = nice;
+    }
+
+    pub fn capabilities(&self) -> ProcessCapabilities {
+        *self.capabilities.lock()
+    }
+
+    pub fn set_capabilities(&self, capabilities: ProcessCapabilities) {
+        *self.capabilities.lock() = capabilities;
     }
 
     pub fn exec_path(&self) -> String {

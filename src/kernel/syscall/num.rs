@@ -124,6 +124,8 @@ macro_rules! syscall_entries {
             283 => misc::membarrier(0),
             293 => misc::rseq(0),
 
+            90  => uid::capget(2),
+            91  => uid::capset(2),
             143 => uid::setregid(2),
             144 => uid::setgid(1),
             145 => uid::setreuid(2),
@@ -178,10 +180,12 @@ macro_rules! syscall_entries {
             109 => time::timer_getoverrun(1),
             110 => time::timer_settime(4),
             111 => time::timer_delete(1),
+            112 => time::clock_settime(2),
             113 => time::clock_gettime(2),
             114 => time::clock_getres(2),
             115 => time::clock_nanosleep(4) [no_restart],
             169 => time::gettimeofday(2),
+            170 => time::settimeofday(2),
 
             // Event
             19  => event::eventfd2(2),

@@ -12,6 +12,34 @@ use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UPtr, UserPointer, UserStruct};
 
 use super::common::{ITimerSpec, Timespec, Timeval};
+use super::uid::{self, Capability};
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SetTimeval {
+    tv_sec: i64,
+    tv_usec: i64,
+}
+
+impl UserStruct for SetTimeval {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SetTimespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+impl UserStruct for SetTimespec {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Timezone {
+    tz_minuteswest: i32,
+    tz_dsttime: i32,
+}
+
+impl UserStruct for Timezone {}
 
 pub fn gettimeofday(uptr_timeval: UPtr<Timeval>, uptr_tz: UPtr<u8>) -> SysResult<usize> {
     if !uptr_tz.is_null() {
@@ -21,6 +49,43 @@ pub fn gettimeofday(uptr_timeval: UPtr<Timeval>, uptr_tz: UPtr<u8>) -> SysResult
 
     let timeval = kclock::now()?.into();
     uptr_timeval.write(timeval)?;
+
+    Ok(0)
+}
+
+pub fn clock_settime(clockid: usize, uptr_timespec: UPtr<SetTimespec>) -> SysResult<usize> {
+    let clockid = ClockId::try_from(clockid).map_err(|_| Errno::EINVAL)?;
+    if clockid != ClockId::CLOCK_REALTIME {
+        return Err(Errno::EINVAL);
+    }
+
+    let timespec = uptr_timespec.should_not_null()?.read()?;
+    if timespec.tv_sec < 0 || timespec.tv_nsec < 0 || timespec.tv_nsec >= 1_000_000_000 {
+        return Err(Errno::EINVAL);
+    }
+
+    if !uid::capable(Capability::SysTime) {
+        return Err(Errno::EPERM);
+    }
+
+    Ok(0)
+}
+
+pub fn settimeofday(uptr_timeval: UPtr<SetTimeval>, uptr_timezone: UPtr<Timezone>) -> SysResult<usize> {
+    if !uptr_timeval.is_null() {
+        let timeval = uptr_timeval.read()?;
+        if timeval.tv_sec < 0 || timeval.tv_usec < 0 || timeval.tv_usec >= 1_000_000 {
+            return Err(Errno::EINVAL);
+        }
+    }
+
+    if !uptr_timezone.is_null() {
+        uptr_timezone.read()?;
+    }
+
+    if !uid::capable(Capability::SysTime) {
+        return Err(Errno::EPERM);
+    }
 
     Ok(0)
 }
