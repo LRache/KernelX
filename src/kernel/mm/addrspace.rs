@@ -328,7 +328,11 @@ impl AddrSpace {
         f(&mut self.map_manager.lock())
     }
 
-    pub fn try_to_fix_memory_fault(self: &Arc<Self>, uaddr: usize, access_type: MemAccessType) -> Option<usize> {
+    pub fn try_to_fix_memory_fault(
+        self: &Arc<Self>,
+        uaddr: usize,
+        access_type: MemAccessType,
+    ) -> Result<usize, maparea::MemoryFaultSignal> {
         let map_manager = &mut self.map_manager.lock();
         map_manager.try_to_fix_memory_fault(uaddr, access_type, self)
     }

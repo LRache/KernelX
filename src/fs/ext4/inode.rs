@@ -730,7 +730,14 @@ impl InodeOps for Ext4Inode {
             let uid = uid.unwrap_or(inode_uid(inode_ref) as Uid) as u16;
             let gid = gid.unwrap_or(inode_gid(inode_ref) as Uid) as u16;
             inode_set_owner(inode_ref, uid, gid);
-            let cleared_mode = inode_mode(inode_ref) & !(Mode::S_ISUID | Mode::S_ISGID).bits();
+            let current_mode = inode_mode(inode_ref);
+            let cleared_mode = if current_mode & Mode::S_IFMT.bits() == Mode::S_IFDIR.bits() {
+                current_mode
+            } else if current_mode & Mode::S_IXGRP.bits() != 0 {
+                current_mode & !(Mode::S_ISUID | Mode::S_ISGID).bits()
+            } else {
+                current_mode & !Mode::S_ISUID.bits()
+            };
             inode_set_mode(inode_ref, cleared_mode);
             inode_set_ctime(inode_ref, &now());
             Ok(())

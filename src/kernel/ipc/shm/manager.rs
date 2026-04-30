@@ -3,7 +3,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use bitflags::bitflags;
 
-use crate::arch::PGSIZE;
+use crate::arch::{self, PGSIZE};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::ShmArea;
 use crate::kernel::mm::{AddrSpace, MapPerm};
@@ -22,11 +22,6 @@ bitflags! {
     }
 }
 
-pub const IPC_RMID: usize = 0;
-pub const IPC_SET: usize = 1;
-pub const IPC_STAT: usize = 2;
-pub const IPC_INFO: usize = 3;
-
 bitflags! {
     pub struct ShmFlag: usize {
         const SHM_RDONLY = 0o10000;
@@ -39,11 +34,23 @@ bitflags! {
 #[derive(Clone, Copy, Debug)]
 pub struct ShmidDs {
     pub key: usize,
+    pub uid: u32,
+    pub gid: u32,
+    pub cuid: u32,
+    pub cgid: u32,
     pub size: usize,
     pub mode: u32,
+    pub cpid: Tid,
+    pub lpid: Tid,
     pub ctime: usize, // Creation time (placeholder)
     pub atime: usize, // Last attach time
     pub dtime: usize, // Last detach time
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ShmStat {
+    pub ds: ShmidDs,
+    pub nattch: usize,
 }
 
 pub struct ShmIdentifier {
@@ -60,6 +67,24 @@ pub struct ShmManager {
     attach_map: BTreeMap<(Tid, usize), usize>,
 }
 
+fn has_shm_perm(shm: &ShmIdentifier, uid: u32, gid: u32, readonly: bool) -> bool {
+    if uid == 0 {
+        return true;
+    }
+
+    let required = if readonly { 0o4 } else { 0o6 };
+    let shift = if uid == shm.ds.uid {
+        6
+    } else if gid == shm.ds.gid {
+        3
+    } else {
+        0
+    };
+    let allowed = (shm.ds.mode >> shift) & 0o7;
+
+    allowed & required == required
+}
+
 impl ShmManager {
     const fn new() -> Self {
         Self {
@@ -69,7 +94,16 @@ impl ShmManager {
         }
     }
 
-    fn get_or_create(&mut self, key: usize, size: usize, flags: IpcGetFlag) -> Result<usize, Errno> {
+    fn get_or_create(
+        &mut self,
+        key: usize,
+        size: usize,
+        flags: IpcGetFlag,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        pid: Tid,
+    ) -> Result<usize, Errno> {
         if key != IPC_PRIVATE {
             // Try to find existing
             let mut found_id = None;
@@ -109,8 +143,14 @@ impl ShmManager {
         let shm = ShmIdentifier {
             ds: ShmidDs {
                 key,
+                uid,
+                gid,
+                cuid: uid,
+                cgid: gid,
                 size,
-                mode: (flags.bits() & 0o777) as u32,
+                mode,
+                cpid: pid,
+                lpid: 0,
                 ctime: 0, // TODO: get time
                 atime: 0,
                 dtime: 0,
@@ -124,8 +164,15 @@ impl ShmManager {
         Ok(id)
     }
 
-    fn get(&mut self, shmid: usize) -> Option<&mut ShmIdentifier> {
-        self.shms.get_mut(&shmid)
+    fn stat(&self, shmid: usize) -> SysResult<ShmStat> {
+        let shm = self.shms.get(&shmid).ok_or(Errno::EINVAL)?;
+        if shm.deleted {
+            return Err(Errno::EINVAL);
+        }
+        Ok(ShmStat {
+            ds: shm.ds,
+            nattch: shm.ref_count,
+        })
     }
 
     // Called on shmat. `make_area` is a closure that constructs the concrete Area
@@ -135,6 +182,8 @@ impl ShmManager {
         &mut self,
         shmid: usize,
         pid: Tid,
+        uid: u32,
+        gid: u32,
         addrspace: &AddrSpace,
         shmaddr: usize,
         shmflg: ShmFlag,
@@ -142,6 +191,9 @@ impl ShmManager {
         let shm = self.shms.get_mut(&shmid).ok_or(Errno::EINVAL)?;
         if shm.deleted {
             return Err(Errno::EINVAL);
+        }
+        if !has_shm_perm(shm, uid, gid, shmflg.contains(ShmFlag::SHM_RDONLY)) {
+            return Err(Errno::EACCES);
         }
         let page_count = shm.frames.page_count();
         let frames = shm.frames.clone();
@@ -153,6 +205,19 @@ impl ShmManager {
         }
         if shmflg.contains(ShmFlag::SHM_EXEC) {
             perm |= MapPerm::X;
+        }
+
+        let shmaddr = if shmflg.contains(ShmFlag::SHM_RND) {
+            // Round down to page boundary
+            shmaddr & !(PGSIZE - 1)
+        } else {
+            shmaddr
+        };
+        if shmaddr % PGSIZE != 0 || shmaddr >= arch::USEREND {
+            return Err(Errno::EINVAL);
+        }
+        if shmaddr == 0 && shmflg.contains(ShmFlag::SHM_REMAP) {
+            return Err(Errno::EINVAL);
         }
 
         let uaddr = addrspace.with_map_manager_mut(|map_manager| {
@@ -186,6 +251,8 @@ impl ShmManager {
 
         let shm = self.shms.get_mut(&shmid).unwrap();
         shm.ref_count += 1;
+        shm.ds.lpid = pid;
+        shm.ds.atime = 0;
         self.attach_map.insert((pid, uaddr), shmid);
 
         Ok(uaddr)
@@ -244,19 +311,49 @@ impl ShmManager {
 
 static SHM_MANAGER: SpinLock<ShmManager> = SpinLock::new(ShmManager::new(), "static::SHM_MANAGER");
 
-pub fn get_or_create_shm(key: usize, size: usize, flags: IpcGetFlag) -> SysResult<usize> {
-    SHM_MANAGER.lock().get_or_create(key, size, flags)
+pub fn get_or_create_shm(
+    key: usize,
+    size: usize,
+    flags: IpcGetFlag,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    pid: Tid,
+) -> SysResult<usize> {
+    SHM_MANAGER.lock().get_or_create(key, size, flags, mode, uid, gid, pid)
 }
 
-pub fn attach_shm(shmid: usize, pid: Tid, addrspace: &AddrSpace, shmaddr: usize, shmflg: ShmFlag) -> SysResult<usize> {
-    SHM_MANAGER.lock().attach(shmid, pid, addrspace, shmaddr, shmflg)
+pub fn stat_shm(shmid: usize) -> SysResult<ShmStat> {
+    SHM_MANAGER.lock().stat(shmid)
+}
+
+pub fn attach_shm(
+    shmid: usize,
+    pid: Tid,
+    uid: u32,
+    gid: u32,
+    addrspace: &AddrSpace,
+    shmaddr: usize,
+    shmflg: ShmFlag,
+) -> SysResult<usize> {
+    SHM_MANAGER
+        .lock()
+        .attach(shmid, pid, uid, gid, addrspace, shmaddr, shmflg)
 }
 
 pub fn detach_shm_by_addr(pid: Tid, shmaddr: usize, addr_space: &AddrSpace) -> SysResult<()> {
     let (shmid, page_count) = {
         let mut mgr = SHM_MANAGER.lock();
         let shmid = mgr.attach_map.remove(&(pid, shmaddr)).ok_or(Errno::EINVAL)?;
-        let page_count = mgr.shms.get(&shmid).map(|s| s.frames.page_count()).unwrap_or(0);
+        let page_count = mgr
+            .shms
+            .get_mut(&shmid)
+            .map(|shm| {
+                shm.ds.lpid = pid;
+                shm.ds.dtime = 0;
+                shm.frames.page_count()
+            })
+            .unwrap_or(0);
         (shmid, page_count)
     };
     // Unmap the area; ShmArea::drop will call on_area_drop to fix up ref_count.
