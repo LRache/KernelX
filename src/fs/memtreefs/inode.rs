@@ -431,8 +431,11 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             clear_suid_sgid = true;
         }
 
-        if clear_suid_sgid && meta.mode.contains(Mode::S_IXGRP) {
-            meta.mode.remove(Mode::S_ISUID | Mode::S_ISGID);
+        if clear_suid_sgid && (meta.mode & Mode::S_IFMT) != Mode::S_IFDIR {
+            meta.mode.remove(Mode::S_ISUID);
+            if meta.mode.contains(Mode::S_IXGRP) {
+                meta.mode.remove(Mode::S_ISGID);
+            }
         }
 
         if update_ctime {

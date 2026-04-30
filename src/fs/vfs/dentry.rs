@@ -288,14 +288,15 @@ impl Dentry {
         let mut mode = mode;
         let mut owner = owner;
 
+        let inherited_sgid = parent_mode.contains(Mode::S_ISGID) && (mode & Mode::S_IFMT) == Mode::S_IFDIR;
         if parent_mode.contains(Mode::S_ISGID) {
             owner.gid = parent_gid;
-            if (mode & Mode::S_IFMT) == Mode::S_IFDIR {
+            if inherited_sgid {
                 mode.insert(Mode::S_ISGID);
             }
         }
 
-        if mode.contains(Mode::S_ISGID) && current::fsuid() != 0 {
+        if mode.contains(Mode::S_ISGID) && current::fsuid() != 0 && !inherited_sgid {
             let pcb = current::pcb();
             let in_supplementary_group = pcb.supplementary_gids().contains(&owner.gid);
             if pcb.fsgid() != owner.gid && !in_supplementary_group {
