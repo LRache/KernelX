@@ -11,6 +11,7 @@ use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::syscall::uptr::UArray;
 use crate::kernel::task::fdtable::FDFlags;
+use crate::net::protocol::ipv4::IpProtocol;
 use crate::net::socket::{
     AddressFamily, InetSocket, NetlinkProtocol, NetlinkSocket, SOCK_CLOEXEC, SOCK_NONBLOCK, SockAddrIn, SocketAddr,
 };
@@ -82,16 +83,15 @@ fn unix_socket_type(sock_kind: SocketKind, protocol: usize) -> SysResult<UnixSoc
 }
 
 fn inet_socketpair_error(sock_kind: SocketKind, protocol: usize) -> Errno {
-    const IPPROTO_TCP: usize = 6;
-    const IPPROTO_UDP: usize = 17;
-
     match sock_kind {
         SocketKind::Dgram => match protocol {
-            0 | IPPROTO_UDP => Errno::EOPNOTSUPP,
+            0 => Errno::EOPNOTSUPP,
+            protocol if protocol == IpProtocol::Udp as usize => Errno::EOPNOTSUPP,
             _ => Errno::EPROTONOSUPPORT,
         },
         SocketKind::Stream => match protocol {
-            0 | IPPROTO_TCP => Errno::EOPNOTSUPP,
+            0 => Errno::EOPNOTSUPP,
+            protocol if protocol == IpProtocol::Tcp as usize => Errno::EOPNOTSUPP,
             _ => Errno::EPROTONOSUPPORT,
         },
         SocketKind::Raw => Errno::EPROTONOSUPPORT,
@@ -154,8 +154,18 @@ pub fn socket(domain: usize, sock_type: usize, protocol: usize) -> SyscallRet {
     let sock: Arc<dyn FileOps> = match domain {
         AddressFamily::Unix => Arc::new(UnixSocket::new(unix_socket_type(sock_kind, protocol)?, blocked)),
         AddressFamily::Inet => match sock_kind {
-            SocketKind::Dgram => Arc::new(InetSocket::new_udp(blocked)),
-            SocketKind::Stream => Arc::new(InetSocket::new_tcp(blocked)),
+            SocketKind::Dgram => {
+                if protocol != 0 && protocol != IpProtocol::Udp as usize {
+                    return Err(Errno::EPROTONOSUPPORT);
+                }
+                Arc::new(InetSocket::new_udp(blocked))
+            }
+            SocketKind::Stream => {
+                if protocol != 0 && protocol != IpProtocol::Tcp as usize {
+                    return Err(Errno::EPROTONOSUPPORT);
+                }
+                Arc::new(InetSocket::new_tcp(blocked))
+            }
             SocketKind::Raw => {
                 let proto = u8::try_from(protocol).map_err(|_| Errno::EPROTONOSUPPORT)?;
                 if proto == 0 {
