@@ -106,7 +106,10 @@ impl SocketInner for RawInner {
                     current::schedule();
                     match current::task().take_wakeup_event() {
                         Some(Event::ReadReady) => continue,
-                        Some(Event::Signal) => return Err(Errno::EINTR),
+                        Some(Event::Signal) => {
+                            iface.cancel_wait_raw(self.protocol);
+                            return Err(Errno::EINTR);
+                        }
                         _ => continue,
                     }
                 }

@@ -49,8 +49,10 @@ impl<T> WaitQueue<T> {
     }
 
     pub fn remove(&mut self, task: &Arc<dyn Task>) {
-        if let Some(pos) = self.waiters.iter().position(|item| Arc::ptr_eq(&item.task, task)) {
-            self.waiters.remove(pos);
-        }
+        self.waiters.retain(|item| !Arc::ptr_eq(&item.task, task));
+    }
+
+    pub fn remove_current(&mut self) {
+        self.remove(current::task());
     }
 }

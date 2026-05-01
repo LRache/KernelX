@@ -3,6 +3,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -11,7 +12,7 @@ use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::InodeOps;
 use crate::fs::inode::Index as InodeIndex;
-use crate::kernel::mm::maparea::Area;
+use crate::kernel::mm::maparea::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::{SleepLock, SpinLock};
 
@@ -22,18 +23,23 @@ struct MappedFileEntry {
 }
 
 impl MappedFileEntry {
-    fn get_page(&mut self, page_index: usize) -> Option<usize> {
-        if let Some(frame) = self.shared.get(&page_index) {
+    fn get_page(&mut self, file_page_index: usize) -> Option<usize> {
+        if let Some(frame) = self.shared.get(&file_page_index) {
             Some(frame.get_page())
         } else {
-            // Load from inode
-            let offset = page_index * arch::PGSIZE;
+            let offset = file_page_index.checked_mul(arch::PGSIZE)?;
+            let file_size = usize::try_from(self.inode.size().ok()?).ok()?;
+            if offset >= file_size {
+                return None;
+            }
+
+            let length = core::cmp::min(file_size - offset, arch::PGSIZE);
             let frame = PhysPageFrame::alloc_zeroed();
             self.inode
-                .readat(frame.slice(), offset, false)
+                .readat(&mut frame.slice()[..length], offset, false)
                 .expect("Failed to read.");
             let kpage = frame.get_page();
-            self.shared.insert(page_index, frame);
+            self.shared.insert(file_page_index, frame);
             Some(kpage)
         }
     }
@@ -112,6 +118,7 @@ pub struct SharedFileMapArea {
     states: Vec<FrameState>,
     perm: MapPerm,
     inode_index: InodeIndex,
+    path: String,
 }
 
 impl SharedFileMapArea {
@@ -122,6 +129,7 @@ impl SharedFileMapArea {
         index: InodeIndex,
         offset: usize,
         page_count: usize,
+        path: String,
     ) -> Self {
         let states = vec![FrameState::Unallocated; page_count];
         let entry = MANAGER.open_mapped_file(inode, index);
@@ -132,6 +140,7 @@ impl SharedFileMapArea {
             states,
             perm,
             inode_index: index,
+            path,
         }
     }
 
@@ -141,8 +150,13 @@ impl SharedFileMapArea {
             return None;
         }
 
-        let kpage = self.entry.lock().get_page(page_index)?;
+        let file_page_index = self.file_page_index(page_index)?;
+        let kpage = self.entry.lock().get_page(file_page_index)?;
         Some(kpage + uaddr % arch::PGSIZE)
+    }
+
+    fn file_page_index(&self, page_index: usize) -> Option<usize> {
+        (self.offset / arch::PGSIZE).checked_add(page_index)
     }
 }
 
@@ -186,6 +200,7 @@ impl Area for SharedFileMapArea {
             states: vec![FrameState::Unallocated; self.states.len()],
             perm: self.perm,
             inode_index: self.inode_index,
+            path: self.path.clone(),
         };
 
         Box::new(new_area)
@@ -204,22 +219,31 @@ impl Area for SharedFileMapArea {
         uaddr: usize,
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize> {
+    ) -> Result<usize, MemoryFaultSignal> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index >= self.states.len() {
-            return None;
+            return Err(MemoryFaultSignal::Segv);
         }
 
-        let kpage = self
-            .entry
-            .lock()
-            .get_page(page_index)
-            .expect("Failed to get page in try_to_fix_memory_fault");
+        let Some(file_page_index) = self.file_page_index(page_index) else {
+            return Err(MemoryFaultSignal::Bus);
+        };
+        let Some(file_offset) = file_page_index.checked_mul(arch::PGSIZE) else {
+            return Err(MemoryFaultSignal::Bus);
+        };
+        let mut entry = self.entry.lock();
+        let Some(kpage) = entry.get_page(file_page_index) else {
+            let file_size = entry.inode.size().ok().and_then(|size| usize::try_from(size).ok());
+            return Err(match file_size {
+                Some(file_size) if file_offset >= file_size => MemoryFaultSignal::Bus,
+                _ => MemoryFaultSignal::Segv,
+            });
+        };
         let mut pagetable = addrspace.pagetable().lock();
         pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
         self.states[page_index] = FrameState::Allocated;
 
-        Some(kpage + (uaddr - self.ubase) % arch::PGSIZE)
+        Ok(kpage + (uaddr - self.ubase) % arch::PGSIZE)
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
@@ -235,5 +259,15 @@ impl Area for SharedFileMapArea {
 
     fn type_name(&self) -> &'static str {
         "SharedFileMapArea"
+    }
+
+    fn map_area_info(&self) -> MapAreaInfo {
+        let mut info = MapAreaInfo::new(self.ubase(), self.ubase() + self.size(), self.perm);
+        info.shared = true;
+        info.offset = self.offset;
+        info.dev_minor = self.inode_index.sno;
+        info.inode = self.inode_index.ino as u64;
+        info.path = Some(self.path.clone());
+        info
     }
 }

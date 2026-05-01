@@ -57,6 +57,11 @@ impl Interface {
             }
             current::schedule();
 
+            if matches!(current::task().take_wakeup_event(), Some(Event::Signal)) {
+                self.arp_table.lock().waiters.remove_current();
+                return Err(Errno::EINTR);
+            }
+
             // Woken up — check cache
             if let Some(mac) = self.arp_table.lock().cache.get(&u32::from(next_hop)).copied() {
                 return Ok(mac);

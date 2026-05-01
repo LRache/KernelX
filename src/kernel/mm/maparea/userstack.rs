@@ -5,7 +5,7 @@ use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
-use crate::kernel::mm::maparea::area::Area;
+use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
@@ -392,15 +392,15 @@ impl Area for UserStack {
         addr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize> {
+    ) -> Result<usize, MemoryFaultSignal> {
         if addr >= config::USER_STACK_TOP {
-            return None;
+            return Err(MemoryFaultSignal::Segv);
         }
 
         let page_index = (config::USER_STACK_TOP - addr - 1) / arch::PGSIZE;
 
         if page_index >= self.get_max_page_count() {
-            return None;
+            return Err(MemoryFaultSignal::Segv);
         }
 
         match &self.frames[page_index] {
@@ -439,9 +439,9 @@ impl Area for UserStack {
         }
 
         if access_type == MemAccessType::Write {
-            self.translate_write(addr, addrspace)
+            self.translate_write(addr, addrspace).ok_or(MemoryFaultSignal::Segv)
         } else {
-            self.translate_read(addr, addrspace)
+            self.translate_read(addr, addrspace).ok_or(MemoryFaultSignal::Segv)
         }
     }
 
@@ -477,5 +477,11 @@ impl Area for UserStack {
 
     fn type_name(&self) -> &'static str {
         "stack"
+    }
+
+    fn map_area_info(&self) -> MapAreaInfo {
+        let mut info = MapAreaInfo::new(self.ubase(), self.ubase() + self.size(), self.perm());
+        info.path = Some("[stack]".into());
+        info
     }
 }

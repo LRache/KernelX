@@ -4,6 +4,8 @@ fn main() {
     let arch_bits = std::env::var("ARCH_BITS").unwrap();
     let sysroot = std::env::var("SYSROOT").unwrap_or_default();
 
+    track_kernelx_env_vars();
+
     // Symbol table for stack backtrace (debug only)
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let symbols_dir = format!("{}/build/{}{}", manifest_dir, arch, arch_bits);
@@ -45,6 +47,19 @@ fn main() {
     println!("cargo:rustc-link-arg=-T{}", linker);
     println!("cargo:rustc-link-arg=-Map=link.map");
     println!("cargo:rerun-if-changed={}", linker);
+}
+
+fn track_kernelx_env_vars() {
+    const ENV_VARS: &[&str] = &[
+        "KERNELX_SECOND_DEVICE",
+        "KERNELX_SECOND_FSTYPE",
+        "KERNELX_SECOND_MOUNTPOINT",
+    ];
+
+    for key in ENV_VARS {
+        println!("cargo:rerun-if-env-changed={key}");
+        println!("cargo:rustc-env={key}={}", std::env::var(key).unwrap_or_default());
+    }
 }
 
 fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysroot: &str) {

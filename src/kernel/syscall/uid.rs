@@ -1,11 +1,87 @@
 use alloc::vec::Vec;
+use num_enum::TryFromPrimitive;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::{UArray, UPtr};
+use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
+use crate::kernel::task::{CapabilitySet, ProcessCapabilities};
 use crate::kernel::uapi::Uid;
 
 const NGROUPS_MAX: usize = 65536;
+
+#[derive(Clone, Copy)]
+pub(super) enum Capability {
+    SysTime,
+}
+
+#[derive(TryFromPrimitive)]
+#[repr(u32)]
+enum CapabilityVersion {
+    V1 = 0x1998_0330,
+    V2 = 0x2007_1026,
+    V3 = 0x2008_0522,
+}
+
+impl CapabilityVersion {
+    fn data_entries(self) -> usize {
+        match self {
+            CapabilityVersion::V1 => 1,
+            CapabilityVersion::V2 | CapabilityVersion::V3 => 2,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapUserHeader {
+    version: u32,
+    pid: i32,
+}
+
+impl UserStruct for CapUserHeader {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CapUserData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+impl UserStruct for CapUserData {}
+
+impl CapUserData {
+    const ZERO: Self = Self {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    };
+
+    fn from_capabilities(capabilities: ProcessCapabilities) -> Self {
+        Self {
+            effective: capabilities.effective.bits(),
+            permitted: capabilities.permitted.bits(),
+            inheritable: capabilities.inheritable.bits(),
+        }
+    }
+
+    fn into_capabilities(self) -> ProcessCapabilities {
+        ProcessCapabilities {
+            effective: CapabilitySet::from_bits_truncate(self.effective),
+            permitted: CapabilitySet::from_bits_truncate(self.permitted),
+            inheritable: CapabilitySet::from_bits_truncate(self.inheritable),
+        }
+    }
+}
+
+pub(super) fn capable(capability: Capability) -> bool {
+    match capability {
+        Capability::SysTime => current::pcb()
+            .capabilities()
+            .effective
+            .contains(CapabilitySet::SYS_TIME),
+    }
+}
 
 pub fn getuid() -> SysResult<usize> {
     Ok(current::pcb().uid() as usize)
@@ -21,6 +97,49 @@ pub fn getgid() -> SysResult<usize> {
 
 pub fn getegid() -> SysResult<usize> {
     Ok(current::pcb().egid() as usize)
+}
+
+pub fn capget(header: UPtr<CapUserHeader>, data: UPtr<CapUserData>) -> SysResult<usize> {
+    let header = header.should_not_null()?.read()?;
+    let version = CapabilityVersion::try_from(header.version).map_err(|_| Errno::EINVAL)?;
+    if header.pid != 0 && header.pid != current::pid() {
+        return Err(Errno::ESRCH);
+    }
+
+    if !data.is_null() {
+        data.write(CapUserData::from_capabilities(current::pcb().capabilities()))?;
+        for i in 1..version.data_entries() {
+            data.add(i).write(CapUserData::ZERO)?;
+        }
+    }
+
+    Ok(0)
+}
+
+pub fn capset(header: UPtr<CapUserHeader>, data: UPtr<CapUserData>) -> SysResult<usize> {
+    let header = header.should_not_null()?.read()?;
+    let version = CapabilityVersion::try_from(header.version).map_err(|_| Errno::EINVAL)?;
+    if header.pid != 0 && header.pid != current::pid() {
+        return Err(Errno::ESRCH);
+    }
+
+    data.should_not_null()?;
+    let capabilities = data.read()?.into_capabilities();
+    for i in 1..version.data_entries() {
+        data.add(i).read()?;
+    }
+    if !capabilities.permitted.contains(capabilities.effective) {
+        return Err(Errno::EPERM);
+    }
+    let old = current::pcb().capabilities();
+    if current::pcb().euid() != 0
+        && (!old.permitted.contains(capabilities.permitted) || !old.inheritable.contains(capabilities.inheritable))
+    {
+        return Err(Errno::EPERM);
+    }
+    current::pcb().set_capabilities(capabilities);
+
+    Ok(0)
 }
 
 pub fn getresuid(ruid: UPtr<Uid>, euid: UPtr<Uid>, suid: UPtr<Uid>) -> SysResult<usize> {

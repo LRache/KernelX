@@ -104,7 +104,10 @@ impl SocketInner for UdpInner {
 
                     match current::task().take_wakeup_event() {
                         Some(Event::ReadReady) => continue,
-                        Some(Event::Signal) => return Err(Errno::EINTR),
+                        Some(Event::Signal) => {
+                            iface.cancel_wait_udp(local.port);
+                            return Err(Errno::EINTR);
+                        }
                         _ => continue,
                     }
                 }

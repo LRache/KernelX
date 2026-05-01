@@ -6,8 +6,9 @@ use crate::kernel::event::{Event, timer};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::syscall::uptr::{UPtr, UserPointer};
-use crate::kernel::uapi;
 use crate::kernel::usync::futex::{self, RobustListHead};
+
+use super::common::Timespec;
 
 pub fn set_robust_list(u: UPtr<RobustListHead>) -> SyscallRet {
     current::tcb().set_robust_list(u.uaddr());
@@ -37,7 +38,7 @@ pub fn futex(
     uaddr: UPtr<i32>,
     futex_op: usize,
     val: usize,
-    timeout: UPtr<uapi::Timespec>,
+    timeout: UPtr<Timespec>,
     uaddr2: UPtr<()>,
     val3: usize,
 ) -> SyscallRet {

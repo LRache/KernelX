@@ -100,6 +100,10 @@ impl PosixFlockState {
         self.waiters.wait_current(());
     }
 
+    pub fn remove_current_waiter(&mut self) {
+        self.waiters.remove_current();
+    }
+
     pub fn wake_all(&mut self) {
         self.waiters.wake_all(|_| Event::IOComplete);
     }

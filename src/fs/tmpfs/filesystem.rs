@@ -7,6 +7,8 @@ use crate::kernel::errno::SysResult;
 
 struct TmpfsInfo;
 impl memtreefs::StaticFsInfo for TmpfsInfo {
+    const MAX_FILENAME_LEN: Option<usize> = Some(255);
+
     fn type_name() -> &'static str {
         "tmpfs"
     }

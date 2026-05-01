@@ -17,9 +17,15 @@ use crate::kernel::uapi::{FileStat, Uid};
 
 use super::RootInode;
 
+const CLK_TCK: u64 = 100;
+
 fn process_leader_tid(tid: Tid) -> SysResult<Tid> {
     let tcb = manager::get(tid).ok_or(Errno::ESRCH)?;
     Ok(tcb.parent().pid())
+}
+
+fn duration_to_clock_ticks(duration: core::time::Duration) -> usize {
+    (duration.as_millis() as u64 * CLK_TCK / 1000) as usize
 }
 
 fn thread_group_tids(pid: Tid) -> SysResult<Vec<Tid>> {
@@ -426,12 +432,12 @@ impl TaskMapsInode {
         Self::INO_BASE + tid as u32
     }
 
-    fn perm_string(perm: MapPerm) -> String {
+    fn perm_string(perm: MapPerm, shared: bool) -> String {
         let mut perms = String::with_capacity(4);
         perms.push(if perm.contains(MapPerm::R) { 'r' } else { '-' });
         perms.push(if perm.contains(MapPerm::W) { 'w' } else { '-' });
         perms.push(if perm.contains(MapPerm::X) { 'x' } else { '-' });
-        perms.push('p');
+        perms.push(if shared { 's' } else { 'p' });
         perms
     }
 }
@@ -451,9 +457,18 @@ impl InodeOps for TaskMapsInode {
         let areas = addrspace.with_map_manager_mut(|manager| manager.snapshot());
 
         read_iter_text(buf, offset, areas.iter(), |area| {
-            let perms = Self::perm_string(area.perm);
-            let mut line = String::with_capacity(50);
-            let _ = writeln!(line, "{:016x}-{:016x} {} {}", area.start, area.end, perms, area.name);
+            let perms = Self::perm_string(area.perm, area.shared);
+            let path_len = area.path.as_ref().map_or(0, |path| path.len() + 1);
+            let mut line = String::with_capacity(80 + path_len);
+            let _ = write!(
+                line,
+                "{:x}-{:x} {} {:x} {:x}:{:x} {:>5}",
+                area.start, area.end, perms, area.offset, area.dev_major, area.dev_minor, area.inode
+            );
+            if let Some(path) = &area.path {
+                let _ = write!(line, " {}", path);
+            }
+            line.push('\n');
             Ok(line)
         })
     }
@@ -617,9 +632,16 @@ impl InodeOps for TaskStatInode {
         let state_set = tcb.state().lock();
         let state_char = Self::state_char(state_set.state(), state_set.is_dead());
         drop(state_set);
+        let (utime, stime) = pcb.tasks_usage_time();
+        let utime = duration_to_clock_ticks(utime);
+        let stime = duration_to_clock_ticks(stime);
 
-        let mut content = fixedstr::str96::new();
-        let _ = write!(content, "{} ({}) {} {} {}\n", pid, comm, state_char, ppid, pgid);
+        let mut content = String::with_capacity(128);
+        let _ = writeln!(
+            content,
+            "{} ({}) {} {} {} 0 0 0 0 0 0 0 0 {} {}",
+            pid, comm, state_char, ppid, pgid, utime, stime
+        );
 
         let content_bytes = content.as_bytes();
         if offset >= content_bytes.len() {

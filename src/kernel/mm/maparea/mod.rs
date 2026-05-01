@@ -9,7 +9,7 @@ mod userbrk;
 mod userstack;
 
 pub use anonymous::{PrivateAnonymousArea, SharedAnonymousArea};
-pub use area::Area;
+pub use area::{Area, MapAreaInfo, MemoryFaultSignal};
 pub use elf::ELFArea;
 pub use filemap::{PrivateFileMapArea, SharedFileMapArea};
 pub use manager::Manager;

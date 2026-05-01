@@ -107,7 +107,10 @@ impl MessagePipeInner {
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
                 Event::ReadReady => {}
-                Event::Signal => return Err(Errno::EINTR),
+                Event::Signal => {
+                    self.wait_event_cancel();
+                    return Err(Errno::EINTR);
+                }
                 _ => unreachable!(),
             }
         }
@@ -142,7 +145,10 @@ impl MessagePipeInner {
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
                 Event::ReadReady => {}
-                Event::Signal => return Err(Errno::EINTR),
+                Event::Signal => {
+                    self.wait_event_cancel();
+                    return Err(Errno::EINTR);
+                }
                 _ => unreachable!(),
             }
         }
@@ -176,7 +182,10 @@ impl MessagePipeInner {
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
                 Event::WriteReady => {}
-                Event::Signal => return Err(Errno::EINTR),
+                Event::Signal => {
+                    self.wait_event_cancel();
+                    return Err(Errno::EINTR);
+                }
                 _ => unreachable!(),
             }
         }
@@ -217,7 +226,10 @@ impl MessagePipeInner {
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
                 Event::WriteReady => {}
-                Event::Signal => return Err(Errno::EINTR),
+                Event::Signal => {
+                    self.wait_event_cancel();
+                    return Err(Errno::EINTR);
+                }
                 _ => unreachable!(),
             }
         }

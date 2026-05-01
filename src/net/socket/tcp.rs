@@ -211,7 +211,10 @@ impl TcpInner {
             iface.wait_tcp(local.port);
             current::schedule();
             match current::task().take_wakeup_event() {
-                Some(Event::Signal) => return Err(Errno::EINTR),
+                Some(Event::Signal) => {
+                    iface.cancel_wait_tcp(local.port);
+                    return Err(Errno::EINTR);
+                }
                 _ => continue,
             }
         }

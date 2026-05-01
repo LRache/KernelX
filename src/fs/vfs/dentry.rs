@@ -11,7 +11,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::klib::SpinLock;
 
-use super::vfs;
+use super::{LookupFlags, vfs};
 
 pub struct Dentry {
     inode_index: Index,
@@ -213,6 +213,29 @@ impl Dentry {
         Ok(self)
     }
 
+    pub fn walk_link_with_perm_and_flags(
+        self: Arc<Self>,
+        symlink_depth: &mut usize,
+        perm: &Perm,
+        flags: LookupFlags,
+    ) -> SysResult<Arc<Dentry>> {
+        if let Some(p) = self.parent.as_ref() {
+            let inode = self.get_inode();
+            let mut buffer = [0u8; 255];
+            if let Some(length) = inode.readlink(&mut buffer)? {
+                if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
+                    return Err(Errno::ELOOP);
+                }
+                *symlink_depth += 1;
+                let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
+                let link_dentry =
+                    vfs().lookup_dentry_with_depth_perm_flags(p, link_name, symlink_depth, perm, flags)?;
+                return Ok(link_dentry);
+            }
+        }
+        Ok(self)
+    }
+
     pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>, mount_to_sno: u32) {
         *self.mount_to.lock() = Some(Arc::new(Dentry {
             inode_index: Index {
@@ -265,14 +288,15 @@ impl Dentry {
         let mut mode = mode;
         let mut owner = owner;
 
+        let inherited_sgid = parent_mode.contains(Mode::S_ISGID) && (mode & Mode::S_IFMT) == Mode::S_IFDIR;
         if parent_mode.contains(Mode::S_ISGID) {
             owner.gid = parent_gid;
-            if (mode & Mode::S_IFMT) == Mode::S_IFDIR {
+            if inherited_sgid {
                 mode.insert(Mode::S_ISGID);
             }
         }
 
-        if mode.contains(Mode::S_ISGID) && current::fsuid() != 0 {
+        if mode.contains(Mode::S_ISGID) && current::fsuid() != 0 && !inherited_sgid {
             let pcb = current::pcb();
             let in_supplementary_group = pcb.supplementary_gids().contains(&owner.gid);
             if pcb.fsgid() != owner.gid && !in_supplementary_group {
@@ -397,6 +421,8 @@ impl Dentry {
     }
 
     pub fn readlink(&self, child: &str, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        self.check_search_perm(&Perm::current(PermFlags::X))?;
+
         let lookup_ino = self.get_inode().lookup(child)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;

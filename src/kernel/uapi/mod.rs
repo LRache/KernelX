@@ -6,14 +6,12 @@ mod openflags;
 mod sigaction;
 mod statfs;
 pub mod termios;
-mod timespec;
 
 pub use dirent::*;
 pub use filestat::*;
 pub use openflags::*;
 pub use sigaction::*;
 pub use statfs::*;
-pub use timespec::*;
 
 pub type uid_t = u32;
 pub type Uid = u32;

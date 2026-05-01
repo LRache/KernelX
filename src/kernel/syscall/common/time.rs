@@ -14,8 +14,8 @@ fn checked_duration(tv_sec: i64, tv_nsec: i64) -> SysResult<Duration> {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Timespec {
-    pub tv_sec: u64,  // seconds
-    pub tv_nsec: u64, // nanoseconds
+    pub tv_sec: u64,
+    pub tv_nsec: u64,
 }
 
 impl UserStruct for Timespec {}
@@ -38,17 +38,19 @@ impl From<Duration> for Timespec {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Timeval {
-    pub tv_sec: u64,  // seconds
-    pub tv_usec: u64, // microseconds
+    pub tv_sec: u64,
+    pub tv_usec: u64,
 }
 
 impl UserStruct for Timeval {}
 
-impl Into<Duration> for Timeval {
-    fn into(self) -> Duration {
-        Duration::new(self.tv_sec as u64, (self.tv_usec * 1000) as u32)
+impl Timeval {
+    pub const ZERO: Self = Self { tv_sec: 0, tv_usec: 0 };
+
+    pub fn is_zero(&self) -> bool {
+        self.tv_sec == 0 && self.tv_usec == 0
     }
 }
 
@@ -61,11 +63,17 @@ impl From<Duration> for Timeval {
     }
 }
 
+impl From<Timeval> for Duration {
+    fn from(value: Timeval) -> Self {
+        Duration::new(value.tv_sec, (value.tv_usec * 1000) as u32)
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Timespec32 {
-    pub tv_sec: i32,  // seconds
-    pub tv_nsec: i32, // nanoseconds
+    pub tv_sec: i32,
+    pub tv_nsec: i32,
 }
 
 impl UserStruct for Timespec32 {}
@@ -79,29 +87,41 @@ impl TryFrom<Timespec32> for Duration {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct TimeVal {
-    pub tv_sec: usize,  // seconds
-    pub tv_usec: usize, // microseconds
+#[derive(Clone, Copy)]
+pub struct ITimerSpec {
+    pub it_interval: Timespec,
+    pub it_value: Timespec,
 }
 
-impl TimeVal {
-    pub fn is_zero(&self) -> bool {
-        self.tv_sec == 0 && self.tv_usec == 0
+impl UserStruct for ITimerSpec {}
+
+impl ITimerSpec {
+    pub fn into_durations(self) -> SysResult<(Duration, Duration)> {
+        Ok((self.it_value.try_into()?, self.it_interval.try_into()?))
     }
-}
 
-impl From<Duration> for TimeVal {
-    fn from(dur: Duration) -> Self {
-        TimeVal {
-            tv_sec: dur.as_secs() as usize,
-            tv_usec: (dur.subsec_nanos() / 1000) as usize,
+    pub fn from_durations(interval: Duration, value: Duration) -> Self {
+        Self {
+            it_interval: interval.into(),
+            it_value: value.into(),
         }
     }
 }
 
-impl Into<Duration> for TimeVal {
-    fn into(self) -> Duration {
-        Duration::new(self.tv_sec as u64, (self.tv_usec * 1000) as u32)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ITimerVal {
+    pub it_interval: Timeval,
+    pub it_value: Timeval,
+}
+
+impl UserStruct for ITimerVal {}
+
+impl ITimerVal {
+    pub fn from_durations(interval: Duration, value: Duration) -> Self {
+        Self {
+            it_interval: interval.into(),
+            it_value: value.into(),
+        }
     }
 }
