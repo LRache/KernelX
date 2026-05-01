@@ -1,17 +1,19 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::time::Duration;
 use core::usize;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
+use crate::fs::devfs::LoopInode;
 use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
-use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
+use crate::fs::inode::{BsdFlockType, FanotifyEventMask, FanotifyMarkFlags, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::Event;
+use crate::kernel::event::{Event, FanotifyFile};
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
@@ -36,7 +38,25 @@ pub fn dup3(oldfd: usize, newfd: usize, flags: usize) -> SyscallRet {
     };
     let fdtable = current::fdtable();
     let mut fdtable = fdtable.lock();
-    fdtable.dup3(oldfd, newfd, fd_flags)
+    let old_file = fdtable.get(oldfd)?;
+    let old_new_file = fdtable.get(newfd).ok();
+    let fd = fdtable.dup3(oldfd, newfd, fd_flags)?;
+    drop(fdtable);
+
+    if let Some(file) = old_new_file
+        && !Arc::ptr_eq(&file, &old_file)
+    {
+        notify_fanotify(
+            &file,
+            if file.writable() {
+                FanotifyEventMask::FAN_CLOSE_WRITE
+            } else {
+                FanotifyEventMask::FAN_CLOSE_NOWRITE
+            },
+        );
+    }
+
+    Ok(fd)
 }
 
 #[allow(non_camel_case_types)]
@@ -114,6 +134,20 @@ fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<&RandomAccessFile> {
         return Ok(file);
     }
     Err(Errno::ESPIPE)
+}
+
+fn notify_fanotify(file: &Arc<dyn FileOps>, mask: FanotifyEventMask) {
+    if let Some(inode) = file.get_inode()
+        && let Some(fanotify) = inode.fanotify()
+    {
+        fanotify.notify(mask, Some(file.clone()));
+    }
+
+    if let Some(parent) = file.get_dentry().and_then(|dentry| dentry.get_parent())
+        && let Some(fanotify) = parent.get_inode().fanotify()
+    {
+        fanotify.notify_child(mask, Some(file.clone()));
+    }
 }
 
 fn normalize_posix_flock(
@@ -443,15 +477,25 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
 
     let fd = current::fdtable().lock().push(file.clone(), fd_flags)?;
 
+    let mut truncated = false;
     if writable && open_flags.contains(OpenFlags::O_TRUNC) {
         if let Some(inode) = file.get_inode()
             && inode.inode_type()? == FileType::Regular
-            && let Err(err) = inode.truncate(0)
+            && let Err(err) = random_access_file(&file).and_then(|file| file.ftruncate(0))
         {
             let _ = current::fdtable().lock().take(fd);
             return Err(err);
         }
+        if let Some(inode) = file.get_inode()
+            && inode.inode_type()? == FileType::Regular
+        {
+            truncated = true;
+        }
     }
+    if truncated {
+        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
+    }
+    notify_fanotify(&file, FanotifyEventMask::FAN_OPEN);
 
     Ok(fd)
 }
@@ -472,6 +516,9 @@ pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
     let ubuf = ubuf.to_uaddrspace_buffer(count);
 
     let total_read = file.read_to_user(&ubuf)?;
+    if total_read != 0 {
+        notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
+    }
 
     Ok(total_read)
 }
@@ -520,8 +567,15 @@ pub fn write(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
         return Err(Errno::EBADF);
     }
 
+    if fd == 4 {
+        crate::kinfo!("write to fd 4: {:?}", file.type_name());
+    }
+
     let ubuf = ubuf.to_uaddrspace_buffer(count);
     let written = file.write_from_user(&ubuf)?;
+    if written != 0 {
+        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
+    }
 
     Ok(written)
 }
@@ -588,6 +642,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
                 Ok(n) => n,
                 Err(e) => {
                     if total_read + read > 0 {
+                        notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
                         return Ok(total_read + read);
                     }
                     return Err(e);
@@ -599,6 +654,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
 
             if copy_to_user::buffer(iov.base + read, &buffer[..bytes_read]).is_err() {
                 if total_read + read > 0 {
+                    notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
                     return Ok(total_read + read);
                 }
                 return Err(Errno::EFAULT);
@@ -611,6 +667,9 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
         total_read += read;
     }
 
+    if total_read != 0 {
+        notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
+    }
     Ok(total_read)
 }
 
@@ -620,8 +679,8 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    let file = random_access_file(&file)?;
-    if !file.readable() {
+    let random_file = random_access_file(&file)?;
+    if !random_file.readable() {
         return Err(Errno::EBADF);
     }
 
@@ -658,10 +717,11 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
         while remaining != 0 {
             let to_read = core::cmp::min(remaining, BUFFER_SIZE);
             let read_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
-            let bytes_read = match file.pread(&mut buffer[..to_read], read_pos) {
+            let bytes_read = match random_file.pread(&mut buffer[..to_read], read_pos) {
                 Ok(n) => n,
                 Err(e) => {
                     if total_read + read > 0 {
+                        notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
                         return Ok(total_read + read);
                     }
                     return Err(e);
@@ -673,6 +733,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
 
             if copy_to_user::buffer(iov.base + read, &buffer[..bytes_read]).is_err() {
                 if total_read + read > 0 {
+                    notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
                     return Ok(total_read + read);
                 }
                 return Err(Errno::EFAULT);
@@ -686,6 +747,9 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
         total_read += read;
     }
 
+    if total_read != 0 {
+        notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
+    }
     Ok(total_read)
 }
 
@@ -727,8 +791,8 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
         return Err(Errno::EINVAL);
     }
 
-    let file = random_access_file(&file)?;
-    if !file.readable() {
+    let random_file = random_access_file(&file)?;
+    if !random_file.readable() {
         return Err(Errno::EBADF);
     }
 
@@ -738,7 +802,7 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
 
     while left != 0 {
         let to_read = core::cmp::min(left, BUFFER_SIZE);
-        let bytes_read = file.pread(&mut buffer[..to_read], pos + (count - left))?;
+        let bytes_read = random_file.pread(&mut buffer[..to_read], pos + (count - left))?;
         if bytes_read == 0 {
             break; // EOF
         }
@@ -753,6 +817,9 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
         }
     }
 
+    if written != 0 {
+        notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
+    }
     Ok(written)
 }
 
@@ -769,8 +836,8 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    let file = random_access_file(&file)?;
-    if !file.writable() {
+    let random_file = random_access_file(&file)?;
+    if !random_file.writable() {
         return Err(Errno::EBADF);
     }
 
@@ -782,7 +849,7 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
         let to_write = core::cmp::min(left, BUFFER_SIZE);
         ubuf.read(count - left, &mut buffer[..to_write])?;
 
-        let bytes_written = file.pwrite(&buffer[..to_write], pos + (count - left))?;
+        let bytes_written = random_file.pwrite(&buffer[..to_write], pos + (count - left))?;
         if bytes_written == 0 {
             break; // EOF
         }
@@ -795,6 +862,9 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
         }
     }
 
+    if written != 0 {
+        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
+    }
     Ok(written)
 }
 
@@ -804,8 +874,8 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
     }
 
     let file = current::fdtable().lock().get(fd)?;
-    let file = random_access_file(&file)?;
-    if !file.writable() {
+    let random_file = random_access_file(&file)?;
+    if !random_file.writable() {
         return Err(Errno::EBADF);
     }
 
@@ -847,23 +917,26 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
             if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
                 if total_written + written > 0 {
+                    notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
                     return Ok(total_written + written);
                 }
                 return Err(Errno::EFAULT);
             }
 
             let write_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
-            match file.pwrite(&buffer[..to_write], write_pos) {
+            match random_file.pwrite(&buffer[..to_write], write_pos) {
                 Ok(bytes_written) => {
                     remaining -= bytes_written;
                     written += bytes_written;
                     offset = offset.checked_add(bytes_written).ok_or(Errno::EINVAL)?;
                     if bytes_written != to_write {
+                        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
                         return Ok(total_written + written);
                     }
                 }
                 Err(e) => {
                     if total_written + written > 0 {
+                        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
                         return Ok(total_written + written);
                     }
                     return Err(e);
@@ -874,6 +947,9 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
         total_written += written;
     }
 
+    if total_written != 0 {
+        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
+    }
     Ok(total_written)
 }
 
@@ -924,6 +1000,7 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
             let to_write = core::cmp::min(remaining, BUFFER_SIZE);
             if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
                 if total_written + written > 0 {
+                    notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
                     return Ok(total_written + written);
                 }
                 return Err(Errno::EFAULT);
@@ -934,11 +1011,13 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
                     remaining -= bytes_written;
                     written += bytes_written;
                     if bytes_written != to_write {
+                        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
                         return Ok(total_written + written);
                     }
                 }
                 Err(e) => {
                     if total_written + written > 0 {
+                        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
                         return Ok(total_written + written);
                     }
                     return Err(e);
@@ -949,6 +1028,9 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
         total_written += written;
     }
 
+    if total_written != 0 {
+        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
+    }
     Ok(total_written)
 }
 
@@ -995,6 +1077,14 @@ pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
 pub fn close(fd: usize) -> Result<usize, Errno> {
     // Drop Arc<dyn FileOps> without lock
     let file = current::fdtable().lock().take(fd)?;
+    notify_fanotify(
+        &file,
+        if file.writable() {
+            FanotifyEventMask::FAN_CLOSE_WRITE
+        } else {
+            FanotifyEventMask::FAN_CLOSE_NOWRITE
+        },
+    );
     drop(file);
 
     Ok(0)
@@ -1021,6 +1111,7 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
 
     let fdtable = current::fdtable();
     let mut fdtable = fdtable.lock();
+    let mut closed = Vec::new();
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         for i in fd..=max_fd {
             if let Ok(fdflags) = fdtable.get_fd_flags(i) {
@@ -1035,8 +1126,22 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
         }
     } else {
         for i in fd..=max_fd {
-            let _ = fdtable.take(i);
+            if let Ok(file) = fdtable.take(i) {
+                closed.push(file);
+            }
         }
+    }
+    drop(fdtable);
+
+    for file in closed {
+        notify_fanotify(
+            &file,
+            if file.writable() {
+                FanotifyEventMask::FAN_CLOSE_WRITE
+            } else {
+                FanotifyEventMask::FAN_CLOSE_NOWRITE
+            },
+        );
     }
 
     Ok(0)
@@ -1046,8 +1151,9 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     let fdtable = current::fdtable();
     let mut fdtable = fdtable.lock();
     let out_file = fdtable.get(out_fd)?;
-    let in_file = fdtable
-        .get(in_fd)?
+    let in_file = fdtable.get(in_fd)?;
+    let in_random_file = in_file
+        .clone()
         .downcast_arc::<RandomAccessFile>()
         .map_err(|_| Errno::EINVAL)?;
     drop(fdtable); // Release lock early
@@ -1055,11 +1161,11 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     if !out_file.writable() {
         return Err(Errno::EBADF);
     }
-    if !in_file.readable() {
+    if !in_random_file.readable() {
         return Err(Errno::EBADF);
     }
 
-    let in_file_offset = in_file.seek(0, SeekWhence::CUR)?;
+    let in_file_offset = in_random_file.seek(0, SeekWhence::CUR)?;
     let mut local_offset = if uptr_offset.is_null() {
         in_file_offset
     } else {
@@ -1067,16 +1173,18 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     };
 
     let mut total_sent = 0;
+    let mut total_read = 0;
     let mut left = count;
 
     let mut buffer = [0u8; BUFFER_SIZE];
 
     while left > 0 {
         let to_read = core::cmp::min(left, BUFFER_SIZE);
-        let bytes_read = in_file.read_at(&mut buffer[..to_read], local_offset)?;
+        let bytes_read = in_random_file.read_at(&mut buffer[..to_read], local_offset)?;
         if bytes_read == 0 {
             break; // EOF
         }
+        total_read += bytes_read;
 
         let bytes_written = out_file.write(&buffer[..bytes_read])?;
         if bytes_written == 0 {
@@ -1097,9 +1205,16 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     }
 
     if uptr_offset.is_null() {
-        in_file.seek(local_offset as isize, SeekWhence::BEG)?;
+        in_random_file.seek(local_offset as isize, SeekWhence::BEG)?;
     } else {
         uptr_offset.write(local_offset)?;
+    }
+
+    if total_read != 0 {
+        notify_fanotify(&in_file, FanotifyEventMask::FAN_ACCESS);
+    }
+    if total_sent != 0 {
+        notify_fanotify(&out_file, FanotifyEventMask::FAN_MODIFY);
     }
 
     Ok(total_sent)
@@ -1212,6 +1327,8 @@ pub fn splice(
     let mut out_offset = splice_offsets(&out_file, uptr_off_out, out_is_pipe)?;
 
     let mut total_moved = 0usize;
+    let mut total_read = 0usize;
+    let mut total_written = 0usize;
     let mut left = len;
     let mut buffer = [0u8; BUFFER_SIZE];
 
@@ -1229,6 +1346,7 @@ pub fn splice(
         if bytes_read == 0 {
             break;
         }
+        total_read += bytes_read;
 
         let mut moved_from_chunk = 0usize;
         while moved_from_chunk < bytes_read {
@@ -1248,6 +1366,7 @@ pub fn splice(
             }
 
             moved_from_chunk += bytes_written;
+            total_written += bytes_written;
             splice_advance_offset(&mut out_offset, bytes_written)?;
         }
 
@@ -1273,6 +1392,13 @@ pub fn splice(
     }
     if !uptr_off_out.is_null() {
         uptr_off_out.write(out_offset.unwrap())?;
+    }
+
+    if total_read != 0 {
+        notify_fanotify(&in_file, FanotifyEventMask::FAN_ACCESS);
+    }
+    if total_written != 0 {
+        notify_fanotify(&out_file, FanotifyEventMask::FAN_MODIFY);
     }
 
     Ok(total_moved)
@@ -1468,6 +1594,151 @@ bitflags! {
         const AT_SYMLINK_NOFOLLOW = 0x100;
         const AT_EMPTY_PATH = 0x1000;
     }
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct FanotifyInitFlags: usize {
+        const FAN_CLOEXEC = 0x0000_0001;
+        const FAN_NONBLOCK = 0x0000_0002;
+        const FAN_CLASS_CONTENT = 0x0000_0004;
+        const FAN_CLASS_PRE_CONTENT = 0x0000_0008;
+        const FAN_UNLIMITED_QUEUE = 0x0000_0010;
+        const FAN_UNLIMITED_MARKS = 0x0000_0020;
+        const FAN_ENABLE_AUDIT = 0x0000_0040;
+        const FAN_REPORT_PIDFD = 0x0000_0080;
+        const FAN_REPORT_TID = 0x0000_0100;
+        const FAN_REPORT_FID = 0x0000_0200;
+        const FAN_REPORT_DIR_FID = 0x0000_0400;
+        const FAN_REPORT_NAME = 0x0000_0800;
+        const FAN_REPORT_TARGET_FID = 0x0000_1000;
+    }
+}
+
+enum FanotifyMarkOp {
+    Add,
+    Remove,
+    Flush,
+}
+
+fn fanotify_mark_op(flags: FanotifyMarkFlags) -> SysResult<FanotifyMarkOp> {
+    let mut op_count = 0;
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_ADD) {
+        op_count += 1;
+    }
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_REMOVE) {
+        op_count += 1;
+    }
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_FLUSH) {
+        op_count += 1;
+    }
+    if op_count != 1 {
+        return Err(Errno::EINVAL);
+    }
+
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_ADD) {
+        Ok(FanotifyMarkOp::Add)
+    } else if flags.contains(FanotifyMarkFlags::FAN_MARK_REMOVE) {
+        Ok(FanotifyMarkOp::Remove)
+    } else {
+        Ok(FanotifyMarkOp::Flush)
+    }
+}
+
+pub fn fanotify_init(flags: usize, _event_f_flags: usize) -> SyscallRet {
+    let flags = FanotifyInitFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let file = Arc::new(FanotifyFile::new(!flags.contains(FanotifyInitFlags::FAN_NONBLOCK)));
+
+    current::fdtable().lock().push(
+        file,
+        FDFlags {
+            cloexec: flags.contains(FanotifyInitFlags::FAN_CLOEXEC),
+        },
+    )
+}
+
+pub fn fanotify_mark(
+    fanotify_fd: usize,
+    flags: usize,
+    mask: usize,
+    dirfd: usize,
+    uptr_pathname: UString,
+) -> SyscallRet {
+    let flags = FanotifyMarkFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let op = fanotify_mark_op(flags)?;
+    let file = current::fdtable().lock().get(fanotify_fd)?;
+    let fanotify_file = file.downcast_ref::<FanotifyFile>().ok_or(Errno::EINVAL)?;
+
+    if let FanotifyMarkOp::Flush = op {
+        fanotify_file.flush_marks();
+        return Ok(0);
+    }
+
+    if flags.intersects(FanotifyMarkFlags::FAN_MARK_MOUNT | FanotifyMarkFlags::FAN_MARK_FILESYSTEM) {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
+    let dentry = if uptr_pathname.is_null() {
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| Ok(cwd))?
+        } else {
+            current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?
+                .clone()
+        }
+    } else {
+        let pathname = uptr_pathname.read_path()?;
+        let helper = if flags.contains(FanotifyMarkFlags::FAN_MARK_DONT_FOLLOW) {
+            vfs::load_dentry_at_nofollow
+        } else {
+            vfs::load_dentry_at
+        };
+
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| helper(&cwd, &pathname))?
+        } else {
+            helper(
+                current::fdtable()
+                    .lock()
+                    .get(dirfd)?
+                    .get_dentry()
+                    .ok_or(Errno::ENOTDIR)?,
+                &pathname,
+            )?
+        }
+    }
+    .get_mount_to();
+
+    let inode = dentry.get_inode();
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_ONLYDIR) && inode.inode_type()? != FileType::Directory {
+        return Err(Errno::ENOTDIR);
+    }
+
+    let mask = FanotifyEventMask::from_bits(mask as u64).ok_or(Errno::EINVAL)?;
+    match op {
+        FanotifyMarkOp::Add => {
+            if mask.is_empty() {
+                return Err(Errno::EINVAL);
+            }
+            let fanotify = inode.ensure_fanotify().ok_or(Errno::EOPNOTSUPP)?;
+            let listener = fanotify_file.listener();
+            fanotify.add_mark(&listener, flags, mask);
+        }
+        FanotifyMarkOp::Remove => {
+            if mask.is_empty() {
+                return Err(Errno::EINVAL);
+            }
+            if let Some(fanotify) = inode.fanotify() {
+                fanotify.remove_mark(fanotify_file.listener_id(), fanotify_file.listener_generation(), mask);
+            }
+        }
+        FanotifyMarkOp::Flush => unreachable!(),
+    }
+
+    Ok(0)
 }
 
 pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flags: usize) -> SyscallRet {
@@ -2040,6 +2311,14 @@ pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
     }
 
     inode.truncate(length)?;
+    if let Some(fanotify) = inode.fanotify() {
+        fanotify.notify(FanotifyEventMask::FAN_MODIFY, None);
+    }
+    if let Some(parent) = dentry.get_parent()
+        && let Some(fanotify) = parent.get_inode().fanotify()
+    {
+        fanotify.notify_child(FanotifyEventMask::FAN_MODIFY, None);
+    }
 
     Ok(0)
 }
@@ -2053,9 +2332,11 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
 
     let length = truncate_length(length)?;
     check_file_size_limit(length)?;
-    file.downcast_arc::<RandomAccessFile>()
+    file.clone()
+        .downcast_arc::<RandomAccessFile>()
         .map_err(|_| Errno::EINVAL)?
         .ftruncate(length)?;
+    notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
 
     Ok(0)
 }
@@ -2195,8 +2476,10 @@ pub fn mount(
         // Resolve the source path to a block device inode
         let dentry = vfs::load_dentry(&source)?;
         let inode = dentry.get_inode();
-        if let Ok(blk_inode) = inode.downcast_arc::<BlockDevInode>() {
+        if let Ok(blk_inode) = inode.clone().downcast_arc::<BlockDevInode>() {
             Some(blk_inode.driver().clone())
+        } else if let Ok(blk_inode) = inode.downcast_arc::<LoopInode>() {
+            Some(blk_inode.driver()?)
         } else {
             return Err(Errno::ENODEV);
         }

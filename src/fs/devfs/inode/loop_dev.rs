@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use num_enum::TryFromPrimitive;
 
+use crate::driver::{BlockDriverOps, block::LoopDevice};
 use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::{InodeLockState, InodeOps, Mode};
@@ -93,6 +94,10 @@ impl LoopInode {
 
     fn target_inode(&self) -> SysResult<Arc<dyn InodeOps>> {
         self.state.lock().target_inode.clone().ok_or(Errno::ENXIO)
+    }
+
+    pub fn driver(&self) -> SysResult<Arc<dyn BlockDriverOps>> {
+        Ok(LoopDevice::new(self.target_inode()?))
     }
 
     fn get_status(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {

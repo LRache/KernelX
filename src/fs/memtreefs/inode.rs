@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -7,7 +8,7 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, Mode, Owner};
+use crate::fs::inode::{Fanotify, InodeLockState, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
@@ -16,12 +17,6 @@ use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::SpinLock;
 
 use super::superblock::{StaticFsInfo, SuperBlockInner};
-
-#[derive(Default)]
-struct Timespec {
-    tv_sec: u64,
-    tv_nsec: u64,
-}
 
 struct FileMeta {
     pages: Vec<PhysPageFrame>,
@@ -81,6 +76,7 @@ pub struct Inode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
     lock_state: SpinLock<InodeLockState>,
+    fanotify: SpinLock<Option<&'static Fanotify>>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
 }
@@ -91,6 +87,7 @@ impl<T: StaticFsInfo> Inode<T> {
             ino,
             meta: SpinLock::new(meta, "Inode::meta"),
             lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
+            fanotify: SpinLock::new(None, "Inode::fanotify"),
             superblock,
             _marker: core::marker::PhantomData,
         }
@@ -171,6 +168,18 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         Some(&self.lock_state)
+    }
+
+    fn fanotify(&self) -> Option<&Fanotify> {
+        *self.fanotify.lock()
+    }
+
+    fn ensure_fanotify(&self) -> Option<&Fanotify> {
+        let mut fanotify = self.fanotify.lock();
+        if fanotify.is_none() {
+            *fanotify = Some(Box::leak(Box::new(Fanotify::new())));
+        }
+        *fanotify
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {

@@ -1,3 +1,5 @@
+use core::option;
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
@@ -856,4 +858,9 @@ pub fn setfsgid(fsgid: usize) -> SyscallRet {
     }
 
     Ok(old_fsgid as usize)
+}
+
+pub fn prctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SyscallRet {
+    // crate::kinfo!("prctl: option={:#x}, arg2={:#x}, arg3={:#x}, arg4={:#x}, arg5={:#x}", option, arg2, arg3, arg4, arg5);
+    Ok(0)
 }

@@ -12,7 +12,7 @@ use crate::klib::SpinLock;
 
 use super::bsd_flock::BsdFlockState;
 use super::posix_flock::PosixFlockState;
-use super::{FileType, Mode, Owner};
+use super::{Fanotify, FileType, Mode, Owner};
 
 pub struct InodeLockState {
     pub(crate) bsd: BsdFlockState,
@@ -89,6 +89,14 @@ pub trait InodeOps: DowncastSync {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         None
+    }
+
+    fn fanotify(&self) -> Option<&Fanotify> {
+        None
+    }
+
+    fn ensure_fanotify(&self) -> Option<&Fanotify> {
+        self.fanotify()
     }
 
     fn begin_write_open(&self) -> SysResult<()> {
