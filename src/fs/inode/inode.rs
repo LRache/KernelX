@@ -91,11 +91,11 @@ pub trait InodeOps: DowncastSync {
         None
     }
 
-    fn fanotify(&self) -> Option<&Fanotify> {
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
         None
     }
 
-    fn ensure_fanotify(&self) -> Option<&Fanotify> {
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify()
     }
 

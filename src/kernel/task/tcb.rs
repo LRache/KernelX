@@ -8,6 +8,7 @@ use core::time::Duration;
 use crate::arch::{KernelContext, UserContext, UserContextTrait};
 use crate::driver::chosen::kclock;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
+use crate::fs::inode::{FanotifyEventMask, notify_fanotify, wait_fanotify_open_exec_permission};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::errno::{Errno, SysResult};
@@ -319,6 +320,11 @@ impl TCB {
         argv: &[&str],
         envp: &[&str],
     ) -> SysResult<(Arc<Self>, String, Arc<dyn crate::fs::InodeOps>)> {
+        let fanotify_file: Arc<dyn FileOps> = file.clone();
+        wait_fanotify_open_exec_permission(&fanotify_file)?;
+        notify_fanotify(&fanotify_file, FanotifyEventMask::FAN_OPEN);
+        notify_fanotify(&fanotify_file, FanotifyEventMask::FAN_OPEN_EXEC);
+
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file.read_at(&mut first_line, 0)?;

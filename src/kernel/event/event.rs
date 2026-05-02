@@ -13,6 +13,7 @@ pub enum Event {
     Process { child: Tid },
     WaitSignal { signum: SignalNum },
     Signal,
+    FanotifyPermission,
     VFork,
     IOComplete,
     SleepLock,

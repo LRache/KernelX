@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -13,7 +12,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::klib::SpinLock;
+use crate::klib::{LazyInitedCell, SpinLock};
 
 use super::superblock::{StaticFsInfo, SuperBlockInner};
 
@@ -75,7 +74,7 @@ pub struct Inode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
     lock_state: SpinLock<InodeLockState>,
-    fanotify: SpinLock<Option<&'static Fanotify>>,
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
 }
@@ -86,7 +85,7 @@ impl<T: StaticFsInfo> Inode<T> {
             ino,
             meta: SpinLock::new(meta, "Inode::meta"),
             lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
-            fanotify: SpinLock::new(None, "Inode::fanotify"),
+            fanotify: LazyInitedCell::new("Inode::fanotify"),
             superblock,
             _marker: core::marker::PhantomData,
         }
@@ -157,16 +156,12 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         Some(&self.lock_state)
     }
 
-    fn fanotify(&self) -> Option<&Fanotify> {
-        *self.fanotify.lock()
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
     }
 
-    fn ensure_fanotify(&self) -> Option<&Fanotify> {
-        let mut fanotify = self.fanotify.lock();
-        if fanotify.is_none() {
-            *fanotify = Some(Box::leak(Box::new(Fanotify::new())));
-        }
-        *fanotify
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
+        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {

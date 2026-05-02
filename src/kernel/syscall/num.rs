@@ -49,6 +49,7 @@ macro_rules! syscall_entries {
             82  => fs::fsync(1),
             88  => fs::utimensat(4),
             166 => fs::umask(1),
+            267 => fs::syncfs(1),
             276 => fs::renameat2(5),
             285 => fs::copy_file_range(6),
             286 => fs::preadv2(6),

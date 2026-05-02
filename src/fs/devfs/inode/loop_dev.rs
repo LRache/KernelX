@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
 use num_enum::TryFromPrimitive;
 
-use crate::driver::{BlockDriverOps, block::LoopDevice};
+use crate::driver::BlockDriverOps;
+use crate::driver::block::LoopDevice;
 use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::{InodeLockState, InodeOps, Mode};

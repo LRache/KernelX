@@ -556,7 +556,7 @@ pub fn shmget(key: usize, size: usize, shmflg: usize) -> SyscallRet {
 }
 
 pub fn shmat(shmid: usize, shmaddr: usize, shmflg: usize) -> SyscallRet {
-    let flags = shm::ShmFlag::from_bits_truncate(shmflg);  
+    let flags = shm::ShmFlag::from_bits_truncate(shmflg);
     let addrspace = current::addrspace();
     let pid = current::pid();
     let addr = shm::attach_shm(shmid, pid, current::euid(), current::egid(), addrspace, shmaddr, flags)?;

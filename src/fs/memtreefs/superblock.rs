@@ -3,11 +3,12 @@ use alloc::sync::Arc;
 
 use crate::arch;
 use crate::fs::filesystem::SuperBlockOps;
+use crate::fs::inode::Fanotify;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi::Statfs;
-use crate::klib::SpinLock;
+use crate::klib::{LazyInitedCell, SpinLock};
 
 use super::inode::{Inode as MemInode, InodeMeta};
 
@@ -70,6 +71,7 @@ impl SuperBlockInner {
 }
 pub struct SuperBlock<T: StaticFsInfo> {
     inner: Arc<SpinLock<SuperBlockInner>>,
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
     read_only: bool,
     _marker: core::marker::PhantomData<T>,
 }
@@ -90,6 +92,7 @@ impl<T: StaticFsInfo> SuperBlock<T> {
 
         Self {
             inner,
+            fanotify: LazyInitedCell::new("SuperBlock::fanotify"),
             read_only,
             _marker: core::marker::PhantomData,
         }
@@ -117,6 +120,14 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
     fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
         let inode = self.inner.lock().get_inode(ino)?;
         Ok(inode)
+    }
+
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
+    }
+
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
+        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
     fn create_temp(&self, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {

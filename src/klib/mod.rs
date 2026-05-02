@@ -8,6 +8,8 @@ pub mod ksync;
 pub mod print;
 pub mod random;
 pub mod ring;
+pub mod utils;
 
 pub use initcell::InitedCell;
 pub use ksync::{RWLock, SleepLock, SpinLock};
+pub use utils::LazyInitedCell;

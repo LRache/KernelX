@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
@@ -92,6 +93,10 @@ pub trait FileOps: DowncastSync {
     }
 
     fn on_fd_remove(&self) {}
+
+    fn fdinfo(&self) -> Option<String> {
+        None
+    }
 }
 
 impl_downcast!(sync FileOps);

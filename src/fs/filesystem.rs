@@ -6,7 +6,7 @@ use crate::fs::Mode;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{Statfs, StatfsFlags};
 
-use super::InodeOps;
+use super::inode::{Fanotify, InodeOps};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MountOptions {
@@ -32,6 +32,14 @@ pub trait SuperBlockOps: Send + Sync {
     fn get_root_ino(&self) -> u32;
 
     fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>>;
+
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        None
+    }
+
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify()
+    }
 
     fn create_temp(&self, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
         Err(Errno::EOPNOTSUPP)

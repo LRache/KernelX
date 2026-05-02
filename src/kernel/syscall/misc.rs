@@ -54,7 +54,7 @@ impl Utsname {
         uts.write_hostname_to(&mut ustname.nodename);
         uts.write_domainname_to(&mut ustname.domainname);
 
-        let release = "5.0.0";
+        let release = "6.0.0";
         ustname.release[..release.len()].copy_from_slice(release.as_bytes());
 
         let machine = b"riscv64";

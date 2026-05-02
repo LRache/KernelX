@@ -1,17 +1,20 @@
 use core::fmt::Debug;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 
-use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
+use crate::fs::inode::{Fanotify, FileType, Index, InodeOps, Mode, Owner};
 use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
-use crate::klib::SpinLock;
+use crate::klib::{LazyInitedCell, SpinLock};
 
 use super::{LookupFlags, vfs};
+
+static NEXT_MOUNT_ID: AtomicUsize = AtomicUsize::new(1);
 
 pub struct Dentry {
     inode_index: Index,
@@ -20,6 +23,34 @@ pub struct Dentry {
     children: SpinLock<BTreeMap<String, Weak<Dentry>>>,
     inode: SpinLock<Weak<dyn InodeOps>>,
     mount_to: SpinLock<Option<Arc<Dentry>>>,
+    mount_to_is_bind: SpinLock<bool>,
+    mount: Arc<Mount>,
+}
+
+pub struct Mount {
+    id: usize,
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
+}
+
+impl Mount {
+    pub fn new() -> Self {
+        Self {
+            id: NEXT_MOUNT_ID.fetch_add(1, Ordering::Relaxed),
+            fanotify: LazyInitedCell::new("Mount::fanotify"),
+        }
+    }
+
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    pub fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
+    }
+
+    pub fn ensure_fanotify(&self) -> Arc<Fanotify> {
+        self.fanotify.get_or_init(|| Arc::new(Fanotify::new()))
+    }
 }
 
 impl Dentry {
@@ -92,6 +123,8 @@ impl Dentry {
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(inode), "Dentry::inode"),
             mount_to: SpinLock::new(None, "Dentry::mount_to"),
+            mount_to_is_bind: SpinLock::new(false, "Dentry::mount_to_is_bind"),
+            mount: parent.mount.clone(),
         }
     }
 
@@ -106,6 +139,8 @@ impl Dentry {
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(inode), "Dentry::inode"),
             mount_to: SpinLock::new(None, "Dentry::mount_to"),
+            mount_to_is_bind: SpinLock::new(false, "Dentry::mount_to_is_bind"),
+            mount: Arc::new(Mount::new()),
         }
     }
 
@@ -125,6 +160,24 @@ impl Dentry {
         vfs().is_superblock_readonly(self.sno())
     }
 
+    pub fn superblock_fanotify(&self) -> Option<Arc<Fanotify>> {
+        vfs()
+            .superblock_table
+            .lock()
+            .get(self.sno())
+            .and_then(|superblock| superblock.fanotify())
+    }
+
+    pub fn ensure_superblock_fanotify(&self) -> SysResult<Arc<Fanotify>> {
+        vfs()
+            .superblock_table
+            .lock()
+            .get(self.sno())
+            .ok_or(Errno::ENOENT)?
+            .ensure_fanotify()
+            .ok_or(Errno::EOPNOTSUPP)
+    }
+
     pub fn get_inode(&self) -> Arc<dyn InodeOps> {
         let inode = self.inode.lock();
         match inode.upgrade() {
@@ -138,12 +191,20 @@ impl Dentry {
         }
     }
 
-    pub(super) fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
     pub fn get_parent(&self) -> Option<Arc<Dentry>> {
         self.parent.clone()
+    }
+
+    pub fn get_mount(&self) -> Arc<Mount> {
+        self.mount.clone()
+    }
+
+    pub fn get_mount_id(&self) -> usize {
+        self.mount.id()
     }
 
     pub fn lookup_with_perm(self: &Arc<Self>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
@@ -237,6 +298,7 @@ impl Dentry {
     }
 
     pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>, mount_to_sno: u32) {
+        let mount = Arc::new(Mount::new());
         *self.mount_to.lock() = Some(Arc::new(Dentry {
             inode_index: Index {
                 sno: mount_to_sno,
@@ -247,15 +309,42 @@ impl Dentry {
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(mount_to), "Dentry::inode"),
             mount_to: SpinLock::new(None, "Dentry::mount_to"),
+            mount_to_is_bind: SpinLock::new(false, "Dentry::mount_to_is_bind"),
+            mount,
         }));
+        *self.mount_to_is_bind.lock() = false;
+    }
+
+    pub fn bind_mount(self: &Arc<Self>, source: &Arc<Dentry>) {
+        let source_inode = source.get_inode();
+        let mount = Arc::new(Mount::new());
+        *self.mount_to.lock() = Some(Arc::new(Dentry {
+            inode_index: source.get_inode_index(),
+            name: self.name.clone(),
+            parent: self.parent.clone(),
+            children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
+            inode: SpinLock::new(Arc::downgrade(&source_inode), "Dentry::inode"),
+            mount_to: SpinLock::new(None, "Dentry::mount_to"),
+            mount_to_is_bind: SpinLock::new(false, "Dentry::mount_to_is_bind"),
+            mount,
+        }));
+        *self.mount_to_is_bind.lock() = true;
     }
 
     pub fn mounted_root(self: &Arc<Self>) -> Option<Arc<Dentry>> {
         self.mount_to.lock().clone()
     }
 
+    pub fn is_bind_mount(&self) -> bool {
+        *self.mount_to_is_bind.lock()
+    }
+
     pub fn unmount(self: &Arc<Self>) -> Option<Arc<Dentry>> {
-        self.mount_to.lock().take()
+        let mounted = self.mount_to.lock().take();
+        if mounted.is_some() {
+            *self.mount_to_is_bind.lock() = false;
+        }
+        mounted
     }
 
     pub fn get_path(&self) -> String {

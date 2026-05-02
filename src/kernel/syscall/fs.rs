@@ -11,7 +11,10 @@ use crate::driver;
 use crate::fs::devfs::LoopInode;
 use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
-use crate::fs::inode::{BsdFlockType, FanotifyEventMask, FanotifyMarkFlags, PosixFlock, PosixFlockType};
+use crate::fs::inode::{
+    BsdFlockType, FanotifyEventMask, FanotifyMarkFlags, FanotifyMarkScope, PosixFlock, PosixFlockType, notify_fanotify,
+    notify_fanotify_dentry, wait_fanotify_permission as wait_fanotify_permission_for_file,
+};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FanotifyFile};
@@ -160,20 +163,6 @@ fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<&RandomAccessFile> {
         return Ok(file);
     }
     Err(Errno::ESPIPE)
-}
-
-fn notify_fanotify(file: &Arc<dyn FileOps>, mask: FanotifyEventMask) {
-    if let Some(inode) = file.get_inode()
-        && let Some(fanotify) = inode.fanotify()
-    {
-        fanotify.notify(mask, Some(file.clone()));
-    }
-
-    if let Some(parent) = file.get_dentry().and_then(|dentry| dentry.get_parent())
-        && let Some(fanotify) = parent.get_inode().fanotify()
-    {
-        fanotify.notify_child(mask, Some(file.clone()));
-    }
 }
 
 fn update_file_times(file: &dyn FileOps, time: &Duration, is_write: bool) -> SysResult<()> {
@@ -560,6 +549,8 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
         }
     }
 
+    wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_OPEN_PERM)?;
+
     let fd = current::fdtable().lock().push(file.clone(), fd_flags)?;
 
     let mut truncated = false;
@@ -732,8 +723,11 @@ fn do_openat_with_lookup_flags(
         }
     }
 
+    wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_OPEN_PERM)?;
+
     let fd = current::fdtable().lock().push(file.clone(), fd_flags)?;
 
+    let mut truncated = false;
     if writable && open_flags.contains(OpenFlags::O_TRUNC) {
         if let Some(inode) = file.get_inode()
             && inode.inode_type()? == FileType::Regular
@@ -751,7 +745,16 @@ fn do_openat_with_lookup_flags(
                 }
             }
         }
+        if let Some(inode) = file.get_inode()
+            && inode.inode_type()? == FileType::Regular
+        {
+            truncated = true;
+        }
     }
+    if truncated {
+        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
+    }
+    notify_fanotify(&file, FanotifyEventMask::FAN_OPEN);
 
     Ok(fd)
 }
@@ -817,6 +820,7 @@ pub fn read(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
     }
 
     ubuf.should_not_null()?;
+    wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_ACCESS_PERM)?;
 
     let ubuf = ubuf.to_uaddrspace_buffer(count);
 
@@ -885,10 +889,6 @@ pub fn write(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
         return Err(Errno::EBADF);
     }
 
-    if fd == 4 {
-        crate::kinfo!("write to fd 4: {:?}", file.type_name());
-    }
-
     let ubuf = ubuf.to_uaddrspace_buffer(count);
     let written = file.write_from_user(&ubuf)?;
     if written != 0 {
@@ -930,6 +930,7 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     }
 
     uptr_iov.should_not_null()?;
+    wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_ACCESS_PERM)?;
 
     let mut total_read = 0;
 
@@ -1007,6 +1008,7 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
     }
 
     uptr_iov.should_not_null()?;
+    wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_ACCESS_PERM)?;
 
     let mut total_read = 0usize;
     let mut offset = 0usize;
@@ -1113,6 +1115,8 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
     if !random_file.readable() {
         return Err(Errno::EBADF);
     }
+
+    wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_ACCESS_PERM)?;
 
     let mut written = 0;
     let mut buffer = [0u8; BUFFER_SIZE];
@@ -1483,6 +1487,9 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     } else {
         utils::should_not_be_negative(uptr_offset.read()?)?
     };
+    if count != 0 {
+        wait_fanotify_permission_for_file(&in_file, FanotifyEventMask::FAN_ACCESS_PERM)?;
+    }
 
     let mut total_sent = 0;
     let mut total_read = 0;
@@ -1574,6 +1581,7 @@ pub fn copy_file_range(
         return Err(Errno::EINVAL);
     }
 
+    let in_file_for_notify = in_file.clone();
     let in_file = random_access_file(&in_file)?;
     let out_file = random_access_file(&out_file)?;
 
@@ -1606,6 +1614,7 @@ pub fn copy_file_range(
     if same_file && in_offset < out_end && out_offset < in_end {
         return Err(Errno::EINVAL);
     }
+    wait_fanotify_permission_for_file(&in_file_for_notify, FanotifyEventMask::FAN_ACCESS_PERM)?;
 
     let mut total_copied = 0usize;
     let mut left = len;
@@ -1774,6 +1783,7 @@ pub fn splice(
 
     let mut in_offset = splice_offsets(&in_file, uptr_off_in, in_is_pipe)?;
     let mut out_offset = splice_offsets(&out_file, uptr_off_out, out_is_pipe)?;
+    wait_fanotify_permission_for_file(&in_file, FanotifyEventMask::FAN_ACCESS_PERM)?;
 
     let mut total_moved = 0usize;
     let mut total_read = 0usize;
@@ -2088,6 +2098,7 @@ fn fanotify_mark_op(flags: FanotifyMarkFlags) -> SysResult<FanotifyMarkOp> {
         op_count += 1;
     }
     if op_count != 1 {
+        crate::kwarn!("fanotify_mark: unsupported operation flags={:#x}", flags.bits());
         return Err(Errno::EINVAL);
     }
 
@@ -2100,9 +2111,48 @@ fn fanotify_mark_op(flags: FanotifyMarkFlags) -> SysResult<FanotifyMarkOp> {
     }
 }
 
-pub fn fanotify_init(flags: usize, _event_f_flags: usize) -> SyscallRet {
-    let flags = FanotifyInitFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-    let file = Arc::new(FanotifyFile::new(!flags.contains(FanotifyInitFlags::FAN_NONBLOCK)));
+fn validate_fanotify_mark_flags(flags: FanotifyMarkFlags) -> SysResult<()> {
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_MOUNT) && flags.contains(FanotifyMarkFlags::FAN_MARK_FILESYSTEM) {
+        crate::kwarn!("fanotify_mark: mutually exclusive scope flags={:#x}", flags.bits());
+        return Err(Errno::EINVAL);
+    }
+
+    let has_ignore = flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORE);
+    let has_ignored_mask = flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_MASK);
+    if has_ignore && has_ignored_mask {
+        crate::kwarn!("fanotify_mark: mutually exclusive ignore flags={:#x}", flags.bits());
+        return Err(Errno::EINVAL);
+    }
+    if has_ignore && !flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY) {
+        crate::kwarn!(
+            "fanotify_mark: FAN_MARK_IGNORE requires FAN_MARK_IGNORED_SURV_MODIFY, flags={:#x}",
+            flags.bits()
+        );
+        return Err(Errno::EINVAL);
+    }
+
+    Ok(())
+}
+
+pub fn fanotify_init(flags: usize, event_f_flags: usize) -> SyscallRet {
+    let Some(flags) = FanotifyInitFlags::from_bits(flags) else {
+        crate::kwarn!("fanotify_init: unsupported flags={:#x}", flags);
+        return Err(Errno::EINVAL);
+    };
+    if event_f_flags != 0 {
+        crate::kwarn!(
+            "fanotify_init: event_f_flags is ignored, event_f_flags={:#x}",
+            event_f_flags
+        );
+    }
+
+    let report_dfid_name = flags.contains(FanotifyInitFlags::FAN_REPORT_DIR_FID | FanotifyInitFlags::FAN_REPORT_NAME);
+
+    let file = Arc::new(FanotifyFile::new(
+        !flags.contains(FanotifyInitFlags::FAN_NONBLOCK),
+        report_dfid_name,
+        current::euid() != 0,
+    ));
 
     current::fdtable().lock().push(
         file,
@@ -2119,7 +2169,11 @@ pub fn fanotify_mark(
     dirfd: usize,
     uptr_pathname: UString,
 ) -> SyscallRet {
-    let flags = FanotifyMarkFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let Some(flags) = FanotifyMarkFlags::from_bits(flags) else {
+        crate::kwarn!("fanotify_mark: unsupported flags={:#x}", flags);
+        return Err(Errno::EINVAL);
+    };
+    validate_fanotify_mark_flags(flags)?;
     let op = fanotify_mark_op(flags)?;
     let file = current::fdtable().lock().get(fanotify_fd)?;
     let fanotify_file = file.downcast_ref::<FanotifyFile>().ok_or(Errno::EINVAL)?;
@@ -2129,9 +2183,8 @@ pub fn fanotify_mark(
         return Ok(0);
     }
 
-    if flags.intersects(FanotifyMarkFlags::FAN_MARK_MOUNT | FanotifyMarkFlags::FAN_MARK_FILESYSTEM) {
-        return Err(Errno::EOPNOTSUPP);
-    }
+    let is_mount_mark = flags.contains(FanotifyMarkFlags::FAN_MARK_MOUNT);
+    let is_filesystem_mark = flags.contains(FanotifyMarkFlags::FAN_MARK_FILESYSTEM);
 
     let dentry = if uptr_pathname.is_null() {
         if dirfd as isize == AT_FDCWD {
@@ -2172,22 +2225,98 @@ pub fn fanotify_mark(
         return Err(Errno::ENOTDIR);
     }
 
-    let mask = FanotifyEventMask::from_bits(mask as u64).ok_or(Errno::EINVAL)?;
+    let Some(mask) = FanotifyEventMask::from_bits(mask as u64) else {
+        crate::kwarn!("fanotify_mark: unsupported mask={:#x}", mask);
+        return Err(Errno::EINVAL);
+    };
+    if fanotify_file.unprivileged()
+        && mask.intersects(
+            FanotifyEventMask::FAN_OPEN_PERM
+                | FanotifyEventMask::FAN_ACCESS_PERM
+                | FanotifyEventMask::FAN_OPEN_EXEC_PERM,
+        )
+    {
+        return Err(Errno::EPERM);
+    }
+    let is_ignore_mark =
+        flags.intersects(FanotifyMarkFlags::FAN_MARK_IGNORE | FanotifyMarkFlags::FAN_MARK_IGNORED_MASK);
+    let mark_scope = if is_mount_mark {
+        FanotifyMarkScope::Mount {
+            fdinfo_index: if is_ignore_mark {
+                None
+            } else {
+                Some(dentry.get_inode_index())
+            },
+            mount_id: dentry.get_mount_id(),
+        }
+    } else if is_filesystem_mark {
+        FanotifyMarkScope::Filesystem {
+            fdinfo_index: if is_ignore_mark {
+                None
+            } else {
+                Some(dentry.get_inode_index())
+            },
+            sno: dentry.sno(),
+        }
+    } else {
+        FanotifyMarkScope::Inode(dentry.get_inode_index())
+    };
     match op {
         FanotifyMarkOp::Add => {
             if mask.is_empty() {
+                crate::kwarn!("fanotify_mark: empty mask for add flags={:#x}", flags.bits());
                 return Err(Errno::EINVAL);
             }
-            let fanotify = inode.ensure_fanotify().ok_or(Errno::EOPNOTSUPP)?;
             let listener = fanotify_file.listener();
-            fanotify.add_mark(&listener, flags, mask);
+            if is_mount_mark {
+                dentry
+                    .get_mount()
+                    .ensure_fanotify()
+                    .add_mark(&listener, flags, mask, mark_scope);
+            } else if is_filesystem_mark {
+                dentry
+                    .ensure_superblock_fanotify()?
+                    .add_mark(&listener, flags, mask, mark_scope);
+            } else {
+                let Some(fanotify) = inode.ensure_fanotify() else {
+                    return Err(Errno::EOPNOTSUPP);
+                };
+                fanotify.add_mark(&listener, flags, mask, mark_scope);
+            }
         }
         FanotifyMarkOp::Remove => {
             if mask.is_empty() {
+                crate::kwarn!("fanotify_mark: empty mask for remove flags={:#x}", flags.bits());
                 return Err(Errno::EINVAL);
             }
-            if let Some(fanotify) = inode.fanotify() {
-                fanotify.remove_mark(fanotify_file.listener_id(), fanotify_file.listener_generation(), mask);
+            if is_mount_mark {
+                if let Some(fanotify) = dentry.get_mount().fanotify() {
+                    fanotify.remove_mark(
+                        fanotify_file.listener_id(),
+                        fanotify_file.listener_generation(),
+                        flags,
+                        mask,
+                        mark_scope,
+                    );
+                }
+            } else if is_filesystem_mark {
+                if let Some(fanotify) = dentry.superblock_fanotify() {
+                    fanotify.remove_mark(
+                        fanotify_file.listener_id(),
+                        fanotify_file.listener_generation(),
+                        flags,
+                        mask,
+                        mark_scope,
+                    );
+                }
+            } else if let Some(fanotify) = inode.fanotify() {
+                fanotify.remove_mark(
+                    fanotify_file.listener_id(),
+                    fanotify_file.listener_generation(),
+                    flags,
+                    mask,
+                    mark_scope,
+                );
             }
         }
         FanotifyMarkOp::Flush => unreachable!(),
@@ -2798,14 +2927,7 @@ pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
 
     let old_size = inode.size()?;
     inode.truncate(length)?;
-    if let Some(fanotify) = inode.fanotify() {
-        fanotify.notify(FanotifyEventMask::FAN_MODIFY, None);
-    }
-    if let Some(parent) = dentry.get_parent()
-        && let Some(fanotify) = parent.get_inode().fanotify()
-    {
-        fanotify.notify_child(FanotifyEventMask::FAN_MODIFY, None);
-    }
+    notify_fanotify_dentry(&dentry, FanotifyEventMask::FAN_MODIFY);
     if old_size != length {
         let time = driver::chosen::kclock::now()?;
         inode.update_mtime(&time)?;
@@ -2824,7 +2946,10 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
 
     let length = truncate_length(length)?;
     check_file_size_limit(length)?;
-    let random_file = file.clone().downcast_arc::<RandomAccessFile>().map_err(|_| Errno::EINVAL)?;
+    let random_file = file
+        .clone()
+        .downcast_arc::<RandomAccessFile>()
+        .map_err(|_| Errno::EINVAL)?;
     let old_size = random_file.get_inode().ok_or(Errno::EBADF)?.size()?;
     random_file.ftruncate(length)?;
     notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
@@ -2879,6 +3004,7 @@ bitflags! {
     struct MountFlags: usize {
         const RDONLY = 0x1;
         const REMOUNT = 0x20;
+        const BIND = 0x1000;
     }
 }
 
@@ -2966,6 +3092,13 @@ pub fn mount(
         return Ok(0);
     }
 
+    if flags.contains(MountFlags::BIND) {
+        uptr_source.should_not_null()?;
+        let source = uptr_source.read_path()?;
+        current::with_cwd(|cwd| vfs::bind_mount(&cwd, &source, &target))?;
+        return Ok(0);
+    }
+
     uptr_fstype.should_not_null()?;
     let fstype = uptr_fstype.read_string()?;
 
@@ -2999,5 +3132,10 @@ pub fn umount2(uptr_target: UString, flags: usize) -> SyscallRet {
 
     let target = uptr_target.read_path()?;
     current::with_cwd(|cwd| vfs::unmount(&cwd, &target))?;
+    Ok(0)
+}
+
+pub fn syncfs(fd: usize) -> SyscallRet {
+    let _ = fd;
     Ok(0)
 }

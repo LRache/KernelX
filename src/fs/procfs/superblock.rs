@@ -3,9 +3,11 @@ use alloc::sync::Arc;
 use crate::arch;
 use crate::driver::BlockDriverOps;
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
+use crate::fs::inode::Fanotify;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
+use crate::klib::LazyInitedCell;
 
 use super::inode;
 
@@ -18,11 +20,21 @@ impl FileSystemOps for FileSystem {
         _driver: Option<Arc<dyn BlockDriverOps>>,
         _options: MountOptions,
     ) -> SysResult<Arc<dyn SuperBlockOps>> {
-        Ok(Arc::new(SuperBlock))
+        Ok(Arc::new(SuperBlock::new()))
     }
 }
 
-pub struct SuperBlock;
+pub struct SuperBlock {
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
+}
+
+impl SuperBlock {
+    fn new() -> Self {
+        Self {
+            fanotify: LazyInitedCell::new("ProcfsSuperBlock::fanotify"),
+        }
+    }
+}
 
 impl SuperBlockOps for SuperBlock {
     fn get_root_ino(&self) -> u32 {
@@ -42,6 +54,9 @@ impl SuperBlockOps for SuperBlock {
             inode::SysFsDirInode::INO => Ok(Arc::new(inode::SysFsDirInode)),
             inode::PipeMaxSizeInode::INO => Ok(Arc::new(inode::PipeMaxSizeInode)),
             inode::PipeUserPagesSoftInode::INO => Ok(Arc::new(inode::PipeUserPagesSoftInode)),
+            inode::SysVmDirInode::INO => Ok(Arc::new(inode::SysVmDirInode)),
+            inode::VfsCachePressureInode::INO => Ok(Arc::new(inode::VfsCachePressureInode)),
+            inode::DropCachesInode::INO => Ok(Arc::new(inode::DropCachesInode)),
             i if i >= inode::TaskDirInode::BASE_INO && i < inode::TaskMapsInode::INO_BASE => {
                 Ok(Arc::new(inode::TaskDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
@@ -69,8 +84,22 @@ impl SuperBlockOps for SuperBlock {
             i if i >= inode::TaskThreadDirInode::INO_BASE && i < inode::TaskThreadDirInode::INO_END => {
                 Ok(Arc::new(inode::TaskThreadDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
             }
+            i if i >= inode::TaskFdInfoDirInode::INO_BASE && i < inode::TaskFdInfoDirInode::INO_END => {
+                Ok(Arc::new(inode::TaskFdInfoDirInode::from_ino(i).ok_or(Errno::ENOENT)?))
+            }
+            i if i >= inode::TaskFdInfoEntryInode::INO_BASE && i < inode::TaskFdInfoEntryInode::INO_END => {
+                Ok(Arc::new(inode::TaskFdInfoEntryInode::from_ino(i).ok_or(Errno::ENOENT)?))
+            }
             _ => Err(Errno::ENOENT),
         }
+    }
+
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
+    }
+
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
+        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
     fn create_temp(&self, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
@@ -93,7 +122,7 @@ impl SuperBlockOps for SuperBlock {
     }
 
     fn is_readonly(&self) -> bool {
-        true
+        false
     }
 
     fn type_name(&self) -> &'static str {
