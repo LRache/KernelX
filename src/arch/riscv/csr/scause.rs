@@ -30,7 +30,7 @@ pub enum Trap {
 #[derive(Debug, TryFromPrimitive)]
 #[repr(usize)]
 pub enum Interrupt {
-    Software = 0,
+    Software = 1,
     Timer = 5,
     External = 9,
     Counter = 13,

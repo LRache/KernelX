@@ -1,6 +1,6 @@
 ARCH ?= riscv64
 ISA ?= $(ARCH)
-GUEST_COMPONENTS ?= hello_sbi
+GUEST_COMPONENTS ?= hello_sbi timer_tick
 
 BUILD_DIR = build/$(ARCH)
 OUTPUT_DIR = $(BUILD_DIR)/output

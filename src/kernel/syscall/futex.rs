@@ -61,6 +61,7 @@ pub fn futex(
             futex::wait_current(kaddr, val as i32, bitset)?;
             if let Some(timeout) = timeout.read_optional()? {
                 timer::add_timer(current::task().clone(), timeout.try_into()?);
+                // crate::kinfo!("futex: added timer for timeout: {:?}", timeout);
             }
 
             let event = current::block("futex");

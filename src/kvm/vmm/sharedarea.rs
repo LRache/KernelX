@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 
 use crate::arch::{self, PageTable, PageTableTrait};
-use crate::kernel::mm::maparea::Area;
+use crate::kernel::mm::maparea::{Area, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
@@ -103,12 +103,12 @@ impl Area for KVMSharedArea {
         uaddr: usize,
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Option<usize> {
-        let (page_index, page_offset) = self.page_index_and_offset(uaddr)?;
+    ) -> Result<usize, MemoryFaultSignal> {
+        let (page_index, page_offset) = self.page_index_and_offset(uaddr).ok_or(MemoryFaultSignal::Segv)?;
         let kpage = self.frames.translate(page_index);
 
         self.map_page(page_index, kpage, addrspace.pagetable());
-        Some(kpage + page_offset)
+        Ok(kpage + page_offset)
     }
 
     fn page_count(&self) -> usize {

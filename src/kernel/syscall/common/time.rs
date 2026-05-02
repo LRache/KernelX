@@ -12,7 +12,7 @@ fn checked_duration(tv_sec: i64, tv_nsec: i64) -> SysResult<Duration> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Timespec {
     pub tv_sec: u64,
     pub tv_nsec: u64,

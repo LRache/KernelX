@@ -36,11 +36,11 @@ ifneq ($(CONFIG_ROOT_DEVICE),)
 BOOTARGS += root=$(CONFIG_ROOT_DEVICE)
 endif
 
-ifneq ($(CONFIG_ROOT_FSTYPE),)
-BOOTARGS += rootfstype=$(CONFIG_ROOT_FSTYPE)
+ifneq ($(CONFIG_ROOT_FS_TYPE),)
+BOOTARGS += rootfstype=$(CONFIG_ROOT_FS_TYPE)
 endif
 
-QEMU_FLAGS += -append "$(BOOTARGS)"
+QEMU_FLAGS += -append '$(BOOTARGS)'
 
 qemu-run:
 	truncate -s $(TMPDISK_SIZE) $(TMPDISK)

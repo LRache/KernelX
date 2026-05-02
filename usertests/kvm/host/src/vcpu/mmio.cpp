@@ -7,12 +7,48 @@
 #include <cstdio>
 
 namespace kvm_host {
-static constexpr std::uintptr_t MMIO_ACCESS_READ = 0;
-static constexpr std::uintptr_t MMIO_ACCESS_WRITE = 1;
+enum class MemoryFaultAccess : std::uintptr_t {
+    Read = 0,
+    Write = 1,
+    Execute = 2,
+};
 
-static constexpr std::uintptr_t OPCODE_LOAD = 0x03;
-static constexpr std::uintptr_t OPCODE_STORE = 0x23;
+enum class Opcode : std::uintptr_t {
+    Load = 0x03,
+    Store = 0x23,
+};
+
+enum class LoadFunct3 : std::uintptr_t {
+    Lb = 0,
+    Lh = 1,
+    Lw = 2,
+    Ld = 3,
+    Lbu = 4,
+    Lhu = 5,
+    Lwu = 6,
+};
+
+enum class StoreFunct3 : std::uintptr_t {
+    Sb = 0,
+    Sh = 1,
+    Sw = 2,
+    Sd = 3,
+};
+
+enum class AccessWidth : std::size_t {
+    Byte = 1,
+    Halfword = 2,
+    Word = 4,
+    Doubleword = 8,
+};
+
 static constexpr std::uintptr_t OPCODE_MASK = 0x7f;
+static constexpr std::uintptr_t FUNCT3_MASK = 0x7;
+static constexpr std::uintptr_t REG_INDEX_MASK = 0x1f;
+static constexpr std::uintptr_t UNCOMPRESSED_INST_LOW_BITS = 0x3;
+static constexpr std::uintptr_t ILLEGAL_COMPRESSED_INST_LOW_BIT = 0x1;
+static constexpr std::uintptr_t INSTRUCTION_16BIT_SIZE = 2;
+static constexpr std::uintptr_t INSTRUCTION_32BIT_SIZE = 4;
 
 struct DecodedPageFaultInst {
     bool is_write = false;
@@ -22,212 +58,57 @@ struct DecodedPageFaultInst {
     std::uintptr_t instruction_length = 0;
 };
 
+static std::size_t access_width_size(AccessWidth width) {
+    return static_cast<std::size_t>(width);
+}
+
 static std::uintptr_t get_reg(const KvmRegs &regs, std::uint8_t index) {
-    switch (index) {
-        case 0:
-            return 0;
-        case 1:
-            return regs.ra;
-        case 2:
-            return regs.sp;
-        case 3:
-            return regs.gp;
-        case 4:
-            return regs.tp;
-        case 5:
-            return regs.t0;
-        case 6:
-            return regs.t1;
-        case 7:
-            return regs.t2;
-        case 8:
-            return regs.s0;
-        case 9:
-            return regs.s1;
-        case 10:
-            return regs.a0;
-        case 11:
-            return regs.a1;
-        case 12:
-            return regs.a2;
-        case 13:
-            return regs.a3;
-        case 14:
-            return regs.a4;
-        case 15:
-            return regs.a5;
-        case 16:
-            return regs.a6;
-        case 17:
-            return regs.a7;
-        case 18:
-            return regs.s2;
-        case 19:
-            return regs.s3;
-        case 20:
-            return regs.s4;
-        case 21:
-            return regs.s5;
-        case 22:
-            return regs.s6;
-        case 23:
-            return regs.s7;
-        case 24:
-            return regs.s8;
-        case 25:
-            return regs.s9;
-        case 26:
-            return regs.s10;
-        case 27:
-            return regs.s11;
-        case 28:
-            return regs.t3;
-        case 29:
-            return regs.t4;
-        case 30:
-            return regs.t5;
-        case 31:
-            return regs.t6;
-        default:
-            return 0;
+    if (index == 0 || index >= kvm_reg_index(KvmReg::Count)) {
+        return 0;
     }
+    return regs[index];
 }
 
 static void set_reg(KvmRegs *regs, std::uint8_t index, std::uintptr_t value) {
-    switch (index) {
-        case 0:
-            return;
-        case 1:
-            regs->ra = value;
-            return;
-        case 2:
-            regs->sp = value;
-            return;
-        case 3:
-            regs->gp = value;
-            return;
-        case 4:
-            regs->tp = value;
-            return;
-        case 5:
-            regs->t0 = value;
-            return;
-        case 6:
-            regs->t1 = value;
-            return;
-        case 7:
-            regs->t2 = value;
-            return;
-        case 8:
-            regs->s0 = value;
-            return;
-        case 9:
-            regs->s1 = value;
-            return;
-        case 10:
-            regs->a0 = value;
-            return;
-        case 11:
-            regs->a1 = value;
-            return;
-        case 12:
-            regs->a2 = value;
-            return;
-        case 13:
-            regs->a3 = value;
-            return;
-        case 14:
-            regs->a4 = value;
-            return;
-        case 15:
-            regs->a5 = value;
-            return;
-        case 16:
-            regs->a6 = value;
-            return;
-        case 17:
-            regs->a7 = value;
-            return;
-        case 18:
-            regs->s2 = value;
-            return;
-        case 19:
-            regs->s3 = value;
-            return;
-        case 20:
-            regs->s4 = value;
-            return;
-        case 21:
-            regs->s5 = value;
-            return;
-        case 22:
-            regs->s6 = value;
-            return;
-        case 23:
-            regs->s7 = value;
-            return;
-        case 24:
-            regs->s8 = value;
-            return;
-        case 25:
-            regs->s9 = value;
-            return;
-        case 26:
-            regs->s10 = value;
-            return;
-        case 27:
-            regs->s11 = value;
-            return;
-        case 28:
-            regs->t3 = value;
-            return;
-        case 29:
-            regs->t4 = value;
-            return;
-        case 30:
-            regs->t5 = value;
-            return;
-        case 31:
-            regs->t6 = value;
-            return;
-        default:
-            return;
+    if (regs == nullptr || index == 0 || index >= kvm_reg_index(KvmReg::Count)) {
+        return;
     }
+    (*regs)[index] = value;
 }
 
 static bool decode_load(std::uintptr_t inst, std::uintptr_t instruction_length, DecodedPageFaultInst *decoded) {
-    const std::uintptr_t funct3 = (inst >> 12) & 0x7;
+    const auto funct3 = static_cast<LoadFunct3>((inst >> 12) & FUNCT3_MASK);
     decoded->is_write = false;
-    decoded->reg = static_cast<std::uint8_t>((inst >> 7) & 0x1f);
+    decoded->reg = static_cast<std::uint8_t>((inst >> 7) & REG_INDEX_MASK);
     decoded->instruction_length = instruction_length;
 
     switch (funct3) {
-        case 0:
-            decoded->width = 1;
+        case LoadFunct3::Lb:
+            decoded->width = access_width_size(AccessWidth::Byte);
             decoded->sign_extend = true;
             return true;
-        case 1:
-            decoded->width = 2;
+        case LoadFunct3::Lh:
+            decoded->width = access_width_size(AccessWidth::Halfword);
             decoded->sign_extend = true;
             return true;
-        case 2:
-            decoded->width = 4;
+        case LoadFunct3::Lw:
+            decoded->width = access_width_size(AccessWidth::Word);
             decoded->sign_extend = true;
             return true;
-        case 3:
-            decoded->width = 8;
+        case LoadFunct3::Ld:
+            decoded->width = access_width_size(AccessWidth::Doubleword);
             decoded->sign_extend = true;
             return true;
-        case 4:
-            decoded->width = 1;
+        case LoadFunct3::Lbu:
+            decoded->width = access_width_size(AccessWidth::Byte);
             decoded->sign_extend = false;
             return true;
-        case 5:
-            decoded->width = 2;
+        case LoadFunct3::Lhu:
+            decoded->width = access_width_size(AccessWidth::Halfword);
             decoded->sign_extend = false;
             return true;
-        case 6:
-            decoded->width = 4;
+        case LoadFunct3::Lwu:
+            decoded->width = access_width_size(AccessWidth::Word);
             decoded->sign_extend = false;
             return true;
         default:
@@ -236,24 +117,24 @@ static bool decode_load(std::uintptr_t inst, std::uintptr_t instruction_length, 
 }
 
 static bool decode_store(std::uintptr_t inst, std::uintptr_t instruction_length, DecodedPageFaultInst *decoded) {
-    const std::uintptr_t funct3 = (inst >> 12) & 0x7;
+    const auto funct3 = static_cast<StoreFunct3>((inst >> 12) & FUNCT3_MASK);
     decoded->is_write = true;
-    decoded->reg = static_cast<std::uint8_t>((inst >> 20) & 0x1f);
+    decoded->reg = static_cast<std::uint8_t>((inst >> 20) & REG_INDEX_MASK);
     decoded->instruction_length = instruction_length;
     decoded->sign_extend = false;
 
     switch (funct3) {
-        case 0:
-            decoded->width = 1;
+        case StoreFunct3::Sb:
+            decoded->width = access_width_size(AccessWidth::Byte);
             return true;
-        case 1:
-            decoded->width = 2;
+        case StoreFunct3::Sh:
+            decoded->width = access_width_size(AccessWidth::Halfword);
             return true;
-        case 2:
-            decoded->width = 4;
+        case StoreFunct3::Sw:
+            decoded->width = access_width_size(AccessWidth::Word);
             return true;
-        case 3:
-            decoded->width = 8;
+        case StoreFunct3::Sd:
+            decoded->width = access_width_size(AccessWidth::Doubleword);
             return true;
         default:
             return false;
@@ -262,19 +143,21 @@ static bool decode_store(std::uintptr_t inst, std::uintptr_t instruction_length,
 
 static bool decode_page_fault_inst(const KvmPageFault &page_fault, DecodedPageFaultInst *decoded) {
     const std::uintptr_t raw = page_fault.inst;
-    if ((raw & 0x1) == 0) {
+    if ((raw & ILLEGAL_COMPRESSED_INST_LOW_BIT) == 0) {
         return false;
     }
-    if (sizeof(std::uintptr_t) > 4 && (raw >> 32) != 0) {
+    if (sizeof(std::uintptr_t) > INSTRUCTION_32BIT_SIZE && (raw >> 32) != 0) {
         return false;
     }
 
     const std::uintptr_t inst = raw | 0x2;
-    const std::uintptr_t instruction_length = (raw & 0x2) == 0 ? 2 : 4;
-    switch (inst & OPCODE_MASK) {
-        case OPCODE_LOAD:
+    const std::uintptr_t instruction_length =
+        (raw & UNCOMPRESSED_INST_LOW_BITS) == UNCOMPRESSED_INST_LOW_BITS ? INSTRUCTION_32BIT_SIZE
+                                                                         : INSTRUCTION_16BIT_SIZE;
+    switch (static_cast<Opcode>(inst & OPCODE_MASK)) {
+        case Opcode::Load:
             return decode_load(inst, instruction_length, decoded);
-        case OPCODE_STORE:
+        case Opcode::Store:
             return decode_store(inst, instruction_length, decoded);
         default:
             return false;
@@ -308,26 +191,44 @@ static std::uint64_t mask_to_width(std::uintptr_t value, std::size_t width) {
     return static_cast<std::uint64_t>(value) & ((static_cast<std::uint64_t>(1) << (width * 8)) - 1);
 }
 
-bool KvmCpu::handle_mmio_fault(std::uintptr_t fault_addr, std::uintptr_t access_type) const {
-    if (bus_ == nullptr) {
+static MemoryFaultAccess memory_fault_access(std::uintptr_t access_type) {
+    return static_cast<MemoryFaultAccess>(access_type);
+}
+
+static const char *memory_access_name(MemoryFaultAccess access_type) {
+    switch (access_type) {
+        case MemoryFaultAccess::Read:
+            return "read";
+        case MemoryFaultAccess::Write:
+            return "write";
+        case MemoryFaultAccess::Execute:
+            return "execute";
+        default:
+            return "unknown";
+    }
+}
+
+bool KvmCpu::handle_memory_fault() const {
+    if (this->bus_ == nullptr) {
+        std::fprintf(stderr, "kvm memory fault cannot be handled without bus\n");
         return false;
     }
 
     KvmPageFault page_fault = {};
-    if (!get_page_fault(page_fault)) {
+    if (!this->get_page_fault(page_fault)) {
         return false;
     }
-    if (page_fault.addr != fault_addr || page_fault.access_type != access_type) {
-        std::fprintf(stderr,
-                     "stale kvm page fault info: fault addr=0x%lx access=0x%lx page fault addr=0x%lx access=0x%lx\n",
-                     static_cast<unsigned long>(fault_addr), static_cast<unsigned long>(access_type),
-                     static_cast<unsigned long>(page_fault.addr), static_cast<unsigned long>(page_fault.access_type));
+
+    const MemoryFaultAccess access_type = memory_fault_access(page_fault.access_type);
+    if (access_type == MemoryFaultAccess::Execute) {
+        std::fprintf(stderr, "unsupported kvm memory fault: addr=0x%lx access=%s\n",
+                     static_cast<unsigned long>(page_fault.addr), memory_access_name(access_type));
         return false;
     }
 
     DecodedPageFaultInst decoded = {};
     if (!decode_page_fault_inst(page_fault, &decoded) ||
-        decoded.is_write != (page_fault.access_type == MMIO_ACCESS_WRITE)) {
+        decoded.is_write != (access_type == MemoryFaultAccess::Write)) {
         std::fprintf(stderr, "unsupported kvm page fault instruction: addr=0x%lx access=0x%lx inst=0x%lx\n",
                      static_cast<unsigned long>(page_fault.addr), static_cast<unsigned long>(page_fault.access_type),
                      static_cast<unsigned long>(page_fault.inst));
@@ -335,25 +236,31 @@ bool KvmCpu::handle_mmio_fault(std::uintptr_t fault_addr, std::uintptr_t access_
     }
 
     KvmRegs regs = {};
-    if (!get_regs(regs)) {
+    if (!this->get_regs(regs)) {
         return false;
     }
     if (decoded.is_write) {
         const std::uint64_t value = mask_to_width(get_reg(regs, decoded.reg), decoded.width);
-        if (!bus_->write_mmio(page_fault.addr, decoded.width, value)) {
+        if (!this->bus_->write_mmio(page_fault.addr, decoded.width, value)) {
+            std::fprintf(stderr, "unsupported kvm mmio write: addr=0x%lx width=%zu value=0x%lx\n",
+                         static_cast<unsigned long>(page_fault.addr), decoded.width, static_cast<unsigned long>(value));
             return false;
         }
-    } else if (page_fault.access_type == MMIO_ACCESS_READ) {
+    } else if (access_type == MemoryFaultAccess::Read) {
         std::uint64_t value = 0;
-        if (!bus_->read_mmio(page_fault.addr, decoded.width, &value)) {
+        if (!this->bus_->read_mmio(page_fault.addr, decoded.width, &value)) {
+            std::fprintf(stderr, "unsupported kvm mmio read: addr=0x%lx width=%zu\n",
+                         static_cast<unsigned long>(page_fault.addr), decoded.width);
             return false;
         }
         set_reg(&regs, decoded.reg, maybe_sign_extend(value, decoded.width, decoded.sign_extend));
     } else {
+        std::fprintf(stderr, "unsupported kvm memory fault: addr=0x%lx access=%s\n",
+                     static_cast<unsigned long>(page_fault.addr), memory_access_name(access_type));
         return false;
     }
 
-    regs.pc += decoded.instruction_length;
-    return set_regs(regs);
+    regs[KvmReg::Pc] += decoded.instruction_length;
+    return this->set_regs(regs);
 }
 } // namespace kvm_host

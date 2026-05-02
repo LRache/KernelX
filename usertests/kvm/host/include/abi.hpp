@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace kvm_host {
@@ -10,6 +11,10 @@ constexpr unsigned long KVM_GET_REGS = 2;
 constexpr unsigned long KVM_SET_REGS = 3;
 constexpr unsigned long KVM_GET_SREGS = 4;
 constexpr unsigned long KVM_GET_PAGE_FAULT = 5;
+constexpr unsigned long KVM_SET_INTERRUPT_PENDING = 6;
+constexpr unsigned long KVM_CLEAR_INTERRUPT_PENDING = 7;
+
+constexpr std::uintptr_t KVM_INTERRUPT_HARDWARE = 2;
 
 struct KvmMapArea {
     std::uintptr_t addr;
@@ -17,39 +22,37 @@ struct KvmMapArea {
     std::uintptr_t mapped_addr;
 };
 
+enum class KvmReg : std::size_t {
+    Pc = 0,
+    A0 = 10,
+    A1 = 11,
+    A6 = 16,
+    A7 = 17,
+    Count = 32,
+};
+
+inline constexpr std::size_t kvm_reg_index(KvmReg reg) {
+    return static_cast<std::size_t>(reg);
+}
+
 struct KvmRegs {
-    std::uintptr_t pc;
-    std::uintptr_t ra;
-    std::uintptr_t sp;
-    std::uintptr_t gp;
-    std::uintptr_t tp;
-    std::uintptr_t t0;
-    std::uintptr_t t1;
-    std::uintptr_t t2;
-    std::uintptr_t s0;
-    std::uintptr_t s1;
-    std::uintptr_t a0;
-    std::uintptr_t a1;
-    std::uintptr_t a2;
-    std::uintptr_t a3;
-    std::uintptr_t a4;
-    std::uintptr_t a5;
-    std::uintptr_t a6;
-    std::uintptr_t a7;
-    std::uintptr_t s2;
-    std::uintptr_t s3;
-    std::uintptr_t s4;
-    std::uintptr_t s5;
-    std::uintptr_t s6;
-    std::uintptr_t s7;
-    std::uintptr_t s8;
-    std::uintptr_t s9;
-    std::uintptr_t s10;
-    std::uintptr_t s11;
-    std::uintptr_t t3;
-    std::uintptr_t t4;
-    std::uintptr_t t5;
-    std::uintptr_t t6;
+    std::uintptr_t regs[kvm_reg_index(KvmReg::Count)];
+
+    std::uintptr_t &operator[](std::size_t index) {
+        return this->regs[index];
+    }
+
+    const std::uintptr_t &operator[](std::size_t index) const {
+        return this->regs[index];
+    }
+
+    std::uintptr_t &operator[](KvmReg reg) {
+        return (*this)[kvm_reg_index(reg)];
+    }
+
+    const std::uintptr_t &operator[](KvmReg reg) const {
+        return (*this)[kvm_reg_index(reg)];
+    }
 };
 
 struct KvmSRegs {
@@ -62,8 +65,15 @@ struct KvmPageFault {
     std::uintptr_t inst;
 };
 
+struct KvmInterrupt {
+    std::uintptr_t kind;
+    std::uintptr_t irq;
+};
+
 static_assert(sizeof(KvmMapArea) == sizeof(std::uintptr_t) * 3, "KvmMapArea ABI changed");
+static_assert(kvm_reg_index(KvmReg::Count) == 32, "KvmRegs register count changed");
 static_assert(sizeof(KvmRegs) == sizeof(std::uintptr_t) * 32, "KvmRegs ABI changed");
 static_assert(sizeof(KvmSRegs) == sizeof(std::uintptr_t), "KvmSRegs ABI changed");
 static_assert(sizeof(KvmPageFault) == sizeof(std::uintptr_t) * 3, "KvmPageFault ABI changed");
+static_assert(sizeof(KvmInterrupt) == sizeof(std::uintptr_t) * 2, "KvmInterrupt ABI changed");
 } // namespace kvm_host

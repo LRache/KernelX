@@ -1,0 +1,6 @@
+*
+
+!/.gitignore
+!/Makefile
+!/busybox_defconfig
+!/init

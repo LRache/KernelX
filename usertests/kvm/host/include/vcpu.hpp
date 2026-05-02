@@ -21,11 +21,14 @@ public:
 
     ~KvmCpu();
 
+    bool init(std::uintptr_t pc, std::uintptr_t a1, std::uintptr_t a0 = 0) const;
     bool run(std::uintptr_t *exit_reason) const;
     bool get_regs(KvmRegs &regs) const;
     bool get_sregs(KvmSRegs &regs) const;
     bool get_page_fault(KvmPageFault &page_fault) const;
     bool set_regs(const KvmRegs &regs) const;
+    bool set_interrupt_pending(const KvmInterrupt &interrupt) const;
+    bool clear_interrupt_pending(const KvmInterrupt &interrupt) const;
     std::uint8_t *translate_guest_vaddr(std::uintptr_t guest_vaddr, std::uintptr_t length) const;
     std::shared_ptr<Bus> bus() const;
     int raw_fd() const;
@@ -43,7 +46,7 @@ private:
 
     bool run_once(std::uintptr_t *exit_reason) const;
     SbiCallResult handle_sbi_call(const KvmRegs &regs) const;
-    bool handle_mmio_fault(std::uintptr_t fault_addr, std::uintptr_t access_type) const;
+    bool handle_memory_fault() const;
 
     int fd_ = -1;
     std::shared_ptr<Bus> bus_;

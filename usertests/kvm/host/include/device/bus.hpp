@@ -6,10 +6,12 @@
 #pragma once
 
 #include "device/mmio.hpp"
+#include "linux_dtb.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace kvm_host {
 class Kvm;
@@ -40,6 +42,7 @@ public:
                          unsigned int id = 0);
     bool read_mmio(std::uintptr_t guest_addr, std::size_t width, std::uint64_t *value) const;
     bool write_mmio(std::uintptr_t guest_addr, std::size_t width, std::uint64_t value) const;
+    std::vector<std::uint8_t> build_dtb(const DtbConfig &config) const;
     std::uint8_t *translate(std::uintptr_t guest_addr, std::uintptr_t length) const;
     const Area *find_area(std::uintptr_t guest_addr, std::uintptr_t length) const;
     const MmioRegion *mmio_region_at(std::size_t index) const;

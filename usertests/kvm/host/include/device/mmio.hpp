@@ -10,6 +10,8 @@
 
 namespace kvm_host {
 class Bus;
+class DtbBuilder;
+struct DtbConfig;
 
 class MmioDevice {
 public:
@@ -25,6 +27,14 @@ public:
     virtual void clear_interrupt() {}
     virtual void connect_to_bus(Bus *bus) {
         (void)bus;
+    }
+    virtual void config_dtb(DtbBuilder &builder, const DtbConfig &config, std::uintptr_t guest_addr,
+                            std::uintptr_t length, unsigned int id) const {
+        (void)builder;
+        (void)config;
+        (void)guest_addr;
+        (void)length;
+        (void)id;
     }
     virtual const char *type_name() const {
         return "mmio";

@@ -71,14 +71,45 @@ fn kinit() {
 #[unsafe(link_section = ".text.init")]
 pub fn parse_boot_args(bootargs: &'static str) {
     let mut bootargs_map = BTreeMap::new();
-    for arg in bootargs.split_whitespace() {
+    let mut start = None;
+    let mut in_quotes = false;
+
+    let mut parse_arg = |arg: &'static str| {
+        let arg = arg.trim_matches('"');
         if let Some((key, value)) = arg.split_once('=') {
+            let value = value.trim_matches('"');
             bootargs_map.insert(key, value);
             kinfo!("bootarg: {}={}", key, value);
         } else {
             bootargs_map.insert(arg, "");
             kinfo!("bootarg: {}", arg);
         }
+    };
+
+    for (i, c) in bootargs.char_indices() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if let Some(begin) = start {
+                    parse_arg(&bootargs[begin..i]);
+                    start = None;
+                }
+            }
+            _ => {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
+        }
+    }
+
+    if let Some(begin) = start {
+        parse_arg(&bootargs[begin..]);
     }
 
     BOOT_ARGS.init(bootargs_map);

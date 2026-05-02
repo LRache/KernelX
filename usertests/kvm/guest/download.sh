@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-OS_DIR=${OS_DIR:-"$SCRIPT_DIR/os"}
+LINUX_DIR=${LINUX_DIR:-"$SCRIPT_DIR/linux"}
 
 LINUX_VERSION=5.15.132
 LINUX_SERIES=v5.x
@@ -16,14 +16,14 @@ usage() {
 }
 
 download_linux_5_15() {
-    mkdir -p "$OS_DIR"
+    mkdir -p "$LINUX_DIR"
 
-    if [[ ! -f "$OS_DIR/$LINUX_ARCHIVE" ]]; then
-        wget -O "$OS_DIR/$LINUX_ARCHIVE" "$LINUX_URL"
+    if [[ ! -f "$LINUX_DIR/$LINUX_ARCHIVE" ]]; then
+        wget -O "$LINUX_DIR/$LINUX_ARCHIVE" "$LINUX_URL"
     fi
 
-    if [[ ! -d "$OS_DIR/linux-$LINUX_VERSION" ]]; then
-        tar -C "$OS_DIR" -xf "$OS_DIR/$LINUX_ARCHIVE"
+    if [[ ! -d "$LINUX_DIR/linux-$LINUX_VERSION" ]]; then
+        tar -C "$LINUX_DIR" -xf "$LINUX_DIR/$LINUX_ARCHIVE"
     fi
 }
 

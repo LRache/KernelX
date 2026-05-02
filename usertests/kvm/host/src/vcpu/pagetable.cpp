@@ -85,7 +85,7 @@ static bool range_fits_in_leaf(std::uintptr_t vaddr, std::uintptr_t length, int 
 }
 
 std::uint8_t *KvmCpu::translate_guest_vaddr(std::uintptr_t guest_vaddr, std::uintptr_t length) const {
-    if (bus_ == nullptr) {
+    if (this->bus_ == nullptr) {
         return nullptr;
     }
 
@@ -95,13 +95,13 @@ std::uint8_t *KvmCpu::translate_guest_vaddr(std::uintptr_t guest_vaddr, std::uin
     }
 
     KvmSRegs sregs = {};
-    if (!get_sregs(sregs)) {
+    if (!this->get_sregs(sregs)) {
         return nullptr;
     }
 
     const std::uintptr_t satp_mode = sregs.satp >> SATP_MODE_SHIFT;
     if (satp_mode == SATP_MODE_BARE) {
-        return bus_->translate(guest_vaddr, length);
+        return this->bus_->translate(guest_vaddr, length);
     }
     if (satp_mode != SATP_MODE_SV39) {
         std::fprintf(stderr, "unsupported guest satp mode: 0x%lx\n", static_cast<unsigned long>(satp_mode));
@@ -115,7 +115,7 @@ std::uint8_t *KvmCpu::translate_guest_vaddr(std::uintptr_t guest_vaddr, std::uin
     for (int level = 2; level >= 0; level--) {
         const std::uintptr_t pte_addr = table_paddr + vpn_index(guest_vaddr, level) * PTE_SIZE;
         std::uint64_t pte = 0;
-        if (!read_pte(*bus_, pte_addr, &pte) || !is_valid_pte(pte)) {
+        if (!read_pte(*this->bus_, pte_addr, &pte) || !is_valid_pte(pte)) {
             return nullptr;
         }
 
@@ -130,7 +130,7 @@ std::uint8_t *KvmCpu::translate_guest_vaddr(std::uintptr_t guest_vaddr, std::uin
             const std::uintptr_t page_shift = PAGE_SHIFT + static_cast<std::uintptr_t>(level) * VPN_BITS;
             const std::uintptr_t page_offset = guest_vaddr & ((static_cast<std::uintptr_t>(1) << page_shift) - 1);
             const std::uintptr_t guest_paddr = (ppn << PAGE_SHIFT) | page_offset;
-            return bus_->translate(guest_paddr, length);
+            return this->bus_->translate(guest_paddr, length);
         }
 
         table_paddr = ppn << PAGE_SHIFT;

@@ -26,6 +26,8 @@ public:
     void update() override;
     bool interrupt_pending() override;
     void clear_interrupt() override;
+    void config_dtb(DtbBuilder &builder, const DtbConfig &config, std::uintptr_t guest_addr,
+                             std::uintptr_t length, unsigned int id) const override;
     const char *type_name() const override;
 
     bool putch(std::uint8_t data);

@@ -22,6 +22,8 @@ public:
     bool write(std::uintptr_t offset, std::size_t width, std::uint64_t value) override;
     void update() override;
     void connect_to_bus(Bus *bus) override;
+    void config_dtb(DtbBuilder &builder, const DtbConfig &config, std::uintptr_t guest_addr,
+                             std::uintptr_t length, unsigned int id) const override;
     const char *type_name() const override;
 
 private:
