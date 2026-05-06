@@ -25,6 +25,20 @@ bitflags! {
     }
 }
 
+impl FanotifyEventMask {
+    fn event_bits(self) -> Self {
+        self & (Self::FAN_ACCESS
+            | Self::FAN_MODIFY
+            | Self::FAN_CLOSE_WRITE
+            | Self::FAN_CLOSE_NOWRITE
+            | Self::FAN_OPEN
+            | Self::FAN_OPEN_EXEC
+            | Self::FAN_OPEN_PERM
+            | Self::FAN_ACCESS_PERM
+            | Self::FAN_OPEN_EXEC_PERM)
+    }
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct FanotifyMarkFlags: usize {
@@ -113,6 +127,21 @@ struct FanotifyEventContext {
     is_dir: bool,
 }
 
+struct FanotifyListenerMask {
+    listener: Arc<dyn FanotifyListener>,
+    mark_mask: FanotifyEventMask,
+    ignored_mask: FanotifyEventMask,
+}
+
+struct FanotifyListenerEvent {
+    listener: Arc<dyn FanotifyListener>,
+    mask: FanotifyEventMask,
+}
+
+struct FanotifyListenerMasks {
+    masks: Vec<FanotifyListenerMask>,
+}
+
 struct FanotifyMark {
     listener_id: usize,
     generation: usize,
@@ -156,30 +185,13 @@ impl Fanotify {
             .remove_mark(listener_id, generation, flags, mask, scope);
     }
 
-    fn matching_listeners(
+    fn listener_masks(
         &self,
         mask: FanotifyEventMask,
         context: FanotifyEventContext,
         child_event: bool,
-    ) -> Vec<Arc<dyn FanotifyListener>> {
-        let mut state = self.state.lock();
-        if child_event {
-            state.listeners_for_child_mask(mask, context)
-        } else {
-            state.listeners_for_mask(mask, context)
-        }
-    }
-
-    fn ignores_listener(
-        &self,
-        listener_id: usize,
-        generation: usize,
-        mask: FanotifyEventMask,
-        context: FanotifyEventContext,
-    ) -> bool {
-        self.state
-            .lock()
-            .ignores_listener(listener_id, generation, mask, context)
+    ) -> Vec<FanotifyListenerMask> {
+        self.state.lock().listener_masks(mask, context, child_event)
     }
 
     fn dentry_context(dentry: &Arc<Dentry>) -> FanotifyEventContext {
@@ -206,34 +218,83 @@ impl Fanotify {
     }
 }
 
-fn push_unique_listener(listeners: &mut Vec<Arc<dyn FanotifyListener>>, listener: Arc<dyn FanotifyListener>) {
-    let listener_id = listener.fanotify_id();
-    let generation = listener.fanotify_generation();
-    if listeners
-        .iter()
-        .any(|queued| queued.fanotify_id() == listener_id && queued.fanotify_generation() == generation)
-    {
-        return;
+impl FanotifyListenerMasks {
+    fn new() -> Self {
+        Self { masks: Vec::new() }
     }
-    listeners.push(listener);
+
+    fn merge(&mut self, listener_mask: FanotifyListenerMask) {
+        let listener_id = listener_mask.listener.fanotify_id();
+        let generation = listener_mask.listener.fanotify_generation();
+        if let Some(existing) = self.masks.iter().position(|queued| {
+            queued.listener.fanotify_id() == listener_id && queued.listener.fanotify_generation() == generation
+        }) {
+            self.masks[existing].mark_mask.insert(listener_mask.mark_mask);
+            self.masks[existing].ignored_mask.insert(listener_mask.ignored_mask);
+            return;
+        }
+        self.masks.push(listener_mask);
+    }
+
+    fn merge_fanotify(
+        &mut self,
+        fanotify: Option<&Arc<Fanotify>>,
+        mask: FanotifyEventMask,
+        context: FanotifyEventContext,
+        child_event: bool,
+    ) {
+        if let Some(fanotify) = fanotify {
+            for listener_mask in fanotify.listener_masks(mask, context, child_event) {
+                self.merge(listener_mask);
+            }
+        }
+    }
+
+    fn into_events(self, mask: FanotifyEventMask) -> Vec<FanotifyListenerEvent> {
+        self.masks
+            .into_iter()
+            .filter_map(|listener_mask| {
+                let mut effective_mask = mask & listener_mask.mark_mask;
+                effective_mask.remove(listener_mask.ignored_mask);
+                if effective_mask.event_bits().is_empty() {
+                    None
+                } else {
+                    Some(FanotifyListenerEvent {
+                        listener: listener_mask.listener,
+                        mask: effective_mask,
+                    })
+                }
+            })
+            .collect()
+    }
 }
 
-fn fanotify_ignores_listener(
-    fanotify: Option<&Arc<Fanotify>>,
-    listener_id: usize,
-    generation: usize,
+fn fanotify_listener_events(
     mask: FanotifyEventMask,
     context: FanotifyEventContext,
-) -> bool {
-    if let Some(fanotify) = fanotify {
-        fanotify.ignores_listener(listener_id, generation, mask, context)
-    } else {
-        false
+    inode_fanotify: Option<&Arc<Fanotify>>,
+    mount_fanotify: Option<&Arc<Fanotify>>,
+    filesystem_fanotify: Option<&Arc<Fanotify>>,
+    parent_fanotify: Option<&Arc<Fanotify>>,
+) -> Vec<FanotifyListenerEvent> {
+    if inode_fanotify.is_none()
+        && mount_fanotify.is_none()
+        && filesystem_fanotify.is_none()
+        && parent_fanotify.is_none()
+    {
+        return Vec::new();
     }
+
+    let mut listener_masks = FanotifyListenerMasks::new();
+    listener_masks.merge_fanotify(inode_fanotify, mask, context, false);
+    listener_masks.merge_fanotify(mount_fanotify, mask, context, false);
+    listener_masks.merge_fanotify(filesystem_fanotify, mask, context, false);
+    listener_masks.merge_fanotify(parent_fanotify, mask, context, true);
+    listener_masks.into_events(mask)
 }
 
 #[inline(always)]
-fn fanotify_listeners_for_file(file: &Arc<dyn FileOps>, mask: FanotifyEventMask) -> Vec<Arc<dyn FanotifyListener>> {
+fn fanotify_listener_events_for_file(file: &Arc<dyn FileOps>, mask: FanotifyEventMask) -> Vec<FanotifyListenerEvent> {
     let inode_fanotify = file.get_inode().and_then(|inode| inode.fanotify());
     let dentry = file.get_dentry();
     let mount_fanotify = dentry.and_then(|dentry| dentry.get_mount().fanotify());
@@ -242,104 +303,36 @@ fn fanotify_listeners_for_file(file: &Arc<dyn FileOps>, mask: FanotifyEventMask)
         .and_then(|dentry| dentry.get_parent())
         .and_then(|parent| parent.get_inode().fanotify());
 
-    if inode_fanotify.is_none()
-        && mount_fanotify.is_none()
-        && filesystem_fanotify.is_none()
-        && parent_fanotify.is_none()
-    {
-        return Vec::new();
-    }
-
-    let context = Fanotify::file_context(Some(file));
-    let mut listeners = Vec::new();
-    if let Some(fanotify) = &inode_fanotify {
-        for listener in fanotify.matching_listeners(mask, context, false) {
-            push_unique_listener(&mut listeners, listener);
-        }
-    }
-    if let Some(fanotify) = &mount_fanotify {
-        for listener in fanotify.matching_listeners(mask, context, false) {
-            push_unique_listener(&mut listeners, listener);
-        }
-    }
-    if let Some(fanotify) = &filesystem_fanotify {
-        for listener in fanotify.matching_listeners(mask, context, false) {
-            push_unique_listener(&mut listeners, listener);
-        }
-    }
-    if let Some(fanotify) = &parent_fanotify {
-        for listener in fanotify.matching_listeners(mask, context, true) {
-            push_unique_listener(&mut listeners, listener);
-        }
-    }
-
-    listeners
-        .into_iter()
-        .filter(|listener| {
-            let listener_id = listener.fanotify_id();
-            let generation = listener.fanotify_generation();
-            !fanotify_ignores_listener(inode_fanotify.as_ref(), listener_id, generation, mask, context)
-                && !fanotify_ignores_listener(mount_fanotify.as_ref(), listener_id, generation, mask, context)
-                && !fanotify_ignores_listener(filesystem_fanotify.as_ref(), listener_id, generation, mask, context)
-                && !fanotify_ignores_listener(parent_fanotify.as_ref(), listener_id, generation, mask, context)
-        })
-        .collect()
+    fanotify_listener_events(
+        mask,
+        Fanotify::file_context(Some(file)),
+        inode_fanotify.as_ref(),
+        mount_fanotify.as_ref(),
+        filesystem_fanotify.as_ref(),
+        parent_fanotify.as_ref(),
+    )
 }
 
-fn fanotify_listeners_for_dentry(dentry: &Arc<Dentry>, mask: FanotifyEventMask) -> Vec<Arc<dyn FanotifyListener>> {
+fn fanotify_listener_events_for_dentry(dentry: &Arc<Dentry>, mask: FanotifyEventMask) -> Vec<FanotifyListenerEvent> {
     let inode_fanotify = dentry.get_inode().fanotify();
     let mount_fanotify = dentry.get_mount().fanotify();
     let filesystem_fanotify = dentry.superblock_fanotify();
     let parent_fanotify = dentry.get_parent().and_then(|parent| parent.get_inode().fanotify());
 
-    if inode_fanotify.is_none()
-        && mount_fanotify.is_none()
-        && filesystem_fanotify.is_none()
-        && parent_fanotify.is_none()
-    {
-        return Vec::new();
-    }
-
-    let context = Fanotify::dentry_context(dentry);
-    let mut listeners = Vec::new();
-    if let Some(fanotify) = &inode_fanotify {
-        for listener in fanotify.matching_listeners(mask, context, false) {
-            push_unique_listener(&mut listeners, listener);
-        }
-    }
-    if let Some(fanotify) = &mount_fanotify {
-        for listener in fanotify.matching_listeners(mask, context, false) {
-            push_unique_listener(&mut listeners, listener);
-        }
-    }
-    if let Some(fanotify) = &filesystem_fanotify {
-        for listener in fanotify.matching_listeners(mask, context, false) {
-            push_unique_listener(&mut listeners, listener);
-        }
-    }
-    if let Some(fanotify) = &parent_fanotify {
-        for listener in fanotify.matching_listeners(mask, context, true) {
-            push_unique_listener(&mut listeners, listener);
-        }
-    }
-
-    listeners
-        .into_iter()
-        .filter(|listener| {
-            let listener_id = listener.fanotify_id();
-            let generation = listener.fanotify_generation();
-            !fanotify_ignores_listener(inode_fanotify.as_ref(), listener_id, generation, mask, context)
-                && !fanotify_ignores_listener(mount_fanotify.as_ref(), listener_id, generation, mask, context)
-                && !fanotify_ignores_listener(filesystem_fanotify.as_ref(), listener_id, generation, mask, context)
-                && !fanotify_ignores_listener(parent_fanotify.as_ref(), listener_id, generation, mask, context)
-        })
-        .collect()
+    fanotify_listener_events(
+        mask,
+        Fanotify::dentry_context(dentry),
+        inode_fanotify.as_ref(),
+        mount_fanotify.as_ref(),
+        filesystem_fanotify.as_ref(),
+        parent_fanotify.as_ref(),
+    )
 }
 
 #[inline(always)]
 pub fn wait_fanotify_permission(file: &Arc<dyn FileOps>, mask: FanotifyEventMask) -> SysResult<()> {
-    for listener in fanotify_listeners_for_file(file, mask) {
-        listener.queue_fanotify_permission(mask, file.clone())?;
+    for event in fanotify_listener_events_for_file(file, mask) {
+        event.listener.queue_fanotify_permission(event.mask, file.clone())?;
     }
 
     Ok(())
@@ -353,15 +346,15 @@ pub fn wait_fanotify_open_exec_permission(file: &Arc<dyn FileOps>) -> SysResult<
 
 #[inline(always)]
 pub fn notify_fanotify(file: &Arc<dyn FileOps>, mask: FanotifyEventMask) {
-    for listener in fanotify_listeners_for_file(file, mask) {
-        listener.queue_fanotify_event(mask, Some(file.clone()));
+    for event in fanotify_listener_events_for_file(file, mask) {
+        event.listener.queue_fanotify_event(event.mask, Some(file.clone()));
     }
 }
 
 #[inline(always)]
 pub fn notify_fanotify_dentry(dentry: &Arc<Dentry>, mask: FanotifyEventMask) {
-    for listener in fanotify_listeners_for_dentry(dentry, mask) {
-        listener.queue_fanotify_event(mask, None);
+    for event in fanotify_listener_events_for_dentry(dentry, mask) {
+        event.listener.queue_fanotify_event(event.mask, None);
     }
 }
 
@@ -450,12 +443,13 @@ impl FanotifyState {
             .retain(|mark| !mark.self_mask.is_empty() || !mark.child_mask.is_empty() || !mark.ignored.is_empty());
     }
 
-    fn listeners_for_mask(
+    fn listener_masks(
         &mut self,
         mask: FanotifyEventMask,
         context: FanotifyEventContext,
-    ) -> Vec<Arc<dyn FanotifyListener>> {
-        let mut listeners = Vec::new();
+        child_event: bool,
+    ) -> Vec<FanotifyListenerMask> {
+        let mut listener_masks = Vec::new();
         self.marks.retain(|mark| {
             let Some(listener) = mark.listener.upgrade() else {
                 return false;
@@ -463,57 +457,18 @@ impl FanotifyState {
             if listener.fanotify_generation() != mark.generation {
                 return false;
             }
-            if Self::mark_matches(mark, mask, context, false) {
-                listeners.push(listener);
+            let mark_mask = Self::matching_mark_mask(mark, mask, context, child_event);
+            let ignored_mask = Self::matching_ignored_mask(mark, mask, context);
+            if !mark_mask.is_empty() || !ignored_mask.is_empty() {
+                listener_masks.push(FanotifyListenerMask {
+                    listener,
+                    mark_mask,
+                    ignored_mask,
+                });
             }
             true
         });
-        listeners
-    }
-
-    fn listeners_for_child_mask(
-        &mut self,
-        mask: FanotifyEventMask,
-        context: FanotifyEventContext,
-    ) -> Vec<Arc<dyn FanotifyListener>> {
-        let mut listeners = Vec::new();
-        self.marks.retain(|mark| {
-            let Some(listener) = mark.listener.upgrade() else {
-                return false;
-            };
-            if listener.fanotify_generation() != mark.generation {
-                return false;
-            }
-            if Self::mark_matches(mark, mask, context, true) {
-                listeners.push(listener);
-            }
-            true
-        });
-        listeners
-    }
-
-    fn ignores_listener(
-        &mut self,
-        listener_id: usize,
-        generation: usize,
-        mask: FanotifyEventMask,
-        context: FanotifyEventContext,
-    ) -> bool {
-        let mut ignored = false;
-        self.marks.retain(|mark| {
-            let Some(listener) = mark.listener.upgrade() else {
-                return false;
-            };
-            if listener.fanotify_generation() != mark.generation {
-                return false;
-            }
-            if mark.listener_id == listener_id && mark.generation == generation && Self::is_ignored(mark, context, mask)
-            {
-                ignored = true;
-            }
-            true
-        });
-        ignored
+        listener_masks
     }
 
     fn is_ignore_mark(flags: FanotifyMarkFlags) -> bool {
@@ -584,45 +539,65 @@ impl FanotifyState {
         ignored.retain(|ignored_mark| !ignored_mark.self_mask.is_empty() || !ignored_mark.child_mask.is_empty());
     }
 
-    fn mark_matches(
+    fn matching_mark_mask(
         mark: &FanotifyMark,
         mask: FanotifyEventMask,
         context: FanotifyEventContext,
         child_event: bool,
-    ) -> bool {
-        if Self::is_ignored(mark, context, mask) {
-            return false;
-        }
+    ) -> FanotifyEventMask {
         let mark_mask = if child_event { mark.child_mask } else { mark.self_mask };
-        Self::mask_matches_event(mark_mask, context, mask)
+        Self::matching_event_mask(mark_mask, context, mask)
     }
 
-    fn is_ignored(mark: &FanotifyMark, context: FanotifyEventContext, mask: FanotifyEventMask) -> bool {
-        mark.ignored.iter().any(|ignored_mark| match ignored_mark.scope {
-            FanotifyMarkScope::Inode(ignored_index) => {
-                (Some(ignored_index) == context.index
-                    && Self::mask_matches_event(ignored_mark.self_mask, context, mask))
-                    || (Some(ignored_index) == context.parent_index
-                        && Self::mask_matches_event(ignored_mark.child_mask, context, mask))
-            }
-            FanotifyMarkScope::Mount { mount_id, .. } => {
-                Some(mount_id) == context.mount_id && Self::mask_matches_event(ignored_mark.self_mask, context, mask)
-            }
-            FanotifyMarkScope::Filesystem { sno, .. } => {
-                Some(sno) == context.sno && Self::mask_matches_event(ignored_mark.self_mask, context, mask)
-            }
-        })
+    fn matching_ignored_mask(
+        mark: &FanotifyMark,
+        mask: FanotifyEventMask,
+        context: FanotifyEventContext,
+    ) -> FanotifyEventMask {
+        let mut ignored_mask = FanotifyEventMask::empty();
+        for ignored_mark in &mark.ignored {
+            let matching_mask = match ignored_mark.scope {
+                FanotifyMarkScope::Inode(ignored_index) => {
+                    if Some(ignored_index) == context.index {
+                        Self::matching_event_mask(ignored_mark.self_mask, context, mask)
+                    } else if Some(ignored_index) == context.parent_index {
+                        Self::matching_event_mask(ignored_mark.child_mask, context, mask)
+                    } else {
+                        FanotifyEventMask::empty()
+                    }
+                }
+                FanotifyMarkScope::Mount { mount_id, .. } => {
+                    if Some(mount_id) == context.mount_id {
+                        Self::matching_event_mask(ignored_mark.self_mask, context, mask)
+                    } else {
+                        FanotifyEventMask::empty()
+                    }
+                }
+                FanotifyMarkScope::Filesystem { sno, .. } => {
+                    if Some(sno) == context.sno {
+                        Self::matching_event_mask(ignored_mark.self_mask, context, mask)
+                    } else {
+                        FanotifyEventMask::empty()
+                    }
+                }
+            };
+            ignored_mask.insert(matching_mask);
+        }
+        ignored_mask
     }
 
-    fn mask_matches_event(
+    fn matching_event_mask(
         mark_mask: FanotifyEventMask,
         context: FanotifyEventContext,
         event_mask: FanotifyEventMask,
-    ) -> bool {
+    ) -> FanotifyEventMask {
         if context.is_dir && !mark_mask.contains(FanotifyEventMask::FAN_ONDIR) {
-            return false;
+            return FanotifyEventMask::empty();
         }
-        mark_mask.intersects(event_mask)
+        if !mark_mask.event_bits().intersects(event_mask.event_bits()) {
+            return FanotifyEventMask::empty();
+        }
+        mark_mask
     }
 }
 

@@ -898,6 +898,6 @@ pub fn setfsgid(fsgid: usize) -> SyscallRet {
 
 pub fn prctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SyscallRet {
     let _ = (option, arg2, arg3, arg4, arg5); // Silence unused variable warnings
-    
+
     Ok(0)
 }
