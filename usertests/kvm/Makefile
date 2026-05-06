@@ -1,12 +1,13 @@
 ARCH ?= riscv64
 ISA ?= $(ARCH)
 GUEST_COMPONENTS ?= hello_sbi timer_tick
+HOST_IMPL ?= host-rs
 
 BUILD_DIR = build/$(ARCH)
 OUTPUT_DIR = $(BUILD_DIR)/output
 HOST_OUTPUT_DIR = $(OUTPUT_DIR)/host
 GUEST_OUTPUT_DIR = $(OUTPUT_DIR)/guest
-HOST_BUILD_OUTPUT_DIR = host/build/$(ARCH)/output
+HOST_BUILD_OUTPUT_DIR = $(HOST_IMPL)/build/$(ARCH)/output
 GUEST_BUILD_OUTPUT_DIR = guest/build/$(ISA)/output
 
 .PHONY: all host guest guest-linux5.15 download-linux5.15 package image clean
@@ -18,7 +19,7 @@ all: host guest
 	@ cp -r $(GUEST_BUILD_OUTPUT_DIR)/* $(GUEST_OUTPUT_DIR)/
 
 host:
-	@ $(MAKE) -C host ARCH=$(ARCH) ISA=$(ISA) all
+	@ $(MAKE) -C $(HOST_IMPL) ARCH=$(ARCH) ISA=$(ISA) all
 
 guest:
 	@ rm -rf $(GUEST_BUILD_OUTPUT_DIR)
@@ -31,11 +32,11 @@ download-linux5.15:
 	@ $(MAKE) -C guest download-linux5.15
 
 package: all
-	@ KVM_SKIP_BUILD=1 ARCH=$(ARCH) ISA=$(ISA) GUEST_COMPONENTS="$(GUEST_COMPONENTS)" ./package.sh
+	@ KVM_SKIP_BUILD=1 ARCH=$(ARCH) ISA=$(ISA) HOST_IMPL=$(HOST_IMPL) GUEST_COMPONENTS="$(GUEST_COMPONENTS)" ./package.sh
 
 image: package
 
 clean:
-	@ $(MAKE) -C host ARCH=$(ARCH) ISA=$(ISA) clean
+	@ $(MAKE) -C $(HOST_IMPL) ARCH=$(ARCH) ISA=$(ISA) clean
 	@ $(MAKE) -C guest ARCH=$(ARCH) ISA=$(ISA) clean
 	@ rm -rf $(BUILD_DIR)

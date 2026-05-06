@@ -6,6 +6,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 ARCH=${ARCH:-${1:-riscv64}}
 ISA=${ISA:-$ARCH}
+HOST_IMPL=${HOST_IMPL:-host-rs}
 GUEST_COMPONENTS=${GUEST_COMPONENTS:-"hello_sbi timer_tick"}
 DEFAULT_IMG_SIZE_MB=128
 LINUX_GUEST_IMG_SIZE_MB=768
@@ -221,8 +222,8 @@ build_outputs() {
         return 0
     fi
 
-    log "build kvm usertests for ARCH=$ARCH ISA=$ISA GUEST_COMPONENTS=$GUEST_COMPONENTS"
-    make -C "$SCRIPT_DIR" ARCH="$ARCH" ISA="$ISA" GUEST_COMPONENTS="$GUEST_COMPONENTS" all
+    log "build kvm usertests for ARCH=$ARCH ISA=$ISA HOST_IMPL=$HOST_IMPL GUEST_COMPONENTS=$GUEST_COMPONENTS"
+    make -C "$SCRIPT_DIR" ARCH="$ARCH" ISA="$ISA" HOST_IMPL="$HOST_IMPL" GUEST_COMPONENTS="$GUEST_COMPONENTS" all
 }
 
 adjust_image_size() {

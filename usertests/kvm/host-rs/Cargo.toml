@@ -1,0 +1,12 @@
+[package]
+name = "kxemu-kvm-rs"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+lto = true
+panic = "abort"
+
+[dependencies]
+libc = "0.2"
+num_enum = "0.7"
