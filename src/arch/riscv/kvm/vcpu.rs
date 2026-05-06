@@ -3,13 +3,14 @@ use crate::arch::riscv::csr::scause::{Cause, Interrupt, Trap};
 use crate::arch::riscv::csr::{Sstatus, SstatusSPP, scause, sepc, sscratch, stval, stvec};
 use crate::arch::riscv::kvm::context::{KvmRegs, KvmSRegs, VCpuContext};
 use crate::arch::riscv::kvm::csr::hcounteren::Hcounteren;
+use crate::arch::riscv::kvm::csr::henvcfg::{Henvcfg, HenvcfgFlag};
+use crate::arch::riscv::kvm::csr::hie::Hie;
 use crate::arch::riscv::kvm::csr::hstatus::{Hstatus, HstatusSpv};
 use crate::arch::riscv::kvm::csr::hvip::Hvip;
-use crate::arch::riscv::kvm::csr::{
-    VirtualInterrupt, hcounteren, hedeleg, hgatp, hideleg, htinst, htval, vsatp, vstimecmp,
-};
+use crate::arch::riscv::kvm::csr::{VirtualInterrupt, hedeleg, hgatp, hideleg, htinst, htval, vsatp, vstimecmp};
 use crate::arch::riscv::task::traphandle;
 use crate::kernel::mm::MemAccessType;
+use crate::kernel::scheduler::current;
 use crate::klib::{SleepLock, SpinLock};
 use crate::kvm::{KvmInterruptKind, KvmInterruptState, VCpuExitReason};
 
@@ -30,6 +31,7 @@ pub struct VCpuState {
     pub(super) pc: usize,
     pub(super) vsatp: usize,
     pub(super) spp: SstatusSPP,
+    pub(super) hie: Hie,
     pub(super) hvip: Hvip,
     pub(super) vstimecmp: usize,
 }
@@ -45,6 +47,7 @@ impl VCpuState {
             pc: 0,
             vsatp: 0,
             spp: SstatusSPP::Supervisor,
+            hie: Hie::clear(),
             hvip: Hvip::clear(),
             vstimecmp: usize::MAX,
         }
@@ -53,17 +56,17 @@ impl VCpuState {
     fn goto_guest(&mut self, hgatp: usize) {
         Self::delegate_exceptions_to_vs();
         Self::delegate_interrupts_to_vs();
-        self.enable_guest_counters();
-        Hcounteren::read().set_tm(true).write();
+        Self::enable_sstc_timer();
         Sstatus::read().set_spie(false).set_spp(self.spp).write();
         Hstatus::read().set_spv(HstatusSpv::Virtual).write();
 
-        stvec::write(asm_kvm_guest_trap_entry as usize);
+        stvec::write(asm_kvm_guest_trap_entry as *const () as usize);
         sepc::write(self.pc);
         sscratch::write(&raw mut self.context as usize);
         hgatp::write(hgatp);
         vsatp::write(self.vsatp);
         vstimecmp::write(self.vstimecmp);
+        self.hie.write();
         self.hvip.write();
 
         traphandle::restore_float_registers(&mut self.context.fpregs_mut());
@@ -74,6 +77,7 @@ impl VCpuState {
         Hstatus::read().set_spv(HstatusSpv::Hypervisor).write();
         traphandle::set_stvec_to_kerneltrap_handler();
         self.vsatp = vsatp::read();
+        self.hie = Hie::read();
         self.hvip = Hvip::read();
         self.spp = Sstatus::read().spp();
         traphandle::save_float_registers(&mut self.context.fpregs_mut());
@@ -111,8 +115,9 @@ impl VCpuState {
             .write();
     }
 
-    fn enable_guest_counters(&self) {
-        hcounteren::Hcounteren::read().set_tm(true).write();
+    fn enable_sstc_timer() {
+        Hcounteren::read().set_tm(true).write();
+        Henvcfg::read().set(HenvcfgFlag::STCE, true).write();
     }
 
     pub(super) fn regs(&self) -> KvmRegs {
@@ -212,8 +217,13 @@ impl VCpu {
                     _ => unreachable!("Unsupported trap cause: {:?}, stval={:#x}", trap, stval::read()),
                 },
 
-                Cause::Interrupt(Interrupt::Timer) => return VCpuExitReason::Timer,
-                Cause::Interrupt(interrupt) => traphandle::handle_interrupt(interrupt),
+                Cause::Interrupt(Interrupt::Timer) => {
+                    return VCpuExitReason::Timer;
+                }
+                Cause::Interrupt(interrupt) => {
+                    traphandle::handle_interrupt(interrupt);
+                    current::schedule();
+                }
             }
         }
     }

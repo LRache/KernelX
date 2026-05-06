@@ -7,7 +7,45 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <utility>
+#include <unistd.h>
+
+namespace {
+class StdinTermiosGuard {
+public:
+    StdinTermiosGuard() = default;
+    StdinTermiosGuard(const StdinTermiosGuard &) = delete;
+    StdinTermiosGuard &operator=(const StdinTermiosGuard &) = delete;
+
+    ~StdinTermiosGuard() {
+        if (this->enabled_) {
+            (void)ioctl(STDIN_FILENO, TCSETS, &this->saved_);
+        }
+    }
+
+    void enable_raw_input() {
+        if (ioctl(STDIN_FILENO, TCGETS, &this->saved_) != 0) {
+            return;
+        }
+
+        termios raw = this->saved_;
+        raw.c_iflag &= static_cast<tcflag_t>(~(BRKINT | INPCK | ISTRIP | IXON | INLCR | IGNCR));
+        raw.c_iflag |= ICRNL;
+        raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO | ISIG | IEXTEN));
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        if (ioctl(STDIN_FILENO, TCSETS, &raw) == 0) {
+            this->enabled_ = true;
+        }
+    }
+
+private:
+    bool enabled_ = false;
+    termios saved_ = {};
+};
+} // namespace
 
 int main(int argc, char **argv) {
     bool kernel_explicit = false;
@@ -92,6 +130,8 @@ int main(int argc, char **argv) {
 
     auto uart = std::make_shared<kvm_host::Uart16650Device>();
     uart->set_output_stream(std::cout);
+    StdinTermiosGuard stdin_termios_guard;
+    stdin_termios_guard.enable_raw_input();
     if (!bus->add_mmio_device(kvm_host::UART0_BASE, kvm_host::Uart16650Device::kLength, std::move(uart),
                               kvm_host::UART0_IRQ)) {
         std::fprintf(stderr, "failed to add uart mmio device\n");

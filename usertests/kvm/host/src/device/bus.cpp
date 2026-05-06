@@ -198,6 +198,17 @@ std::size_t Bus::mmio_device_count() const {
     return this->mmio_device_count_;
 }
 
+bool Bus::external_interrupt_pending() const {
+    for (std::size_t i = 0; i < this->mmio_device_count_; i++) {
+        const MmioRegion &region = this->mmio_regions_[i];
+        if (region.id == 0 && region.device != nullptr && region.device->interrupt_pending()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 const Bus::MmioRegion *Bus::find_mmio_region(std::uintptr_t guest_addr, std::uintptr_t length) const {
     std::uintptr_t end = 0;
     if (!checked_range_end(guest_addr, length, &end)) {

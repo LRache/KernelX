@@ -165,6 +165,16 @@ void PlicDevice::update() {
     this->refresh_context_claims();
 }
 
+bool PlicDevice::interrupt_pending() {
+    for (std::size_t context = 0; context < this->kContextCount; context++) {
+        if (this->target_contexts_[context].claim != 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void PlicDevice::connect_to_bus(Bus *bus) {
     this->bus_ = bus;
 }

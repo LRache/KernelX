@@ -32,6 +32,8 @@ enum class SbiDebugConsoleFunctionId : std::uintptr_t {
 
 enum class SbiRemoteFenceFunctionId : std::uintptr_t {
     RemoteFenceI = 0,
+    RemoteSfenceVma = 1,
+    RemoteSfenceVmaAsid = 2,
 };
 
 enum class SbiSystemResetFunctionId : std::uintptr_t {
@@ -146,6 +148,8 @@ static bool handle_debug_console_extension(const KvmCpu &cpu, const KvmRegs &reg
 static bool handle_remote_fence_extension(const KvmCpu &cpu, const KvmRegs &regs) {
     switch (static_cast<SbiRemoteFenceFunctionId>(regs[KvmReg::A6])) {
         case SbiRemoteFenceFunctionId::RemoteFenceI:
+        case SbiRemoteFenceFunctionId::RemoteSfenceVma:
+        case SbiRemoteFenceFunctionId::RemoteSfenceVmaAsid:
             return finish_sbi_call(cpu, regs, SBI_SUCCESS, 0);
         default:
             return finish_sbi_call(cpu, regs, SBI_ERR_NOT_SUPPORTED, 0);

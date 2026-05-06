@@ -41,6 +41,7 @@ private:
         Socket,
     };
 
+    void refresh_interrupt_state();
     void recv_byte(std::uint8_t c);
     void send_byte(std::uint8_t c);
 
@@ -63,6 +64,8 @@ private:
     std::uint8_t msr_ = 0x00;
 
     bool interrupt_ = false;
+    bool thr_interrupt_pending_ = false;
+    bool stream_input_closed_ = false;
     unsigned int recv_fifo_trigger_byte_count_ = 1;
 };
 

@@ -47,6 +47,7 @@ private:
     bool run_once(std::uintptr_t *exit_reason) const;
     SbiCallResult handle_sbi_call(const KvmRegs &regs) const;
     bool handle_memory_fault() const;
+    bool sync_external_interrupt() const;
 
     int fd_ = -1;
     std::shared_ptr<Bus> bus_;

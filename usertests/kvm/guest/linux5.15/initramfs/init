@@ -5,6 +5,11 @@
 /bin/mount -t devtmpfs dev /dev
 /bin/mount -t tmpfs tmp /tmp
 
+if [ ! -e /dev/console ]; then
+    /bin/mknod /dev/console c 5 1
+fi
+exec </dev/console >/dev/console 2>&1
+
 /bin/echo "Hello, world! from Busybox"
 
 /bin/echo "$ /bin/ls -al"

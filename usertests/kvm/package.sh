@@ -6,7 +6,14 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 ARCH=${ARCH:-${1:-riscv64}}
 ISA=${ISA:-$ARCH}
-IMG_SIZE_MB=${IMG_SIZE_MB:-128}
+GUEST_COMPONENTS=${GUEST_COMPONENTS:-"hello_sbi timer_tick"}
+DEFAULT_IMG_SIZE_MB=128
+LINUX_GUEST_IMG_SIZE_MB=768
+IMG_SIZE_MB_EXPLICIT=0
+if [[ -n "${IMG_SIZE_MB+x}" ]]; then
+    IMG_SIZE_MB_EXPLICIT=1
+fi
+IMG_SIZE_MB=${IMG_SIZE_MB:-$DEFAULT_IMG_SIZE_MB}
 KVM_SKIP_BUILD=${KVM_SKIP_BUILD:-0}
 
 BUILD_DIR=${BUILD_DIR:-"$SCRIPT_DIR/build/$ARCH"}
@@ -214,8 +221,14 @@ build_outputs() {
         return 0
     fi
 
-    log "build kvm usertests for ARCH=$ARCH ISA=$ISA"
-    make -C "$SCRIPT_DIR" ARCH="$ARCH" ISA="$ISA" all
+    log "build kvm usertests for ARCH=$ARCH ISA=$ISA GUEST_COMPONENTS=$GUEST_COMPONENTS"
+    make -C "$SCRIPT_DIR" ARCH="$ARCH" ISA="$ISA" GUEST_COMPONENTS="$GUEST_COMPONENTS" all
+}
+
+adjust_image_size() {
+    if [[ "$IMG_SIZE_MB_EXPLICIT" == "0" && -d "$OUTPUT_DIR/guest/linux5.15" ]]; then
+        IMG_SIZE_MB=$LINUX_GUEST_IMG_SIZE_MB
+    fi
 }
 
 copy_outputs_to_image() {
@@ -252,6 +265,7 @@ main() {
     require_cmd make
 
     build_outputs
+    adjust_image_size
     create_image
     copy_outputs_to_image
     stage_dynamic_libraries

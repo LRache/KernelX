@@ -47,6 +47,7 @@ public:
     const Area *find_area(std::uintptr_t guest_addr, std::uintptr_t length) const;
     const MmioRegion *mmio_region_at(std::size_t index) const;
     std::size_t mmio_device_count() const;
+    bool external_interrupt_pending() const;
     void update();
     std::size_t area_count() const;
 

@@ -31,13 +31,14 @@ $(BUSYBOX_CONFIG): busybox_defconfig $(BUSYBOX_SRC)
 
 $(BUSYBOX): $(BUSYBOX_CONFIG)
 	$(info + BUILDING BUSYBOX)
-	@ $(MAKE) -C $(BUSYBOX_DIR) ARCH=riscv CROSS_COMPILE=$(CROSS_COMPILE) olddefconfig
+	@ yes "" | $(MAKE) -C $(BUSYBOX_DIR) ARCH=riscv CROSS_COMPILE=$(CROSS_COMPILE) oldconfig
 	@ $(MAKE) -C $(BUSYBOX_DIR) ARCH=riscv CROSS_COMPILE=$(CROSS_COMPILE) CFLAGS="-march=rv64g" install -j$(MAKE_JOBS)
 
 $(INITRAMFS): $(BUSYBOX) $(INIT_EXEC)
 	$(info + CREATING INITRAMFS)
 	@ rm -rf $(ROOTFS_DIR)
-	@ cp -r $(BUSYBOX_INSTALL) $(ROOTFS_DIR)
+	@ mkdir -p $(ROOTFS_DIR)
+	@ (cd $(BUSYBOX_INSTALL) && tar cf - .) | (cd $(ROOTFS_DIR) && tar xpf -)
 	@ cp $(INIT_EXEC) $(ROOTFS_DIR)/
 	@ chmod +x $(ROOTFS_DIR)/$(INIT_EXEC)
 	@ mkdir -p $(ROOTFS_DIR)/dev $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/sys $(ROOTFS_DIR)/tmp

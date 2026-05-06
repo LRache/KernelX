@@ -6,28 +6,32 @@ BUILD_DIR = build/$(ARCH)
 OUTPUT_DIR = $(BUILD_DIR)/output
 HOST_OUTPUT_DIR = $(OUTPUT_DIR)/host
 GUEST_OUTPUT_DIR = $(OUTPUT_DIR)/guest
+HOST_BUILD_OUTPUT_DIR = host/build/$(ARCH)/output
+GUEST_BUILD_OUTPUT_DIR = guest/build/$(ISA)/output
 
 .PHONY: all host guest guest-linux5.15 download-linux5.15 package image clean
 
 all: host guest
+	@ rm -rf $(HOST_OUTPUT_DIR) $(GUEST_OUTPUT_DIR)
 	@ mkdir -p $(HOST_OUTPUT_DIR) $(GUEST_OUTPUT_DIR)
-	@ cp -r host/build/$(ARCH)/output/* $(HOST_OUTPUT_DIR)/
-	@ cp -r guest/build/$(ARCH)/output/* $(GUEST_OUTPUT_DIR)/
+	@ cp -r $(HOST_BUILD_OUTPUT_DIR)/* $(HOST_OUTPUT_DIR)/
+	@ cp -r $(GUEST_BUILD_OUTPUT_DIR)/* $(GUEST_OUTPUT_DIR)/
 
 host:
 	@ $(MAKE) -C host ARCH=$(ARCH) ISA=$(ISA) all
 
 guest:
+	@ rm -rf $(GUEST_BUILD_OUTPUT_DIR)
 	@ $(MAKE) -C guest ARCH=$(ARCH) ISA=$(ISA) GUEST_COMPONENTS="$(GUEST_COMPONENTS)" all
 
 guest-linux5.15:
-	@ $(MAKE) -C guest ARCH=$(ARCH) ISA=$(ISA) linux5.15
+	@ $(MAKE) ARCH=$(ARCH) ISA=$(ISA) GUEST_COMPONENTS=linux5.15 guest
 
 download-linux5.15:
 	@ $(MAKE) -C guest download-linux5.15
 
 package: all
-	@ KVM_SKIP_BUILD=1 ARCH=$(ARCH) ISA=$(ISA) ./package.sh
+	@ KVM_SKIP_BUILD=1 ARCH=$(ARCH) ISA=$(ISA) GUEST_COMPONENTS="$(GUEST_COMPONENTS)" ./package.sh
 
 image: package
 

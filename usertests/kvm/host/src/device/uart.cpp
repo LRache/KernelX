@@ -24,6 +24,10 @@ static constexpr std::uint8_t UART_LSR_DATA_READY = 1u << 0;
 static constexpr std::uint8_t UART_LSR_THR_EMPTY = 1u << 5;
 static constexpr std::uint8_t UART_LSR_TRANSMITTER_EMPTY = 1u << 6;
 static constexpr std::uint8_t UART_IER_RX_AVAILABLE = 1u << 0;
+static constexpr std::uint8_t UART_IER_THR_EMPTY = 1u << 1;
+static constexpr std::uint8_t UART_IIR_NONE = 0b11000001;
+static constexpr std::uint8_t UART_IIR_THR_EMPTY = 0b11000010;
+static constexpr std::uint8_t UART_IIR_RX_AVAILABLE = 0b11000100;
 static constexpr std::size_t UART_FIFO_CAPACITY = 1024;
 
 static constexpr std::uintptr_t UART_RBR_THR_DLL = 0;
@@ -59,6 +63,23 @@ static int open_socket_client(const std::string &ip, int port) {
     return sockfd;
 }
 
+void Uart16650Device::refresh_interrupt_state() {
+    if (!this->queue_.empty() && (this->ier_ & UART_IER_RX_AVAILABLE) != 0) {
+        this->iir_ = UART_IIR_RX_AVAILABLE;
+        this->interrupt_ = true;
+        return;
+    }
+
+    if (this->thr_interrupt_pending_ && (this->ier_ & UART_IER_THR_EMPTY) != 0) {
+        this->iir_ = UART_IIR_THR_EMPTY;
+        this->interrupt_ = true;
+        return;
+    }
+
+    this->iir_ = UART_IIR_NONE;
+    this->interrupt_ = false;
+}
+
 bool Uart16650Device::read(std::uintptr_t offset, std::size_t width, std::uint64_t *value) {
     if (value == nullptr || width != 1) {
         return false;
@@ -83,10 +104,7 @@ bool Uart16650Device::read(std::uintptr_t offset, std::size_t width, std::uint64
                 if (this->queue_.empty()) {
                     this->lsr_ &= static_cast<std::uint8_t>(~UART_LSR_DATA_READY);
                 }
-                if ((this->ier_ & UART_IER_RX_AVAILABLE) != 0 && (this->iir_ & 0x3f) == 0x02) {
-                    this->iir_ = 0b11000001;
-                    this->interrupt_ = false;
-                }
+                this->refresh_interrupt_state();
 
                 *value = c;
                 return true;
@@ -94,9 +112,15 @@ bool Uart16650Device::read(std::uintptr_t offset, std::size_t width, std::uint64
         case UART_IER_DLM:
             *value = (this->lcr_ & UART_DLAB) != 0 ? this->msb_ : this->ier_;
             return true;
-        case UART_IIR_FCR:
-            *value = this->iir_;
+        case UART_IIR_FCR: {
+            const std::uint8_t iir = this->iir_;
+            *value = iir;
+            if ((iir & 0x0f) == (UART_IIR_THR_EMPTY & 0x0f)) {
+                this->thr_interrupt_pending_ = false;
+                this->refresh_interrupt_state();
+            }
             return true;
+        }
         case UART_LCR:
             *value = this->lcr_;
             return true;
@@ -126,26 +150,26 @@ bool Uart16650Device::write(std::uintptr_t offset, std::size_t width, std::uint6
             }
 
             this->send_byte(byte);
+            if ((this->lsr_ & UART_LSR_THR_EMPTY) != 0 && (this->ier_ & UART_IER_THR_EMPTY) != 0) {
+                this->thr_interrupt_pending_ = true;
+            }
+            this->refresh_interrupt_state();
             return true;
-        case UART_IER_DLM:
+        case UART_IER_DLM: {
             if ((this->lcr_ & UART_DLAB) != 0) {
                 this->msb_ = byte;
                 return true;
             }
 
+            const std::uint8_t old_ier = this->ier_;
             this->ier_ = byte;
-            {
-                std::lock_guard<std::mutex> lock(this->queue_mutex_);
-                if (!this->queue_.empty() && this->queue_.size() >= this->recv_fifo_trigger_byte_count_ &&
-                    (this->ier_ & UART_IER_RX_AVAILABLE) != 0) {
-                    this->iir_ = 0b11000010;
-                    this->interrupt_ = true;
-                } else if ((this->ier_ & UART_IER_RX_AVAILABLE) == 0 && (this->iir_ & 0x3f) == 0x02) {
-                    this->iir_ = 0b11000001;
-                    this->interrupt_ = false;
-                }
+            if ((old_ier & UART_IER_THR_EMPTY) == 0 && (this->ier_ & UART_IER_THR_EMPTY) != 0 &&
+                (this->lsr_ & UART_LSR_THR_EMPTY) != 0) {
+                this->thr_interrupt_pending_ = true;
             }
+            this->refresh_interrupt_state();
             return true;
+        }
         case UART_IIR_FCR:
             if ((byte & (1u << 1)) != 0) {
                 std::lock_guard<std::mutex> lock(this->queue_mutex_);
@@ -153,8 +177,6 @@ bool Uart16650Device::write(std::uintptr_t offset, std::size_t width, std::uint6
                     this->queue_.pop();
                 }
                 this->lsr_ &= static_cast<std::uint8_t>(~UART_LSR_DATA_READY);
-                this->iir_ = 0b11000001;
-                this->interrupt_ = false;
             }
 
             switch ((byte >> 6) & 0x3) {
@@ -171,6 +193,7 @@ bool Uart16650Device::write(std::uintptr_t offset, std::size_t width, std::uint6
                     this->recv_fifo_trigger_byte_count_ = 14;
                     break;
             }
+            this->refresh_interrupt_state();
             return true;
         case UART_LCR:
             this->lcr_ = byte;
@@ -183,27 +206,38 @@ bool Uart16650Device::write(std::uintptr_t offset, std::size_t width, std::uint6
 }
 
 void Uart16650Device::update() {
-    if (this->mode_ != Mode::Socket || this->recv_socket_ < 0) {
+    int recv_fd = -1;
+    if (this->mode_ == Mode::Socket) {
+        recv_fd = this->recv_socket_;
+    } else if (this->mode_ == Mode::Stream && !this->stream_input_closed_) {
+        recv_fd = STDIN_FILENO;
+    }
+    if (recv_fd < 0) {
         return;
     }
 
     timeval timeout = {};
     fd_set read_fds;
     FD_ZERO(&read_fds);
-    FD_SET(this->recv_socket_, &read_fds);
+    FD_SET(recv_fd, &read_fds);
 
-    const int ready = select(this->recv_socket_ + 1, &read_fds, nullptr, nullptr, &timeout);
+    const int ready = select(recv_fd + 1, &read_fds, nullptr, nullptr, &timeout);
     if (ready <= 0) {
         return;
     }
 
     char buffer[64];
-    const ssize_t bytes = ::read(this->recv_socket_, buffer, sizeof(buffer));
+    const ssize_t bytes = ::read(recv_fd, buffer, sizeof(buffer));
     if (bytes <= 0) {
-        std::fprintf(stderr, "uart socket: receive failed: %s\n", bytes < 0 ? std::strerror(errno) : "peer closed");
-        close(this->recv_socket_);
-        this->recv_socket_ = -1;
-        this->mode_ = Mode::None;
+        if (this->mode_ == Mode::Socket) {
+            std::fprintf(stderr, "uart socket: receive failed: %s\n",
+                         bytes < 0 ? std::strerror(errno) : "peer closed");
+            close(this->recv_socket_);
+            this->recv_socket_ = -1;
+            this->mode_ = Mode::None;
+        } else if (bytes < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+            this->stream_input_closed_ = true;
+        }
         return;
     }
 
@@ -217,15 +251,7 @@ bool Uart16650Device::interrupt_pending() {
 }
 
 void Uart16650Device::clear_interrupt() {
-    std::lock_guard<std::mutex> lock(this->queue_mutex_);
-    if (!this->queue_.empty() && this->queue_.size() >= this->recv_fifo_trigger_byte_count_ && (this->ier_ & UART_IER_RX_AVAILABLE) != 0) {
-        this->iir_ = 0b11000010;
-        this->interrupt_ = true;
-        return;
-    }
-
-    this->iir_ = 0b11000001;
-    this->interrupt_ = false;
+    this->refresh_interrupt_state();
 }
 
 bool Uart16650Device::putch(std::uint8_t data) {
@@ -236,10 +262,7 @@ bool Uart16650Device::putch(std::uint8_t data) {
 
     this->queue_.push(data);
     this->lsr_ |= UART_LSR_DATA_READY;
-    if (this->queue_.size() >= this->recv_fifo_trigger_byte_count_ && (this->ier_ & UART_IER_RX_AVAILABLE) != 0) {
-        this->iir_ = 0b11000010;
-        this->interrupt_ = true;
-    }
+    this->refresh_interrupt_state();
     return true;
 }
 
@@ -288,11 +311,7 @@ void Uart16650Device::recv_byte(std::uint8_t c) {
 
     this->queue_.push(c);
     this->lsr_ |= UART_LSR_DATA_READY;
-
-    if (this->queue_.size() >= this->recv_fifo_trigger_byte_count_ && (this->ier_ & UART_IER_RX_AVAILABLE) != 0) {
-        this->iir_ = 0b11000010;
-        this->interrupt_ = true;
-    }
+    this->refresh_interrupt_state();
 }
 
 void Uart16650Device::send_byte(std::uint8_t c) {

@@ -55,6 +55,33 @@ pub mod hideleg {
     }
 }
 
+pub mod hie {
+    #[derive(Clone, Copy)]
+    pub struct Hie {
+        value: usize,
+    }
+
+    impl Hie {
+        pub const fn clear() -> Self {
+            Self { value: 0 }
+        }
+
+        pub fn read() -> Self {
+            let value: usize;
+            unsafe {
+                core::arch::asm!("csrr {}, hie", out(reg) value);
+            }
+            Self { value }
+        }
+
+        pub fn write(&self) {
+            unsafe {
+                core::arch::asm!("csrw hie, {}", in(reg) self.value);
+            }
+        }
+    }
+}
+
 pub mod hvip {
     use super::VirtualInterrupt;
 
@@ -85,6 +112,43 @@ pub mod hvip {
         pub fn set_pending(&mut self, interrupt: VirtualInterrupt, pending: bool) -> &mut Self {
             let bit = 1 << interrupt as usize;
             if pending {
+                self.value |= bit;
+            } else {
+                self.value &= !bit;
+            }
+            self
+        }
+    }
+}
+
+pub mod henvcfg {
+    #[derive(Clone, Copy)]
+    pub enum HenvcfgFlag {
+        STCE = 63,
+    }
+
+    pub struct Henvcfg {
+        value: usize,
+    }
+
+    impl Henvcfg {
+        pub fn read() -> Self {
+            let value: usize;
+            unsafe {
+                core::arch::asm!("csrr {}, henvcfg", out(reg) value);
+            }
+            Self { value }
+        }
+
+        pub fn write(&self) {
+            unsafe {
+                core::arch::asm!("csrw henvcfg, {}", in(reg) self.value);
+            }
+        }
+
+        pub fn set(&mut self, flag: HenvcfgFlag, enabled: bool) -> &mut Self {
+            let bit = 1usize << flag as usize;
+            if enabled {
                 self.value |= bit;
             } else {
                 self.value &= !bit;

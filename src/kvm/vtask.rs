@@ -58,6 +58,7 @@ impl UserStruct for KvmInterrupt {}
 
 enum VTaskExitReason {
     MemoryFault,
+    Timer,
     Other(usize),
 }
 
@@ -65,6 +66,7 @@ impl Into<usize> for VTaskExitReason {
     fn into(self) -> usize {
         match self {
             VTaskExitReason::MemoryFault => 1 as usize,
+            VTaskExitReason::Timer => 2 as usize,
             VTaskExitReason::Other(exit_code) => exit_code as usize,
         }
     }
@@ -104,6 +106,7 @@ impl VTask {
                     if trap::handle_signal() {
                         return Err(Errno::EINTR);
                     }
+                    return Ok(VTaskExitReason::Timer);
                 }
                 VCpuExitReason::MemoryFault(addr, access_type, inst) => {
                     if self.addrspace.try_to_fix_memory_fault(addr, access_type).is_none() {

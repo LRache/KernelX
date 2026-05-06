@@ -14,6 +14,10 @@ constexpr unsigned long KVM_GET_PAGE_FAULT = 5;
 constexpr unsigned long KVM_SET_INTERRUPT_PENDING = 6;
 constexpr unsigned long KVM_CLEAR_INTERRUPT_PENDING = 7;
 
+constexpr std::uintptr_t KVM_EXIT_MEMORY_FAULT = 1;
+constexpr std::uintptr_t KVM_EXIT_TIMER = 2;
+constexpr std::uintptr_t KVM_EXIT_SBI_CALL = 16;
+
 constexpr std::uintptr_t KVM_INTERRUPT_HARDWARE = 2;
 
 struct KvmMapArea {

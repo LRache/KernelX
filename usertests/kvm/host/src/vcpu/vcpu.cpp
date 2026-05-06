@@ -9,8 +9,9 @@
 namespace kvm_host {
 
 enum KvmExitReason : std::uintptr_t {
-    MemoryAccessFault = 1,
-    SbiCall = 16,
+    MemoryAccessFault = KVM_EXIT_MEMORY_FAULT,
+    Timer = KVM_EXIT_TIMER,
+    SbiCall = KVM_EXIT_SBI_CALL,
 };
 
 static void reset_fd(int *slot, int fd = -1) {
@@ -40,6 +41,9 @@ bool KvmCpu::run(std::uintptr_t *exit_reason) const {
     while (true) {
         if (this->bus_ != nullptr) {
             this->bus_->update();
+        }
+        if (!this->sync_external_interrupt()) {
+            return false;
         }
 
         std::uintptr_t reason = 0;
@@ -72,6 +76,8 @@ bool KvmCpu::run(std::uintptr_t *exit_reason) const {
                     continue;
                 }
                 return false;
+            case KvmExitReason::Timer:
+                continue;
             default:
                 std::fprintf(stderr, "unsupported kvm exit reason: 0x%lx\n", static_cast<unsigned long>(reason));
                 return false;
@@ -85,5 +91,14 @@ std::shared_ptr<Bus> KvmCpu::bus() const {
 
 int KvmCpu::raw_fd() const {
     return this->fd_;
+}
+
+bool KvmCpu::sync_external_interrupt() const {
+    const KvmInterrupt interrupt = {KVM_INTERRUPT_HARDWARE, 0};
+    if (this->bus_ != nullptr && this->bus_->external_interrupt_pending()) {
+        return this->set_interrupt_pending(interrupt);
+    }
+
+    return this->clear_interrupt_pending(interrupt);
 }
 } // namespace kvm_host
