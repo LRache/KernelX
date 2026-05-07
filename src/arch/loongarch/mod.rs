@@ -4,14 +4,14 @@ mod arch;
 mod boot;
 mod context;
 mod csr;
-mod eiointc;
+pub(crate) mod eiointc;
 mod fdt;
 mod iocsr;
 mod pagetable;
-mod pch_pic;
+pub(crate) mod pch_pic;
 mod pci;
 mod task;
-mod trap;
+pub(crate) mod trap;
 
 pub use context::{KernelContext, SigContext, UserContext};
 pub use pagetable::PageTable;

@@ -40,15 +40,49 @@ asm_tlb_refill_entry:
 
     csrrd   $t0, 0x1b                  /* $t0 = CSR.PGD */
 
+    /*
+     * Walk the 3-level tree. At each level we must check the intermediate
+     * slot is non-zero before descending — if we deref zero we end up
+     * walking physical page 0 and loading nonsense PTEs that hardware
+     * will happily install into the TLB.
+     *
+     * LoongArch convention for leaf handling: jump into a fault-path stub
+     * that forges a PTE with V=0 and runs tlbfill anyway, so the faulting
+     * access raises PIL/PIS/PIF via the normal EENTRY dispatch.
+     */
     lddir   $t0, $t0, 2
+    beqz    $t0, 1f
     lddir   $t0, $t0, 1
+    beqz    $t0, 1f
 
     ldpte   $t0, 0
     ldpte   $t0, 1
 
-    tlbfill
+2:  tlbfill
 
     csrrd   $t0, 0x8b                  /* restore $t0 */
-
     ertn
+
+    /*
+     * Fault path: the upper directories had a zero slot. Forge a PTE with
+     * PLV=3, MAT=CC, V=0, written to both TLBRELO0/1 so tlbfill leaves
+     * an inert entry behind. The subsequent access will raise a real
+     * page-fault through EENTRY.
+     *
+     * Encoding: rotate TLBREHI right by 61 (pulling PS into low bits),
+     * OR in 0x3 (PLV=3, MAT=?), rotate back. The exact sequence matches
+     * NPUcore's handler. PS is 0xC (4 KiB) — set via TLBREHI bit offset.
+     */
+1:  csrrd   $t0, 0x8e                  /* TLBREHI */
+    ori     $t0, $t0, 0xC
+    csrwr   $t0, 0x8e
+
+    rotri.d $t0, $t0, 61
+    ori     $t0, $t0, 3
+    rotri.d $t0, $t0, 3
+
+    csrwr   $t0, 0x8c                  /* TLBRELO0 */
+    csrrd   $t0, 0x8c
+    csrwr   $t0, 0x8d                  /* TLBRELO1 */
+    b       2b
     .size asm_tlb_refill_entry, . - asm_tlb_refill_entry

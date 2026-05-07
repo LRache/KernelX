@@ -102,5 +102,6 @@ asm_usertrap_return:
 
     ld.d    $t0, $t0, 96
 
+    ibar    0
     ertn
     .size asm_usertrap_return, . - asm_usertrap_return
