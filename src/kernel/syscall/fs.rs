@@ -2146,6 +2146,15 @@ pub fn fanotify_init(flags: usize, event_f_flags: usize) -> SyscallRet {
         );
     }
 
+    if flags.contains(FanotifyInitFlags::FAN_REPORT_FID) {
+        if flags.contains(FanotifyInitFlags::FAN_CLASS_CONTENT) || flags.contains(FanotifyInitFlags::FAN_CLASS_PRE_CONTENT) {
+            return Err(Errno::EINVAL);
+        }
+    }
+    if flags.contains(FanotifyInitFlags::FAN_REPORT_NAME) && !flags.contains(FanotifyInitFlags::FAN_REPORT_DIR_FID) {
+        return Err(Errno::EINVAL);
+    }
+
     let report_dfid_name = flags.contains(FanotifyInitFlags::FAN_REPORT_DIR_FID | FanotifyInitFlags::FAN_REPORT_NAME);
 
     let file = Arc::new(FanotifyFile::new(
