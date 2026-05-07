@@ -2688,22 +2688,37 @@ pub fn mount(
 
     uptr_fstype.should_not_null()?;
     let fstype = uptr_fstype.read_string()?;
+    let fstype = vfs::get_fstype(&fstype).ok_or(Errno::ENODEV)?;
 
     let device = if !uptr_source.is_null() {
         let source = uptr_source.read_path()?;
-        // Resolve the source path to a block device inode
-        let dentry = vfs::load_dentry(&source)?;
-        let inode = dentry.get_inode();
-        if let Ok(blk_inode) = inode.downcast_arc::<BlockDevInode>() {
-            Some(blk_inode.driver().clone())
+        if source.is_empty() {
+            None
         } else {
-            return Err(Errno::ENODEV);
+            // Resolve the source path to a block device inode
+            match current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &source)) {
+                Ok(dentry) => {
+                    let inode = dentry.get_inode();
+                    if let Ok(blk_inode) = inode.downcast_arc::<BlockDevInode>() {
+                        Some(blk_inode.driver().clone())
+                    } else {
+                        return Err(Errno::ENOTBLK);
+                    }
+                }
+                Err(e) => {
+                   if e == Errno::ENOENT {
+                        None
+                    } else {
+                        return Err(e);
+                    } 
+                }
+            }
         }
     } else {
         None
     };
 
-    current::with_cwd(|cwd| vfs::mount(&cwd, &target, &fstype, device, options))?;
+    current::with_cwd(|cwd| vfs::mount(&cwd, &target, fstype, device, options))?;
 
     Ok(0)
 }

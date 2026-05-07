@@ -15,7 +15,8 @@ pub fn init() {
 }
 
 fn mount(path: &str, fstype_name: &str) -> SysResult<()> {
-    vfs::mount(vfs::get_root_dentry(), path, fstype_name, None, MountOptions::default())
+    let fstype = vfs::get_fstype(fstype_name).ok_or(Errno::ENODEV)?;
+    vfs::mount(vfs::get_root_dentry(), path, fstype, None, MountOptions::default())
 }
 
 fn ensure_mountpoint(path: &str) -> SysResult<()> {
@@ -47,6 +48,7 @@ fn mount_second_device_if_enabled() {
     }
 
     let fs_type = config::DEFAULT_SECOND_FSTYPE;
+    let fstype = vfs::get_fstype(fs_type).unwrap();
     let mountpoint = config::DEFAULT_SECOND_MOUNTPOINT;
     let blk_dev = driver::get_block_driver(device_name).unwrap();
 
@@ -54,7 +56,7 @@ fn mount_second_device_if_enabled() {
     vfs::mount(
         vfs::get_root_dentry(),
         mountpoint,
-        fs_type,
+        fstype,
         Some(blk_dev),
         MountOptions::default(),
     )
@@ -65,10 +67,11 @@ fn mount_second_device_if_enabled() {
 #[unsafe(link_section = ".text.init")]
 pub fn mount_init_fs(device_name: &str, fs_type: &str) {
     let blk_dev = driver::get_block_driver(device_name).unwrap();
+    let fstype = vfs::get_fstype(fs_type).unwrap();
     vfs::mount(
         vfs::get_root_dentry(),
         "/",
-        fs_type,
+        fstype,
         Some(blk_dev),
         MountOptions::default(),
     )
@@ -95,7 +98,7 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
         vfs::load_dentry("/")
             .unwrap()
             .create("tmp", Mode::S_IFDIR | Mode::from_bits_truncate(0o755), Owner::root());
-    vfs::mount(vfs::get_root_dentry(), "/tmp", "tmpfs", None, MountOptions::default()).unwrap();
+    mount("/tmp", "tmpfs").unwrap();
 
     let _ =
         vfs::load_dentry("/")

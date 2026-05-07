@@ -25,17 +25,15 @@ impl VirtualFileSystem {
         &self,
         dir: &Arc<Dentry>,
         path: &str,
-        fstype_name: &str,
+        fstype: &'static dyn FileSystemOps,
         device: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
     ) -> SysResult<()> {
         let dentry = self.lookup_dentry(dir, path)?;
 
-        let fstype = self.fstype_map.get(fstype_name).ok_or(Errno::ENOENT)?;
-
         let (sno, root_ino) = {
             let mut superblock_table = self.superblock_table.lock();
-            let sno = superblock_table.mount(*fstype, device, options)?;
+            let sno = superblock_table.mount(fstype, device, options)?;
             (sno, superblock_table.get(sno).unwrap().get_root_ino())
         };
 
@@ -115,14 +113,18 @@ impl VirtualFileSystem {
     }
 }
 
+pub fn get_fstype(fstype_name: &str) -> Option<&'static dyn FileSystemOps> {
+    vfs().fstype_map.get(fstype_name).cloned()
+}
+
 pub fn mount(
     dir: &Arc<Dentry>,
     path: &str,
-    fstype_name: &str,
+    fstype: &'static dyn FileSystemOps,
     device: Option<Arc<dyn BlockDriverOps>>,
     options: MountOptions,
 ) -> Result<(), Errno> {
-    vfs().mount(dir, path, fstype_name, device, options)
+    vfs().mount(dir, path, fstype, device, options)
 }
 
 pub fn unmount(dir: &Arc<Dentry>, path: &str) -> Result<(), Errno> {
