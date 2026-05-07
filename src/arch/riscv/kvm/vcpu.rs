@@ -194,25 +194,47 @@ impl VCpu {
                 Cause::Trap(trap) => match trap {
                     Trap::InstGuestPageFault => {
                         let inst = htinst::read();
-                        let addr = htval::read() << 2 | stval::read() & 0x3;
+                        let val = htval::read();
+                        let addr = val << 2 | stval::read() & 0x3;
                         let addr = if addr == 0 { state.pc } else { addr };
-                        return VCpuExitReason::MemoryFault(addr, MemAccessType::Execute, inst);
+                        return VCpuExitReason::MemoryFault {
+                            addr,
+                            access_type: MemAccessType::Execute,
+                            inst,
+                            val,
+                        };
                     }
                     Trap::LoadGuestPageFault => {
                         let inst = htinst::read();
-                        let addr = htval::read() << 2 | stval::read() & 0x3;
-                        return VCpuExitReason::MemoryFault(addr, MemAccessType::Read, inst);
+                        let val = htval::read();
+                        let addr = val << 2 | stval::read() & 0x3;
+                        return VCpuExitReason::MemoryFault {
+                            addr,
+                            access_type: MemAccessType::Read,
+                            inst,
+                            val,
+                        };
                     }
                     Trap::StoreGuestPageFault => {
                         let inst = htinst::read();
-                        let addr = htval::read() << 2 | stval::read() & 0x3;
-                        return VCpuExitReason::MemoryFault(addr, MemAccessType::Write, inst);
+                        let val = htval::read();
+                        let addr = val << 2 | stval::read() & 0x3;
+                        return VCpuExitReason::MemoryFault {
+                            addr,
+                            access_type: MemAccessType::Write,
+                            inst,
+                            val,
+                        };
                     }
                     Trap::EcallVS => {
                         if self.handle_sbi_call() {
                             continue;
                         }
-                        return VCpuExitReason::ReturnToUser(RiscVVCpuExitReason::SBICall as usize);
+                        return VCpuExitReason::ReturnToUser {
+                            exit_code: RiscVVCpuExitReason::SBICall as usize,
+                            inst: htinst::read(),
+                            val: htval::read(),
+                        };
                     }
                     _ => unreachable!("Unsupported trap cause: {:?}, stval={:#x}", trap, stval::read()),
                 },
@@ -238,6 +260,25 @@ impl VCpu {
 
     pub fn set_regs(&self, regs: KvmRegs) {
         self.state.lock().set_regs(regs);
+    }
+
+    pub fn gpr(&self, index: usize) -> Option<usize> {
+        let state = self.state.lock();
+        if index == 0 {
+            Some(state.pc)
+        } else {
+            state.gpr().get(index).copied()
+        }
+    }
+
+    pub fn set_gpr(&self, index: usize, value: usize) -> Option<()> {
+        let mut state = self.state.lock();
+        if index == 0 {
+            state.pc = value;
+            return Some(());
+        }
+        *state.gpr_mut().get_mut(index)? = value;
+        Some(())
     }
 
     pub fn set_interrupt_pending(&self, kind: KvmInterruptKind) {

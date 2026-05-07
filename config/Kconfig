@@ -235,6 +235,13 @@ config DISK_IMAGE
 	help
 	  Path to the disk image file used as storage.
 
+config SECOND_DISK_IMAGE
+	string "Second disk image path"
+	default ""
+	help
+	  Path to the optional second disk image file used as storage.
+	  If empty, QEMU uses a temporary raw disk as the second disk.
+
 config INITPATH
 	string "Init process path"
 	default "/init"

@@ -4,21 +4,22 @@ use std::mem;
 
 use num_enum::TryFromPrimitive;
 
-use crate::device::bus::{Bus, MmioDevice};
+use crate::device::bus::Bus;
 use crate::device::virtio::{
-    self, RequestBuffer, VirtioCommon, VirtioDeviceId, read_guest_u32, read_guest_u64, translate_guest_slice,
+    BackendOps, RequestBuffer, VirtioBackend, VirtioDeviceId, read_guest_u32, read_guest_u64, translate_guest_slice,
     translate_guest_slice_mut, write_guest_u8,
 };
-use crate::dtb::{DtbBuilder, DtbConfig};
 
 const SECTOR_SIZE: u64 = 512;
 const QUEUE_COUNT: usize = 1;
 const QUEUE_NUM_MAX: u32 = 128;
 
-pub struct VirtioBlkDevice {
+pub type VirtioBlkDevice = VirtioBackend<VirtioBlkBackend>;
+
+pub struct VirtioBlkBackend {
     file: File,
     capacity: u64,
-    common: VirtioCommon,
+    config: [u8; mem::size_of::<u64>()],
 }
 
 #[repr(u32)]
@@ -42,9 +43,7 @@ enum VirtioBlkStatus {
     Unsupported = 2,
 }
 
-impl VirtioBlkDevice {
-    pub const LENGTH: usize = virtio::MMIO_LENGTH;
-
+impl VirtioBlkBackend {
     pub fn open(path: &str) -> Result<Self, String> {
         let file = OpenOptions::new()
             .read(true)
@@ -61,20 +60,8 @@ impl VirtioBlkDevice {
         Ok(Self {
             file,
             capacity: image_size / SECTOR_SIZE,
-            common: VirtioCommon::new(VirtioDeviceId::Block, QUEUE_COUNT, QUEUE_NUM_MAX),
+            config: (image_size / SECTOR_SIZE).to_le_bytes(),
         })
-    }
-
-    fn config_bytes(&self) -> [u8; mem::size_of::<u64>()] {
-        self.capacity.to_le_bytes()
-    }
-
-    fn handle_queue(&mut self, bus: &Bus) {
-        while let Some(request) = self.common.pop_avail_request(bus) {
-            let len = self.handle_blk_request(bus, &request.buffers).unwrap_or(0);
-            self.common
-                .push_used_completion(bus, request.queue_idx, request.desc_idx, len);
-        }
     }
 
     fn handle_blk_request(&mut self, bus: &Bus, buffers: &[RequestBuffer]) -> Option<u32> {
@@ -90,19 +77,18 @@ impl VirtioBlkDevice {
         let sector = read_guest_u64(bus, header.addr.checked_add(8)?)?;
         let data_buffers = &buffers[1..buffers.len() - 1];
 
-        let result = match VirtioBlkRequestType::try_from(request_type) {
-            Ok(VirtioBlkRequestType::In) => self.blk_read(bus, sector, data_buffers),
-            Ok(VirtioBlkRequestType::Out) => self.blk_write(bus, sector, data_buffers),
-            Ok(VirtioBlkRequestType::Flush) => self.file.flush().map_err(|_| VirtioBlkStatus::IoErr).map(|_| 0),
-            Ok(
+        let result = VirtioBlkRequestType::try_from(request_type)
+            .map_err(|_| VirtioBlkStatus::Unsupported)
+            .and_then(|request_type| match request_type {
+                VirtioBlkRequestType::In => self.blk_read(bus, sector, data_buffers),
+                VirtioBlkRequestType::Out => self.blk_write(bus, sector, data_buffers),
+                VirtioBlkRequestType::Flush => self.file.flush().map_err(|_| VirtioBlkStatus::IoErr).map(|_| 0),
                 VirtioBlkRequestType::GetId
                 | VirtioBlkRequestType::GetLifetime
                 | VirtioBlkRequestType::Discard
                 | VirtioBlkRequestType::WriteZeroes
-                | VirtioBlkRequestType::SecureErase,
-            )
-            | Err(_) => Err(VirtioBlkStatus::Unsupported),
-        };
+                | VirtioBlkRequestType::SecureErase => Err(VirtioBlkStatus::Unsupported),
+            });
 
         match result {
             Ok(data_len) => {
@@ -160,25 +146,31 @@ impl VirtioBlkDevice {
     }
 }
 
-impl MmioDevice for VirtioBlkDevice {
-    fn read(&mut self, offset: usize, width: usize) -> Option<u64> {
-        self.common.read(offset, width, &self.config_bytes())
+impl VirtioBlkDevice {
+    pub fn open(path: &str) -> Result<Self, String> {
+        Ok(VirtioBackend::new(VirtioBlkBackend::open(path)?))
+    }
+}
+
+impl BackendOps for VirtioBlkBackend {
+    fn device_id(&self) -> VirtioDeviceId {
+        VirtioDeviceId::Block
     }
 
-    fn write(&mut self, offset: usize, width: usize, value: u64) -> bool {
-        self.common.write(offset, width, value, mem::size_of::<u64>())
+    fn queue_count(&self) -> usize {
+        QUEUE_COUNT
     }
 
-    fn update(&mut self, bus: &Bus) {
-        self.handle_queue(bus);
+    fn queue_num_max(&self) -> u32 {
+        QUEUE_NUM_MAX
     }
 
-    fn interrupt_pending(&self) -> bool {
-        self.common.interrupt_pending()
+    fn config(&self) -> &[u8] {
+        &self.config
     }
 
-    fn config_dtb(&self, builder: &mut DtbBuilder, config: &DtbConfig, addr: usize, len: usize, id: u32) {
-        self.common.config_dtb(builder, config, addr, len, id);
+    fn handle_request(&mut self, bus: &Bus, buffers: &[RequestBuffer]) -> Option<u32> {
+        self.handle_blk_request(bus, buffers)
     }
 }
 

@@ -14,8 +14,17 @@ use super::addrspace::KvmAddrSpace;
 
 pub enum VCpuExitReason {
     Timer,
-    MemoryFault(usize, MemAccessType, usize),
-    ReturnToUser(usize), // Return to user mode
+    MemoryFault {
+        addr: usize,
+        access_type: MemAccessType,
+        inst: usize,
+        val: usize,
+    },
+    ReturnToUser {
+        exit_code: usize,
+        inst: usize,
+        val: usize,
+    },
 }
 
 #[repr(usize)]
@@ -55,6 +64,24 @@ pub struct KvmInterrupt {
 }
 
 impl UserStruct for KvmInterrupt {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct KvmGpr {
+    pub index: usize,
+    pub value: usize,
+}
+
+impl UserStruct for KvmGpr {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct KvmRun {
+    pub inst: usize,
+    pub val: usize,
+}
+
+impl UserStruct for KvmRun {}
 
 enum VTaskExitReason {
     MemoryFault,
@@ -97,7 +124,7 @@ impl VTask {
         }
     }
 
-    fn run(&self) -> SysResult<VTaskExitReason> {
+    fn run(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<VTaskExitReason> {
         loop {
             let interrupt_state = *self.interrupts.lock();
             match self.vcpu.run(self.addrspace.pagetable(), interrupt_state) {
@@ -106,62 +133,90 @@ impl VTask {
                     if trap::handle_signal() {
                         return Err(Errno::EINTR);
                     }
+                    self.fill_run(arg, addrspace, 0, 0)?;
                     return Ok(VTaskExitReason::Timer);
                 }
-                VCpuExitReason::MemoryFault(addr, access_type, inst) => {
+                VCpuExitReason::MemoryFault {
+                    addr,
+                    access_type,
+                    inst,
+                    val,
+                } => {
                     if self.addrspace.try_to_fix_memory_fault(addr, access_type).is_none() {
                         *self.page_fault.lock() = Some(KvmPageFault {
                             addr,
                             access_type: Self::access_type_value(access_type),
                             inst,
                         });
+                        self.fill_run(arg, addrspace, inst, val)?;
                         return Ok(VTaskExitReason::MemoryFault);
                     }
                 }
-                VCpuExitReason::ReturnToUser(exit_code) => {
+                VCpuExitReason::ReturnToUser { exit_code, inst, val } => {
+                    self.fill_run(arg, addrspace, inst, val)?;
                     return Ok(VTaskExitReason::Other(exit_code));
                 }
             }
         }
     }
 
-    fn get_regs(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
+    fn fill_run(&self, arg: usize, addrspace: &AddrSpace, inst: usize, val: usize) -> SysResult<()> {
+        if arg != 0 {
+            addrspace.copy_to_user(arg, KvmRun { inst, val })?;
+        }
+        Ok(())
+    }
+
+    fn get_regs(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         let regs = self.vcpu.regs();
         addrspace.copy_to_user(arg, regs)?;
         Ok(0)
     }
 
-    fn get_sregs(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
+    fn get_sregs(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         let regs: KvmSRegs = self.vcpu.sregs();
         addrspace.copy_to_user(arg, regs)?;
         Ok(0)
     }
 
-    fn set_regs(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
+    fn set_regs(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         let regs = addrspace.copy_from_user::<KvmRegs>(arg)?;
         self.vcpu.set_regs(regs);
         Ok(0)
     }
 
-    fn get_page_fault(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
+    fn get_gpr(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        let mut gpr = addrspace.copy_from_user::<KvmGpr>(arg)?;
+        gpr.value = self.vcpu.gpr(gpr.index).ok_or(Errno::EINVAL)?;
+        addrspace.copy_to_user(arg, gpr)?;
+        Ok(0)
+    }
+
+    fn set_gpr(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        let gpr = addrspace.copy_from_user::<KvmGpr>(arg)?;
+        self.vcpu.set_gpr(gpr.index, gpr.value).ok_or(Errno::EINVAL)?;
+        Ok(0)
+    }
+
+    fn get_page_fault(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         let page_fault = (*self.page_fault.lock()).ok_or(Errno::EINVAL)?;
         addrspace.copy_to_user(arg, page_fault)?;
         Ok(0)
     }
 
-    fn interrupt_kind(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<KvmInterruptKind> {
+    fn interrupt_kind(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<KvmInterruptKind> {
         let interrupt = addrspace.copy_from_user::<KvmInterrupt>(arg)?;
         KvmInterruptKind::try_from(interrupt.kind).map_err(|_| Errno::EINVAL)
     }
 
-    fn set_interrupt_pending(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
+    fn set_interrupt_pending(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         let kind = self.interrupt_kind(arg, addrspace)?;
         self.interrupts.lock().set_pending(kind);
         self.vcpu.set_interrupt_pending(kind);
         Ok(0)
     }
 
-    fn clear_interrupt_pending(&self, arg: usize, addrspace: &crate::kernel::mm::AddrSpace) -> SysResult<usize> {
+    fn clear_interrupt_pending(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         let kind = self.interrupt_kind(arg, addrspace)?;
         self.interrupts.lock().clear_pending(kind);
         self.vcpu.clear_interrupt_pending(kind);
@@ -203,17 +258,20 @@ impl FileOps for VTask {
             GetPageFault = 5,
             SetInterruptPending = 6,
             ClearInterruptPending = 7,
+            GetGpr = 8,
+            SetGpr = 9,
         }
 
-        match IoctlRequest::try_from(request) {
-            Ok(IoctlRequest::Run) => self.run().map(|exit_reason| exit_reason.into()),
-            Ok(IoctlRequest::GetRegs) => self.get_regs(arg, addrspace),
-            Ok(IoctlRequest::SetRegs) => self.set_regs(arg, addrspace),
-            Ok(IoctlRequest::GetSRegs) => self.get_sregs(arg, addrspace),
-            Ok(IoctlRequest::GetPageFault) => self.get_page_fault(arg, addrspace),
-            Ok(IoctlRequest::SetInterruptPending) => self.set_interrupt_pending(arg, addrspace),
-            Ok(IoctlRequest::ClearInterruptPending) => self.clear_interrupt_pending(arg, addrspace),
-            Err(_) => Err(Errno::EINVAL),
+        match IoctlRequest::try_from(request).map_err(|_| Errno::EINVAL)? {
+            IoctlRequest::Run => self.run(arg, addrspace).map(|exit_reason| exit_reason.into()),
+            IoctlRequest::GetRegs => self.get_regs(arg, addrspace),
+            IoctlRequest::SetRegs => self.set_regs(arg, addrspace),
+            IoctlRequest::GetSRegs => self.get_sregs(arg, addrspace),
+            IoctlRequest::GetPageFault => self.get_page_fault(arg, addrspace),
+            IoctlRequest::SetInterruptPending => self.set_interrupt_pending(arg, addrspace),
+            IoctlRequest::ClearInterruptPending => self.clear_interrupt_pending(arg, addrspace),
+            IoctlRequest::GetGpr => self.get_gpr(arg, addrspace),
+            IoctlRequest::SetGpr => self.set_gpr(arg, addrspace),
         }
     }
 }

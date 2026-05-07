@@ -12,10 +12,12 @@ use std::rc::Rc;
 
 use device::bus::{BusBuilder, DeviceRef};
 use device::plic::PlicDevice;
+use device::rtc::GoldfishRtcDevice;
 use device::uart::Uart16650Device;
 use device::virtio_blk::VirtioBlkDevice;
 use guest_boot::{
-    PLIC_BASE, UART0_BASE, UART0_IRQ, VIRTIO_BLK_BASE, VIRTIO_BLK_IRQ, boot_guest, parse_args, prepare_guest,
+    PLIC_BASE, RTC_BASE, RTC_IRQ, UART0_BASE, UART0_IRQ, VIRTIO_BLK_BASE, VIRTIO_BLK_IRQ, boot_guest, parse_args,
+    prepare_guest,
 };
 use kvm::Kvm;
 use terminal::StdinTermiosGuard;
@@ -26,6 +28,9 @@ fn run() -> Result<(), String> {
 
     let uart: DeviceRef = Rc::new(RefCell::new(Uart16650Device::default()));
     bus_builder.add_mmio_device(UART0_BASE, Uart16650Device::LENGTH, uart, UART0_IRQ)?;
+
+    let rtc: DeviceRef = Rc::new(RefCell::new(GoldfishRtcDevice::default()));
+    bus_builder.add_mmio_device(RTC_BASE, GoldfishRtcDevice::LENGTH, rtc, RTC_IRQ)?;
 
     if let Some(disk_path) = options.disk_path.as_deref() {
         let virtio_blk: DeviceRef = Rc::new(RefCell::new(VirtioBlkDevice::open(disk_path)?));

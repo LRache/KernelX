@@ -3,13 +3,13 @@ ISA ?= $(ARCH)
 
 CROSS_COMPILE ?= riscv64-linux-gnu-
 LINUX_ARCH ?= riscv
-LINUX_VERSION ?= 5.15.132
+LINUX_VERSION ?= 6.1.170
 
 SCRIPT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 GUEST_DIR := $(abspath $(SCRIPT_DIR)/..)
 LINUX_DIR ?= $(GUEST_DIR)/linux
 LINUX_SRC_DIR ?= $(LINUX_DIR)/linux-$(LINUX_VERSION)
-OUTPUT_DIR ?= $(abspath $(GUEST_DIR)/build/$(ISA)/output/linux5.15)
+OUTPUT_DIR ?= $(abspath $(GUEST_DIR)/build/$(ISA)/output/linux6.1)
 INITRAMFS_DIR = $(SCRIPT_DIR)/initramfs
 
 KERNEL_DEFCONFIG = kernelx_kvm_guest_defconfig
@@ -22,7 +22,7 @@ LINUX_CONFIG = $(LINUX_SRC_DIR)/.config
 
 OUTPUT_IMAGE = $(OUTPUT_DIR)/Image
 OUTPUT_VMLINUX = $(OUTPUT_DIR)/vmlinux
-OUTPUT_CONFIG = $(OUTPUT_DIR)/linux5.15.config
+OUTPUT_CONFIG = $(OUTPUT_DIR)/linux6.1.config
 INITRAMFS = $(INITRAMFS_DIR)/initramfs.cpio.gz
 OUTPUT_INITRAMFS = $(OUTPUT_DIR)/initramfs.cpio.gz
 
@@ -41,7 +41,7 @@ kernel: $(LINUX_IMAGE) $(LINUX_VMLINUX)
 initramfs: $(OUTPUT_INITRAMFS)
 
 $(LINUX_SRC_DIR)/Makefile:
-	@ $(GUEST_DIR)/download.sh linux5.15
+	@ $(GUEST_DIR)/download.sh linux6.1
 
 $(LINUX_CONFIG): $(KERNEL_DEFCONFIG_SRC) $(LINUX_SRC_DIR)/Makefile
 	@ mkdir -p $(dir $(KERNEL_DEFCONFIG_DST))

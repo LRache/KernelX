@@ -9,7 +9,7 @@ ISA=${ISA:-$ARCH}
 HOST_IMPL=${HOST_IMPL:-host-rs}
 GUEST_COMPONENTS=${GUEST_COMPONENTS:-"hello_sbi timer_tick"}
 DEFAULT_IMG_SIZE_MB=128
-LINUX_GUEST_IMG_SIZE_MB=768
+LINUX_GUEST_IMG_SIZE_MB=4096
 IMG_SIZE_MB_EXPLICIT=0
 if [[ -n "${IMG_SIZE_MB+x}" ]]; then
     IMG_SIZE_MB_EXPLICIT=1
@@ -227,7 +227,7 @@ build_outputs() {
 }
 
 adjust_image_size() {
-    if [[ "$IMG_SIZE_MB_EXPLICIT" == "0" && -d "$OUTPUT_DIR/guest/linux5.15" ]]; then
+    if [[ "$IMG_SIZE_MB_EXPLICIT" == "0" && -d "$OUTPUT_DIR/guest/linux6.1" ]]; then
         IMG_SIZE_MB=$LINUX_GUEST_IMG_SIZE_MB
     fi
 }

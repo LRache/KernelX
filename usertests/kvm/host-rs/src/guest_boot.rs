@@ -12,6 +12,8 @@ const DEFAULT_GUEST_IMAGE: &str = "/guest/hello_sbi.bin";
 
 pub const UART0_BASE: usize = 0x1000_0000;
 pub const UART0_IRQ: u32 = 10;
+pub const RTC_BASE: usize = 0x0010_1000;
+pub const RTC_IRQ: u32 = 11;
 pub const VIRTIO_BLK_BASE: usize = 0x1000_1000;
 pub const VIRTIO_BLK_IRQ: u32 = 1;
 pub const PLIC_BASE: usize = 0x0c00_0000;
@@ -21,7 +23,7 @@ pub struct GuestBootOptions {
     dtb_path: Option<String>,
     initrd_path: Option<String>,
     pub disk_path: Option<String>,
-    bootargs: String,
+    bootargs: Vec<String>,
     pub memory_size: usize,
 }
 
@@ -37,7 +39,7 @@ pub fn parse_args() -> Result<GuestBootOptions, String> {
     let mut dtb_path = None;
     let mut initrd_path = Some(String::from(""));
     let mut disk_path = None;
-    let mut bootargs = String::new();
+    let mut bootargs = Vec::new();
     let mut memory_size = GUEST_MEMORY_SIZE;
     let mut i = 0;
     while i < args.len() {
@@ -79,10 +81,11 @@ pub fn parse_args() -> Result<GuestBootOptions, String> {
             }
             "-append" | "--append" | "--bootargs" => {
                 i += 1;
-                bootargs = args
-                    .get(i)
-                    .cloned()
-                    .ok_or_else(|| format!("{} requires a string argument", args[i - 1]))?;
+                bootargs.push(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| format!("{} requires a string argument", args[i - 1]))?,
+                );
             }
             "--memory-size" => {
                 i += 1;

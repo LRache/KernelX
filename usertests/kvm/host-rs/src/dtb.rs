@@ -5,7 +5,7 @@ use std::mem;
 pub struct DtbConfig {
     pub memory_base: usize,
     pub memory_size: usize,
-    pub bootargs: String,
+    pub bootargs: Vec<String>,
     pub stdout_path: String,
     pub initrd: Option<DtbRange>,
     pub cpu_intc_phandle: u32,
@@ -131,8 +131,9 @@ impl DtbBuilder {
         self.prop_string("model", "KernelX KVM Guest");
 
         self.begin_node("chosen");
-        if !config.bootargs.is_empty() {
-            self.prop_string("bootargs", &config.bootargs);
+        let bootargs = config.bootargs.join(" ");
+        if !bootargs.is_empty() {
+            self.prop_string("bootargs", &bootargs);
         }
         if !config.stdout_path.is_empty() {
             self.prop_string("stdout-path", &config.stdout_path);

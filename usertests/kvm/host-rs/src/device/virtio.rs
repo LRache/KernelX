@@ -2,7 +2,7 @@ use std::{mem, ptr};
 
 use num_enum::TryFromPrimitive;
 
-use crate::device::bus::Bus;
+use crate::device::bus::{Bus, MmioDevice};
 use crate::dtb::{DtbBuilder, DtbConfig, dtb_node_name, dtb_reg_cells};
 
 pub const MMIO_LENGTH: usize = 0x1000;
@@ -23,6 +23,19 @@ pub struct VirtioCommon {
     status: u32,
     interrupt_status: u32,
     notify_pending: Box<[bool]>,
+}
+
+pub trait BackendOps {
+    fn device_id(&self) -> VirtioDeviceId;
+    fn queue_count(&self) -> usize;
+    fn queue_num_max(&self) -> u32;
+    fn config(&self) -> &[u8];
+    fn handle_request(&mut self, bus: &Bus, buffers: &[RequestBuffer]) -> Option<u32>;
+}
+
+pub struct VirtioBackend<T: BackendOps> {
+    common: VirtioCommon,
+    backend: T,
 }
 
 pub struct VirtioRequest {
@@ -201,55 +214,49 @@ impl VirtioCommon {
             return false;
         }
         let data = value as u32;
-        match VirtioMmioRegister::try_from(offset) {
-            Ok(VirtioMmioRegister::DeviceFeaturesSel) => self.device_features_select = data,
-            Ok(VirtioMmioRegister::DriverFeatures) => self.write_driver_features(data),
-            Ok(VirtioMmioRegister::DriverFeaturesSel) => self.driver_features_select = data,
-            Ok(VirtioMmioRegister::QueueSel) => {
+        let Ok(register) = VirtioMmioRegister::try_from(offset) else {
+            return false;
+        };
+        match register {
+            VirtioMmioRegister::DeviceFeaturesSel => self.device_features_select = data,
+            VirtioMmioRegister::DriverFeatures => self.write_driver_features(data),
+            VirtioMmioRegister::DriverFeaturesSel => self.driver_features_select = data,
+            VirtioMmioRegister::QueueSel => {
                 if (data as usize) < self.queues.len() {
                     self.queue_select = data as usize;
                 }
             }
-            Ok(VirtioMmioRegister::QueueNum) => {
+            VirtioMmioRegister::QueueNum => {
                 let queue_num_max = self.queue_num_max;
                 if let Some(queue) = self.selected_queue_mut() {
                     queue.queue_num = data.min(queue_num_max);
                 }
             }
-            Ok(VirtioMmioRegister::QueueReady) => {
+            VirtioMmioRegister::QueueReady => {
                 if let Some(queue) = self.selected_queue_mut() {
                     queue.ready = data == 1;
                 }
             }
-            Ok(VirtioMmioRegister::QueueNotify) => {
+            VirtioMmioRegister::QueueNotify => {
                 if let Some(pending) = self.notify_pending.get_mut(data as usize) {
                     *pending = true;
                 }
             }
-            Ok(VirtioMmioRegister::InterruptAck) => self.interrupt_status &= !data,
-            Ok(VirtioMmioRegister::Status) => self.write_status(data),
-            Ok(VirtioMmioRegister::QueueDescLow) => self.set_selected_queue_addr_lower(data, QueueAddressField::Desc),
-            Ok(VirtioMmioRegister::QueueDescHigh) => self.set_selected_queue_addr_upper(data, QueueAddressField::Desc),
-            Ok(VirtioMmioRegister::QueueDriverLow) => {
-                self.set_selected_queue_addr_lower(data, QueueAddressField::Avail)
-            }
-            Ok(VirtioMmioRegister::QueueDriverHigh) => {
-                self.set_selected_queue_addr_upper(data, QueueAddressField::Avail)
-            }
-            Ok(VirtioMmioRegister::QueueDeviceLow) => self.set_selected_queue_addr_lower(data, QueueAddressField::Used),
-            Ok(VirtioMmioRegister::QueueDeviceHigh) => {
-                self.set_selected_queue_addr_upper(data, QueueAddressField::Used)
-            }
-            Ok(
-                VirtioMmioRegister::MagicValue
-                | VirtioMmioRegister::Version
-                | VirtioMmioRegister::DeviceId
-                | VirtioMmioRegister::VendorId
-                | VirtioMmioRegister::DeviceFeatures
-                | VirtioMmioRegister::QueueNumMax
-                | VirtioMmioRegister::InterruptStatus,
-            )
-            | Err(_) => return false,
+            VirtioMmioRegister::InterruptAck => self.interrupt_status &= !data,
+            VirtioMmioRegister::Status => self.write_status(data),
+            VirtioMmioRegister::QueueDescLow => self.set_selected_queue_addr_lower(data, QueueAddressField::Desc),
+            VirtioMmioRegister::QueueDescHigh => self.set_selected_queue_addr_upper(data, QueueAddressField::Desc),
+            VirtioMmioRegister::QueueDriverLow => self.set_selected_queue_addr_lower(data, QueueAddressField::Avail),
+            VirtioMmioRegister::QueueDriverHigh => self.set_selected_queue_addr_upper(data, QueueAddressField::Avail),
+            VirtioMmioRegister::QueueDeviceLow => self.set_selected_queue_addr_lower(data, QueueAddressField::Used),
+            VirtioMmioRegister::QueueDeviceHigh => self.set_selected_queue_addr_upper(data, QueueAddressField::Used),
+            VirtioMmioRegister::MagicValue
+            | VirtioMmioRegister::Version
+            | VirtioMmioRegister::DeviceId
+            | VirtioMmioRegister::VendorId
+            | VirtioMmioRegister::DeviceFeatures
+            | VirtioMmioRegister::QueueNumMax
+            | VirtioMmioRegister::InterruptStatus => return false,
         }
         true
     }
@@ -452,6 +459,47 @@ impl VirtioCommon {
             }
         }
         None
+    }
+}
+
+impl<T: BackendOps> VirtioBackend<T> {
+    pub const LENGTH: usize = MMIO_LENGTH;
+
+    pub fn new(backend: T) -> Self {
+        Self {
+            common: VirtioCommon::new(backend.device_id(), backend.queue_count(), backend.queue_num_max()),
+            backend,
+        }
+    }
+
+    fn handle_queue(&mut self, bus: &Bus) {
+        while let Some(request) = self.common.pop_avail_request(bus) {
+            let len = self.backend.handle_request(bus, &request.buffers).unwrap_or(0);
+            self.common
+                .push_used_completion(bus, request.queue_idx, request.desc_idx, len);
+        }
+    }
+}
+
+impl<T: BackendOps> MmioDevice for VirtioBackend<T> {
+    fn read(&mut self, offset: usize, width: usize) -> Option<u64> {
+        self.common.read(offset, width, self.backend.config())
+    }
+
+    fn write(&mut self, offset: usize, width: usize, value: u64) -> bool {
+        self.common.write(offset, width, value, self.backend.config().len())
+    }
+
+    fn update(&mut self, bus: &Bus) {
+        self.handle_queue(bus);
+    }
+
+    fn interrupt_pending(&self) -> bool {
+        self.common.interrupt_pending()
+    }
+
+    fn config_dtb(&self, builder: &mut DtbBuilder, config: &DtbConfig, addr: usize, len: usize, id: u32) {
+        self.common.config_dtb(builder, config, addr, len, id);
     }
 }
 

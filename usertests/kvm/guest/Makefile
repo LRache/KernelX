@@ -23,7 +23,7 @@ TIMER_TICK_OUTPUT_BIN_TARGET = $(OUTPUT_DIR)/timer_tick.bin
 CFLAGS = -Wall -Werror -nostdlib -ffreestanding -static
 LDFLAGS = -Wl,-e,_start -Wl,-Ttext=0x80200000
 
-.PHONY: all hello_sbi timer_tick linux5.15 download-linux5.15 clean
+.PHONY: all hello_sbi timer_tick linux6.1 download-linux6.1 clean
 
 all: $(GUEST_COMPONENTS)
 
@@ -31,11 +31,11 @@ hello_sbi: $(HELLO_OUTPUT_TARGET) $(HELLO_OUTPUT_BIN_TARGET)
 
 timer_tick: $(TIMER_TICK_OUTPUT_TARGET) $(TIMER_TICK_OUTPUT_BIN_TARGET)
 
-linux5.15:
-	@ $(MAKE) -C linux5.15 ARCH=$(ARCH) ISA=$(ISA) OUTPUT_DIR="$(abspath $(OUTPUT_DIR))/linux5.15" all
+linux6.1:
+	@ $(MAKE) -C linux6.1 ARCH=$(ARCH) ISA=$(ISA) OUTPUT_DIR="$(abspath $(OUTPUT_DIR))/linux6.1" all
 
-download-linux5.15:
-	@ ./download.sh linux5.15
+download-linux6.1:
+	@ ./download.sh linux6.1
 
 $(HELLO_TARGET): hello_sbi.S
 	@ mkdir -p $(BUILD_DIR)
@@ -69,4 +69,4 @@ $(TIMER_TICK_OUTPUT_BIN_TARGET): $(TIMER_TICK_BIN_TARGET)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	@ $(MAKE) -C linux5.15 clean
+	@ $(MAKE) -C linux6.1 clean

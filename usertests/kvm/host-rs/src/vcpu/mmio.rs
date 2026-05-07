@@ -36,17 +36,21 @@ pub fn handle_memory_fault(cpu: &KvmCpu) -> Result<(), String> {
     if decoded.is_write {
         let value = mask_to_width(regs.get_index(decoded.reg), decoded.width);
         if !cpu.bus().borrow().write_mmio(page_fault.addr, decoded.width, value) {
-            return Err(format!(
-                "unsupported kvm mmio write: addr=0x{:x} width={} value=0x{:x}",
+            eprintln!(
+                "warning: unsupported kvm mmio write: addr=0x{:x} width={} value=0x{:x}",
                 page_fault.addr, decoded.width, value
-            ));
+            );
         }
     } else {
-        let Some(value) = cpu.bus().borrow().read_mmio(page_fault.addr, decoded.width) else {
-            return Err(format!(
-                "unsupported kvm mmio read: addr=0x{:x} width={}",
-                page_fault.addr, decoded.width
-            ));
+        let value = match cpu.bus().borrow().read_mmio(page_fault.addr, decoded.width) {
+            Some(value) => value,
+            None => {
+                eprintln!(
+                    "warning: unsupported kvm mmio read: addr=0x{:x} width={}",
+                    page_fault.addr, decoded.width
+                );
+                0
+            }
         };
         regs.set_index(
             decoded.reg,
