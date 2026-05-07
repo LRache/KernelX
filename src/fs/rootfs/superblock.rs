@@ -3,8 +3,10 @@ use alloc::sync::Arc;
 use crate::driver::BlockDriverOps;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
+use crate::fs::inode::Fanotify;
 use crate::fs::{Dentry, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::klib::LazyInitedCell;
 
 #[derive(Debug, Clone)]
 pub struct RootInode;
@@ -50,11 +52,15 @@ impl InodeOps for RootInode {
 
 pub struct RootFileSystem;
 
-pub struct RootFileSystemSuperBlock;
+pub struct RootFileSystemSuperBlock {
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
+}
 
 impl RootFileSystemSuperBlock {
-    pub const fn new() -> Self {
-        RootFileSystemSuperBlock {}
+    pub fn new() -> Self {
+        Self {
+            fanotify: LazyInitedCell::new("RootFileSystemSuperBlock::fanotify"),
+        }
     }
 }
 
@@ -65,6 +71,14 @@ impl SuperBlockOps for RootFileSystemSuperBlock {
 
     fn get_inode(&self, _ino: u32) -> Result<Arc<dyn InodeOps>, Errno> {
         Ok(Arc::new(RootInode::new()))
+    }
+
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
+    }
+
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
+        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
     fn type_name(&self) -> &'static str {

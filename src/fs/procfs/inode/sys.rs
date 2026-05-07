@@ -41,6 +41,7 @@ impl InodeOps for SysDirInode {
             ".." => Ok(RootInode::INO),
             "kernel" => Ok(SysKernelDirInode::INO),
             "fs" => Ok(SysFsDirInode::INO),
+            "vm" => Ok(SysVmDirInode::INO),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -65,6 +66,11 @@ impl InodeOps for SysDirInode {
             3 => Some(DirResult {
                 ino: SysFsDirInode::INO,
                 name: "fs".into(),
+                file_type: FileType::Directory,
+            }),
+            4 => Some(DirResult {
+                ino: SysVmDirInode::INO,
+                name: "vm".into(),
                 file_type: FileType::Directory,
             }),
             _ => None,
@@ -419,6 +425,181 @@ impl InodeOps for PipeUserPagesSoftInode {
 
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    }
+}
+
+// /proc/sys/vm/
+pub struct SysVmDirInode;
+
+impl SysVmDirInode {
+    pub const INO: u32 = 12;
+}
+
+impl InodeOps for SysVmDirInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_sys_vm"
+    }
+
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
+        Err(Errno::EISDIR)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn lookup(&self, name: &str) -> SysResult<u32> {
+        match name {
+            "." => Ok(Self::INO),
+            ".." => Ok(SysDirInode::INO),
+            "vfs_cache_pressure" => Ok(VfsCachePressureInode::INO),
+            "drop_caches" => Ok(DropCachesInode::INO),
+            _ => Err(Errno::ENOENT),
+        }
+    }
+
+    fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        let d = match index {
+            0 => Some(DirResult {
+                ino: Self::INO,
+                name: ".".into(),
+                file_type: FileType::Directory,
+            }),
+            1 => Some(DirResult {
+                ino: SysDirInode::INO,
+                name: "..".into(),
+                file_type: FileType::Directory,
+            }),
+            2 => Some(DirResult {
+                ino: VfsCachePressureInode::INO,
+                name: "vfs_cache_pressure".into(),
+                file_type: FileType::Regular,
+            }),
+            3 => Some(DirResult {
+                ino: DropCachesInode::INO,
+                name: "drop_caches".into(),
+                file_type: FileType::Regular,
+            }),
+            _ => None,
+        };
+        Ok(d.map(|r| (r, index + 1)))
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFDIR
+            | Mode::S_IRUSR
+            | Mode::S_IXUSR
+            | Mode::S_IRGRP
+            | Mode::S_IXGRP
+            | Mode::S_IROTH
+            | Mode::S_IXOTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs sys vm dir requires associated dentry");
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
+    }
+}
+
+// /proc/sys/vm/vfs_cache_pressure
+pub struct VfsCachePressureInode;
+
+impl VfsCachePressureInode {
+    pub const INO: u32 = 13;
+}
+
+impl InodeOps for VfsCachePressureInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_vfs_cache_pressure"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
+        let content = b"100\n";
+        if offset >= content.len() {
+            return Ok(0);
+        }
+        let len = min(buf.len(), content.len() - offset);
+        buf[..len].copy_from_slice(&content[offset..offset + len]);
+        Ok(len)
+    }
+
+    fn writeat(&self, buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Ok(buf.len())
+    }
+
+    fn truncate(&self, _new_size: u64) -> SysResult<()> {
+        Ok(())
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    }
+}
+
+// /proc/sys/vm/drop_caches
+pub struct DropCachesInode;
+
+impl DropCachesInode {
+    pub const INO: u32 = 14;
+}
+
+impl InodeOps for DropCachesInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_drop_caches"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
+        let content = b"0\n";
+        if offset >= content.len() {
+            return Ok(0);
+        }
+        let len = min(buf.len(), content.len() - offset);
+        buf[..len].copy_from_slice(&content[offset..offset + len]);
+        Ok(len)
+    }
+
+    fn writeat(&self, buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Ok(buf.len())
+    }
+
+    fn truncate(&self, _new_size: u64) -> SysResult<()> {
+        Ok(())
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IRGRP | Mode::S_IROTH)
     }
 
     fn size(&self) -> SysResult<u64> {

@@ -243,11 +243,6 @@ int kernelx_ext4_inode_ref_write_at(struct ext4_inode_ref *ref,
         return rc;
     }
 
-    if (!ext4_inode_has_flag(ref->inode, EXT4_INODE_FLAG_EXTENTS)) {
-        rc = ENOTSUP;
-        return rc;
-    }
-
     block_size = ext4_sb_get_block_size(&fs->sb);
     end = offset + size;
     if (((end - 1) / block_size) > UINT32_MAX) {

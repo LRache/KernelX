@@ -86,6 +86,7 @@ impl InodeOps for TaskDirInode {
             "stat" => Ok(TaskStatInode::ino_from_tid(self.tid)),
             "status" => Ok(TaskStatusInode::ino_from_tid(self.tid)),
             "fd" => Ok(TaskFdDirInode::ino_from_tid(self.tid)),
+            "fdinfo" => Ok(TaskFdInfoDirInode::ino_from_tid(self.tid)),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -128,7 +129,12 @@ impl InodeOps for TaskDirInode {
                 name: "fd".into(),
                 file_type: FileType::Directory,
             }),
-            7 if has_task_dir => Some(DirResult {
+            7 => Some(DirResult {
+                ino: TaskFdInfoDirInode::ino_from_tid(self.tid),
+                name: "fdinfo".into(),
+                file_type: FileType::Directory,
+            }),
+            8 if has_task_dir => Some(DirResult {
                 ino: TaskTaskDirInode::ino_from_pid(self.tid),
                 name: "task".into(),
                 file_type: FileType::Directory,
@@ -334,6 +340,7 @@ impl InodeOps for TaskThreadDirInode {
             "stat" => Ok(TaskStatInode::ino_from_tid(self.tid)),
             "status" => Ok(TaskStatusInode::ino_from_tid(self.tid)),
             "fd" => Ok(TaskFdDirInode::ino_from_tid(self.tid)),
+            "fdinfo" => Ok(TaskFdInfoDirInode::ino_from_tid(self.tid)),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -374,6 +381,11 @@ impl InodeOps for TaskThreadDirInode {
             6 => Some(DirResult {
                 ino: TaskFdDirInode::ino_from_tid(self.tid),
                 name: "fd".into(),
+                file_type: FileType::Directory,
+            }),
+            7 => Some(DirResult {
+                ino: TaskFdInfoDirInode::ino_from_tid(self.tid),
+                name: "fdinfo".into(),
                 file_type: FileType::Directory,
             }),
             _ => None,
@@ -994,5 +1006,189 @@ impl InodeOps for TaskFdEntryInode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    }
+}
+
+pub struct TaskFdInfoDirInode {
+    tid: Tid,
+}
+
+impl TaskFdInfoDirInode {
+    pub const INO_BASE: u32 = 0x5020_0000;
+    pub const INO_END: u32 = Self::INO_BASE + PID_MAX as u32;
+
+    pub fn from_ino(ino: u32) -> Option<Self> {
+        debug_assert!(ino >= Self::INO_BASE);
+        let tid = (ino - Self::INO_BASE) as Tid;
+        manager::get(tid)?;
+        Some(Self { tid })
+    }
+
+    pub fn ino_from_tid(tid: Tid) -> u32 {
+        Self::INO_BASE + tid as u32
+    }
+}
+
+impl InodeOps for TaskFdInfoDirInode {
+    fn get_ino(&self) -> u32 {
+        Self::ino_from_tid(self.tid)
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_task_fdinfo_dir"
+    }
+
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
+        Err(Errno::EISDIR)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn lookup(&self, name: &str) -> SysResult<u32> {
+        match name {
+            "." => Ok(Self::ino_from_tid(self.tid)),
+            ".." => Ok(TaskDirInode::ino_from_tid(self.tid)),
+            _ => {
+                let fd = name.parse::<usize>().map_err(|_| Errno::ENOENT)?;
+                let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+                tcb.fdtable().lock().get(fd).map_err(|_| Errno::ENOENT)?;
+                Ok(TaskFdInfoEntryInode::ino_from_tid_fd(self.tid, fd))
+            }
+        }
+    }
+
+    fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let fds = tcb.fdtable().lock().open_fds();
+
+        let d = match index {
+            0 => Some(DirResult {
+                ino: Self::ino_from_tid(self.tid),
+                name: ".".into(),
+                file_type: FileType::Directory,
+            }),
+            1 => Some(DirResult {
+                ino: TaskDirInode::ino_from_tid(self.tid),
+                name: "..".into(),
+                file_type: FileType::Directory,
+            }),
+            i => fds.get(i - 2).map(|fd| DirResult {
+                ino: TaskFdInfoEntryInode::ino_from_tid_fd(self.tid, *fd),
+                name: fd.to_string(),
+                file_type: FileType::Regular,
+            }),
+        };
+
+        Ok(d.map(|r| (r, index + 1)))
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_mode = self.mode()?.bits();
+        kstat.st_nlink = 1;
+
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
+
+        Ok(kstat)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFDIR
+            | Mode::S_IRUSR
+            | Mode::S_IXUSR
+            | Mode::S_IRGRP
+            | Mode::S_IXGRP
+            | Mode::S_IROTH
+            | Mode::S_IXOTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs fdinfo dir requires associated dentry");
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
+    }
+}
+
+pub struct TaskFdInfoEntryInode {
+    tid: Tid,
+    fd: usize,
+}
+
+impl TaskFdInfoEntryInode {
+    pub const INO_BASE: u32 = 0x8000_0000;
+    pub const INO_END: u32 = Self::INO_BASE + (PID_MAX as u32) * crate::kernel::config::MAX_FD as u32;
+
+    pub fn from_ino(ino: u32) -> Option<Self> {
+        debug_assert!(ino >= Self::INO_BASE);
+        let offset = (ino - Self::INO_BASE) as usize;
+        let tid = (offset / crate::kernel::config::MAX_FD) as Tid;
+        let fd = offset % crate::kernel::config::MAX_FD;
+        let tcb = manager::get(tid)?;
+        tcb.fdtable().lock().get(fd).ok()?;
+
+        Some(Self { tid, fd })
+    }
+
+    pub fn ino_from_tid_fd(tid: Tid, fd: usize) -> u32 {
+        Self::INO_BASE + (tid as u32) * crate::kernel::config::MAX_FD as u32 + fd as u32
+    }
+}
+
+impl InodeOps for TaskFdInfoEntryInode {
+    fn get_ino(&self) -> u32 {
+        Self::ino_from_tid_fd(self.tid, self.fd)
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_task_fdinfo_entry"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let file = tcb.fdtable().lock().get(self.fd).map_err(|_| Errno::ENOENT)?;
+        let content = file.fdinfo().unwrap_or_default();
+        let content_bytes = content.as_bytes();
+        if offset >= content_bytes.len() {
+            return Ok(0);
+        }
+        let to_copy = min(buf.len(), content_bytes.len() - offset);
+        buf[..to_copy].copy_from_slice(&content_bytes[offset..offset + to_copy]);
+        Ok(to_copy)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        let mut kstat = FileStat::default();
+        kstat.st_ino = self.get_ino() as u64;
+        kstat.st_mode = self.mode()?.bits();
+        kstat.st_nlink = 1;
+
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        fill_kstat_common(&mut kstat, &tcb);
+
+        Ok(kstat)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs fdinfo entry requires associated dentry");
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
     }
 }
