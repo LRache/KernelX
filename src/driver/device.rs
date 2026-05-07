@@ -60,10 +60,17 @@ impl<'a> Device<'a> {
     }
 
     pub fn interrupt_number(&self) -> Option<u32> {
-        self.fdt_node
-            .property("interrupts")
-            .and_then(|p| p.as_usize())
-            .map(|v| v as u32)
+        // `interrupts` encodes one or more 32-bit BE cells; the first cell is
+        // always the hwirq number. Additional cells (e.g. trigger mode on
+        // LoongArch) are consumed by the interrupt-parent per its own
+        // #interrupt-cells. Using `as_usize()` on a multi-cell value returns
+        // the *last* cell on this fdt crate, so read the raw first 4 bytes.
+        let prop = self.fdt_node.property("interrupts")?;
+        let bytes = prop.value;
+        if bytes.len() < 4 {
+            return None;
+        }
+        Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 }
 

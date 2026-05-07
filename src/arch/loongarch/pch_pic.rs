@@ -7,9 +7,13 @@ const NR_IRQS: usize = 64;
 mod reg {
     pub const MASK:        usize = 0x20;
     pub const HTMSI_EN:    usize = 0x40;
+    pub const EDGE:        usize = 0x60;
     pub const CLEAR:       usize = 0x80;
+    pub const AUTO_CTRL0:  usize = 0xc0;
+    pub const AUTO_CTRL1:  usize = 0xe0;
     pub const ROUTE_BASE:  usize = 0x100;
     pub const HTVEC_BASE:  usize = 0x200;
+    pub const POL:         usize = 0x3e0;
 }
 
 static mut BASE: usize = 0;
@@ -46,8 +50,13 @@ pub fn init(mmio_pa: usize, mmio_size: usize) {
 
     debug_assert!(kaddr >> 60 == 0x8, "PCH-PIC kaddr {:#x} not in DMW0", kaddr);
 
+    // Defaults: all IRQs masked, level-triggered, high-polarity, no MSI.
     write_d(reg::MASK, !0u64);
     write_d(reg::HTMSI_EN, 0);
+    write_d(reg::EDGE, 0);
+    write_d(reg::POL, 0);
+    write_d(reg::AUTO_CTRL0, 0);
+    write_d(reg::AUTO_CTRL1, 0);
     write_d(reg::CLEAR, !0u64);
 
     for n in 0..NR_IRQS {
@@ -58,6 +67,18 @@ pub fn init(mmio_pa: usize, mmio_size: usize) {
     kinfo!(
         "loongarch: PCH-PIC initialized @ PA {:#x} / kaddr {:#x} ({} IRQs, all masked)",
         mmio_pa, kaddr, NR_IRQS,
+    );
+}
+
+/// Diagnostic: dump critical registers for an IRQ.
+#[allow(dead_code)]
+pub fn dump_irq(irq: u32) {
+    let mask = read_d(reg::MASK);
+    let htvec = unsafe { arch::read_volatile((base() + reg::HTVEC_BASE + irq as usize) as *const u8) };
+    let route = unsafe { arch::read_volatile((base() + reg::ROUTE_BASE + irq as usize) as *const u8) };
+    kinfo!(
+        "pch-pic dump irq={}: MASK={:#x} (bit{}={}) HTVEC={:#x} ROUTE={:#x}",
+        irq, mask, irq, (mask >> irq) & 1, htvec, route,
     );
 }
 

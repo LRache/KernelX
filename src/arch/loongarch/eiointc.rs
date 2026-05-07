@@ -78,9 +78,37 @@ pub fn claim_irq() -> Option<u32> {
     None
 }
 
+pub fn isr0() -> u64 {
+    iocsr::iocsr_read_d(reg::ISR_BASE)
+}
+
 pub fn complete_irq(irq: u32) {
     debug_assert!((irq as usize) < NR_IRQS, "EIOINTC irq {} out of range", irq);
     let word_idx = (irq as usize) / 64;
     let bit = 1u64 << ((irq as usize) % 64);
     iocsr::iocsr_write_d(reg::ISR_BASE + word_idx * 8, bit);
+}
+
+#[allow(dead_code)]
+pub fn dump_irq(irq: u32) {
+    let word_idx = (irq as usize) / 64;
+    let en = iocsr::iocsr_read_d(reg::ENABLE_BASE + word_idx * 8);
+    let isr = iocsr::iocsr_read_d(reg::ISR_BASE + word_idx * 8);
+    // IPMAP: 1 byte per 32-IRQ bucket. word_idx*2 + (irq/32 within word)
+    let ipmap_idx = (irq as usize) / 32;
+    let ipmap_d_idx = ipmap_idx / 8;
+    let ipmap_byte_in_d = ipmap_idx % 8;
+    let ipmap_d = iocsr::iocsr_read_d(reg::IPMAP_BASE + ipmap_d_idx * 8);
+    let ipmap_byte = (ipmap_d >> (ipmap_byte_in_d * 8)) & 0xff;
+    // ROUTE: 1 byte per IRQ, packed 8 per 64-bit word.
+    let route_d_idx = (irq as usize) / 8;
+    let route_byte_in_d = (irq as usize) % 8;
+    let route_d = iocsr::iocsr_read_d(reg::ROUTE_BASE + route_d_idx * 8);
+    let route_byte = (route_d >> (route_byte_in_d * 8)) & 0xff;
+    let misc = iocsr::iocsr_read_d(reg::MISC);
+    crate::kinfo!(
+        "eiointc dump irq={}: EN[{}]={:#x} (bit{}={}) ISR[{}]={:#x} IPMAP[irq>>5={}]={:#x} ROUTE[irq]={:#x} MISC={:#x}",
+        irq, word_idx, en, irq % 64, (en >> (irq % 64)) & 1,
+        word_idx, isr, ipmap_idx, ipmap_byte, route_byte, misc,
+    );
 }

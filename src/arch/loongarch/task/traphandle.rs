@@ -111,7 +111,13 @@ pub fn return_to_user() -> ! {
     csr::write::<{ csr::num::PGDL }>(uc.user_pgd);
 
     unsafe {
-        core::arch::asm!("invtlb 0x00, $zero, $zero", options(nostack, preserves_flags));
+        core::arch::asm!(
+            "dbar 0",
+            "invtlb 0x00, $zero, $zero",
+            "dbar 0",
+            "ibar 0",
+            options(nostack, preserves_flags)
+        );
     }
 
     csr::write::<{ csr::num::ERA  }>(uc.get_user_entry());
