@@ -488,12 +488,27 @@ impl Dentry {
 
         let old_parent_inode = self.get_inode();
         let old_ino = old_parent_inode.lookup(old_name)?;
+        let old_inode = vfs().load_inode(self.sno(), old_ino)?;
+        let old_is_dir = old_inode.inode_type()? == FileType::Directory;
         let new_parent_inode = new_parent.get_inode();
         let overwritten = match new_parent_inode.lookup(new_name) {
-            Ok(ino) if ino != old_ino => Some(Index {
-                sno: new_parent.sno(),
-                ino,
-            }),
+            Ok(ino) if ino != old_ino => {
+                let overwritten_inode = vfs().load_inode(new_parent.sno(), ino)?;
+                if old_is_dir && overwritten_inode.inode_type()? == FileType::Directory {
+                    let mut index = 0;
+                    while let Some((dent, next_index)) = overwritten_inode.get_dent(index)? {
+                        if dent.name != "." && dent.name != ".." {
+                            return Err(Errno::ENOTEMPTY);
+                        }
+                        index = next_index;
+                    }
+                }
+
+                Some(Index {
+                    sno: new_parent.sno(),
+                    ino,
+                })
+            }
             Ok(_) | Err(Errno::ENOENT) => None,
             Err(err) => return Err(err),
         };
