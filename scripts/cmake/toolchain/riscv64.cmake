@@ -4,7 +4,6 @@ set(CMAKE_SYSTEM_PROCESSOR riscv64)
 set(CMAKE_C_COMPILER   "clang" CACHE STRING "C Compiler")
 set(CMAKE_CXX_COMPILER "clang++" CACHE STRING "C++ Compiler")
 set(CMAKE_ASM_COMPILER "clang" CACHE STRING "ASM Compiler")
-set(CMAKE_AR           "ar" CACHE STRING "Archiver")
 set(CMAKE_LINKER       "clang" CACHE STRING "Linker")
 
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)

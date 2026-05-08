@@ -31,7 +31,12 @@ BIOS_FIRMWARE ?= $(CONFIG_BIOS_FIRMWARE)
 BIOS_FIRMWARE ?= ./lib/opensbi/build/platform/generic/firmware/fw_jump.bin
 
 CONFIG_OBJCOPY ?= objcopy
+CONFIG_AR ?= ar
 CONFIG_READELF ?= readelf
+
+ifeq ($(origin AR),default)
+AR = $(CONFIG_AR)
+endif
 
 KERNEL_CONFIG = \
 	ARCH=$(ARCH) \
@@ -49,6 +54,7 @@ KERNEL_CONFIG = \
 	SYSROOT=$(SYSROOT) \
 	COMPILE_MODE=$(COMPILE_MODE) \
 	READELF=$(CONFIG_READELF) \
+	AR=$(AR) \
 	OBJCOPY=$(CONFIG_OBJCOPY)
 
 # Configuration targets

@@ -47,6 +47,10 @@ config OBJCOPY
 	string "objcopy util path"
 	default "objcopy"
 
+config AR
+	string "ar util path"
+	default "ar"
+
 config READELF
 	string "readelf util path"
 	default "readelf"

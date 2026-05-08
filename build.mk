@@ -1,6 +1,7 @@
 COMPILE_MODE ?= debug
 
 OBJCOPY ?= objcopy
+AR ?= ar
 
 KERNELX_HOME := $(strip $(patsubst %/, %, $(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 
@@ -15,6 +16,7 @@ BUILD_ENV = \
 	ARCH=$(ARCH) \
 	ARCH_BITS=$(ARCH_BITS) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
+	AR=$(AR) \
 	KERNELX_RELEASE=$(KERNELX_RELEASE) \
 	KERNELX_HOME=$(KERNELX_HOME) \
 	CONFIG_DEFAULT_BOOT_DEVICE=$(CONFIG_DEFAULT_BOOT_ROOT_DEVICE) \
