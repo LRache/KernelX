@@ -398,6 +398,139 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
     }
 
+    fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
+        let new_parent = new_parent.downcast_ref::<Self>().ok_or(Errno::EXDEV)?;
+        if !Arc::ptr_eq(&self.superblock, &new_parent.superblock) {
+            return Err(Errno::EXDEV);
+        }
+        if old_name == "." || old_name == ".." || new_name == "." || new_name == ".." {
+            return Err(Errno::EINVAL);
+        }
+        if self.ino == new_parent.ino && old_name == new_name {
+            return Ok(());
+        }
+
+        T::check_filename(old_name)?;
+        T::check_filename(new_name)?;
+
+        let now = kclock::now().unwrap_or_default();
+
+        let remove_target = |target_ino: u32, source_is_dir: bool| -> SysResult<()> {
+            let target = self.superblock.lock().get_inode(target_ino)?;
+            let target_inode = target.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+            let mut target_meta = target_inode.meta.lock();
+            let target_is_dir = matches!(target_meta.meta, Meta::Directory(_));
+
+            if source_is_dir && !target_is_dir {
+                return Err(Errno::ENOTDIR);
+            }
+            if !source_is_dir && target_is_dir {
+                return Err(Errno::EISDIR);
+            }
+            if let Meta::Directory(children) = &target_meta.meta
+                && children.len() > 2
+            {
+                return Err(Errno::ENOTEMPTY);
+            }
+
+            target_meta.links = target_meta.links.saturating_sub(1);
+            target_meta.ctime = now;
+            let remove_inode = target_meta.links == 0;
+            drop(target_meta);
+
+            if remove_inode {
+                self.superblock.lock().remove_inode(target_ino);
+            }
+            Ok(())
+        };
+
+        let mut old_parent_meta = self.meta.lock();
+        let Meta::Directory(old_children) = &mut old_parent_meta.meta else {
+            return Err(Errno::ENOTDIR);
+        };
+
+        let old_ino = *old_children.get(old_name).ok_or(Errno::ENOENT)?;
+        let source = self.superblock.lock().get_inode(old_ino)?;
+        let source_inode = source.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+        let source_is_dir = source_inode.inode_type()? == FileType::Directory;
+
+        if self.ino == new_parent.ino {
+            if let Some(&target_ino) = old_children.get(new_name) {
+                if target_ino == old_ino {
+                    return Ok(());
+                }
+                remove_target(target_ino, source_is_dir)?;
+                old_children.remove(new_name);
+            }
+
+            old_children.remove(old_name);
+            old_children.insert(new_name.into(), old_ino);
+            old_parent_meta.mtime = now;
+            old_parent_meta.ctime = now;
+
+            let mut source_meta = source_inode.meta.lock();
+            source_meta.ctime = now;
+
+            return Ok(());
+        }
+
+        if old_ino == new_parent.ino {
+            return Err(Errno::EINVAL);
+        }
+
+        if source_is_dir {
+            let mut ancestor_ino = new_parent.ino;
+            loop {
+                if ancestor_ino == old_ino {
+                    return Err(Errno::EINVAL);
+                }
+                if ancestor_ino == self.ino {
+                    break;
+                }
+
+                let ancestor = self.superblock.lock().get_inode(ancestor_ino)?;
+                let ancestor_inode = ancestor.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+                let ancestor_meta = ancestor_inode.meta.lock();
+                let Meta::Directory(ancestor_children) = &ancestor_meta.meta else {
+                    return Err(Errno::ENOTDIR);
+                };
+                let parent_ino = *ancestor_children.get("..").ok_or(Errno::ENOENT)?;
+                if parent_ino == ancestor_ino {
+                    break;
+                }
+                ancestor_ino = parent_ino;
+            }
+        }
+
+        let mut new_parent_meta = new_parent.meta.lock();
+        let Meta::Directory(new_children) = &mut new_parent_meta.meta else {
+            return Err(Errno::ENOTDIR);
+        };
+
+        if let Some(&target_ino) = new_children.get(new_name) {
+            if target_ino == old_ino {
+                return Ok(());
+            }
+            remove_target(target_ino, source_is_dir)?;
+            new_children.remove(new_name);
+        }
+
+        old_children.remove(old_name);
+        new_children.insert(new_name.into(), old_ino);
+        old_parent_meta.mtime = now;
+        old_parent_meta.ctime = now;
+        new_parent_meta.mtime = now;
+        new_parent_meta.ctime = now;
+
+        let mut source_meta = source_inode.meta.lock();
+        if let Meta::Directory(source_children) = &mut source_meta.meta {
+            source_children.insert("..".into(), new_parent.ino);
+        }
+        source_meta.ctime = now;
+
+        Ok(())
+    }
+
     fn size(&self) -> SysResult<u64> {
         let size = match self.meta.lock().meta {
             Meta::File(ref meta) => meta.filesize,
