@@ -2252,12 +2252,7 @@ pub fn fanotify_mark(
     if !is_mount_mark
         && !is_filesystem_mark
         && !target_is_dir
-        && mask.intersects(
-            FanotifyEventMask::FAN_DELETE
-                | FanotifyEventMask::FAN_RENAME
-                | FanotifyEventMask::FAN_ONDIR
-                | FanotifyEventMask::FAN_EVENT_ON_CHILD,
-        )
+        && mask.intersects(FanotifyEventMask::FAN_DELETE | FanotifyEventMask::FAN_RENAME)
     {
         return Err(Errno::ENOTDIR);
     }
@@ -3128,7 +3123,7 @@ pub fn mount(
     if current::euid() != 0 {
         return Err(Errno::EPERM);
     }
-    
+
     let flags = MountFlags::from_bits_truncate(flags);
 
     uptr_target.should_not_null()?;
