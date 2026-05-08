@@ -8,11 +8,11 @@ use crate::fs::ext4::ffi::*;
 use crate::fs::ext4::superblock::{SuperBlockInner, map_error_to_kernel};
 use crate::fs::ext4::util::{get_block_size, revision_tuple};
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, InodeOps, Mode, Owner};
+use crate::fs::inode::{Fanotify, InodeLockState, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::{LazyInitedCell, SleepLock, SpinLock};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum InodeType {
@@ -273,6 +273,7 @@ pub struct Ext4Inode {
     ino: u32,
     superblock: Arc<SleepLock<SuperBlockInner>>,
     lock_state: SpinLock<InodeLockState>,
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
 impl Ext4Inode {
@@ -287,6 +288,7 @@ impl Ext4Inode {
             ino,
             superblock,
             lock_state: SpinLock::new(InodeLockState::new(), "Ext4Inode::lock_state"),
+            fanotify: LazyInitedCell::new("Ext4Inode::fanotify"),
         })
     }
 
@@ -320,6 +322,14 @@ impl InodeOps for Ext4Inode {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         Some(&self.lock_state)
+    }
+
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
+    }
+
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
+        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {

@@ -25,17 +25,15 @@ impl VirtualFileSystem {
         &self,
         dir: &Arc<Dentry>,
         path: &str,
-        fstype_name: &str,
+        fstype: &'static dyn FileSystemOps,
         device: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
     ) -> SysResult<()> {
         let dentry = self.lookup_dentry(dir, path)?;
 
-        let fstype = self.fstype_map.get(fstype_name).ok_or(Errno::ENOENT)?;
-
         let (sno, root_ino) = {
             let mut superblock_table = self.superblock_table.lock();
-            let sno = superblock_table.mount(*fstype, device, options)?;
+            let sno = superblock_table.mount(fstype, device, options)?;
             (sno, superblock_table.get(sno).unwrap().get_root_ino())
         };
 
@@ -44,6 +42,16 @@ impl VirtualFileSystem {
         dentry.mount(&root_inode, sno);
 
         self.mountpoint.lock().push(dentry);
+
+        Ok(())
+    }
+
+    fn bind_mount(&self, dir: &Arc<Dentry>, source: &str, target: &str) -> SysResult<()> {
+        let source = self.lookup_dentry(dir, source)?;
+        let target = self.resolve_mountpoint(dir, target)?;
+
+        target.bind_mount(&source);
+        self.mountpoint.lock().push(target);
 
         Ok(())
     }
@@ -74,6 +82,7 @@ impl VirtualFileSystem {
 
         let dentry = self.resolve_mountpoint(dir, path)?;
         let mounted_root = dentry.mounted_root().ok_or(Errno::EINVAL)?;
+        let is_bind_mount = dentry.is_bind_mount();
         let mounted_sno = mounted_root.sno();
         let mount_path = dentry.get_path();
 
@@ -85,8 +94,12 @@ impl VirtualFileSystem {
             return Err(Errno::EBUSY);
         }
 
-        if self.cache.superblock_busy(mounted_sno) {
-            crate::kinfo!("Unmount failed: superblock {} is busy", mounted_sno);
+        if !is_bind_mount && self.cache.superblock_busy(mounted_sno) {
+            crate::kinfo!(
+                "Unmount failed: superblock {} is busy, type={}",
+                mounted_sno,
+                self.superblock_table.lock().get(mounted_sno).unwrap().type_name()
+            );
             return Err(Errno::EBUSY);
         }
 
@@ -94,8 +107,10 @@ impl VirtualFileSystem {
         self.mountpoint
             .lock()
             .retain(|mountpoint| !Arc::ptr_eq(mountpoint, &dentry));
-        self.cache.remove_superblock(mounted_sno);
-        self.superblock_table.lock().unmount(mounted_sno)?;
+        if !is_bind_mount {
+            self.cache.remove_superblock(mounted_sno);
+            self.superblock_table.lock().unmount(mounted_sno)?;
+        }
 
         Ok(())
     }
@@ -115,14 +130,22 @@ impl VirtualFileSystem {
     }
 }
 
+pub fn get_fstype(fstype_name: &str) -> Option<&'static dyn FileSystemOps> {
+    vfs().fstype_map.get(fstype_name).cloned()
+}
+
 pub fn mount(
     dir: &Arc<Dentry>,
     path: &str,
-    fstype_name: &str,
+    fstype: &'static dyn FileSystemOps,
     device: Option<Arc<dyn BlockDriverOps>>,
     options: MountOptions,
 ) -> Result<(), Errno> {
-    vfs().mount(dir, path, fstype_name, device, options)
+    vfs().mount(dir, path, fstype, device, options)
+}
+
+pub fn bind_mount(dir: &Arc<Dentry>, source: &str, target: &str) -> Result<(), Errno> {
+    vfs().bind_mount(dir, source, target)
 }
 
 pub fn unmount(dir: &Arc<Dentry>, path: &str) -> Result<(), Errno> {

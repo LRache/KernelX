@@ -6,13 +6,13 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, Mode, Owner};
+use crate::fs::inode::{Fanotify, InodeLockState, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::klib::SpinLock;
+use crate::klib::{LazyInitedCell, SpinLock};
 
 use super::superblock::{StaticFsInfo, SuperBlockInner};
 
@@ -74,6 +74,7 @@ pub struct Inode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
     lock_state: SpinLock<InodeLockState>,
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
 }
@@ -84,6 +85,7 @@ impl<T: StaticFsInfo> Inode<T> {
             ino,
             meta: SpinLock::new(meta, "Inode::meta"),
             lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
+            fanotify: LazyInitedCell::new("Inode::fanotify"),
             superblock,
             _marker: core::marker::PhantomData,
         }
@@ -152,6 +154,14 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         Some(&self.lock_state)
+    }
+
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
+    }
+
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
+        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {

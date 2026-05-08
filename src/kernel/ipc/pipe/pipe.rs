@@ -106,6 +106,10 @@ impl FileOps for Pipe {
         }
     }
 
+    fn writable(&self) -> bool {
+        self.writable
+    }
+
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         const FIONREAD: usize = 0x541B;
 

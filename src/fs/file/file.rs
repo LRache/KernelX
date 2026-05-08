@@ -62,8 +62,7 @@ impl RandomAccessFile {
     }
 
     pub fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        let len = self.inode.readat(buf, offset, self.flags.direct)?;
-        Ok(len)
+        self.inode.readat(buf, offset, self.flags.direct)
     }
 
     pub fn pwrite(&self, buf: &[u8], mut offset: usize) -> SysResult<usize> {
@@ -71,8 +70,7 @@ impl RandomAccessFile {
             offset = self.inode.size()? as usize;
         }
         let len = self.limit_write_len(offset, buf.len())?;
-        let len = self.inode.writeat(&buf[..len], offset)?;
-        Ok(len)
+        self.inode.writeat(&buf[..len], offset)
     }
 
     pub fn ftruncate(&self, new_size: u64) -> SysResult<()> {
@@ -261,5 +259,9 @@ impl FileOps for RandomAccessFile {
             self.inode.end_write_open();
         }
         self.release_bsd_flock_if_last_fd();
+    }
+
+    fn type_name(&self) -> &'static str {
+        self.inode.type_name()
     }
 }

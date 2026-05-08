@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
+use crate::fs::inode::{FanotifyEventMask, notify_fanotify, wait_fanotify_open_exec_permission};
 use crate::fs::{Perm, vfs};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
@@ -186,6 +187,10 @@ fn load_interpreter(path: &str, addrspace: &AddrSpace, perm: &Perm) -> SysResult
     let file_flags = FileFlags::readonly();
     let file = vfs::open_file(path, file_flags, perm)?;
     let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::ENOEXEC)?;
+    let fanotify_file: Arc<dyn FileOps> = file.clone();
+    wait_fanotify_open_exec_permission(&fanotify_file)?;
+    notify_fanotify(&fanotify_file, FanotifyEventMask::FAN_OPEN);
+    notify_fanotify(&fanotify_file, FanotifyEventMask::FAN_OPEN_EXEC);
 
     let ehdr = read_ehdr(&file)?;
 

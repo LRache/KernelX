@@ -17,6 +17,7 @@ pub enum Errno {
     ENOMEM = 12,          // Out of memory
     EACCES = 13,          // Permission denied
     EFAULT = 14,          // Bad address
+    ENOTBLK = 15,         // Block device required
     EBUSY = 16,           // Device or resource busy
     EEXIST = 17,          // File exists
     EXDEV = 18,           // Cross-device link

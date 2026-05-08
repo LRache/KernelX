@@ -9,9 +9,10 @@ use crate::fs::ext4::ffi::*;
 use crate::fs::ext4::inode::Ext4Inode;
 use crate::fs::ext4::util::get_block_size;
 use crate::fs::filesystem::SuperBlockOps;
+use crate::fs::inode::Fanotify;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{Statfs, StatfsFlags};
-use crate::klib::SleepLock;
+use crate::klib::{LazyInitedCell, SleepLock};
 use crate::kwarn;
 
 pub(super) fn map_error_to_kernel(code: i32) -> Errno {
@@ -139,6 +140,7 @@ unsafe impl Sync for SuperBlockInner {}
 
 pub struct Ext4SuperBlock {
     superblock: Arc<SleepLock<SuperBlockInner>>,
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
 impl Ext4SuperBlock {
@@ -148,6 +150,7 @@ impl Ext4SuperBlock {
                 SuperBlockInner::new(driver, read_only)?,
                 "Ext4SuperBlock::superblock",
             )),
+            fanotify: LazyInitedCell::new("Ext4SuperBlock::fanotify"),
         }))
     }
 
@@ -163,6 +166,14 @@ impl SuperBlockOps for Ext4SuperBlock {
 
     fn get_root_ino(&self) -> u32 {
         2
+    }
+
+    fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
+    }
+
+    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
+        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
     fn unmount(&self) -> SysResult<()> {
