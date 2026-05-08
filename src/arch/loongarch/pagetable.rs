@@ -430,7 +430,10 @@ unsafe impl Sync for PageTable {}
 impl PageTableTrait for PageTable {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
-        flags |= PTEFlags::P | PTEFlags::D;
+        flags |= PTEFlags::P;
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::D;
+        }
 
         let mut pte = self.find_pte_or_create(uaddr);
         debug_assert!(
@@ -446,7 +449,11 @@ impl PageTableTrait for PageTable {
     }
 
     fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
-        let flags: PTEFlags = perm.into();
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::P;
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::D;
+        }
 
         let mut pte = self.find_pte_or_create(kaddr);
         pte.set_flags(flags);
@@ -456,7 +463,11 @@ impl PageTableTrait for PageTable {
     }
 
     fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
-        let flags: PTEFlags = perm.into();
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::P;
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::D;
+        }
 
         let mut pte = self.find_pte_or_create(uaddr);
         pte.set_flags(flags);
@@ -473,7 +484,11 @@ impl PageTableTrait for PageTable {
     }
 
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {
-        let flags: PTEFlags = perm.into();
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::P;
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::D;
+        }
 
         let mut pte = self.find_pte_or_create(uaddr);
         pte.set_flags(flags);
