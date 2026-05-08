@@ -3125,6 +3125,10 @@ pub fn mount(
     flags: usize,
     _data: usize,
 ) -> SyscallRet {
+    if current::euid() != 0 {
+        return Err(Errno::EPERM);
+    }
+    
     let flags = MountFlags::from_bits_truncate(flags);
 
     uptr_target.should_not_null()?;
@@ -3183,7 +3187,9 @@ pub fn mount(
 }
 
 pub fn umount2(uptr_target: UString, flags: usize) -> SyscallRet {
-    uptr_target.should_not_null()?;
+    if current::euid() != 0 {
+        return Err(Errno::EPERM);
+    }
 
     if flags != 0 {
         return Err(Errno::EINVAL);
