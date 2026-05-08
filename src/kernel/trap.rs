@@ -24,8 +24,6 @@ pub fn trap_enter() {
 
 pub fn trap_return() {
     let tcb = current::tcb();
-    tcb.recive_pending_signal_from_parent();
-    tcb.handle_signal();
 
     let now = timer::now();
     let mut counter = tcb.time_counter.lock();
@@ -61,6 +59,10 @@ pub fn trap_return() {
 pub fn timer_interrupt() {
     timer::interrupt();
 
+    let tcb = current::tcb();
+    tcb.recive_pending_signal_from_parent();
+    tcb.handle_signal();
+
     if current::has_task() {
         current::schedule();
     }
@@ -73,6 +75,8 @@ pub fn syscall(num: usize, args: &syscall::Args, ret_arg_value: usize) -> usize 
 
     if ret == Err(Errno::EINTR) && syscall::should_restart_on_eintr(num) {
         tcb.push_ucontext_syscall_retreg(Some(ret_arg_value));
+        tcb.recive_pending_signal_from_parent();
+        tcb.handle_signal();
     }
 
     let ret = match ret {
