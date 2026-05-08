@@ -29,7 +29,8 @@ pub extern "C" fn usertrap_handler() -> ! {
         csr::ecode::SYS => handle_syscall(),
         csr::ecode::INT => handle_interrupt(estat),
         csr::ecode::PIL | csr::ecode::PNR => handle_memory_fault(MemAccessType::Read),
-        csr::ecode::PIS | csr::ecode::PME => handle_memory_fault(MemAccessType::Write),
+        csr::ecode::PIS => handle_memory_fault(MemAccessType::Write),
+        csr::ecode::PME => handle_page_modify(),
         csr::ecode::PIF | csr::ecode::PNX => handle_memory_fault(MemAccessType::Execute),
         csr::ecode::PPI => handle_memory_fault(MemAccessType::Read),
         csr::ecode::INE | csr::ecode::IPE => trap::illegal_inst(),
@@ -95,6 +96,21 @@ fn handle_ade() {
     } else {
         trap::memory_fault(badv, MemAccessType::Write);
     }
+}
+
+/// PME (Page Modify Exception): the page is valid and mapped but D=0.
+/// On LoongArch, D=0 serves as the write-protect mechanism (there is no
+/// separate "writable" hardware bit). PME fires in two cases:
+///   1. CoW page: fork removed W from perm → mmap set D=0. The write must
+///      trigger a copy-on-write via the full memory_fault(Write) path which
+///      will allocate a new page and mmap_replace with D=1.
+///   2. Swap tracking: take_access_dirty_bit cleared D for eviction scoring.
+///      The page is still writable (W in area perm), so memory_fault(Write)
+///      will notice it's already Allocated and just re-map with D=1.
+/// In both cases, delegating to memory_fault(Write) is correct.
+fn handle_page_modify() {
+    let badv = csr::read::<{ csr::num::BADV }>();
+    trap::memory_fault(badv, MemAccessType::Write);
 }
 
 pub fn return_to_user() -> ! {

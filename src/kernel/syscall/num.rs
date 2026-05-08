@@ -54,6 +54,7 @@ macro_rules! syscall_entries {
             285 => fs::copy_file_range(6),
             286 => fs::preadv2(6),
             287 => fs::pwritev2(6),
+            291 => fs::statx(5),
             436 => fs::close_range(3),
             437 => fs::openat2(4),
             439 => fs::faccessat2(4),
