@@ -560,6 +560,10 @@ impl FanotifyFile {
         self.inner.unprivileged
     }
 
+    pub fn report_dfid_name(&self) -> bool {
+        self.inner.report_dfid_name
+    }
+
     fn blocked(&self) -> bool {
         self.flags.lock().blocked
     }

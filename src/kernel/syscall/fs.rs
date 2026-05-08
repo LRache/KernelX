@@ -2123,13 +2123,6 @@ fn validate_fanotify_mark_flags(flags: FanotifyMarkFlags) -> SysResult<()> {
         crate::kwarn!("fanotify_mark: mutually exclusive ignore flags={:#x}", flags.bits());
         return Err(Errno::EINVAL);
     }
-    if has_ignore && !flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY) {
-        crate::kwarn!(
-            "fanotify_mark: FAN_MARK_IGNORE requires FAN_MARK_IGNORED_SURV_MODIFY, flags={:#x}",
-            flags.bits()
-        );
-        return Err(Errno::EINVAL);
-    }
 
     Ok(())
 }
@@ -2146,12 +2139,26 @@ pub fn fanotify_init(flags: usize, event_f_flags: usize) -> SyscallRet {
         );
     }
 
+    if flags.contains(FanotifyInitFlags::FAN_REPORT_PIDFD | FanotifyInitFlags::FAN_REPORT_TID) {
+        return Err(Errno::EINVAL);
+    }
     if flags.contains(FanotifyInitFlags::FAN_REPORT_FID) {
-        if flags.contains(FanotifyInitFlags::FAN_CLASS_CONTENT) || flags.contains(FanotifyInitFlags::FAN_CLASS_PRE_CONTENT) {
+        if flags.contains(FanotifyInitFlags::FAN_CLASS_CONTENT)
+            || flags.contains(FanotifyInitFlags::FAN_CLASS_PRE_CONTENT)
+        {
             return Err(Errno::EINVAL);
         }
     }
     if flags.contains(FanotifyInitFlags::FAN_REPORT_NAME) && !flags.contains(FanotifyInitFlags::FAN_REPORT_DIR_FID) {
+        return Err(Errno::EINVAL);
+    }
+    if flags.contains(FanotifyInitFlags::FAN_REPORT_TARGET_FID)
+        && !flags.contains(
+            FanotifyInitFlags::FAN_REPORT_FID
+                | FanotifyInitFlags::FAN_REPORT_DIR_FID
+                | FanotifyInitFlags::FAN_REPORT_NAME,
+        )
+    {
         return Err(Errno::EINVAL);
     }
 
@@ -2199,12 +2206,12 @@ pub fn fanotify_mark(
         if dirfd as isize == AT_FDCWD {
             current::with_cwd(|cwd| Ok(cwd))?
         } else {
-            current::fdtable()
-                .lock()
-                .get(dirfd)?
-                .get_dentry()
-                .ok_or(Errno::ENOTDIR)?
-                .clone()
+            let file = current::fdtable().lock().get(dirfd)?;
+            match file.get_dentry() {
+                Some(dentry) => dentry.clone(),
+                None if is_mount_mark || is_filesystem_mark => return Err(Errno::EINVAL),
+                None => return Err(Errno::ENOTDIR),
+            }
         }
     } else {
         let pathname = uptr_pathname.read_path()?;
@@ -2230,7 +2237,8 @@ pub fn fanotify_mark(
     .get_mount_to();
 
     let inode = dentry.get_inode();
-    if flags.contains(FanotifyMarkFlags::FAN_MARK_ONLYDIR) && inode.inode_type()? != FileType::Directory {
+    let target_is_dir = inode.inode_type()? == FileType::Directory;
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_ONLYDIR) && !target_is_dir {
         return Err(Errno::ENOTDIR);
     }
 
@@ -2238,6 +2246,34 @@ pub fn fanotify_mark(
         crate::kwarn!("fanotify_mark: unsupported mask={:#x}", mask);
         return Err(Errno::EINVAL);
     };
+    if mask.contains(FanotifyEventMask::FAN_RENAME) && !fanotify_file.report_dfid_name() {
+        return Err(Errno::EINVAL);
+    }
+    if !is_mount_mark
+        && !is_filesystem_mark
+        && !target_is_dir
+        && mask.intersects(
+            FanotifyEventMask::FAN_DELETE
+                | FanotifyEventMask::FAN_RENAME
+                | FanotifyEventMask::FAN_ONDIR
+                | FanotifyEventMask::FAN_EVENT_ON_CHILD,
+        )
+    {
+        return Err(Errno::ENOTDIR);
+    }
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORE)
+        && !flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY)
+    {
+        crate::kwarn!(
+            "fanotify_mark: FAN_MARK_IGNORE requires FAN_MARK_IGNORED_SURV_MODIFY, flags={:#x}",
+            flags.bits()
+        );
+        return if !is_mount_mark && !is_filesystem_mark && target_is_dir {
+            Err(Errno::EISDIR)
+        } else {
+            Err(Errno::EINVAL)
+        };
+    }
     if fanotify_file.unprivileged()
         && mask.intersects(
             FanotifyEventMask::FAN_OPEN_PERM

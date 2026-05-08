@@ -16,7 +16,9 @@ bitflags! {
         const FAN_CLOSE_WRITE = 0x0000_0008;
         const FAN_CLOSE_NOWRITE = 0x0000_0010;
         const FAN_OPEN = 0x0000_0020;
+        const FAN_DELETE = 0x0000_0200;
         const FAN_OPEN_EXEC = 0x0000_1000;
+        const FAN_RENAME = 0x1000_0000;
         const FAN_OPEN_PERM = 0x0001_0000;
         const FAN_ACCESS_PERM = 0x0002_0000;
         const FAN_OPEN_EXEC_PERM = 0x0004_0000;
@@ -32,6 +34,7 @@ impl FanotifyEventMask {
             | Self::FAN_CLOSE_WRITE
             | Self::FAN_CLOSE_NOWRITE
             | Self::FAN_OPEN
+            | Self::FAN_DELETE
             | Self::FAN_OPEN_EXEC
             | Self::FAN_OPEN_PERM
             | Self::FAN_ACCESS_PERM
