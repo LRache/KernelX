@@ -2456,16 +2456,24 @@ const UTIME_OMIT: u64 = 0x3ffffffe;
 
 pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, flags: usize) -> SyscallRet {
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-    if uptr_path.is_null() {
-        return Err(Errno::EFAULT);
-    }
+    let path_is_null = uptr_path.is_null();
 
-    let path = uptr_path.read_path()?;
-    if path.is_empty() && !flags.contains(AtFlags::AT_EMPTY_PATH) {
+    let path = if path_is_null {
+        if dirfd as isize == AT_FDCWD {
+            return Err(Errno::EFAULT);
+        }
+        if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+            return Err(Errno::EINVAL);
+        }
+        String::new()
+    } else {
+        uptr_path.read_path()?
+    };
+    if !path_is_null && path.is_empty() && !flags.contains(AtFlags::AT_EMPTY_PATH) {
         return Err(Errno::ENOENT);
     }
 
-    let dentry = if path.is_empty() {
+    let dentry = if path_is_null || path.is_empty() {
         if dirfd as isize == AT_FDCWD {
             current::with_cwd(|cwd| Ok(cwd))?
         } else {
@@ -2499,13 +2507,12 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
     let inode = dentry.get_inode();
 
     let now = driver::chosen::kclock::now()?;
-    let (atime, mtime, has_explicit_time) = if uptr_times.is_null() {
-        (Some(now), Some(now), false)
+    let (atime, mtime, allow_write_perm) = if uptr_times.is_null() {
+        (Some(now), Some(now), true)
     } else {
         let atime = uptr_times.index(0).read()?;
         let mtime = uptr_times.index(1).read()?;
-        let has_explicit_time = (atime.tv_nsec != UTIME_NOW && atime.tv_nsec != UTIME_OMIT)
-            || (mtime.tv_nsec != UTIME_NOW && mtime.tv_nsec != UTIME_OMIT);
+        let allow_write_perm = atime.tv_nsec == UTIME_NOW && mtime.tv_nsec == UTIME_NOW;
         let convert_time = |time: Timespec| -> SysResult<Option<Duration>> {
             match time.tv_nsec {
                 UTIME_OMIT => Ok(None),
@@ -2513,7 +2520,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
                 _ => Ok(Some(time.try_into()?)),
             }
         };
-        (convert_time(atime)?, convert_time(mtime)?, has_explicit_time)
+        (convert_time(atime)?, convert_time(mtime)?, allow_write_perm)
     };
 
     if atime.is_none() && mtime.is_none() {
@@ -2526,12 +2533,14 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
     let mode = inode.mode()?;
     let (uid, gid) = inode.owner()?;
     let perm = Perm::current(PermFlags::W);
-    if has_explicit_time {
+    if allow_write_perm {
+        if !perm.is_root() && perm.uid != uid && !mode.check_perm(&perm, uid, gid) {
+            return Err(Errno::EACCES);
+        }
+    } else {
         if !perm.is_root() && perm.uid != uid {
             return Err(Errno::EPERM);
         }
-    } else if !perm.is_root() && perm.uid != uid && !mode.check_perm(&perm, uid, gid) {
-        return Err(Errno::EACCES);
     }
 
     if let Some(time) = atime {
