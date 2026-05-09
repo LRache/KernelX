@@ -18,6 +18,7 @@ use crate::net::socket::{
 
 use super::SyscallRet;
 use super::fs::IOVec;
+use super::uid::{self, Capability};
 use super::uptr::{UBuffer, UPtr, UserPointer, UserStruct};
 
 const MSG_IOV_MAX: usize = 1024;
@@ -167,6 +168,9 @@ pub fn socket(domain: usize, sock_type: usize, protocol: usize) -> SyscallRet {
                 Arc::new(InetSocket::new_tcp(blocked))
             }
             SocketKind::Raw => {
+                if !uid::capable(Capability::NetRaw) {
+                    return Err(Errno::EPERM);
+                }
                 let proto = u8::try_from(protocol).map_err(|_| Errno::EPROTONOSUPPORT)?;
                 if proto == 0 {
                     return Err(Errno::EPROTONOSUPPORT);

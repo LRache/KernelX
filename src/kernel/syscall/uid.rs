@@ -4,13 +4,33 @@ use num_enum::TryFromPrimitive;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
-use crate::kernel::task::{CapabilitySet, ProcessCapabilities};
+use crate::kernel::task::{CapabilitySet, ProcessCapabilities, manager};
 use crate::kernel::uapi::Uid;
 
 const NGROUPS_MAX: usize = 65536;
 
+pub fn getuid() -> SysResult<usize> {
+    Ok(current::pcb().uid() as usize)
+}
+
+pub fn geteuid() -> SysResult<usize> {
+    Ok(current::pcb().euid() as usize)
+}
+
+pub fn getgid() -> SysResult<usize> {
+    Ok(current::pcb().gid() as usize)
+}
+
+pub fn getegid() -> SysResult<usize> {
+    Ok(current::pcb().egid() as usize)
+}
+
+const PREFERRED_CAPABILITY_VERSION: u32 = 0x2008_0522;
+
 #[derive(Clone, Copy)]
 pub(super) enum Capability {
+    NetRaw,
+    SetPcap,
     SysTime,
 }
 
@@ -19,7 +39,7 @@ pub(super) enum Capability {
 enum CapabilityVersion {
     V1 = 0x1998_0330,
     V2 = 0x2007_1026,
-    V3 = 0x2008_0522,
+    V3 = PREFERRED_CAPABILITY_VERSION,
 }
 
 impl CapabilityVersion {
@@ -29,6 +49,19 @@ impl CapabilityVersion {
             CapabilityVersion::V2 | CapabilityVersion::V3 => 2,
         }
     }
+}
+
+fn read_cap_user_header(header: UPtr<CapUserHeader>) -> SysResult<(CapUserHeader, CapabilityVersion)> {
+    let mut header_value = header.read_optional()?.ok_or(Errno::EFAULT)?;
+    let version = match CapabilityVersion::try_from(header_value.version) {
+        Ok(version) => version,
+        Err(_) => {
+            header_value.version = PREFERRED_CAPABILITY_VERSION;
+            header.write(header_value)?;
+            return Err(Errno::EINVAL);
+        }
+    };
+    Ok((header_value, version))
 }
 
 #[repr(C)]
@@ -65,49 +98,50 @@ impl CapUserData {
         }
     }
 
-    fn into_capabilities(self) -> ProcessCapabilities {
+    fn into_capabilities(self, old: ProcessCapabilities) -> ProcessCapabilities {
         ProcessCapabilities {
-            effective: CapabilitySet::from_bits_truncate(self.effective),
-            permitted: CapabilitySet::from_bits_truncate(self.permitted),
-            inheritable: CapabilitySet::from_bits_truncate(self.inheritable),
+            effective: CapabilitySet::from_bits_retain(self.effective),
+            permitted: CapabilitySet::from_bits_retain(self.permitted),
+            inheritable: CapabilitySet::from_bits_retain(self.inheritable),
+            bounding: old.bounding,
         }
     }
 }
 
 pub(super) fn capable(capability: Capability) -> bool {
-    match capability {
-        Capability::SysTime => current::pcb()
-            .capabilities()
-            .effective
-            .contains(CapabilitySet::SYS_TIME),
+    let capability_set = match capability {
+        Capability::NetRaw => CapabilitySet::NET_RAW,
+        Capability::SetPcap => CapabilitySet::SETPCAP,
+        Capability::SysTime => CapabilitySet::SYS_TIME,
+    };
+    current::pcb().capabilities().effective.contains(capability_set)
+}
+
+pub(super) fn drop_capability_from_bounding(capability: usize) -> SysResult<usize> {
+    if !capable(Capability::SetPcap) {
+        return Err(Errno::EPERM);
     }
-}
 
-pub fn getuid() -> SysResult<usize> {
-    Ok(current::pcb().uid() as usize)
-}
-
-pub fn geteuid() -> SysResult<usize> {
-    Ok(current::pcb().euid() as usize)
-}
-
-pub fn getgid() -> SysResult<usize> {
-    Ok(current::pcb().gid() as usize)
-}
-
-pub fn getegid() -> SysResult<usize> {
-    Ok(current::pcb().egid() as usize)
+    let capability = CapabilitySet::from_cap_number(capability).ok_or(Errno::EINVAL)?;
+    let mut capabilities = current::pcb().capabilities();
+    capabilities.bounding.remove(capability);
+    current::pcb().set_capabilities(capabilities);
+    Ok(0)
 }
 
 pub fn capget(header: UPtr<CapUserHeader>, data: UPtr<CapUserData>) -> SysResult<usize> {
-    let header = header.should_not_null()?.read()?;
-    let version = CapabilityVersion::try_from(header.version).map_err(|_| Errno::EINVAL)?;
-    if header.pid != 0 && header.pid != current::pid() {
-        return Err(Errno::ESRCH);
+    let (header, version) = read_cap_user_header(header)?;
+    if header.pid < 0 {
+        return Err(Errno::EINVAL);
     }
+    let capabilities = if header.pid == 0 || header.pid == current::pid() {
+        current::pcb().capabilities()
+    } else {
+        manager::get(header.pid).ok_or(Errno::ESRCH)?.parent().capabilities()
+    };
 
     if !data.is_null() {
-        data.write(CapUserData::from_capabilities(current::pcb().capabilities()))?;
+        data.write(CapUserData::from_capabilities(capabilities))?;
         for i in 1..version.data_entries() {
             data.add(i).write(CapUserData::ZERO)?;
         }
@@ -117,24 +151,36 @@ pub fn capget(header: UPtr<CapUserHeader>, data: UPtr<CapUserData>) -> SysResult
 }
 
 pub fn capset(header: UPtr<CapUserHeader>, data: UPtr<CapUserData>) -> SysResult<usize> {
-    let header = header.should_not_null()?.read()?;
-    let version = CapabilityVersion::try_from(header.version).map_err(|_| Errno::EINVAL)?;
+    let (header, version) = read_cap_user_header(header)?;
+
+    if header.pid < 0 {
+        return Err(Errno::EINVAL);
+    }
     if header.pid != 0 && header.pid != current::pid() {
+        if manager::get(header.pid).is_some() {
+            return Err(Errno::EPERM);
+        }
         return Err(Errno::ESRCH);
     }
 
     data.should_not_null()?;
-    let capabilities = data.read()?.into_capabilities();
+    let old = current::pcb().capabilities();
+    let capabilities = data.read()?.into_capabilities(old);
     for i in 1..version.data_entries() {
         data.add(i).read()?;
     }
     if !capabilities.permitted.contains(capabilities.effective) {
         return Err(Errno::EPERM);
     }
-    let old = current::pcb().capabilities();
-    if current::pcb().euid() != 0
-        && (!old.permitted.contains(capabilities.permitted) || !old.inheritable.contains(capabilities.inheritable))
-    {
+    if !old.permitted.contains(capabilities.permitted) {
+        return Err(Errno::EPERM);
+    }
+    let allowed_inheritable = if old.effective.contains(CapabilitySet::SETPCAP) {
+        old.inheritable | old.bounding
+    } else {
+        old.inheritable | old.permitted
+    };
+    if !allowed_inheritable.contains(capabilities.inheritable) {
         return Err(Errno::EPERM);
     }
     current::pcb().set_capabilities(capabilities);
@@ -155,28 +201,6 @@ pub fn getresgid(rgid: UPtr<Uid>, egid: UPtr<Uid>, sgid: UPtr<Uid>) -> SysResult
     rgid.write(pcb.gid())?;
     egid.write(pcb.egid())?;
     sgid.write(pcb.sgid())?;
-    Ok(0)
-}
-
-pub fn seteuid(euid: usize) -> SysResult<usize> {
-    let pcb = current::pcb();
-    let euid = euid as Uid;
-    if pcb.euid() == 0 || euid == pcb.uid() || euid == pcb.euid() || euid == pcb.suid() {
-        pcb.set_euid(euid);
-    } else {
-        return Err(Errno::EPERM);
-    }
-    Ok(0)
-}
-
-pub fn setegid(egid: usize) -> SysResult<usize> {
-    let pcb = current::pcb();
-    let egid = egid as Uid;
-    if pcb.euid() == 0 || egid == pcb.gid() || egid == pcb.egid() || egid == pcb.sgid() {
-        pcb.set_egid(egid);
-    } else {
-        return Err(Errno::EPERM);
-    }
     Ok(0)
 }
 

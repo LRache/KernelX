@@ -19,6 +19,8 @@ use crate::kernel::task::{ExitStatus, PCB, manager};
 use crate::kernel::uapi::{OpenFlags, Uid};
 use crate::kernel::{config, scheduler, task};
 
+use super::uid;
+
 pub fn sched_yield() -> SyscallRet {
     current::schedule();
     Ok(0)
@@ -897,7 +899,12 @@ pub fn setfsgid(fsgid: usize) -> SyscallRet {
 }
 
 pub fn prctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SyscallRet {
-    let _ = (option, arg2, arg3, arg4, arg5); // Silence unused variable warnings
+    const PR_CAPBSET_DROP: usize = 24;
 
-    Ok(0)
+    let _ = (arg3, arg4, arg5);
+
+    match option {
+        PR_CAPBSET_DROP => uid::drop_capability_from_bounding(arg2),
+        _ => Ok(0),
+    }
 }
