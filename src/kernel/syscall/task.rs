@@ -254,10 +254,11 @@ pub fn kcmp(pid1: usize, pid2: usize, compare_type: usize, idx1: usize, idx2: us
     let pcb2 = find_process(pid2).ok_or(Errno::ESRCH)?;
 
     let r = match compare_type {
-        KcmpType::File => kcmp_object(
-            &pcb1.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx1)?,
-            &pcb2.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx2)?,
-        ),
+        KcmpType::File => {
+            let obj1 = pcb1.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx1)?;
+            let obj2 = pcb2.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx2)?;
+            kcmp_object(&obj1, &obj2)
+        },
         KcmpType::VM => kcmp_object(
             pcb1.leader().ok_or(Errno::ESRCH)?.get_addrspace(),
             pcb2.leader().ok_or(Errno::ESRCH)?.get_addrspace(),
