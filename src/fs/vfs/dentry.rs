@@ -257,7 +257,12 @@ impl Dentry {
         }
     }
 
-    pub fn walk_link_with_perm(self: Arc<Self>, symlink_depth: &mut usize, perm: &Perm) -> SysResult<Arc<Dentry>> {
+    pub fn walk_link_with_perm(
+        self: Arc<Self>,
+        root: &Arc<Dentry>,
+        symlink_depth: &mut usize,
+        perm: &Perm,
+    ) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
             let mut buffer = [0u8; 255];
@@ -267,7 +272,7 @@ impl Dentry {
                 }
                 *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
-                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(p, link_name, symlink_depth, perm)?;
+                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(root, p, link_name, symlink_depth, perm)?;
                 return Ok(link_dentry);
             }
         }
@@ -276,6 +281,7 @@ impl Dentry {
 
     pub fn walk_link_with_perm_and_flags(
         self: Arc<Self>,
+        root: &Arc<Dentry>,
         symlink_depth: &mut usize,
         perm: &Perm,
         flags: LookupFlags,
@@ -290,7 +296,7 @@ impl Dentry {
                 *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
                 let link_dentry =
-                    vfs().lookup_dentry_with_depth_perm_flags(p, link_name, symlink_depth, perm, flags)?;
+                    vfs().lookup_dentry_with_depth_perm_flags(root, p, link_name, symlink_depth, perm, flags)?;
                 return Ok(link_dentry);
             }
         }

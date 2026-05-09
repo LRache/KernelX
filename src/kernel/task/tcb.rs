@@ -212,8 +212,8 @@ impl TCB {
         exec_inode.begin_exec().expect("Failed to acquire init executable");
 
         let mut addrspace = AddrSpace::new();
-        let (user_entry, dyn_info) =
-            elf::loader::load_elf(&file, &mut addrspace, &exec_perm).expect("Failed to load ELF for init task");
+        let (user_entry, dyn_info) = elf::loader::load_elf(vfs::get_root_dentry(), &file, &mut addrspace, &exec_perm)
+            .expect("Failed to load ELF for init task");
 
         let mut auxv = Auxv::new();
         if let Some(dyn_info) = dyn_info {
@@ -344,10 +344,16 @@ impl TCB {
                     new_argv.push(arg);
                 }
 
-                let interpreter_file =
-                    vfs::open_file(interpreter, FileFlags::readonly(), &Perm::current(PermFlags::X))?
-                        .downcast_arc::<RandomAccessFile>()
-                        .map_err(|_| Errno::ENOEXEC)?;
+                let root = self.parent.root();
+                let interpreter_file = vfs::openat_file(
+                    &root,
+                    &root,
+                    interpreter,
+                    FileFlags::readonly(),
+                    &Perm::current(PermFlags::X),
+                )?
+                .downcast_arc::<RandomAccessFile>()
+                .map_err(|_| Errno::ENOEXEC)?;
                 return self.new_exec(interpreter_file, interpreter, &new_argv, envp);
             }
         }
@@ -360,7 +366,8 @@ impl TCB {
         let result = (|| {
             let mut addrspace = AddrSpace::new();
             let exec_perm = Perm::current(PermFlags::X);
-            let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace, &exec_perm)?;
+            let root = self.parent.root();
+            let (user_entry, dyn_info) = elf::loader::load_elf(&root, &file, &mut addrspace, &exec_perm)?;
 
             let mut auxv = Auxv::new();
             if let Some(dyn_info) = dyn_info {

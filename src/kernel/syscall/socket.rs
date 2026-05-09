@@ -235,8 +235,8 @@ fn bind_unix_socket(sock: &Arc<UnixSocket>, addr_ptr: UPtr<u8>, addrlen: usize) 
 
     sock.can_bind()?;
 
-    let (parent, name, absolute_path) = current::with_cwd(|cwd| {
-        let (parent, name) = vfs::load_parent_dentry_at(&cwd, path)?.ok_or(Errno::EINVAL)?;
+    let (parent, name, absolute_path) = current::with_root_cwd(|root, cwd| {
+        let (parent, name) = vfs::load_parent_dentry_at(&root, &cwd, path)?.ok_or(Errno::EINVAL)?;
         if name.as_ref() == "/" || name.is_empty() {
             return Err(Errno::EINVAL);
         }

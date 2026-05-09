@@ -121,6 +121,7 @@ pub struct PCB {
     exec_inode: SpinLock<Option<Arc<dyn InodeOps>>>,
 
     pub tasks: SleepLock<Vec<Arc<TCB>>>,
+    root: SpinLock<Arc<Dentry>>,
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
     file_size_limit: SpinLock<(usize, usize)>,
@@ -189,7 +190,8 @@ impl PCB {
             exec_inode: SpinLock::new(exec_inode, "PCB::exec_inode"),
 
             tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
-            cwd: SpinLock::new(parent.cwd.lock().clone(), "PCB::cwd"),
+            root: SpinLock::new(inherit.root.lock().clone(), "PCB::root"),
+            cwd: SpinLock::new(inherit.cwd.lock().clone(), "PCB::cwd"),
             umask: SpinLock::new(*parent.umask.lock(), "PCB::umask"),
             file_size_limit: SpinLock::new(*parent.file_size_limit.lock(), "PCB::file_size_limit"),
             waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
@@ -241,6 +243,7 @@ impl PCB {
     ) -> SysResult<(Arc<PCB>, Arc<TCB>)> {
         let new_tid = tid::alloc();
 
+        let root = vfs::get_root_dentry().clone();
         let cwd = vfs::load_dentry(cwd)?;
 
         let pcb = Arc::new(Self {
@@ -251,6 +254,7 @@ impl PCB {
             exec_inode: SpinLock::new(None, "PCB::exec_inode"),
 
             tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
+            root: SpinLock::new(root, "PCB::root"),
             cwd: SpinLock::new(cwd.clone(), "PCB::cwd"),
             umask: SpinLock::new(0o022, "PCB::umask"),
             file_size_limit: SpinLock::new((usize::MAX, usize::MAX), "PCB::file_size_limit"),
@@ -507,6 +511,14 @@ impl PCB {
 
     pub fn set_cwd(&self, dentry: &Arc<Dentry>) {
         *self.cwd.lock() = dentry.clone();
+    }
+
+    pub fn root(&self) -> Arc<Dentry> {
+        self.root.lock().clone()
+    }
+
+    pub fn set_root(&self, dentry: &Arc<Dentry>) {
+        *self.root.lock() = dentry.clone();
     }
 
     pub fn umask(&self) -> u16 {

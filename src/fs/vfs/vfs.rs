@@ -44,45 +44,53 @@ impl VirtualFileSystem {
         &self.root
     }
 
-    pub fn lookup_dentry(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
-        self.lookup_dentry_with_perm(dir, path, &Perm::current(PermFlags::X))
+    pub fn lookup_dentry(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
+        self.lookup_dentry_with_perm(root, dir, path, &Perm::current(PermFlags::X))
     }
 
-    pub fn lookup_dentry_with_perm(&self, dir: &Arc<Dentry>, path: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
-        let mut symlink_depth = 0;
-        self.lookup_dentry_with_depth_and_perm(dir, path, &mut symlink_depth, perm)
-    }
-
-    pub(crate) fn lookup_dentry_with_depth_and_perm(
+    pub fn lookup_dentry_with_perm(
         &self,
+        root: &Arc<Dentry>,
+        dir: &Arc<Dentry>,
+        path: &str,
+        perm: &Perm,
+    ) -> SysResult<Arc<Dentry>> {
+        let mut symlink_depth = 0;
+        self.lookup_dentry_with_depth_and_perm(root, dir, path, &mut symlink_depth, perm)
+    }
+
+    pub fn lookup_dentry_with_depth_and_perm(
+        &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &str,
         symlink_depth: &mut usize,
         perm: &Perm,
     ) -> SysResult<Arc<Dentry>> {
         let mut current = match path.chars().next() {
-            Some('/') => self.get_root().clone(),
+            Some('/') => root.clone(),
             _ => dir.clone(),
         };
 
         current = current.get_mount_to();
-        current = current.walk_link_with_perm(symlink_depth, perm)?;
+        current = current.walk_link_with_perm(root, symlink_depth, perm)?;
 
         for part in path.split('/').filter(|s| !(s.is_empty() || *s == ".")) {
             if part == ".." {
-                current = Self::lookup_parent_component(current, perm, LookupFlags::empty())?;
+                current = Self::lookup_parent_component(root, current, perm, LookupFlags::empty())?;
                 continue;
             }
 
             let next = current.lookup_with_perm(part, perm)?;
-            current = next.get_mount_to().walk_link_with_perm(symlink_depth, perm)?;
+            current = next.get_mount_to().walk_link_with_perm(root, symlink_depth, perm)?;
         }
 
         Ok(current)
     }
 
-    pub(crate) fn lookup_dentry_with_depth_perm_flags(
+    pub fn lookup_dentry_with_depth_perm_flags(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &str,
         symlink_depth: &mut usize,
@@ -90,23 +98,23 @@ impl VirtualFileSystem {
         flags: LookupFlags,
     ) -> SysResult<Arc<Dentry>> {
         let mut current = match path.chars().next() {
-            Some('/') => self.get_root().clone(),
+            Some('/') => root.clone(),
             _ => dir.clone(),
         };
 
         current = self.follow_mount(current, flags)?;
-        current = current.walk_link_with_perm_and_flags(symlink_depth, perm, flags)?;
+        current = current.walk_link_with_perm_and_flags(root, symlink_depth, perm, flags)?;
 
         for part in path.split('/').filter(|s| !(s.is_empty() || *s == ".")) {
             if part == ".." {
-                current = Self::lookup_parent_component(current, perm, flags)?;
+                current = Self::lookup_parent_component(root, current, perm, flags)?;
                 continue;
             }
 
             let next = current.lookup_with_perm(part, perm)?;
-            current = self
-                .follow_mount(next, flags)?
-                .walk_link_with_perm_and_flags(symlink_depth, perm, flags)?;
+            current =
+                self.follow_mount(next, flags)?
+                    .walk_link_with_perm_and_flags(root, symlink_depth, perm, flags)?;
         }
 
         Ok(current)
@@ -114,44 +122,47 @@ impl VirtualFileSystem {
 
     pub fn lookup_dentry_with_flags(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &str,
         flags: LookupFlags,
     ) -> SysResult<Arc<Dentry>> {
-        self.lookup_dentry_with_perm_and_flags(dir, path, &Perm::current(PermFlags::X), flags)
+        self.lookup_dentry_with_perm_and_flags(root, dir, path, &Perm::current(PermFlags::X), flags)
     }
 
     pub fn lookup_dentry_with_perm_and_flags(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &str,
         perm: &Perm,
         flags: LookupFlags,
     ) -> SysResult<Arc<Dentry>> {
         let mut symlink_depth = 0;
-        self.lookup_dentry_with_depth_perm_flags(dir, path, &mut symlink_depth, perm, flags)
+        self.lookup_dentry_with_depth_perm_flags(root, dir, path, &mut symlink_depth, perm, flags)
     }
 
-    pub fn lookup_dentry_nofollow(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
-        self.lookup_dentry_nofollow_with_perm(dir, path, &Perm::current(PermFlags::X))
+    pub fn lookup_dentry_nofollow(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
+        self.lookup_dentry_nofollow_with_perm(root, dir, path, &Perm::current(PermFlags::X))
     }
 
     pub fn lookup_dentry_nofollow_with_perm(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &str,
         perm: &Perm,
     ) -> SysResult<Arc<Dentry>> {
         let mut symlink_depth = 0;
         let current = match path.chars().next() {
-            Some('/') => self.get_root().clone(),
+            Some('/') => root.clone(),
             _ => dir.clone(),
         }
         .get_mount_to()
-        .walk_link_with_perm(&mut symlink_depth, perm)?;
+        .walk_link_with_perm(root, &mut symlink_depth, perm)?;
 
         if let Some((parent, name)) =
-            self.lookup_parent_dentry_with_depth_and_perm(dir, path, &mut symlink_depth, perm)?
+            self.lookup_parent_dentry_with_depth_and_perm(root, dir, path, &mut symlink_depth, perm)?
         {
             let dentry = parent.lookup_nocached_with_perm(name.as_ref(), perm)?;
             Ok(dentry.get_mount_to())
@@ -162,6 +173,7 @@ impl VirtualFileSystem {
 
     pub fn lookup_dentry_nofollow_with_perm_and_flags(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &str,
         perm: &Perm,
@@ -169,15 +181,15 @@ impl VirtualFileSystem {
     ) -> SysResult<Arc<Dentry>> {
         let mut symlink_depth = 0;
         let current = match path.chars().next() {
-            Some('/') => self.get_root().clone(),
+            Some('/') => root.clone(),
             _ => dir.clone(),
         };
         let current =
             self.follow_mount(current, flags)?
-                .walk_link_with_perm_and_flags(&mut symlink_depth, perm, flags)?;
+                .walk_link_with_perm_and_flags(root, &mut symlink_depth, perm, flags)?;
 
         if let Some((parent, name)) =
-            self.lookup_parent_dentry_with_depth_perm_flags(dir, path, &mut symlink_depth, perm, flags)?
+            self.lookup_parent_dentry_with_depth_perm_flags(root, dir, path, &mut symlink_depth, perm, flags)?
         {
             let dentry = parent.lookup_nocached_with_perm(name.as_ref(), perm)?;
             self.follow_mount(dentry, flags)
@@ -188,38 +200,44 @@ impl VirtualFileSystem {
 
     pub fn lookup_parent_dentry<'a>(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &'a str,
     ) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
-        self.lookup_parent_dentry_with_perm(dir, path, &Perm::current(PermFlags::X))
+        self.lookup_parent_dentry_with_perm(root, dir, path, &Perm::current(PermFlags::X))
     }
 
     pub fn lookup_parent_dentry_with_perm<'a>(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &'a str,
         perm: &Perm,
     ) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
         let mut symlink_depth = 0;
-        self.lookup_parent_dentry_with_depth_and_perm(dir, path, &mut symlink_depth, perm)
+        self.lookup_parent_dentry_with_depth_and_perm(root, dir, path, &mut symlink_depth, perm)
     }
 
     pub(crate) fn lookup_parent_dentry_with_depth_and_perm<'a>(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &'a str,
         symlink_depth: &mut usize,
         perm: &Perm,
     ) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
         let mut current = match path.chars().next() {
-            Some('/') => self.get_root().clone(),
+            Some('/') => root.clone(),
             _ => dir.clone(),
         };
-        current = current.get_mount_to().walk_link_with_perm(symlink_depth, perm)?;
+        current = current.get_mount_to().walk_link_with_perm(root, symlink_depth, perm)?;
 
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
         if parts.is_empty() {
+            if Arc::ptr_eq(&current, root) {
+                return Ok(None);
+            }
             return Ok(current.get_parent().map(|p| (p, Cow::Borrowed("/"))));
         }
 
@@ -228,11 +246,11 @@ impl VirtualFileSystem {
                 continue;
             }
             if *part == ".." {
-                current = Self::lookup_parent_component(current, perm, LookupFlags::empty())?;
+                current = Self::lookup_parent_component(root, current, perm, LookupFlags::empty())?;
                 continue;
             }
             let next = current.lookup_with_perm(part, perm)?;
-            current = next.get_mount_to().walk_link_with_perm(symlink_depth, perm)?;
+            current = next.get_mount_to().walk_link_with_perm(root, symlink_depth, perm)?;
         }
 
         let name = parts[parts.len() - 1];
@@ -244,8 +262,12 @@ impl VirtualFileSystem {
             current.check_search_perm(perm)?;
             current
         } else {
-            Self::lookup_parent_component(current, perm, LookupFlags::empty())?
+            Self::lookup_parent_component(root, current, perm, LookupFlags::empty())?
         };
+
+        if Arc::ptr_eq(&target, root) {
+            return Ok(None);
+        }
 
         Ok(target
             .get_parent()
@@ -254,6 +276,7 @@ impl VirtualFileSystem {
 
     pub(crate) fn lookup_parent_dentry_with_depth_perm_flags<'a>(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &'a str,
         symlink_depth: &mut usize,
@@ -261,16 +284,19 @@ impl VirtualFileSystem {
         flags: LookupFlags,
     ) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
         let mut current = match path.chars().next() {
-            Some('/') => self.get_root().clone(),
+            Some('/') => root.clone(),
             _ => dir.clone(),
         };
         current = self
             .follow_mount(current, flags)?
-            .walk_link_with_perm_and_flags(symlink_depth, perm, flags)?;
+            .walk_link_with_perm_and_flags(root, symlink_depth, perm, flags)?;
 
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
         if parts.is_empty() {
+            if Arc::ptr_eq(&current, root) {
+                return Ok(None);
+            }
             return Ok(current.get_parent().map(|p| (p, Cow::Borrowed("/"))));
         }
 
@@ -279,13 +305,13 @@ impl VirtualFileSystem {
                 continue;
             }
             if *part == ".." {
-                current = Self::lookup_parent_component(current, perm, flags)?;
+                current = Self::lookup_parent_component(root, current, perm, flags)?;
                 continue;
             }
             let next = current.lookup_with_perm(part, perm)?;
-            current = self
-                .follow_mount(next, flags)?
-                .walk_link_with_perm_and_flags(symlink_depth, perm, flags)?;
+            current =
+                self.follow_mount(next, flags)?
+                    .walk_link_with_perm_and_flags(root, symlink_depth, perm, flags)?;
         }
 
         let name = parts[parts.len() - 1];
@@ -297,8 +323,12 @@ impl VirtualFileSystem {
             current.check_search_perm(perm)?;
             current
         } else {
-            Self::lookup_parent_component(current, perm, flags)?
+            Self::lookup_parent_component(root, current, perm, flags)?
         };
+
+        if Arc::ptr_eq(&target, root) {
+            return Ok(None);
+        }
 
         Ok(target
             .get_parent()
@@ -307,22 +337,24 @@ impl VirtualFileSystem {
 
     pub fn lookup_parent_dentry_with_flags<'a>(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &'a str,
         flags: LookupFlags,
     ) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
-        self.lookup_parent_dentry_with_perm_and_flags(dir, path, &Perm::current(PermFlags::X), flags)
+        self.lookup_parent_dentry_with_perm_and_flags(root, dir, path, &Perm::current(PermFlags::X), flags)
     }
 
     pub fn lookup_parent_dentry_with_perm_and_flags<'a>(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &'a str,
         perm: &Perm,
         flags: LookupFlags,
     ) -> SysResult<Option<(Arc<Dentry>, Cow<'a, str>)>> {
         let mut symlink_depth = 0;
-        self.lookup_parent_dentry_with_depth_perm_flags(dir, path, &mut symlink_depth, perm, flags)
+        self.lookup_parent_dentry_with_depth_perm_flags(root, dir, path, &mut symlink_depth, perm, flags)
     }
 
     fn follow_mount(&self, dentry: Arc<Dentry>, flags: LookupFlags) -> SysResult<Arc<Dentry>> {
@@ -332,8 +364,16 @@ impl VirtualFileSystem {
         Ok(dentry.get_mount_to())
     }
 
-    fn lookup_parent_component(current: Arc<Dentry>, perm: &Perm, flags: LookupFlags) -> SysResult<Arc<Dentry>> {
+    fn lookup_parent_component(
+        root: &Arc<Dentry>,
+        current: Arc<Dentry>,
+        perm: &Perm,
+        flags: LookupFlags,
+    ) -> SysResult<Arc<Dentry>> {
         current.check_search_perm(perm)?;
+        if Arc::ptr_eq(&current, root) {
+            return Ok(current);
+        }
 
         let current_sno = current.sno();
         let parent = current.get_parent().unwrap_or(current);

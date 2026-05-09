@@ -62,6 +62,7 @@ macro_rules! syscall_entries {
             17  => task::getcwd(2),
             49  => task::chdir(1),
             50  => task::fchdir(1),
+            51  => task::chroot(1),
             93  => task::exit(1),
             94  => task::exit_group(1),
             95  => task::waitid(5),

@@ -258,7 +258,7 @@ pub fn kcmp(pid1: usize, pid2: usize, compare_type: usize, idx1: usize, idx2: us
             let obj1 = pcb1.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx1)?;
             let obj2 = pcb2.leader().ok_or(Errno::ESRCH)?.fdtable().lock().get(idx2)?;
             kcmp_object(&obj1, &obj2)
-        },
+        }
         KcmpType::VM => kcmp_object(
             pcb1.leader().ok_or(Errno::ESRCH)?.get_addrspace(),
             pcb2.leader().ok_or(Errno::ESRCH)?.get_addrspace(),
@@ -525,10 +525,11 @@ pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<
 
     let path = uptr_path.read_string()?;
 
-    let file =
-        current::with_cwd(|cwd| vfs::openat_file(&cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X)))?
-            .downcast_arc::<RandomAccessFile>()
-            .map_err(|_| Errno::ENOEXEC)?;
+    let file = current::with_root_cwd(|root, cwd| {
+        vfs::openat_file(&root, &cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X))
+    })?
+    .downcast_arc::<RandomAccessFile>()
+    .map_err(|_| Errno::ENOEXEC)?;
 
     do_execve(file, &path, uptr_argv, uptr_envp)
 }
@@ -542,13 +543,14 @@ bitflags! {
 }
 
 fn open_execveat_file(
+    root: &Arc<crate::fs::Dentry>,
     dir: &Arc<crate::fs::Dentry>,
     path: &str,
     flags: ExecveAtFlags,
     perm: &Perm,
 ) -> SysResult<Arc<RandomAccessFile>> {
     let file = if flags.contains(ExecveAtFlags::AT_SYMLINK_NOFOLLOW) {
-        let dentry = vfs::load_dentry_at_nofollow_with_perm(dir, path, perm)?;
+        let dentry = vfs::load_dentry_at_nofollow_with_perm(root, dir, path, perm)?;
         let inode = dentry.get_inode();
         if inode.inode_type()? == FileType::Symlink {
             return Err(Errno::ELOOP);
@@ -562,7 +564,7 @@ fn open_execveat_file(
 
         inode.wrap_file(Some(dentry), FileFlags::readonly())
     } else {
-        vfs::openat_file(dir, path, FileFlags::readonly(), perm)?
+        vfs::openat_file(root, dir, path, FileFlags::readonly(), perm)?
     };
 
     file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::ENOEXEC)
@@ -598,13 +600,13 @@ pub fn execveat(
 
         // When pathname is absolute, dirfd can be ignored.
         let file = if path.starts_with('/') {
-            current::with_cwd(|cwd| open_execveat_file(&cwd, &path, flags, &perm))?
+            current::with_root_cwd(|root, cwd| open_execveat_file(&root, &cwd, &path, flags, &perm))?
         } else if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| open_execveat_file(&cwd, &path, flags, &perm))?
+            current::with_root_cwd(|root, cwd| open_execveat_file(&root, &cwd, &path, flags, &perm))?
         } else {
             let dir_file = current::fdtable().lock().get(dirfd)?;
             let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
-            open_execveat_file(dir, &path, flags, &perm)?
+            current::with_root(|root| open_execveat_file(&root, dir, &path, flags, &perm))?
         };
         (file, path.as_str().into())
     };
@@ -859,7 +861,7 @@ pub fn chdir(uptr_path: UString) -> SysResult<usize> {
     if path.len() >= config::MAX_FILENAME_LEN {
         return Err(Errno::ENAMETOOLONG);
     }
-    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+    let dentry = current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &path))?;
     current::pcb().set_cwd(&dentry);
     Ok(0)
 }
@@ -868,6 +870,24 @@ pub fn fchdir(fd: usize) -> SysResult<usize> {
     let file = current::fdtable().lock().get(fd)?;
     let dentry = file.get_dentry().ok_or(Errno::ENOTDIR)?;
     current::pcb().set_cwd(&dentry);
+    Ok(0)
+}
+
+pub fn chroot(uptr_path: UString) -> SysResult<usize> {
+    let path = uptr_path.should_not_null()?.read_path()?;
+    if path.len() >= config::MAX_FILENAME_LEN {
+        return Err(Errno::ENAMETOOLONG);
+    }
+
+    let perm = Perm::current(PermFlags::X);
+    let dentry = current::with_root_cwd(|root, cwd| vfs::load_dentry_at_with_perm(&root, &cwd, &path, &perm))?;
+    dentry.check_search_perm(&perm)?;
+
+    if current::euid() != 0 {
+        return Err(Errno::EPERM);
+    }
+
+    current::pcb().set_root(&dentry);
     Ok(0)
 }
 
