@@ -102,6 +102,7 @@ macro_rules! syscall_entries {
             98  => futex::futex(6),
             99  => futex::set_robust_list(1),
             100 => futex::get_robust_list(0),
+            449 => futex::futex_waitv(5),
 
             // Misc
             81  => misc::sync(0),

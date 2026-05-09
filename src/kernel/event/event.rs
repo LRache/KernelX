@@ -10,6 +10,7 @@ pub enum Event {
     WriteReady,
     Timeout,
     Futex,
+    FutexWaitv { index: usize },
     Process { child: Tid },
     WaitSignal { signum: SignalNum },
     Signal,
