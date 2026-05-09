@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::arch;
 use crate::driver::RTCDriverOps;
-use crate::kernel::errno::SysResult;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::SpinLock;
 
 static KCLOCK: SpinLock<Option<Arc<dyn RTCDriverOps>>> = SpinLock::new(None, "static::KCLOCK");
@@ -18,5 +18,13 @@ pub fn now() -> SysResult<Duration> {
         clock.now()
     } else {
         Ok(arch::uptime())
+    }
+}
+
+pub fn set_time(time: Duration) -> SysResult<()> {
+    if let Some(clock) = &*KCLOCK.lock() {
+        clock.set_time(time)
+    } else {
+        Err(Errno::ENODEV)
     }
 }

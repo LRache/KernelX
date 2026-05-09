@@ -161,6 +161,7 @@ pub trait PMUDriverOps: Sync + Send {
 
 pub trait RTCDriverOps: DriverOps + Downcast + Send + Sync {
     fn now(&self) -> SysResult<Duration>;
+    fn set_time(&self, time: Duration) -> SysResult<()>;
 }
 
 impl_downcast!(RTCDriverOps);

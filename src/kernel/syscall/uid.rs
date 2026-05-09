@@ -28,7 +28,7 @@ pub fn getegid() -> SysResult<usize> {
 const PREFERRED_CAPABILITY_VERSION: u32 = 0x2008_0522;
 
 #[derive(Clone, Copy)]
-pub(super) enum Capability {
+pub(crate) enum Capability {
     NetRaw,
     SetPcap,
     SysTime,
@@ -108,7 +108,7 @@ impl CapUserData {
     }
 }
 
-pub(super) fn capable(capability: Capability) -> bool {
+pub(crate) fn capable(capability: Capability) -> bool {
     let capability_set = match capability {
         Capability::NetRaw => CapabilitySet::NET_RAW,
         Capability::SetPcap => CapabilitySet::SETPCAP,
