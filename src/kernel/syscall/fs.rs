@@ -2454,52 +2454,91 @@ pub fn newfstat(fd: usize, uptr_stat: UPtr<FileStat>) -> SyscallRet {
 const UTIME_NOW: u64 = 0x3fffffff;
 const UTIME_OMIT: u64 = 0x3ffffffe;
 
-pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, _flags: usize) -> SyscallRet {
-    let path = if uptr_path.is_null() {
-        String::new()
-    } else {
-        uptr_path.read_path()?
-    };
-    let dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
-    } else {
-        vfs::load_dentry_at(
+pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, flags: usize) -> SyscallRet {
+    let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if uptr_path.is_null() {
+        return Err(Errno::EFAULT);
+    }
+
+    let path = uptr_path.read_path()?;
+    if path.is_empty() && !flags.contains(AtFlags::AT_EMPTY_PATH) {
+        return Err(Errno::ENOENT);
+    }
+
+    let dentry = if path.is_empty() {
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| Ok(cwd))?
+        } else {
             current::fdtable()
                 .lock()
                 .get(dirfd)?
                 .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &path,
-        )?
+                .cloned()
+                .ok_or(Errno::EINVAL)?
+        }
+    } else {
+        let helper = if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+            vfs::load_dentry_at_nofollow
+        } else {
+            vfs::load_dentry_at
+        };
+        if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| helper(&cwd, &path))?
+        } else {
+            helper(
+                current::fdtable()
+                    .lock()
+                    .get(dirfd)?
+                    .get_dentry()
+                    .ok_or(Errno::ENOTDIR)?,
+                &path,
+            )?
+        }
     };
+    let dentry = dentry.get_mount_to();
     let inode = dentry.get_inode();
 
     let now = driver::chosen::kclock::now()?;
+    let (atime, mtime, has_explicit_time) = if uptr_times.is_null() {
+        (Some(now), Some(now), false)
+    } else {
+        let atime = uptr_times.index(0).read()?;
+        let mtime = uptr_times.index(1).read()?;
+        let has_explicit_time = (atime.tv_nsec != UTIME_NOW && atime.tv_nsec != UTIME_OMIT)
+            || (mtime.tv_nsec != UTIME_NOW && mtime.tv_nsec != UTIME_OMIT);
+        let convert_time = |time: Timespec| -> SysResult<Option<Duration>> {
+            match time.tv_nsec {
+                UTIME_OMIT => Ok(None),
+                UTIME_NOW => Ok(Some(now)),
+                _ => Ok(Some(time.try_into()?)),
+            }
+        };
+        (convert_time(atime)?, convert_time(mtime)?, has_explicit_time)
+    };
 
-    if uptr_times.is_null() {
-        inode.update_atime(&now)?;
-        inode.update_mtime(&now)?;
+    if atime.is_none() && mtime.is_none() {
         return Ok(0);
     }
-
-    let atime = uptr_times.index(0).read()?;
-    let mtime = uptr_times.index(1).read()?;
-    if atime.tv_nsec != UTIME_OMIT {
-        if atime.tv_nsec == UTIME_NOW {
-            inode.update_atime(&now)?;
-        } else {
-            let duration = Duration::new(atime.tv_sec, atime.tv_nsec as u32);
-            inode.update_atime(&duration)?;
-        }
+    if dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
     }
 
-    if mtime.tv_nsec != UTIME_OMIT {
-        if mtime.tv_nsec == UTIME_NOW {
-            inode.update_mtime(&now)?;
-        } else {
-            let duration = Duration::new(mtime.tv_sec, mtime.tv_nsec as u32);
-            inode.update_mtime(&duration)?;
+    let mode = inode.mode()?;
+    let (uid, gid) = inode.owner()?;
+    let perm = Perm::current(PermFlags::W);
+    if has_explicit_time {
+        if !perm.is_root() && perm.uid != uid {
+            return Err(Errno::EPERM);
         }
+    } else if !perm.is_root() && perm.uid != uid && !mode.check_perm(&perm, uid, gid) {
+        return Err(Errno::EACCES);
+    }
+
+    if let Some(time) = atime {
+        inode.update_atime(&time)?;
+    }
+    if let Some(time) = mtime {
+        inode.update_mtime(&time)?;
     }
 
     Ok(0)
