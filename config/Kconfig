@@ -204,6 +204,16 @@ config ENABLE_SWAP_MEMORY
 
 endmenu
 
+menu "Boot Configuration"
+
+config DEFAULT_BOOTARGS
+	string "Default kernel boot arguments"
+	default ""
+	help
+	  Boot arguments used by the kernel when /chosen/bootargs is empty.
+
+endmenu
+
 menu "QEMU Configuration"
 
 config QEMU_MACHINE

@@ -68,4 +68,8 @@ pub const DEFAULT_INITTTY: &str = match option_env!("CONFIG_DEFAULT_INITTTY") {
     Some(v) => v,
     None => "/dev/serial@10000000",
 };
+pub const DEFAULT_BOOTARGS: &str = match option_env!("CONFIG_DEFAULT_BOOTARGS") {
+    Some(v) => v,
+    None => "",
+};
 /* ------ BOOT ARGS ------- */
