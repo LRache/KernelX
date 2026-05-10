@@ -4,9 +4,10 @@ use core::option::Option;
 use crate::driver::BlockDriverOps;
 use crate::fs::Mode;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::Fanotify;
 use crate::kernel::uapi::{Statfs, StatfsFlags};
 
-use super::inode::{Fanotify, InodeOps};
+use super::inode::InodeOps;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MountOptions {

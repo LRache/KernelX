@@ -4,10 +4,10 @@ use alloc::sync::Arc;
 use alloc::vec;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
-use crate::fs::inode::{FanotifyEventMask, notify_fanotify, wait_fanotify_open_exec_permission};
 use crate::fs::{Dentry, Perm, vfs};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{FanotifyEventMask, notify_fanotify, wait_fanotify_open_exec_permission};
 use crate::kernel::mm::{AddrSpace, MapPerm, maparea};
 use crate::{arch, ktrace, println};
 

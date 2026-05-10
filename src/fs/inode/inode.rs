@@ -5,6 +5,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::Fanotify;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileStat, Uid};
@@ -12,7 +13,7 @@ use crate::klib::SpinLock;
 
 use super::bsd_flock::BsdFlockState;
 use super::posix_flock::PosixFlockState;
-use super::{Fanotify, FileType, Mode, Owner};
+use super::{FileType, Mode, Owner};
 
 pub struct InodeLockState {
     pub(crate) bsd: BsdFlockState,

@@ -3,9 +3,9 @@ use alloc::sync::Arc;
 use crate::arch;
 use crate::driver::BlockDriverOps;
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
-use crate::fs::inode::Fanotify;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::Fanotify;
 use crate::kernel::uapi::Statfs;
 use crate::klib::LazyInitedCell;
 

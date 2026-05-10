@@ -11,13 +11,13 @@ use crate::driver;
 use crate::fs::devfs::LoopInode;
 use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
-use crate::fs::inode::{
-    BsdFlockType, FanotifyEventMask, FanotifyMarkFlags, FanotifyMarkScope, PosixFlock, PosixFlockType, notify_fanotify,
-    notify_fanotify_dentry, wait_fanotify_permission as wait_fanotify_permission_for_file,
-};
+use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FanotifyFile};
+use crate::kernel::event::{
+    Event, FanotifyEventMask, FanotifyFdinfoKey, FanotifyFile, FanotifyMarkFlags, notify_fanotify,
+    notify_fanotify_dentry, wait_fanotify_permission as wait_fanotify_permission_for_file,
+};
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
@@ -2057,7 +2057,7 @@ pub fn faccessat2(dirfd: usize, uptr_path: UString, mode: usize, flags: usize) -
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct AtFlags: usize {
+pub struct AtFlags: usize {
         const AT_SYMLINK_NOFOLLOW = 0x100;
         const AT_EMPTY_PATH = 0x1000;
     }
@@ -2114,14 +2114,12 @@ fn fanotify_mark_op(flags: FanotifyMarkFlags) -> SysResult<FanotifyMarkOp> {
 }
 
 fn validate_fanotify_mark_flags(flags: FanotifyMarkFlags) -> SysResult<()> {
-    if flags.contains(FanotifyMarkFlags::FAN_MARK_MOUNT) && flags.contains(FanotifyMarkFlags::FAN_MARK_FILESYSTEM) {
+    if flags.has_conflicting_scope_flags() {
         crate::kwarn!("fanotify_mark: mutually exclusive scope flags={:#x}", flags.bits());
         return Err(Errno::EINVAL);
     }
 
-    let has_ignore = flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORE);
-    let has_ignored_mask = flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_MASK);
-    if has_ignore && has_ignored_mask {
+    if flags.has_conflicting_ignore_flags() {
         crate::kwarn!("fanotify_mark: mutually exclusive ignore flags={:#x}", flags.bits());
         return Err(Errno::EINVAL);
     }
@@ -2259,9 +2257,7 @@ pub fn fanotify_mark(
     {
         return Err(Errno::ENOTDIR);
     }
-    if flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORE)
-        && !flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY)
-    {
+    if flags.is_ignore_without_surv_modify() {
         crate::kwarn!(
             "fanotify_mark: FAN_MARK_IGNORE requires FAN_MARK_IGNORED_SURV_MODIFY, flags={:#x}",
             flags.bits()
@@ -2281,29 +2277,20 @@ pub fn fanotify_mark(
     {
         return Err(Errno::EPERM);
     }
-    let is_ignore_mark =
-        flags.intersects(FanotifyMarkFlags::FAN_MARK_IGNORE | FanotifyMarkFlags::FAN_MARK_IGNORED_MASK);
-    let mark_scope = if is_mount_mark {
-        FanotifyMarkScope::Mount {
-            fdinfo_index: if is_ignore_mark {
-                None
-            } else {
-                Some(dentry.get_inode_index())
-            },
-            mount_id: dentry.get_mount_id(),
-        }
-    } else if is_filesystem_mark {
-        FanotifyMarkScope::Filesystem {
-            fdinfo_index: if is_ignore_mark {
-                None
-            } else {
-                Some(dentry.get_inode_index())
-            },
-            sno: dentry.sno(),
-        }
+    let is_ignore_mark = flags.is_ignore_mark();
+    let fdinfo_index = if is_ignore_mark && (is_mount_mark || is_filesystem_mark) {
+        None
     } else {
-        FanotifyMarkScope::Inode(dentry.get_inode_index())
+        Some(dentry.get_inode_index())
     };
+    let fdinfo_key = FanotifyFdinfoKey::new(
+        fdinfo_index,
+        if is_mount_mark {
+            Some(dentry.get_mount_id())
+        } else {
+            None
+        },
+    );
     match op {
         FanotifyMarkOp::Add => {
             if mask.is_empty() {
@@ -2315,16 +2302,16 @@ pub fn fanotify_mark(
                 dentry
                     .get_mount()
                     .ensure_fanotify()
-                    .add_mark(&listener, flags, mask, mark_scope);
+                    .add_mark(&listener, flags, mask, fdinfo_key);
             } else if is_filesystem_mark {
                 dentry
                     .ensure_superblock_fanotify()?
-                    .add_mark(&listener, flags, mask, mark_scope);
+                    .add_mark(&listener, flags, mask, fdinfo_key);
             } else {
                 let Some(fanotify) = inode.ensure_fanotify() else {
                     return Err(Errno::EOPNOTSUPP);
                 };
-                fanotify.add_mark(&listener, flags, mask, mark_scope);
+                fanotify.add_mark(&listener, flags, mask, fdinfo_key);
             }
         }
         FanotifyMarkOp::Remove => {
@@ -2339,7 +2326,7 @@ pub fn fanotify_mark(
                         fanotify_file.listener_generation(),
                         flags,
                         mask,
-                        mark_scope,
+                        fdinfo_key,
                     );
                 }
             } else if is_filesystem_mark {
@@ -2349,7 +2336,7 @@ pub fn fanotify_mark(
                         fanotify_file.listener_generation(),
                         flags,
                         mask,
-                        mark_scope,
+                        fdinfo_key,
                     );
                 }
             } else if let Some(fanotify) = inode.fanotify() {
@@ -2358,7 +2345,7 @@ pub fn fanotify_mark(
                     fanotify_file.listener_generation(),
                     flags,
                     mask,
-                    mark_scope,
+                    fdinfo_key,
                 );
             }
         }
