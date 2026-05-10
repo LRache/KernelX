@@ -1,10 +1,11 @@
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::arch;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, WaitQueue};
+use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue};
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::page;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -138,6 +139,8 @@ pub struct PipeInner {
     fifo: SleepLock<FIFO>,
     read_waiter: SpinLock<WaitQueue<Event>>,
     write_waiter: SpinLock<WaitQueue<Event>>,
+    read_notifier: Arc<EpollNotifier>,
+    write_notifier: Arc<EpollNotifier>,
     capacity: SpinLock<usize>,
     writer_count: SpinLock<u32>,
     reader_count: SpinLock<u32>,
@@ -149,6 +152,8 @@ impl PipeInner {
             fifo: SleepLock::new(FIFO::new(), "PipeInner::fifo"),
             read_waiter: SpinLock::new(WaitQueue::new(), "PipeInner::read_waiter"),
             write_waiter: SpinLock::new(WaitQueue::new(), "PipeInner::write_waiter"),
+            read_notifier: Arc::new(EpollNotifier::new()),
+            write_notifier: Arc::new(EpollNotifier::new()),
             capacity: SpinLock::new(capacity, "PipeInner::capacity"),
             writer_count: SpinLock::new(0, "PipeInner::writer_count"),
             reader_count: SpinLock::new(0, "PipeInner::reader_count"),
@@ -167,6 +172,7 @@ impl PipeInner {
                 buf[0] = fifo.pop_front().unwrap();
                 drop(fifo);
                 self.write_waiter.lock().wake_all(|e| e);
+                self.write_notifier.notify(FileEvent::WRITE_READY);
                 break;
             }
             if *self.writer_count.lock() == 0 {
@@ -202,6 +208,7 @@ impl PipeInner {
             }
             drop(fifo);
             self.write_waiter.lock().wake_all(|e| e);
+            self.write_notifier.notify(FileEvent::WRITE_READY);
         }
 
         Ok(total_read)
@@ -219,6 +226,7 @@ impl PipeInner {
                 let r = fifo.pop_front_ubuf(ubuf);
                 drop(fifo);
                 self.write_waiter.lock().wake_all(|e| e);
+                self.write_notifier.notify(FileEvent::WRITE_READY);
                 return r;
             }
 
@@ -264,6 +272,7 @@ impl PipeInner {
             }
             drop(fifo);
             self.read_waiter.lock().wake_all(|e| e);
+            self.read_notifier.notify(FileEvent::READ_READY);
             Ok(to_write)
         } else {
             // Small write (<= PIPE_BUF): must be atomic, wait until space available
@@ -300,6 +309,7 @@ impl PipeInner {
             }
             drop(fifo);
             self.read_waiter.lock().wake_all(|e| e);
+            self.read_notifier.notify(FileEvent::READ_READY);
             Ok(buf.len())
         }
     }
@@ -355,6 +365,7 @@ impl PipeInner {
             // Large write: write as much as fits, non-atomic
             let n = self.fifo.lock().push_back_ubuf(ubuf)?;
             self.read_waiter.lock().wake_all(|e| e);
+            self.read_notifier.notify(FileEvent::READ_READY);
             Ok(n)
         } else {
             // Small write: atomic, wait until enough space available
@@ -389,11 +400,12 @@ impl PipeInner {
             fifo.push_back_ubuf(ubuf)?;
             drop(fifo);
             self.read_waiter.lock().wake_all(|e| e);
+            self.read_notifier.notify(FileEvent::READ_READY);
             Ok(ubuf.length())
         }
     }
 
-    pub fn wait_event(&self, waker: usize, event: FileEvent, writable: bool) -> SysResult<Option<FileEvent>> {
+    pub fn poll_event(&self, event: FileEvent, writable: bool) -> SysResult<Option<FileEvent>> {
         let want_read = event.contains(FileEvent::READ_READY) && !writable;
         let want_write = event.contains(FileEvent::WRITE_READY) && writable;
         if !want_read && !want_write {
@@ -427,6 +439,20 @@ impl PipeInner {
             return Ok(Some(ready));
         }
 
+        Ok(None)
+    }
+
+    pub fn wait_event(&self, waker: usize, event: FileEvent, writable: bool) -> SysResult<Option<FileEvent>> {
+        let want_read = event.contains(FileEvent::READ_READY) && !writable;
+        let want_write = event.contains(FileEvent::WRITE_READY) && writable;
+        if !want_read && !want_write {
+            return Ok(None);
+        }
+
+        if let Some(ready) = self.poll_event(event, writable)? {
+            return Ok(Some(ready));
+        }
+
         if want_read {
             self.read_waiter.lock().wait(
                 current::task().clone(),
@@ -455,6 +481,14 @@ impl PipeInner {
         self.write_waiter.lock().remove(current::task());
     }
 
+    pub fn epoll_notifier(&self, writable: bool) -> Arc<EpollNotifier> {
+        if writable {
+            self.write_notifier.clone()
+        } else {
+            self.read_notifier.clone()
+        }
+    }
+
     pub fn increment_reader_count(&self) {
         *self.reader_count.lock() += 1;
     }
@@ -466,6 +500,7 @@ impl PipeInner {
         if *reader_count == 0 {
             // Wake blocked writers so they can return EPIPE
             self.write_waiter.lock().wake_all(|e| e);
+            self.write_notifier.notify(FileEvent::HANG_UP);
         }
     }
 
@@ -490,6 +525,7 @@ impl PipeInner {
                 },
                 _ => e,
             }); // Wake up readers to notify them of EOF
+            self.read_notifier.notify(wake_event);
         }
     }
 
@@ -519,6 +555,7 @@ impl PipeInner {
         *self.capacity.lock() = aligned;
         // Capacity changes may unblock writers waiting for room.
         self.write_waiter.lock().wake_all(|e| e);
+        self.write_notifier.notify(FileEvent::WRITE_READY);
         Ok(aligned)
     }
 }

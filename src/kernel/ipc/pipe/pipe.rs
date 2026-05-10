@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::FileEvent;
+use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
@@ -149,8 +149,16 @@ impl FileOps for Pipe {
         self.inner.wait_event(waker, event, self.writable)
     }
 
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        self.inner.poll_event(event, self.writable)
+    }
+
     fn wait_event_cancel(&self) {
         self.inner.wait_event_cancel();
+    }
+
+    fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
+        Some(self.inner.epoll_notifier(self.writable))
     }
 
     fn set_flags(&self, flags: FileFlags) {

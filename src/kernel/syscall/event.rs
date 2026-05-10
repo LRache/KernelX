@@ -10,11 +10,13 @@ use num_enum::TryFromPrimitive;
 use crate::arch;
 use crate::fs::file::FileOps;
 use crate::kernel::errno::Errno;
-use crate::kernel::event::{Event, EventFd, FileEvent, TimerFd, TimerFdClockId, timer};
+use crate::kernel::event::{
+    EpollCtlOp, EpollEvent, EpollFile, Event, EventFd, FileEvent, TimerFd, TimerFdClockId, timer,
+};
 use crate::kernel::ipc::{KSiFields, SiCode, SignalNum, SignalSet, signum};
 use crate::kernel::scheduler::{Task, current};
-use crate::kernel::syscall::SysResult;
 use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
+use crate::kernel::syscall::{SysResult, SyscallRet};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::{ITimer, PCB};
 use crate::kernel::uapi::OpenFlags;
@@ -44,6 +46,183 @@ bitflags! {
         const TFD_TIMER_ABSTIME = 1;
         const TFD_TIMER_CANCEL_ON_SET = 1 << 1;
     }
+}
+
+bitflags! {
+    struct EpollCreateFlags: usize {
+        const EPOLL_CLOEXEC = OpenFlags::O_CLOEXEC.bits();
+    }
+}
+
+pub fn epoll_create1(flags: usize) -> SyscallRet {
+    let flags = EpollCreateFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let epoll = Arc::new(EpollFile::new());
+    let fd = current::fdtable().lock().push(
+        epoll,
+        FDFlags {
+            cloexec: flags.contains(EpollCreateFlags::EPOLL_CLOEXEC),
+        },
+    )?;
+    Ok(fd)
+}
+
+pub fn epoll_ctl(epfd: usize, op: usize, fd: usize, uptr_event: UPtr<EpollEvent>) -> SyscallRet {
+    if epfd == fd {
+        return Err(Errno::EINVAL);
+    }
+
+    let op = EpollCtlOp::try_from(op).map_err(|_| Errno::EINVAL)?;
+    let event = match op {
+        EpollCtlOp::Add | EpollCtlOp::Mod => Some(uptr_event.read_optional()?.ok_or(Errno::EFAULT)?),
+        EpollCtlOp::Del => None,
+    };
+
+    let (epoll_file, file) = {
+        let fdtable = current::fdtable();
+        let mut fdtable = fdtable.lock();
+        let epoll_file = fdtable.get(epfd)?;
+        let file = if matches!(op, EpollCtlOp::Add) {
+            Some(fdtable.get(fd)?)
+        } else {
+            None
+        };
+        (epoll_file, file)
+    };
+
+    let epoll = epoll_file.downcast_ref::<EpollFile>().ok_or(Errno::EINVAL)?;
+
+    match op {
+        EpollCtlOp::Add => {
+            let file = file.unwrap();
+            if file.downcast_ref::<EpollFile>().is_some() {
+                return Err(Errno::EINVAL);
+            }
+            let notifier = file.epoll_notifier().ok_or(Errno::EPERM)?;
+            epoll.listener().add(fd, file, notifier, event.unwrap())?;
+        }
+        EpollCtlOp::Del => {
+            epoll.listener().delete(fd)?;
+        }
+        EpollCtlOp::Mod => {
+            epoll.listener().modify(fd, event.unwrap())?;
+        }
+    }
+
+    Ok(0)
+}
+
+fn epoll_wait_timeout(timeout: isize) -> SysResult<Option<Duration>> {
+    if timeout < -1 {
+        return Err(Errno::EINVAL);
+    }
+    if timeout == -1 {
+        Ok(None)
+    } else {
+        Ok(Some(Duration::from_millis(timeout as u64)))
+    }
+}
+
+fn do_epoll_wait(
+    epfd: usize,
+    uptr_events: UArray<EpollEvent>,
+    maxevents: usize,
+    timeout: Option<Duration>,
+    sigmask: Option<SignalSet>,
+) -> SyscallRet {
+    if (maxevents as isize) <= 0 {
+        return Err(Errno::EINVAL);
+    }
+    uptr_events.should_not_null()?;
+
+    let fdtable = current::fdtable();
+    let file = fdtable.lock().get(epfd)?;
+    let epoll = file.downcast_ref::<EpollFile>().ok_or(Errno::EINVAL)?;
+
+    let mut events = epoll.listener().collect_ready(maxevents);
+    if !events.is_empty() {
+        uptr_events.write(0, &events)?;
+        return Ok(events.len());
+    }
+
+    if matches!(timeout, Some(timeout) if timeout.is_zero()) {
+        return Ok(0);
+    }
+
+    let timer_id = timeout.map(|timeout| timer::add_timer(current::task().clone(), timeout));
+    let tcb = current::tcb();
+    let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+
+    if has_pending_unmasked_signal() {
+        old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+        timer_id.map(|id| timer::remove_timer(id));
+        return Err(Errno::EINTR);
+    }
+
+    loop {
+        epoll.listener().wait_current();
+        current::schedule();
+
+        match current::task().take_wakeup_event().unwrap() {
+            Event::Epoll => {
+                events = epoll.listener().collect_ready(maxevents);
+                if !events.is_empty() {
+                    timer_id.map(|id| timer::remove_timer(id));
+                    old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+                    uptr_events.write(0, &events)?;
+                    return Ok(events.len());
+                }
+            }
+            Event::Timeout => {
+                old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+                epoll.listener().wait_cancel();
+                return Ok(0);
+            }
+            Event::Signal => {
+                timer_id.map(|id| timer::remove_timer(id));
+                old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+                epoll.listener().wait_cancel();
+                return Err(Errno::EINTR);
+            }
+            event => unreachable!("Invalid event type in epoll_wait: {:?}", event),
+        }
+    }
+}
+
+pub fn epoll_pwait(
+    epfd: usize,
+    uptr_events: UArray<EpollEvent>,
+    maxevents: usize,
+    timeout: usize,
+    uptr_sigmask: UPtr<SignalSet>,
+    sigmask_size: usize,
+) -> SyscallRet {
+    if !uptr_sigmask.is_null() && sigmask_size != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
+
+    let timeout = epoll_wait_timeout(timeout as isize)?;
+    let sigmask = uptr_sigmask.read_optional()?;
+    do_epoll_wait(epfd, uptr_events, maxevents, timeout, sigmask)
+}
+
+pub fn epoll_pwait2(
+    epfd: usize,
+    uptr_events: UArray<EpollEvent>,
+    maxevents: usize,
+    uptr_timeout: UPtr<Timespec>,
+    uptr_sigmask: UPtr<SignalSet>,
+    sigmask_size: usize,
+) -> SysResult<usize> {
+    if !uptr_sigmask.is_null() && sigmask_size != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
+
+    let timeout = match uptr_timeout.read_optional()? {
+        Some(timeout) => Some(timeout.try_into()?),
+        None => None,
+    };
+    let sigmask = uptr_sigmask.read_optional()?;
+    do_epoll_wait(epfd, uptr_events, maxevents, timeout, sigmask)
 }
 
 pub fn eventfd2(initval: usize, flags: usize) -> SysResult<usize> {

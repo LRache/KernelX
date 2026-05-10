@@ -164,7 +164,10 @@ impl ClockId {
             | ClockId::CLOCK_REALTIME_COARSE
             | ClockId::CLOCK_REALTIME_ALARM
             | ClockId::CLOCK_TAI => kclock::now(),
-            ClockId::CLOCK_MONOTONIC | ClockId::CLOCK_MONOTONIC_RAW | ClockId::CLOCK_BOOTTIME | ClockId::CLOCK_BOOTTIME_ALARM => Ok(timer::now()),
+            ClockId::CLOCK_MONOTONIC
+            | ClockId::CLOCK_MONOTONIC_RAW
+            | ClockId::CLOCK_BOOTTIME
+            | ClockId::CLOCK_BOOTTIME_ALARM => Ok(timer::now()),
             ClockId::CLOCK_PROCESS_CPUTIME_ID => Ok(current::pcb().process_cpu_time()),
             ClockId::CLOCK_THREAD_CPUTIME_ID => Ok(current::tcb().thread_cpu_time()),
         }

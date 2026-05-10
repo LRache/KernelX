@@ -4,7 +4,7 @@ use core::mem::size_of;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, WaitQueue};
+use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
@@ -16,6 +16,7 @@ pub struct EventFd {
     flags: SpinLock<FileFlags>,
     read_waiter: SpinLock<WaitQueue<Event>>,
     write_waiter: SpinLock<WaitQueue<Event>>,
+    epoll_notifier: Arc<EpollNotifier>,
     semaphore: bool,
 }
 
@@ -39,6 +40,7 @@ impl EventFd {
             ),
             read_waiter: SpinLock::new(WaitQueue::new(), "EventFd::read_waiter"),
             write_waiter: SpinLock::new(WaitQueue::new(), "EventFd::write_waiter"),
+            epoll_notifier: Arc::new(EpollNotifier::new()),
             semaphore,
         }
     }
@@ -67,16 +69,20 @@ impl EventFd {
         loop {
             let mut counter = self.counter.lock();
             if *counter != 0 {
-                let value = if self.semaphore {
+                let (value, still_readable) = if self.semaphore {
                     *counter -= 1;
-                    1
+                    (1, *counter != 0)
                 } else {
                     let value = *counter;
                     *counter = 0;
-                    value
+                    (value, false)
                 };
                 drop(counter);
                 self.write_waiter.lock().wake_all(|event| event);
+                self.epoll_notifier.notify(FileEvent::WRITE_READY);
+                if still_readable {
+                    self.epoll_notifier.notify(FileEvent::READ_READY);
+                }
                 return Ok(value);
             }
 
@@ -112,6 +118,7 @@ impl EventFd {
                 drop(counter);
                 if was_empty && value != 0 {
                     self.read_waiter.lock().wake_all(|event| event);
+                    self.epoll_notifier.notify(FileEvent::READ_READY);
                 }
                 return Ok(());
             }
@@ -190,7 +197,7 @@ impl FileOps for EventFd {
         None
     }
 
-    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
         let want_read = event.contains(FileEvent::READ_READY);
         let want_write = event.contains(FileEvent::WRITE_READY);
         if !want_read && !want_write {
@@ -208,6 +215,20 @@ impl FileOps for EventFd {
         }
 
         if !ready.is_empty() {
+            return Ok(Some(ready));
+        }
+
+        Ok(None)
+    }
+
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let want_read = event.contains(FileEvent::READ_READY);
+        let want_write = event.contains(FileEvent::WRITE_READY);
+        if !want_read && !want_write {
+            return Ok(None);
+        }
+
+        if let Some(ready) = self.poll_event(event)? {
             return Ok(Some(ready));
         }
 
@@ -236,6 +257,10 @@ impl FileOps for EventFd {
     fn wait_event_cancel(&self) {
         self.read_waiter.lock().remove(current::task());
         self.write_waiter.lock().remove(current::task());
+    }
+
+    fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
+        Some(self.epoll_notifier.clone())
     }
 
     fn set_flags(&self, flags: FileFlags) {

@@ -1,3 +1,4 @@
+mod epoll;
 mod event;
 mod eventfd;
 mod fanotify;
@@ -7,6 +8,7 @@ pub mod timer;
 mod timerfd;
 mod waitqueue;
 
+pub use epoll::*;
 pub use event::*;
 pub use eventfd::*;
 pub use fanotify::*;

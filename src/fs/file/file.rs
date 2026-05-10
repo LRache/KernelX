@@ -233,7 +233,7 @@ impl FileOps for RandomAccessFile {
         Some(&self.dentry)
     }
 
-    fn wait_event(&self, _waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
         let mut ready = FileEvent::empty();
 
         if event.contains(FileEvent::READ_READY) && self.flags.readable {
@@ -244,6 +244,10 @@ impl FileOps for RandomAccessFile {
         }
 
         if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
+    }
+
+    fn wait_event(&self, _waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        self.poll_event(event)
     }
 
     fn on_fd_install(&self) -> SysResult<()> {

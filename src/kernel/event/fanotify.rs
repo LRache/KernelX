@@ -8,7 +8,7 @@ use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::inode::{FanotifyEventMask, FanotifyListener, FanotifyMarkFlags, Index};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, WaitQueue};
+use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
@@ -258,6 +258,7 @@ struct FanotifyInner {
     pending: SpinLock<Vec<FanotifyEvent>>,
     responses: SpinLock<Vec<(i32, Arc<FanotifyPermission>)>>,
     waiter: SpinLock<WaitQueue<Event>>,
+    epoll_notifier: Arc<EpollNotifier>,
 }
 
 impl FanotifyInner {
@@ -275,6 +276,7 @@ impl FanotifyInner {
             pending: SpinLock::new(Vec::new(), "FanotifyInner::pending"),
             responses: SpinLock::new(Vec::new(), "FanotifyInner::responses"),
             waiter: SpinLock::new(WaitQueue::new(), "FanotifyInner::waiter"),
+            epoll_notifier: Arc::new(EpollNotifier::new()),
         }
     }
 
@@ -329,6 +331,7 @@ impl FanotifyInner {
             permission: Some(permission.clone()),
         });
         self.waiter.lock().wake_all(|event| event);
+        self.epoll_notifier.notify(FileEvent::READ_READY);
         permission.wait()
     }
 
@@ -345,6 +348,7 @@ impl FanotifyInner {
         pending.push(event);
         drop(pending);
         self.waiter.lock().wake_all(|event| event);
+        self.epoll_notifier.notify(FileEvent::READ_READY);
     }
 
     fn respond(&self, fd: i32, response: u32) -> SysResult<()> {
@@ -656,13 +660,25 @@ impl FileOps for FanotifyFile {
         None
     }
 
-    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
         if !event.contains(FileEvent::READ_READY) {
             return Ok(None);
         }
 
         if !self.inner.pending.lock().is_empty() {
             return Ok(Some(FileEvent::READ_READY));
+        }
+
+        Ok(None)
+    }
+
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        if !event.contains(FileEvent::READ_READY) {
+            return Ok(None);
+        }
+
+        if let Some(ready) = self.poll_event(event)? {
+            return Ok(Some(ready));
         }
 
         self.inner.waiter.lock().wait(
@@ -678,6 +694,10 @@ impl FileOps for FanotifyFile {
 
     fn wait_event_cancel(&self) {
         self.inner.waiter.lock().remove(current::task());
+    }
+
+    fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
+        Some(self.inner.epoll_notifier.clone())
     }
 
     fn set_flags(&self, flags: FileFlags) {
