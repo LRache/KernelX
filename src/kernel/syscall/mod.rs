@@ -16,6 +16,7 @@ mod num;
 mod uptr;
 
 pub use num::{should_restart_on_eintr, syscall};
+pub(crate) use uid::{Capability, capable};
 pub use uptr::UserStruct;
 
 use crate::kernel::errno::SysResult;

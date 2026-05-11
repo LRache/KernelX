@@ -8,9 +8,10 @@ use crate::fs::ext4::ffi::*;
 use crate::fs::ext4::superblock::{SuperBlockInner, map_error_to_kernel};
 use crate::fs::ext4::util::{get_block_size, revision_tuple};
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{Fanotify, InodeLockState, InodeOps, Mode, Owner};
+use crate::fs::inode::{InodeLockState, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::Fanotify;
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::{LazyInitedCell, SleepLock, SpinLock};
 
@@ -216,16 +217,34 @@ fn free_unlinked_inode(inode_ref: &mut ext4_inode_ref) -> SysResult<()> {
     Ok(())
 }
 
-fn unlink_from_parent(superblock: &mut SuperBlockInner, parent_ref: &mut ext4_inode_ref, name: &str) -> SysResult<()> {
+fn check_rename_target_type(source_type: InodeType, target_type: InodeType) -> SysResult<()> {
+    if source_type == InodeType::Directory && target_type != InodeType::Directory {
+        return Err(Errno::ENOTDIR);
+    }
+    if source_type != InodeType::Directory && target_type == InodeType::Directory {
+        return Err(Errno::EISDIR);
+    }
+    Ok(())
+}
+
+fn unlink_from_parent(
+    superblock: &mut SuperBlockInner,
+    parent_ref: &mut ext4_inode_ref,
+    name: &str,
+    rename_source_type: Option<InodeType>,
+) -> SysResult<()> {
     let child_ino = lookup_child(parent_ref, name)?;
     let mut child_ref = superblock.read_inode_ref(child_ino)?;
 
     let result = (|| {
-        if has_children(&mut child_ref)? {
-            return Err(Errno::ENOTEMPTY);
+        let child_type = inode_type(&mut child_ref);
+        if let Some(source_type) = rename_source_type {
+            check_rename_target_type(source_type, child_type)?;
         }
 
-        let child_is_dir = inode_type(&mut child_ref) == InodeType::Directory;
+        if child_type == InodeType::Directory && has_children(&mut child_ref)? {
+            return Err(Errno::ENOTEMPTY);
+        }
 
         unsafe {
             ext4_result(ext4_dir_remove_entry(
@@ -235,7 +254,7 @@ fn unlink_from_parent(superblock: &mut SuperBlockInner, parent_ref: &mut ext4_in
             ))?;
         }
 
-        if child_is_dir {
+        if child_type == InodeType::Directory {
             unsafe {
                 ext4_fs_inode_links_count_dec(parent_ref);
                 ext4_inode_set_links_cnt(child_ref.inode, 0);
@@ -418,7 +437,7 @@ impl InodeOps for Ext4Inode {
                 return Err(Errno::ENOTDIR);
             }
 
-            unlink_from_parent(superblock, parent_ref, name)?;
+            unlink_from_parent(superblock, parent_ref, name, None)?;
             let time = now();
             inode_set_mtime(parent_ref, &time);
             inode_set_ctime(parent_ref, &time);
@@ -566,15 +585,17 @@ impl InodeOps for Ext4Inode {
 
         let result = if self.ino == new_parent.ino {
             (|| {
-                if let Err(err) = unlink_from_parent(&mut superblock, &mut src_dir_ref, new_name) {
-                    if err != Errno::ENOENT {
-                        return Err(err);
-                    }
-                }
-
                 let src_ino = lookup_child(&mut src_dir_ref, old_name)?;
                 let mut src_ref = superblock.read_inode_ref(src_ino)?;
                 let rename_result = (|| {
+                    let source_type = inode_type(&mut src_ref);
+                    match lookup_child(&mut src_dir_ref, new_name) {
+                        Ok(target_ino) if target_ino == src_ino => return Ok(()),
+                        Ok(_) => unlink_from_parent(&mut superblock, &mut src_dir_ref, new_name, Some(source_type))?,
+                        Err(Errno::ENOENT) => {}
+                        Err(err) => return Err(err),
+                    }
+
                     unsafe {
                         ext4_result(ext4_dir_remove_entry(
                             &mut src_dir_ref,
@@ -611,16 +632,20 @@ impl InodeOps for Ext4Inode {
             (|| {
                 let mut dst_dir_ref = superblock.read_inode_ref(new_parent.ino)?;
                 let outer_result = (|| {
-                    if let Err(err) = unlink_from_parent(&mut superblock, &mut dst_dir_ref, new_name) {
-                        if err != Errno::ENOENT {
-                            return Err(err);
-                        }
-                    }
-
                     let src_ino = lookup_child(&mut src_dir_ref, old_name)?;
                     let mut src_ref = superblock.read_inode_ref(src_ino)?;
                     let rename_result = (|| {
-                        if inode_type(&mut src_ref) == InodeType::Directory {
+                        let source_type = inode_type(&mut src_ref);
+                        match lookup_child(&mut dst_dir_ref, new_name) {
+                            Ok(target_ino) if target_ino == src_ino => return Ok(()),
+                            Ok(_) => {
+                                unlink_from_parent(&mut superblock, &mut dst_dir_ref, new_name, Some(source_type))?
+                            }
+                            Err(Errno::ENOENT) => {}
+                            Err(err) => return Err(err),
+                        }
+
+                        if source_type == InodeType::Directory {
                             let mut result: ext4_dir_search_result = unsafe { mem::zeroed() };
                             unsafe {
                                 ext4_result(ext4_dir_find_entry(&mut result, &mut src_ref, c"..".as_ptr(), 2))?;

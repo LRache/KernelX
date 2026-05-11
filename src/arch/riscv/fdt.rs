@@ -3,7 +3,7 @@ use fdt::node::FdtNode;
 
 use crate::arch::riscv::plic;
 use crate::driver::{Device, found_device};
-use crate::kernel::parse_boot_args;
+use crate::kernel::{config, parse_boot_args};
 use crate::{kinfo, kwarn};
 
 use super::cpu::load_cpu_node;
@@ -32,12 +32,16 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     }
 
     let chosen_node = fdt.find_node("/chosen").unwrap();
-    if let Some(bootargs_prop) = chosen_node.property("bootargs") {
-        bootargs_prop.as_str().map(|bootargs| {
-            parse_boot_args(bootargs);
-        });
-    } else {
-        kwarn!("No bootargs found in /chosen node");
+    match chosen_node.property("bootargs").and_then(|prop| prop.as_str()) {
+        Some(bootargs) if !bootargs.trim().is_empty() => parse_boot_args(bootargs),
+        Some(_) => {
+            kinfo!("Empty bootargs found in /chosen node, using default bootargs");
+            parse_boot_args(config::DEFAULT_BOOTARGS);
+        }
+        None => {
+            kwarn!("No bootargs found in /chosen node");
+            parse_boot_args(config::DEFAULT_BOOTARGS);
+        }
     }
 
     kinfo!("Device Tree loaded successfully!");

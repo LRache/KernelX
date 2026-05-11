@@ -47,6 +47,10 @@ config OBJCOPY
 	string "objcopy util path"
 	default "objcopy"
 
+config AR
+	string "ar util path"
+	default "ar"
+
 config READELF
 	string "readelf util path"
 	default "readelf"
@@ -205,6 +209,16 @@ config KVM
 	help
 	  Enable experimental KVM support.
 	  This option is only available when targeting the RISC-V architecture.
+
+endmenu
+
+menu "Boot Configuration"
+
+config DEFAULT_BOOTARGS
+	string "Default kernel boot arguments"
+	default ""
+	help
+	  Boot arguments used by the kernel when /chosen/bootargs is empty.
 
 endmenu
 

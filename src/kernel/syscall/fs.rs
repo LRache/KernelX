@@ -11,13 +11,13 @@ use crate::driver;
 use crate::fs::devfs::LoopInode;
 use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
-use crate::fs::inode::{
-    BsdFlockType, FanotifyEventMask, FanotifyMarkFlags, FanotifyMarkScope, PosixFlock, PosixFlockType, notify_fanotify,
-    notify_fanotify_dentry, wait_fanotify_permission as wait_fanotify_permission_for_file,
-};
+use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FanotifyFile};
+use crate::kernel::event::{
+    Event, FanotifyEventMask, FanotifyFdinfoKey, FanotifyFile, FanotifyMarkFlags, notify_fanotify,
+    notify_fanotify_dentry, wait_fanotify_permission as wait_fanotify_permission_for_file,
+};
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
@@ -452,13 +452,13 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
         return Err(Errno::ENOENT);
     }
 
-    let helper = |parent: &Arc<Dentry>| {
+    let helper = |root: &Arc<Dentry>, parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
             if !writable {
                 return Err(Errno::EINVAL);
             }
 
-            let dentry = vfs::load_dentry_at(parent, &path)?;
+            let dentry = vfs::load_dentry_at(root, parent, &path)?;
             if dentry.is_superblock_readonly()? {
                 return Err(Errno::EROFS);
             }
@@ -484,16 +484,16 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
         let perm = Perm::current(perm_flags);
         let file: SysResult<Arc<dyn FileOps>> = if is_path_open {
             let dentry = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
-                vfs::load_dentry_at_nofollow(parent, &path)?
+                vfs::load_dentry_at_nofollow(root, parent, &path)?
             } else {
-                vfs::load_dentry_at(parent, &path)?
+                vfs::load_dentry_at(root, parent, &path)?
             };
             let inode = dentry.get_inode();
             Ok(inode.wrap_file(Some(dentry), file_flags))
         } else if open_flags.contains(OpenFlags::O_NOFOLLOW) {
-            vfs::openat_file_nofollow(parent, &path, file_flags, &perm)
+            vfs::openat_file_nofollow(root, parent, &path, file_flags, &perm)
         } else {
-            vfs::openat_file(parent, &path, file_flags, &perm)
+            vfs::openat_file(root, parent, &path, file_flags, &perm)
         };
 
         match file {
@@ -508,7 +508,7 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
                     // Create the file
                     let mode =
                         Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
-                    let (parent_dentry, child_name) = vfs::load_parent_dentry_at(parent, &path)?.unwrap(); // SAFETY: The root must exist
+                    let (parent_dentry, child_name) = vfs::load_parent_dentry_at(root, parent, &path)?.unwrap(); // SAFETY: The root must exist
                     let parent_dentry = parent_dentry.get_mount_to();
                     if parent_dentry.is_superblock_readonly()? {
                         return Err(Errno::EROFS);
@@ -535,11 +535,11 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
     };
 
     let file = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| helper(&cwd))?
+        current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
     } else {
         let dir_file = current::fdtable().lock().get(dirfd)?;
         let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
-        helper(dir)?
+        current::with_root(|root| helper(&root, dir))?
     };
 
     if open_flags.contains(OpenFlags::O_DIRECTORY) && !open_flags.contains(OpenFlags::O_TMPFILE) {
@@ -626,13 +626,13 @@ fn do_openat_with_lookup_flags(
         return Err(Errno::ENOENT);
     }
 
-    let helper = |parent: &Arc<Dentry>| {
+    let helper = |root: &Arc<Dentry>, parent: &Arc<Dentry>| {
         if open_flags.contains(OpenFlags::O_TMPFILE) {
             if !writable {
                 return Err(Errno::EINVAL);
             }
 
-            let dentry = vfs::load_dentry_at_with_flags(parent, &path, lookup_flags)?;
+            let dentry = vfs::load_dentry_at_with_flags(root, parent, &path, lookup_flags)?;
             if dentry.is_superblock_readonly()? {
                 return Err(Errno::EROFS);
             }
@@ -658,16 +658,16 @@ fn do_openat_with_lookup_flags(
         let perm = Perm::current(perm_flags);
         let file: SysResult<Arc<dyn FileOps>> = if is_path_open {
             let dentry = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
-                vfs::load_dentry_at_nofollow_with_perm_and_flags(parent, &path, &perm, lookup_flags)?
+                vfs::load_dentry_at_nofollow_with_perm_and_flags(root, parent, &path, &perm, lookup_flags)?
             } else {
-                vfs::load_dentry_at_with_flags(parent, &path, lookup_flags)?
+                vfs::load_dentry_at_with_flags(root, parent, &path, lookup_flags)?
             };
             let inode = dentry.get_inode();
             Ok(inode.wrap_file(Some(dentry), file_flags))
         } else if open_flags.contains(OpenFlags::O_NOFOLLOW) {
-            vfs::openat_file_nofollow_with_lookup_flags(parent, &path, file_flags, &perm, lookup_flags)
+            vfs::openat_file_nofollow_with_lookup_flags(root, parent, &path, file_flags, &perm, lookup_flags)
         } else {
-            vfs::openat_file_with_lookup_flags(parent, &path, file_flags, &perm, lookup_flags)
+            vfs::openat_file_with_lookup_flags(root, parent, &path, file_flags, &perm, lookup_flags)
         };
 
         match file {
@@ -683,7 +683,7 @@ fn do_openat_with_lookup_flags(
                     let mode =
                         Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG;
                     let (parent_dentry, child_name) =
-                        vfs::load_parent_dentry_at_with_flags(parent, &path, lookup_flags)?.unwrap(); // SAFETY: The root must exist
+                        vfs::load_parent_dentry_at_with_flags(root, parent, &path, lookup_flags)?.unwrap(); // SAFETY: The root must exist
                     if parent_dentry.is_superblock_readonly()? {
                         return Err(Errno::EROFS);
                     }
@@ -709,11 +709,11 @@ fn do_openat_with_lookup_flags(
     };
 
     let file = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| helper(&cwd))?
+        current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
     } else {
         let dir_file = current::fdtable().lock().get(dirfd)?;
         let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
-        helper(dir)?
+        current::with_root(|root| helper(&root, dir))?
     };
 
     if open_flags.contains(OpenFlags::O_DIRECTORY) && !open_flags.contains(OpenFlags::O_TMPFILE) {
@@ -851,16 +851,15 @@ pub fn readlinkat(dirfd: usize, uptr_path: UString, ubuf: UBuffer, bufsize: usiz
         let inode = file.get_inode().ok_or(Errno::EINVAL)?;
         inode.readlink(&mut buffer)?
     } else if let Some((parent, child)) = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?
+        current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &path))?
     } else {
-        vfs::load_parent_dentry_at(
-            current::fdtable()
-                .lock()
-                .get(dirfd)?
-                .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &path,
-        )?
+        let dir = current::fdtable()
+            .lock()
+            .get(dirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &dir, &path))?
     } {
         parent.readlink(child.as_ref(), &mut buffer)?
     } else {
@@ -1994,17 +1993,20 @@ fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_p
         return Ok(dentry.get_mount_to());
     }
 
-    let helper = if flags.contains(AccessAtFlags::AT_SYMLINK_NOFOLLOW) {
-        vfs::load_dentry_at_nofollow_with_perm
-    } else {
-        vfs::load_dentry_at_with_perm
+    let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+        if flags.contains(AccessAtFlags::AT_SYMLINK_NOFOLLOW) {
+            vfs::load_dentry_at_nofollow_with_perm(root, dir, path, search_perm)
+        } else {
+            vfs::load_dentry_at_with_perm(root, dir, path, search_perm)
+        }
     };
 
     let dentry = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| helper(&cwd, path, search_perm))?
+        current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
     } else {
         let file = current::fdtable().lock().get(dirfd)?;
-        helper(file.get_dentry().ok_or(Errno::ENOTDIR)?, path, search_perm)?
+        let dir = file.get_dentry().ok_or(Errno::ENOTDIR)?;
+        current::with_root(|root| helper(&root, dir))?
     };
 
     Ok(dentry.get_mount_to())
@@ -2055,7 +2057,7 @@ pub fn faccessat2(dirfd: usize, uptr_path: UString, mode: usize, flags: usize) -
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct AtFlags: usize {
+pub struct AtFlags: usize {
         const AT_SYMLINK_NOFOLLOW = 0x100;
         const AT_EMPTY_PATH = 0x1000;
     }
@@ -2112,22 +2114,13 @@ fn fanotify_mark_op(flags: FanotifyMarkFlags) -> SysResult<FanotifyMarkOp> {
 }
 
 fn validate_fanotify_mark_flags(flags: FanotifyMarkFlags) -> SysResult<()> {
-    if flags.contains(FanotifyMarkFlags::FAN_MARK_MOUNT) && flags.contains(FanotifyMarkFlags::FAN_MARK_FILESYSTEM) {
+    if flags.has_conflicting_scope_flags() {
         crate::kwarn!("fanotify_mark: mutually exclusive scope flags={:#x}", flags.bits());
         return Err(Errno::EINVAL);
     }
 
-    let has_ignore = flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORE);
-    let has_ignored_mask = flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_MASK);
-    if has_ignore && has_ignored_mask {
+    if flags.has_conflicting_ignore_flags() {
         crate::kwarn!("fanotify_mark: mutually exclusive ignore flags={:#x}", flags.bits());
-        return Err(Errno::EINVAL);
-    }
-    if has_ignore && !flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY) {
-        crate::kwarn!(
-            "fanotify_mark: FAN_MARK_IGNORE requires FAN_MARK_IGNORED_SURV_MODIFY, flags={:#x}",
-            flags.bits()
-        );
         return Err(Errno::EINVAL);
     }
 
@@ -2146,12 +2139,26 @@ pub fn fanotify_init(flags: usize, event_f_flags: usize) -> SyscallRet {
         );
     }
 
+    if flags.contains(FanotifyInitFlags::FAN_REPORT_PIDFD | FanotifyInitFlags::FAN_REPORT_TID) {
+        return Err(Errno::EINVAL);
+    }
     if flags.contains(FanotifyInitFlags::FAN_REPORT_FID) {
-        if flags.contains(FanotifyInitFlags::FAN_CLASS_CONTENT) || flags.contains(FanotifyInitFlags::FAN_CLASS_PRE_CONTENT) {
+        if flags.contains(FanotifyInitFlags::FAN_CLASS_CONTENT)
+            || flags.contains(FanotifyInitFlags::FAN_CLASS_PRE_CONTENT)
+        {
             return Err(Errno::EINVAL);
         }
     }
     if flags.contains(FanotifyInitFlags::FAN_REPORT_NAME) && !flags.contains(FanotifyInitFlags::FAN_REPORT_DIR_FID) {
+        return Err(Errno::EINVAL);
+    }
+    if flags.contains(FanotifyInitFlags::FAN_REPORT_TARGET_FID)
+        && !flags.contains(
+            FanotifyInitFlags::FAN_REPORT_FID
+                | FanotifyInitFlags::FAN_REPORT_DIR_FID
+                | FanotifyInitFlags::FAN_REPORT_NAME,
+        )
+    {
         return Err(Errno::EINVAL);
     }
 
@@ -2199,38 +2206,40 @@ pub fn fanotify_mark(
         if dirfd as isize == AT_FDCWD {
             current::with_cwd(|cwd| Ok(cwd))?
         } else {
-            current::fdtable()
+            let file = current::fdtable().lock().get(dirfd)?;
+            match file.get_dentry() {
+                Some(dentry) => dentry.clone(),
+                None if is_mount_mark || is_filesystem_mark => return Err(Errno::EINVAL),
+                None => return Err(Errno::ENOTDIR),
+            }
+        }
+    } else {
+        let pathname = uptr_pathname.read_path()?;
+        let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+            if flags.contains(FanotifyMarkFlags::FAN_MARK_DONT_FOLLOW) {
+                vfs::load_dentry_at_nofollow(root, dir, &pathname)
+            } else {
+                vfs::load_dentry_at(root, dir, &pathname)
+            }
+        };
+
+        if dirfd as isize == AT_FDCWD {
+            current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
+        } else {
+            let dir = current::fdtable()
                 .lock()
                 .get(dirfd)?
                 .get_dentry()
                 .ok_or(Errno::ENOTDIR)?
-                .clone()
-        }
-    } else {
-        let pathname = uptr_pathname.read_path()?;
-        let helper = if flags.contains(FanotifyMarkFlags::FAN_MARK_DONT_FOLLOW) {
-            vfs::load_dentry_at_nofollow
-        } else {
-            vfs::load_dentry_at
-        };
-
-        if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| helper(&cwd, &pathname))?
-        } else {
-            helper(
-                current::fdtable()
-                    .lock()
-                    .get(dirfd)?
-                    .get_dentry()
-                    .ok_or(Errno::ENOTDIR)?,
-                &pathname,
-            )?
+                .clone();
+            current::with_root(|root| helper(&root, &dir))?
         }
     }
     .get_mount_to();
 
     let inode = dentry.get_inode();
-    if flags.contains(FanotifyMarkFlags::FAN_MARK_ONLYDIR) && inode.inode_type()? != FileType::Directory {
+    let target_is_dir = inode.inode_type()? == FileType::Directory;
+    if flags.contains(FanotifyMarkFlags::FAN_MARK_ONLYDIR) && !target_is_dir {
         return Err(Errno::ENOTDIR);
     }
 
@@ -2238,6 +2247,27 @@ pub fn fanotify_mark(
         crate::kwarn!("fanotify_mark: unsupported mask={:#x}", mask);
         return Err(Errno::EINVAL);
     };
+    if mask.contains(FanotifyEventMask::FAN_RENAME) && !fanotify_file.report_dfid_name() {
+        return Err(Errno::EINVAL);
+    }
+    if !is_mount_mark
+        && !is_filesystem_mark
+        && !target_is_dir
+        && mask.intersects(FanotifyEventMask::FAN_DELETE | FanotifyEventMask::FAN_RENAME)
+    {
+        return Err(Errno::ENOTDIR);
+    }
+    if flags.is_ignore_without_surv_modify() {
+        crate::kwarn!(
+            "fanotify_mark: FAN_MARK_IGNORE requires FAN_MARK_IGNORED_SURV_MODIFY, flags={:#x}",
+            flags.bits()
+        );
+        return if !is_mount_mark && !is_filesystem_mark && target_is_dir {
+            Err(Errno::EISDIR)
+        } else {
+            Err(Errno::EINVAL)
+        };
+    }
     if fanotify_file.unprivileged()
         && mask.intersects(
             FanotifyEventMask::FAN_OPEN_PERM
@@ -2247,29 +2277,20 @@ pub fn fanotify_mark(
     {
         return Err(Errno::EPERM);
     }
-    let is_ignore_mark =
-        flags.intersects(FanotifyMarkFlags::FAN_MARK_IGNORE | FanotifyMarkFlags::FAN_MARK_IGNORED_MASK);
-    let mark_scope = if is_mount_mark {
-        FanotifyMarkScope::Mount {
-            fdinfo_index: if is_ignore_mark {
-                None
-            } else {
-                Some(dentry.get_inode_index())
-            },
-            mount_id: dentry.get_mount_id(),
-        }
-    } else if is_filesystem_mark {
-        FanotifyMarkScope::Filesystem {
-            fdinfo_index: if is_ignore_mark {
-                None
-            } else {
-                Some(dentry.get_inode_index())
-            },
-            sno: dentry.sno(),
-        }
+    let is_ignore_mark = flags.is_ignore_mark();
+    let fdinfo_index = if is_ignore_mark && (is_mount_mark || is_filesystem_mark) {
+        None
     } else {
-        FanotifyMarkScope::Inode(dentry.get_inode_index())
+        Some(dentry.get_inode_index())
     };
+    let fdinfo_key = FanotifyFdinfoKey::new(
+        fdinfo_index,
+        if is_mount_mark {
+            Some(dentry.get_mount_id())
+        } else {
+            None
+        },
+    );
     match op {
         FanotifyMarkOp::Add => {
             if mask.is_empty() {
@@ -2281,16 +2302,16 @@ pub fn fanotify_mark(
                 dentry
                     .get_mount()
                     .ensure_fanotify()
-                    .add_mark(&listener, flags, mask, mark_scope);
+                    .add_mark(&listener, flags, mask, fdinfo_key);
             } else if is_filesystem_mark {
                 dentry
                     .ensure_superblock_fanotify()?
-                    .add_mark(&listener, flags, mask, mark_scope);
+                    .add_mark(&listener, flags, mask, fdinfo_key);
             } else {
                 let Some(fanotify) = inode.ensure_fanotify() else {
                     return Err(Errno::EOPNOTSUPP);
                 };
-                fanotify.add_mark(&listener, flags, mask, mark_scope);
+                fanotify.add_mark(&listener, flags, mask, fdinfo_key);
             }
         }
         FanotifyMarkOp::Remove => {
@@ -2305,7 +2326,7 @@ pub fn fanotify_mark(
                         fanotify_file.listener_generation(),
                         flags,
                         mask,
-                        mark_scope,
+                        fdinfo_key,
                     );
                 }
             } else if is_filesystem_mark {
@@ -2315,7 +2336,7 @@ pub fn fanotify_mark(
                         fanotify_file.listener_generation(),
                         flags,
                         mask,
-                        mark_scope,
+                        fdinfo_key,
                     );
                 }
             } else if let Some(fanotify) = inode.fanotify() {
@@ -2324,7 +2345,7 @@ pub fn fanotify_mark(
                     fanotify_file.listener_generation(),
                     flags,
                     mask,
-                    mark_scope,
+                    fdinfo_key,
                 );
             }
         }
@@ -2354,22 +2375,23 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
             current::fdtable().lock().get(dirfd)?.fstat()?
         }
     } else {
-        let helper = if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
-            vfs::load_dentry_at_nofollow
-        } else {
-            vfs::load_dentry_at
+        let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+            if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow(root, dir, &path)
+            } else {
+                vfs::load_dentry_at(root, dir, &path)
+            }
         };
         let dentry = if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| helper(&cwd, &path))
+            current::with_root_cwd(|root, cwd| helper(&root, &cwd))
         } else {
-            helper(
-                current::fdtable()
-                    .lock()
-                    .get(dirfd)?
-                    .get_dentry()
-                    .ok_or(Errno::ENOTDIR)?,
-                &path,
-            )
+            let dir = current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?
+                .clone();
+            current::with_root(|root| helper(&root, &dir))
         }?;
 
         dentry.get_inode().fstat()?
@@ -2388,7 +2410,7 @@ pub fn statfs64(uptr_path: UString, uptr_buf: UPtr<Statfs>) -> SyscallRet {
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
-    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+    let dentry = current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &path))?;
 
     let statfs = vfs::statfs(dentry.sno())?;
 
@@ -2423,52 +2445,101 @@ pub fn newfstat(fd: usize, uptr_stat: UPtr<FileStat>) -> SyscallRet {
 const UTIME_NOW: u64 = 0x3fffffff;
 const UTIME_OMIT: u64 = 0x3ffffffe;
 
-pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, _flags: usize) -> SyscallRet {
-    let path = if uptr_path.is_null() {
+pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>, flags: usize) -> SyscallRet {
+    let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    let path_is_null = uptr_path.is_null();
+
+    let path = if path_is_null {
+        if dirfd as isize == AT_FDCWD {
+            return Err(Errno::EFAULT);
+        }
+        if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+            return Err(Errno::EINVAL);
+        }
         String::new()
     } else {
         uptr_path.read_path()?
     };
-    let dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
-    } else {
-        vfs::load_dentry_at(
+    if !path_is_null && path.is_empty() && !flags.contains(AtFlags::AT_EMPTY_PATH) {
+        return Err(Errno::ENOENT);
+    }
+
+    let dentry = if path_is_null || path.is_empty() {
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| Ok(cwd))?
+        } else {
             current::fdtable()
                 .lock()
                 .get(dirfd)?
                 .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &path,
-        )?
+                .cloned()
+                .ok_or(Errno::EINVAL)?
+        }
+    } else {
+        let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+            if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow(root, dir, &path)
+            } else {
+                vfs::load_dentry_at(root, dir, &path)
+            }
+        };
+        if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+            current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
+        } else {
+            let dir = current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?
+                .clone();
+            current::with_root(|root| helper(&root, &dir))?
+        }
     };
+    let dentry = dentry.get_mount_to();
     let inode = dentry.get_inode();
 
     let now = driver::chosen::kclock::now()?;
+    let (atime, mtime, allow_write_perm) = if uptr_times.is_null() {
+        (Some(now), Some(now), true)
+    } else {
+        let atime = uptr_times.index(0).read()?;
+        let mtime = uptr_times.index(1).read()?;
+        let allow_write_perm = atime.tv_nsec == UTIME_NOW && mtime.tv_nsec == UTIME_NOW;
+        let convert_time = |time: Timespec| -> SysResult<Option<Duration>> {
+            match time.tv_nsec {
+                UTIME_OMIT => Ok(None),
+                UTIME_NOW => Ok(Some(now)),
+                _ => Ok(Some(time.try_into()?)),
+            }
+        };
+        (convert_time(atime)?, convert_time(mtime)?, allow_write_perm)
+    };
 
-    if uptr_times.is_null() {
-        inode.update_atime(&now)?;
-        inode.update_mtime(&now)?;
+    if atime.is_none() && mtime.is_none() {
         return Ok(0);
     }
+    if dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
 
-    let atime = uptr_times.index(0).read()?;
-    let mtime = uptr_times.index(1).read()?;
-    if atime.tv_nsec != UTIME_OMIT {
-        if atime.tv_nsec == UTIME_NOW {
-            inode.update_atime(&now)?;
-        } else {
-            let duration = Duration::new(atime.tv_sec, atime.tv_nsec as u32);
-            inode.update_atime(&duration)?;
+    let mode = inode.mode()?;
+    let (uid, gid) = inode.owner()?;
+    let perm = Perm::current(PermFlags::W);
+    if allow_write_perm {
+        if !perm.is_root() && perm.uid != uid && !mode.check_perm(&perm, uid, gid) {
+            return Err(Errno::EACCES);
+        }
+    } else {
+        if !perm.is_root() && perm.uid != uid {
+            return Err(Errno::EPERM);
         }
     }
 
-    if mtime.tv_nsec != UTIME_OMIT {
-        if mtime.tv_nsec == UTIME_NOW {
-            inode.update_mtime(&now)?;
-        } else {
-            let duration = Duration::new(mtime.tv_sec, mtime.tv_nsec as u32);
-            inode.update_mtime(&duration)?;
-        }
+    if let Some(time) = atime {
+        inode.update_atime(&time)?;
+    }
+    if let Some(time) = mtime {
+        inode.update_mtime(&time)?;
     }
 
     Ok(0)
@@ -2484,17 +2555,15 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     let path = uptr_path.read_path()?;
 
     let (parent, name) = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EEXIST)?
+        current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &path))?.ok_or(Errno::EEXIST)?
     } else {
-        vfs::load_parent_dentry_at(
-            current::fdtable()
-                .lock()
-                .get(dirfd)?
-                .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &path,
-        )?
-        .ok_or(Errno::EEXIST)?
+        let dir = current::fdtable()
+            .lock()
+            .get(dirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &dir, &path))?.ok_or(Errno::EEXIST)?
     };
 
     let parent = parent.get_mount_to();
@@ -2586,19 +2655,17 @@ pub fn unlinkat(dirfd: usize, uptr_path: UString, flags: usize) -> SyscallRet {
     }
 
     let parent_dentry = if path.starts_with('/') {
-        vfs::load_parent_dentry(&path)?.ok_or(Errno::EOPNOTSUPP)
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &root, &path))?.ok_or(Errno::EOPNOTSUPP)
     } else if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
+        current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry_at(
-            current::fdtable()
-                .lock()
-                .get(dirfd)?
-                .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &path,
-        )?
-        .ok_or(Errno::EOPNOTSUPP)
+        let dir = current::fdtable()
+            .lock()
+            .get(dirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &dir, &path))?.ok_or(Errno::EOPNOTSUPP)
     }?;
 
     let parent = parent_dentry.0.get_mount_to();
@@ -2628,19 +2695,18 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
     }
 
     let (parent, name) = if new_name.starts_with('/') {
-        vfs::load_parent_dentry(&new_name)?.ok_or(Errno::EOPNOTSUPP)?
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &root, &new_name))?.ok_or(Errno::EOPNOTSUPP)?
     } else if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_name))?.ok_or(Errno::EOPNOTSUPP)?
+        current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &new_name))?
+            .ok_or(Errno::EOPNOTSUPP)?
     } else {
-        vfs::load_parent_dentry_at(
-            current::fdtable()
-                .lock()
-                .get(newdirfd)?
-                .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &new_name,
-        )?
-        .ok_or(Errno::EOPNOTSUPP)?
+        let dir = current::fdtable()
+            .lock()
+            .get(newdirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &dir, &new_name))?.ok_or(Errno::EOPNOTSUPP)?
     };
 
     parent.create_symlink(name.as_ref(), &target, Owner::new(current::fsuid(), current::fsgid()))?;
@@ -2663,22 +2729,27 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
         if old_path.is_empty() {
             return Err(Errno::ENOENT);
         }
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &old_path))
+        current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &old_path))
     } else {
-        vfs::load_dentry_at(
-            current::fdtable()
-                .lock()
-                .get(olddirfd)?
-                .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &old_path,
-        )
+        let dir = current::fdtable()
+            .lock()
+            .get(olddirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_dentry_at(&root, &dir, &old_path))
     }?;
 
     let (new_parent_dentry, new_name) = if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
+        current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&new_path)?.ok_or(Errno::EOPNOTSUPP)
+        let dir = current::fdtable()
+            .lock()
+            .get(newdirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &dir, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     }?;
 
     let new_parent_dentry = new_parent_dentry.get_mount_to();
@@ -2719,14 +2790,26 @@ pub fn renameat2(
     let new_path = uptr_newpath.read_path()?;
 
     let old_parent_dentry = if olddirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &old_path))?.ok_or(Errno::EOPNOTSUPP)
+        current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &old_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&old_path)?.ok_or(Errno::EOPNOTSUPP)
+        let dir = current::fdtable()
+            .lock()
+            .get(olddirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &dir, &old_path))?.ok_or(Errno::EOPNOTSUPP)
     }?;
     let new_parent_dentry = if newdirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_parent_dentry_at(&cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
+        current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
-        vfs::load_parent_dentry(&new_path)?.ok_or(Errno::EOPNOTSUPP)
+        let dir = current::fdtable()
+            .lock()
+            .get(newdirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &dir, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     }?;
 
     let old_parent = old_parent_dentry.0;
@@ -2810,16 +2893,15 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     }
 
     let dentry = if dirfd as isize == AT_FDCWD {
-        current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?
+        current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &path))?
     } else {
-        vfs::load_dentry_at(
-            current::fdtable()
-                .lock()
-                .get(dirfd)?
-                .get_dentry()
-                .ok_or(Errno::ENOTDIR)?,
-            &path,
-        )?
+        let dir = current::fdtable()
+            .lock()
+            .get(dirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_dentry_at(&root, &dir, &path))?
     };
 
     do_chmod(&dentry, mode)
@@ -2856,22 +2938,23 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags:
                 .ok_or(Errno::EINVAL)?
         }
     } else {
-        let helper = if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
-            vfs::load_dentry_at_nofollow
-        } else {
-            vfs::load_dentry_at
+        let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+            if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow(root, dir, &path)
+            } else {
+                vfs::load_dentry_at(root, dir, &path)
+            }
         };
         if path.starts_with('/') || dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| helper(&cwd, &path))?
+            current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
         } else {
-            helper(
-                current::fdtable()
-                    .lock()
-                    .get(dirfd)?
-                    .get_dentry()
-                    .ok_or(Errno::ENOTDIR)?,
-                &path,
-            )?
+            let dir = current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?
+                .clone();
+            current::with_root(|root| helper(&root, &dir))?
         }
     };
 
@@ -2921,7 +3004,7 @@ pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
     }
 
     let length = truncate_length(length)?;
-    let dentry = current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &path))?;
+    let dentry = current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &path))?;
     let inode = dentry.get_inode();
     let mode = inode.mode()?;
     if (mode & Mode::S_IFMT) == Mode::S_IFDIR {
@@ -3089,6 +3172,10 @@ pub fn mount(
     flags: usize,
     _data: usize,
 ) -> SyscallRet {
+    if current::euid() != 0 {
+        return Err(Errno::EPERM);
+    }
+
     let flags = MountFlags::from_bits_truncate(flags);
 
     uptr_target.should_not_null()?;
@@ -3097,14 +3184,14 @@ pub fn mount(
     let options = MountOptions::new(flags.contains(MountFlags::RDONLY));
 
     if flags.contains(MountFlags::REMOUNT) {
-        current::with_cwd(|cwd| vfs::remount(&cwd, &target, options))?;
+        current::with_root_cwd(|root, cwd| vfs::remount(&root, &cwd, &target, options))?;
         return Ok(0);
     }
 
     if flags.contains(MountFlags::BIND) {
         uptr_source.should_not_null()?;
         let source = uptr_source.read_path()?;
-        current::with_cwd(|cwd| vfs::bind_mount(&cwd, &source, &target))?;
+        current::with_root_cwd(|root, cwd| vfs::bind_mount(&root, &cwd, &source, &target))?;
         return Ok(0);
     }
 
@@ -3117,7 +3204,7 @@ pub fn mount(
         if source.is_empty() {
             None
         } else {
-            match current::with_cwd(|cwd| vfs::load_dentry_at(&cwd, &source)) {
+            match current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &source)) {
                 Ok(dentry) => {
                     let inode = dentry.get_inode();
                     if let Ok(blk_inode) = inode.clone().downcast_arc::<BlockDevInode>() {
@@ -3141,20 +3228,22 @@ pub fn mount(
         None
     };
 
-    current::with_cwd(|cwd| vfs::mount(&cwd, &target, fstype, device, options))?;
+    current::with_root_cwd(|root, cwd| vfs::mount(&root, &cwd, &target, fstype, device, options))?;
 
     Ok(0)
 }
 
 pub fn umount2(uptr_target: UString, flags: usize) -> SyscallRet {
-    uptr_target.should_not_null()?;
+    if current::euid() != 0 {
+        return Err(Errno::EPERM);
+    }
 
     if flags != 0 {
         return Err(Errno::EINVAL);
     }
 
     let target = uptr_target.read_path()?;
-    current::with_cwd(|cwd| vfs::unmount(&cwd, &target))?;
+    current::with_root_cwd(|root, cwd| vfs::unmount(&root, &cwd, &target))?;
     Ok(0)
 }
 

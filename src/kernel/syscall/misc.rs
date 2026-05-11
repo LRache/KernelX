@@ -505,6 +505,33 @@ pub fn getpriority(which: usize, who: usize) -> SyscallRet {
     Ok((20 - nice) as usize)
 }
 
+#[derive(TryFromPrimitive)]
+#[repr(usize)]
+enum SchedPolicy {
+    Other = 0,
+    Fifo = 1,
+    Rr = 2,
+    Batch = 3,
+    Idle = 5,
+    Deadline = 6,
+}
+
+impl SchedPolicy {
+    fn priority_max(&self) -> usize {
+        match self {
+            SchedPolicy::Fifo | SchedPolicy::Rr => 99,
+            SchedPolicy::Other | SchedPolicy::Batch | SchedPolicy::Idle | SchedPolicy::Deadline => 0,
+        }
+    }
+
+    fn priority_min(&self) -> usize {
+        match self {
+            SchedPolicy::Fifo | SchedPolicy::Rr => 1,
+            SchedPolicy::Other | SchedPolicy::Batch | SchedPolicy::Idle | SchedPolicy::Deadline => 0,
+        }
+    }
+}
+
 // TODO: implement real scheduling policy setting
 pub fn sched_setscheduler(_pid: usize, _policy: usize, _uptr_param: UPtr<u32>) -> SyscallRet {
     // Pretend success, always using SCHED_OTHER
@@ -522,6 +549,16 @@ pub fn sched_getparam(_pid: usize, uptr_param: UPtr<u32>) -> SyscallRet {
     // Write sched_priority = 0 (default for SCHED_OTHER)
     uptr_param.write(0)?;
     Ok(0)
+}
+
+pub fn sched_get_priority_max(policy: usize) -> SyscallRet {
+    let policy = SchedPolicy::try_from(policy).map_err(|_| Errno::EINVAL)?;
+    Ok(policy.priority_max())
+}
+
+pub fn sched_get_priority_min(policy: usize) -> SyscallRet {
+    let policy = SchedPolicy::try_from(policy).map_err(|_| Errno::EINVAL)?;
+    Ok(policy.priority_min())
 }
 
 // TODO: implement real reboot syscall

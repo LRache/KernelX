@@ -5,10 +5,11 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 
-use crate::fs::inode::{Fanotify, FileType, Index, InodeOps, Mode, Owner};
+use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
 use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::Fanotify;
 use crate::kernel::scheduler::current;
 use crate::klib::{LazyInitedCell, SpinLock};
 
@@ -257,7 +258,12 @@ impl Dentry {
         }
     }
 
-    pub fn walk_link_with_perm(self: Arc<Self>, symlink_depth: &mut usize, perm: &Perm) -> SysResult<Arc<Dentry>> {
+    pub fn walk_link_with_perm(
+        self: Arc<Self>,
+        root: &Arc<Dentry>,
+        symlink_depth: &mut usize,
+        perm: &Perm,
+    ) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
             let mut buffer = [0u8; 255];
@@ -267,7 +273,7 @@ impl Dentry {
                 }
                 *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
-                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(p, link_name, symlink_depth, perm)?;
+                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(root, p, link_name, symlink_depth, perm)?;
                 return Ok(link_dentry);
             }
         }
@@ -276,6 +282,7 @@ impl Dentry {
 
     pub fn walk_link_with_perm_and_flags(
         self: Arc<Self>,
+        root: &Arc<Dentry>,
         symlink_depth: &mut usize,
         perm: &Perm,
         flags: LookupFlags,
@@ -290,7 +297,7 @@ impl Dentry {
                 *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
                 let link_dentry =
-                    vfs().lookup_dentry_with_depth_perm_flags(p, link_name, symlink_depth, perm, flags)?;
+                    vfs().lookup_dentry_with_depth_perm_flags(root, p, link_name, symlink_depth, perm, flags)?;
                 return Ok(link_dentry);
             }
         }
@@ -488,12 +495,27 @@ impl Dentry {
 
         let old_parent_inode = self.get_inode();
         let old_ino = old_parent_inode.lookup(old_name)?;
+        let old_inode = vfs().load_inode(self.sno(), old_ino)?;
+        let old_is_dir = old_inode.inode_type()? == FileType::Directory;
         let new_parent_inode = new_parent.get_inode();
         let overwritten = match new_parent_inode.lookup(new_name) {
-            Ok(ino) if ino != old_ino => Some(Index {
-                sno: new_parent.sno(),
-                ino,
-            }),
+            Ok(ino) if ino != old_ino => {
+                let overwritten_inode = vfs().load_inode(new_parent.sno(), ino)?;
+                if old_is_dir && overwritten_inode.inode_type()? == FileType::Directory {
+                    let mut index = 0;
+                    while let Some((dent, next_index)) = overwritten_inode.get_dent(index)? {
+                        if dent.name != "." && dent.name != ".." {
+                            return Err(Errno::ENOTEMPTY);
+                        }
+                        index = next_index;
+                    }
+                }
+
+                Some(Index {
+                    sno: new_parent.sno(),
+                    ino,
+                })
+            }
             Ok(_) | Err(Errno::ENOENT) => None,
             Err(err) => return Err(err),
         };

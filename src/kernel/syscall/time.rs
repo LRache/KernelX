@@ -68,15 +68,20 @@ pub fn clock_settime(clockid: usize, uptr_timespec: UPtr<SetTimespec>) -> SysRes
         return Err(Errno::EPERM);
     }
 
+    let time = Duration::new(timespec.tv_sec as u64, timespec.tv_nsec as u32);
+    kclock::set_time(time)?;
+
     Ok(0)
 }
 
 pub fn settimeofday(uptr_timeval: UPtr<SetTimeval>, uptr_timezone: UPtr<Timezone>) -> SysResult<usize> {
+    let mut time = None;
     if !uptr_timeval.is_null() {
         let timeval = uptr_timeval.read()?;
         if timeval.tv_sec < 0 || timeval.tv_usec < 0 || timeval.tv_usec >= 1_000_000 {
             return Err(Errno::EINVAL);
         }
+        time = Some(Duration::new(timeval.tv_sec as u64, (timeval.tv_usec * 1000) as u32));
     }
 
     if !uptr_timezone.is_null() {
@@ -85,6 +90,10 @@ pub fn settimeofday(uptr_timeval: UPtr<SetTimeval>, uptr_timezone: UPtr<Timezone
 
     if !uid::capable(Capability::SysTime) {
         return Err(Errno::EPERM);
+    }
+
+    if let Some(time) = time {
+        kclock::set_time(time)?;
     }
 
     Ok(0)
@@ -140,6 +149,7 @@ enum ClockId {
     CLOCK_MONOTONIC = 1,
     CLOCK_PROCESS_CPUTIME_ID = 2,
     CLOCK_THREAD_CPUTIME_ID = 3,
+    CLOCK_MONOTONIC_RAW = 4,
     CLOCK_REALTIME_COARSE = 5,
     CLOCK_BOOTTIME = 7,
     CLOCK_REALTIME_ALARM = 8,
@@ -154,7 +164,10 @@ impl ClockId {
             | ClockId::CLOCK_REALTIME_COARSE
             | ClockId::CLOCK_REALTIME_ALARM
             | ClockId::CLOCK_TAI => kclock::now(),
-            ClockId::CLOCK_MONOTONIC | ClockId::CLOCK_BOOTTIME | ClockId::CLOCK_BOOTTIME_ALARM => Ok(timer::now()),
+            ClockId::CLOCK_MONOTONIC
+            | ClockId::CLOCK_MONOTONIC_RAW
+            | ClockId::CLOCK_BOOTTIME
+            | ClockId::CLOCK_BOOTTIME_ALARM => Ok(timer::now()),
             ClockId::CLOCK_PROCESS_CPUTIME_ID => Ok(current::pcb().process_cpu_time()),
             ClockId::CLOCK_THREAD_CPUTIME_ID => Ok(current::tcb().thread_cpu_time()),
         }

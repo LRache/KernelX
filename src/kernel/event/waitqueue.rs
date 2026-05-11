@@ -15,10 +15,6 @@ impl<T> WaitQueueItem<T> {
     fn new(task: Arc<dyn Task>, arg: T) -> Self {
         Self { task, arg }
     }
-
-    fn wakeup(self, e: Event) {
-        let _ = scheduler::wakeup_task(self.task, e);
-    }
 }
 
 pub struct WaitQueue<T> {

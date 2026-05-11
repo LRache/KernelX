@@ -8,7 +8,7 @@ use crate::driver::chosen::kclock;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, WaitQueue, timer};
+use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue, timer};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::current::copy_to_user;
@@ -53,6 +53,7 @@ struct TimerFdState {
 struct TimerFdInner {
     state: SpinLock<TimerFdState>,
     waiter: SpinLock<WaitQueue<Event>>,
+    epoll_notifier: Arc<EpollNotifier>,
 }
 
 impl TimerFdInner {
@@ -60,6 +61,7 @@ impl TimerFdInner {
         Self {
             state: SpinLock::new(TimerFdState::default(), "TimerFdInner::state"),
             waiter: SpinLock::new(WaitQueue::new(), "TimerFdInner::waiter"),
+            epoll_notifier: Arc::new(EpollNotifier::new()),
         }
     }
 
@@ -113,6 +115,7 @@ impl TimerFdInner {
 
         if should_wake {
             self.waiter.lock().wake_all(|event| event);
+            self.epoll_notifier.notify(FileEvent::READ_READY);
         }
 
         if let Some(expiry_us) = next_expiry_us {
@@ -215,6 +218,7 @@ impl TimerFd {
         }
         if initial_expirations != 0 {
             self.inner.waiter.lock().wake_all(|event| event);
+            self.inner.epoll_notifier.notify(FileEvent::READ_READY);
         }
         if let Some(expiry_us) = next_expiry_us {
             self.inner.arm_at(sequence, expiry_us);
@@ -342,7 +346,7 @@ impl FileOps for TimerFd {
         None
     }
 
-    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
         if !event.contains(FileEvent::READ_READY) {
             return Ok(None);
         }
@@ -350,6 +354,18 @@ impl FileOps for TimerFd {
         let state = self.inner.state.lock();
         if state.expirations != 0 {
             return Ok(Some(FileEvent::READ_READY));
+        }
+
+        Ok(None)
+    }
+
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        if !event.contains(FileEvent::READ_READY) {
+            return Ok(None);
+        }
+
+        if let Some(ready) = self.poll_event(event)? {
+            return Ok(Some(ready));
         }
 
         self.inner.waiter.lock().wait(
@@ -365,6 +381,10 @@ impl FileOps for TimerFd {
 
     fn wait_event_cancel(&self) {
         self.inner.waiter.lock().remove(current::task());
+    }
+
+    fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
+        Some(self.inner.epoll_notifier.clone())
     }
 
     fn set_flags(&self, flags: FileFlags) {

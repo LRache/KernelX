@@ -16,7 +16,14 @@ pub fn init() {
 
 fn mount(path: &str, fstype_name: &str) -> SysResult<()> {
     let fstype = vfs::get_fstype(fstype_name).ok_or(Errno::ENODEV)?;
-    vfs::mount(vfs::get_root_dentry(), path, fstype, None, MountOptions::default())
+    vfs::mount(
+        vfs::get_root_dentry(),
+        vfs::get_root_dentry(),
+        path,
+        fstype,
+        None,
+        MountOptions::default(),
+    )
 }
 
 fn ensure_mountpoint(path: &str) -> SysResult<()> {
@@ -55,6 +62,7 @@ fn mount_second_device_if_enabled() {
     ensure_mountpoint(mountpoint).unwrap();
     vfs::mount(
         vfs::get_root_dentry(),
+        vfs::get_root_dentry(),
         mountpoint,
         fstype,
         Some(blk_dev),
@@ -69,6 +77,7 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
     let blk_dev = driver::get_block_driver(device_name).unwrap();
     let fstype = vfs::get_fstype(fs_type).unwrap();
     vfs::mount(
+        vfs::get_root_dentry(),
         vfs::get_root_dentry(),
         "/",
         fstype,

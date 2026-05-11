@@ -10,6 +10,22 @@ use crate::klib::SpinLock;
 struct FutexWaitQueueItem {
     tcb: Arc<dyn Task>,
     bitset: u32,
+    kind: FutexWaitKind,
+}
+
+#[derive(Clone, Copy)]
+enum FutexWaitKind {
+    Wait,
+    Waitv { index: usize },
+}
+
+fn wake_waiter(item: FutexWaitQueueItem) -> bool {
+    let event = match item.kind {
+        FutexWaitKind::Wait => Event::Futex,
+        FutexWaitKind::Waitv { index } => Event::FutexWaitv { index },
+    };
+
+    scheduler::wakeup_task(item.tcb, event).is_ok()
 }
 
 pub struct Futex {
@@ -25,7 +41,7 @@ impl Futex {
         }
     }
 
-    pub fn wait_current(&mut self, expected: i32, bitset: u32) -> SysResult<()> {
+    fn wait_current(&mut self, expected: i32, bitset: u32, kind: FutexWaitKind) -> SysResult<()> {
         if *self.kvalue != expected {
             return Err(Errno::EAGAIN);
         }
@@ -33,19 +49,24 @@ impl Futex {
         self.wait_list.push_back(FutexWaitQueueItem {
             tcb: current::task().clone(),
             bitset,
+            kind,
         });
 
         Ok(())
     }
 
     pub fn wake(&mut self, num: usize, mask: u32) -> SysResult<usize> {
+        if num == 0 {
+            return Ok(0);
+        }
+
         let mut woken = 0;
         let mut cursor = self.wait_list.cursor_front_mut();
         while let Some(item) = cursor.current() {
             if (item.bitset & mask) != 0 {
                 let item = cursor.remove_current().unwrap();
 
-                if scheduler::wakeup_task(item.tcb.clone(), Event::Futex).is_ok() {
+                if wake_waiter(item) {
                     woken += 1;
                     if woken >= num {
                         break;
@@ -77,13 +98,21 @@ impl Futex {
 static FUTEXES: SpinLock<BTreeMap<usize, SpinLock<Futex>>> = SpinLock::new(BTreeMap::new(), "static::FUTEXES");
 
 pub fn wait_current(kaddr: usize, expected: i32, bitset: u32) -> SysResult<()> {
+    wait_current_kind(kaddr, expected, bitset, FutexWaitKind::Wait)
+}
+
+pub fn wait_current_waitv(kaddr: usize, expected: i32, bitset: u32, index: usize) -> SysResult<()> {
+    wait_current_kind(kaddr, expected, bitset, FutexWaitKind::Waitv { index })
+}
+
+fn wait_current_kind(kaddr: usize, expected: i32, bitset: u32, kind: FutexWaitKind) -> SysResult<()> {
     let mut futexes = FUTEXES.lock();
     let futex = futexes
         .entry(kaddr)
         .or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) }), "Futex"));
 
     let mut futex = futex.lock();
-    futex.wait_current(expected, bitset)
+    futex.wait_current(expected, bitset, kind)
 }
 
 pub fn wake(kaddr: usize, num: usize, mask: u32) -> SysResult<usize> {
@@ -96,11 +125,17 @@ pub fn wake(kaddr: usize, num: usize, mask: u32) -> SysResult<usize> {
     }
 }
 
-pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> SysResult<usize> {
+pub fn requeue(
+    kaddr: usize,
+    kaddr2: usize,
+    wake_count: usize,
+    requeue_count: usize,
+    val: Option<i32>,
+) -> SysResult<usize> {
     let mut futexes = FUTEXES.lock();
     let mut pending = LinkedList::new();
 
-    let moved = if let Some(futex_spinlock) = futexes.get(&kaddr) {
+    let (woken, moved) = if let Some(futex_spinlock) = futexes.get(&kaddr) {
         let mut futex = futex_spinlock.lock();
         if let Some(val) = val {
             if *futex.kvalue != val {
@@ -108,19 +143,29 @@ pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> Sys
             }
         }
 
+        let woken = futex.wake(wake_count, u32::MAX)?;
         let mut moved = 0;
         let mut cursor = futex.wait_list.cursor_front_mut();
-        while let Some(item) = cursor.remove_current() {
+        while moved < requeue_count {
+            let Some(item) = cursor.remove_current() else {
+                break;
+            };
             pending.push_back(item);
             moved += 1;
-            if moved >= num {
-                break;
-            }
         }
-        moved
+        (woken, moved)
     } else {
+        if let Some(val) = val
+            && unsafe { *(kaddr as *const i32) } != val
+        {
+            return Err(Errno::EAGAIN);
+        }
         return Ok(0);
     };
+
+    if moved == 0 {
+        return Ok(woken);
+    }
 
     let futex2_spinlock = futexes
         .entry(kaddr2)
@@ -128,14 +173,10 @@ pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> Sys
     let mut futex2 = futex2_spinlock.lock();
     futex2.wait_list.append(&mut pending);
 
-    Ok(moved)
+    Ok(woken + moved)
 }
 
-pub fn cancel_wait(kaddr: usize, task: &Arc<dyn Task>) -> usize {
+pub fn cancel_wait_all(task: &Arc<dyn Task>) -> usize {
     let futexes = FUTEXES.lock();
-    if let Some(futex) = futexes.get(&kaddr) {
-        futex.lock().remove_waiter(task)
-    } else {
-        0
-    }
+    futexes.values().map(|futex| futex.lock().remove_waiter(task)).sum()
 }

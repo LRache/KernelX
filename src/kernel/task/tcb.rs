@@ -8,11 +8,10 @@ use core::time::Duration;
 use crate::arch::{KernelContext, UserContext, UserContextTrait};
 use crate::driver::chosen::kclock;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{FanotifyEventMask, notify_fanotify, wait_fanotify_open_exec_permission};
 use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, timer};
+use crate::kernel::event::{Event, FanotifyEventMask, notify_fanotify, timer, wait_fanotify_open_exec_permission};
 use crate::kernel::ipc::{PendingSignal, SignalSet, SignalStackState};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::mm::{AddrSpace, elf};
@@ -212,8 +211,8 @@ impl TCB {
         exec_inode.begin_exec().expect("Failed to acquire init executable");
 
         let mut addrspace = AddrSpace::new();
-        let (user_entry, dyn_info) =
-            elf::loader::load_elf(&file, &mut addrspace, &exec_perm).expect("Failed to load ELF for init task");
+        let (user_entry, dyn_info) = elf::loader::load_elf(vfs::get_root_dentry(), &file, &mut addrspace, &exec_perm)
+            .expect("Failed to load ELF for init task");
 
         let mut auxv = Auxv::new();
         if let Some(dyn_info) = dyn_info {
@@ -344,10 +343,16 @@ impl TCB {
                     new_argv.push(arg);
                 }
 
-                let interpreter_file =
-                    vfs::open_file(interpreter, FileFlags::readonly(), &Perm::current(PermFlags::X))?
-                        .downcast_arc::<RandomAccessFile>()
-                        .map_err(|_| Errno::ENOEXEC)?;
+                let root = self.parent.root();
+                let interpreter_file = vfs::openat_file(
+                    &root,
+                    &root,
+                    interpreter,
+                    FileFlags::readonly(),
+                    &Perm::current(PermFlags::X),
+                )?
+                .downcast_arc::<RandomAccessFile>()
+                .map_err(|_| Errno::ENOEXEC)?;
                 return self.new_exec(interpreter_file, interpreter, &new_argv, envp);
             }
         }
@@ -360,7 +365,8 @@ impl TCB {
         let result = (|| {
             let mut addrspace = AddrSpace::new();
             let exec_perm = Perm::current(PermFlags::X);
-            let (user_entry, dyn_info) = elf::loader::load_elf(&file, &mut addrspace, &exec_perm)?;
+            let root = self.parent.root();
+            let (user_entry, dyn_info) = elf::loader::load_elf(&root, &file, &mut addrspace, &exec_perm)?;
 
             let mut auxv = Auxv::new();
             if let Some(dyn_info) = dyn_info {

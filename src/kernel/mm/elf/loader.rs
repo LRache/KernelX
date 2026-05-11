@@ -4,10 +4,10 @@ use alloc::sync::Arc;
 use alloc::vec;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
-use crate::fs::inode::{FanotifyEventMask, notify_fanotify, wait_fanotify_open_exec_permission};
-use crate::fs::{Perm, vfs};
+use crate::fs::{Dentry, Perm, vfs};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::event::{FanotifyEventMask, notify_fanotify, wait_fanotify_open_exec_permission};
 use crate::kernel::mm::{AddrSpace, MapPerm, maparea};
 use crate::{arch, ktrace, println};
 
@@ -41,6 +41,7 @@ pub fn read_phdr(file: &Arc<RandomAccessFile>) -> Result<Elf64Phdr, Errno> {
 }
 
 pub fn load_elf(
+    root: &Arc<Dentry>,
     file: &Arc<RandomAccessFile>,
     addrspace: &AddrSpace,
     perm: &Perm,
@@ -116,7 +117,7 @@ pub fn load_elf(
     let phdr_addr = phdr_addr.unwrap_or(0);
 
     if let Some(interpreter_path) = &interpreter_path {
-        let (interpreter_base, interpreter_entry) = load_interpreter(&interpreter_path, addrspace, perm)?;
+        let (interpreter_base, interpreter_entry) = load_interpreter(root, &interpreter_path, addrspace, perm)?;
 
         let dyn_info = DynInfo {
             user_entry: ehdr.e_entry as usize + addr_base,
@@ -183,9 +184,9 @@ pub fn load_program_from_file(
     Ok(())
 }
 
-fn load_interpreter(path: &str, addrspace: &AddrSpace, perm: &Perm) -> SysResult<(usize, usize)> {
+fn load_interpreter(root: &Arc<Dentry>, path: &str, addrspace: &AddrSpace, perm: &Perm) -> SysResult<(usize, usize)> {
     let file_flags = FileFlags::readonly();
-    let file = vfs::open_file(path, file_flags, perm)?;
+    let file = vfs::openat_file(root, root, path, file_flags, perm)?;
     let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::ENOEXEC)?;
     let fanotify_file: Arc<dyn FileOps> = file.clone();
     wait_fanotify_open_exec_permission(&fanotify_file)?;

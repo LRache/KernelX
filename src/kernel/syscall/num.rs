@@ -62,6 +62,7 @@ macro_rules! syscall_entries {
             17  => task::getcwd(2),
             49  => task::chdir(1),
             50  => task::fchdir(1),
+            51  => task::chroot(1),
             93  => task::exit(1),
             94  => task::exit_group(1),
             95  => task::waitid(5),
@@ -102,6 +103,7 @@ macro_rules! syscall_entries {
             98  => futex::futex(6),
             99  => futex::set_robust_list(1),
             100 => futex::get_robust_list(0),
+            449 => futex::futex_waitv(5),
 
             // Misc
             81  => misc::sync(0),
@@ -112,6 +114,8 @@ macro_rules! syscall_entries {
             121 => misc::sched_getparam(2),
             122 => misc::sched_setaffinity(3),
             123 => misc::sched_getaffinity(3),
+            125 => misc::sched_get_priority_max(1),
+            126 => misc::sched_get_priority_min(1),
             140 => task::setpriority(3),
             141 => misc::getpriority(2),
             142 => misc::reboot(0),
@@ -193,9 +197,13 @@ macro_rules! syscall_entries {
 
             // Event
             19  => event::eventfd2(2),
+            20  => event::epoll_create1(1),
+            21  => event::epoll_ctl(4),
+            22  => event::epoll_pwait(6) [no_restart],
             72  => event::pselect6_time32(6) [no_restart],
             73  => event::ppoll_time32(5) [no_restart],
             413 => event::pselect6_time64(6) [no_restart],
+            441 => event::epoll_pwait2(6) [no_restart],
             85  => event::timerfd_create(2),
             86  => event::timerfd_settime(4),
             87  => event::timerfd_gettime(2),

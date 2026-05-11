@@ -6,10 +6,12 @@ use super::FileEvent;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Poll { event: FileEvent, waker: usize },
+    Epoll,
     ReadReady,
     WriteReady,
     Timeout,
     Futex,
+    FutexWaitv { index: usize },
     Process { child: Tid },
     WaitSignal { signum: SignalNum },
     Signal,

@@ -1,4 +1,6 @@
 use alloc::sync::Arc;
+use core::time::Duration;
+
 use num_enum::TryFromPrimitive;
 
 use crate::driver::chosen::kclock;
@@ -8,6 +10,7 @@ use crate::fs::inode::{InodeLockState, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
+use crate::kernel::syscall::{Capability, capable};
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
@@ -124,6 +127,7 @@ impl FileOps for RtcFile {
         #[repr(u32)]
         enum Request {
             RTC_RD_TIME = 0x80247009,
+            RTC_SET_TIME = 0x4024700a,
         }
 
         let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
@@ -133,6 +137,14 @@ impl FileOps for RtcFile {
                 let epoch_secs = now.as_secs();
                 let rtc_time = epoch_to_rtc_time(epoch_secs);
                 addrspace.copy_to_user(arg, rtc_time)?;
+                Ok(0)
+            }
+            Request::RTC_SET_TIME => {
+                if !capable(Capability::SysTime) {
+                    return Err(Errno::EPERM);
+                }
+                let rtc_time: RtcTime = addrspace.copy_from_user(arg)?;
+                kclock::set_time(rtc_time_to_epoch(rtc_time)?)?;
                 Ok(0)
             }
         }
@@ -220,6 +232,57 @@ fn epoch_to_rtc_time(epoch: u64) -> RtcTime {
         tm_yday: yday,
         tm_isdst: 0,
     }
+}
+
+fn rtc_time_to_epoch(time: RtcTime) -> SysResult<Duration> {
+    if time.tm_sec < 0
+        || time.tm_sec >= 60
+        || time.tm_min < 0
+        || time.tm_min >= 60
+        || time.tm_hour < 0
+        || time.tm_hour >= 24
+        || time.tm_mon < 0
+        || time.tm_mon >= 12
+    {
+        return Err(Errno::EINVAL);
+    }
+
+    let year = i64::from(time.tm_year) + 1900;
+    if year < 1970 {
+        return Err(Errno::EINVAL);
+    }
+
+    let leap = is_leap(year);
+    let mdays: [i32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mon = time.tm_mon as usize;
+    if time.tm_mday <= 0 || time.tm_mday > mdays[mon] {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut days = days_before_year(year);
+    for days_in_month in mdays.iter().take(mon) {
+        days += i64::from(*days_in_month);
+    }
+    days += i64::from(time.tm_mday - 1);
+
+    let seconds = days
+        .checked_mul(86400)
+        .and_then(|seconds| seconds.checked_add(i64::from(time.tm_hour) * 3600))
+        .and_then(|seconds| seconds.checked_add(i64::from(time.tm_min) * 60))
+        .and_then(|seconds| seconds.checked_add(i64::from(time.tm_sec)))
+        .ok_or(Errno::EINVAL)?;
+
+    Ok(Duration::new(u64::try_from(seconds).map_err(|_| Errno::EINVAL)?, 0))
+}
+
+fn days_before_year(year: i64) -> i64 {
+    let elapsed_years = year - 1970;
+    365 * elapsed_years + leap_days_before(year) - leap_days_before(1970)
+}
+
+fn leap_days_before(year: i64) -> i64 {
+    let prev = year - 1;
+    prev / 4 - prev / 100 + prev / 400
 }
 
 fn is_leap(year: i64) -> bool {

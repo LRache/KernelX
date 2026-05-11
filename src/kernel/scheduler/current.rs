@@ -100,6 +100,22 @@ where
     f(pcb.cwd())
 }
 
+pub fn with_root<F, R>(f: F) -> R
+where
+    F: FnOnce(Arc<Dentry>) -> R,
+{
+    let pcb = pcb();
+    f(pcb.root())
+}
+
+pub fn with_root_cwd<F, R>(f: F) -> R
+where
+    F: FnOnce(Arc<Dentry>, Arc<Dentry>) -> R,
+{
+    let pcb = pcb();
+    f(pcb.root(), pcb.cwd())
+}
+
 pub mod copy_to_user {
     use super::addrspace;
     use crate::kernel::errno::{Errno, SysResult};

@@ -23,13 +23,14 @@ impl VirtualFileSystem {
 
     fn mount(
         &self,
+        root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
         path: &str,
         fstype: &'static dyn FileSystemOps,
         device: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
     ) -> SysResult<()> {
-        let dentry = self.lookup_dentry(dir, path)?;
+        let dentry = self.lookup_dentry(root, dir, path)?;
 
         let (sno, root_ino) = {
             let mut superblock_table = self.superblock_table.lock();
@@ -46,9 +47,9 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    fn bind_mount(&self, dir: &Arc<Dentry>, source: &str, target: &str) -> SysResult<()> {
-        let source = self.lookup_dentry(dir, source)?;
-        let target = self.resolve_mountpoint(dir, target)?;
+    fn bind_mount(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, source: &str, target: &str) -> SysResult<()> {
+        let source = self.lookup_dentry(root, dir, source)?;
+        let target = self.resolve_mountpoint(root, dir, target)?;
 
         target.bind_mount(&source);
         self.mountpoint.lock().push(target);
@@ -56,20 +57,20 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    fn resolve_mountpoint(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
-        match self.lookup_parent_dentry(dir, path)? {
+    fn resolve_mountpoint(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
+        match self.lookup_parent_dentry(root, dir, path)? {
             Some((parent, name)) => parent.lookup(name.as_ref()),
-            None => Ok(self.get_root().clone()),
+            None => Ok(root.clone()),
         }
     }
 
-    fn remount(&self, dir: &Arc<Dentry>, path: &str, options: MountOptions) -> SysResult<()> {
-        let dentry = self.resolve_mountpoint(dir, path)?;
+    fn remount(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str, options: MountOptions) -> SysResult<()> {
+        let dentry = self.resolve_mountpoint(root, dir, path)?;
         let mounted_root = dentry.mounted_root().ok_or(Errno::EINVAL)?;
         self.superblock_table.lock().remount(mounted_root.sno(), options)
     }
 
-    fn unmount(&self, dir: &Arc<Dentry>, path: &str) -> SysResult<()> {
+    fn unmount(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<()> {
         fn is_descendant_mount(parent: &str, child: &str) -> bool {
             if child == parent {
                 return false;
@@ -80,7 +81,7 @@ impl VirtualFileSystem {
             child.strip_prefix(parent).is_some_and(|suffix| suffix.starts_with('/'))
         }
 
-        let dentry = self.resolve_mountpoint(dir, path)?;
+        let dentry = self.resolve_mountpoint(root, dir, path)?;
         let mounted_root = dentry.mounted_root().ok_or(Errno::EINVAL)?;
         let is_bind_mount = dentry.is_bind_mount();
         let mounted_sno = mounted_root.sno();
@@ -135,25 +136,26 @@ pub fn get_fstype(fstype_name: &str) -> Option<&'static dyn FileSystemOps> {
 }
 
 pub fn mount(
+    root: &Arc<Dentry>,
     dir: &Arc<Dentry>,
     path: &str,
     fstype: &'static dyn FileSystemOps,
     device: Option<Arc<dyn BlockDriverOps>>,
     options: MountOptions,
 ) -> Result<(), Errno> {
-    vfs().mount(dir, path, fstype, device, options)
+    vfs().mount(root, dir, path, fstype, device, options)
 }
 
-pub fn bind_mount(dir: &Arc<Dentry>, source: &str, target: &str) -> Result<(), Errno> {
-    vfs().bind_mount(dir, source, target)
+pub fn bind_mount(root: &Arc<Dentry>, dir: &Arc<Dentry>, source: &str, target: &str) -> Result<(), Errno> {
+    vfs().bind_mount(root, dir, source, target)
 }
 
-pub fn unmount(dir: &Arc<Dentry>, path: &str) -> Result<(), Errno> {
-    vfs().unmount(dir, path)
+pub fn unmount(root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> Result<(), Errno> {
+    vfs().unmount(root, dir, path)
 }
 
-pub fn remount(dir: &Arc<Dentry>, path: &str, options: MountOptions) -> Result<(), Errno> {
-    vfs().remount(dir, path, options)
+pub fn remount(root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str, options: MountOptions) -> Result<(), Errno> {
+    vfs().remount(root, dir, path, options)
 }
 
 pub fn get_root_dentry() -> &'static Arc<Dentry> {

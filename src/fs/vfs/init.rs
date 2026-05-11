@@ -28,6 +28,7 @@ pub fn init() {
     let mut vfs = VirtualFileSystem::new();
     vfs.register_filesystem("devfs", &devfs::FileSystem);
     vfs.register_filesystem("ext2", &Ext4FileSystem);
+    vfs.register_filesystem("ext3", &Ext4FileSystem);
     vfs.register_filesystem("ext4", &Ext4FileSystem);
     vfs.register_filesystem("tmpfs", &tmpfs::FileSystem);
     vfs.register_filesystem("procfs", &procfs::FileSystem);

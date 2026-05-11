@@ -1,12 +1,12 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::driver::CharDriverOps;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::inode::release_bsd_flock;
 use crate::fs::{Dentry, InodeOps};
 use crate::kernel::errno::SysResult;
-use crate::kernel::event::FileEvent;
+use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 
@@ -16,7 +16,7 @@ pub struct CharFile {
     dentry: Option<Arc<Dentry>>,
     readable: bool,
     writable: bool,
-    blocked: bool,
+    blocked: AtomicBool,
     fd_refs: AtomicUsize,
 }
 
@@ -33,7 +33,7 @@ impl CharFile {
             dentry,
             readable: flags.readable,
             writable: flags.writable,
-            blocked: flags.blocked,
+            blocked: AtomicBool::new(flags.blocked),
             fd_refs: AtomicUsize::new(0),
         }
     }
@@ -49,7 +49,7 @@ impl CharFile {
 
 impl FileOps for CharFile {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        self.driver.read(buf, self.blocked)
+        self.driver.read(buf, self.blocked.load(Ordering::Relaxed))
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
@@ -60,10 +60,14 @@ impl FileOps for CharFile {
         FileFlags {
             readable: self.readable,
             writable: self.writable,
-            blocked: self.blocked,
+            blocked: self.blocked.load(Ordering::Relaxed),
             append: false,
             direct: false,
         }
+    }
+
+    fn set_flags(&self, flags: FileFlags) {
+        self.blocked.store(flags.blocked, Ordering::Relaxed);
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
@@ -86,12 +90,20 @@ impl FileOps for CharFile {
         self.driver.ioctl(request, arg, addrspace)
     }
 
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        self.driver.poll_event(event)
+    }
+
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
         self.driver.wait_event(waker, event)
     }
 
     fn wait_event_cancel(&self) {
         self.driver.wait_event_cancel();
+    }
+
+    fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
+        self.driver.epoll_notifier()
     }
 
     fn type_name(&self) -> &'static str {

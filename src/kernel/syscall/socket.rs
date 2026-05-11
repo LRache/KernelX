@@ -18,6 +18,7 @@ use crate::net::socket::{
 
 use super::SyscallRet;
 use super::fs::IOVec;
+use super::uid::{self, Capability};
 use super::uptr::{UBuffer, UPtr, UserPointer, UserStruct};
 
 const MSG_IOV_MAX: usize = 1024;
@@ -167,6 +168,9 @@ pub fn socket(domain: usize, sock_type: usize, protocol: usize) -> SyscallRet {
                 Arc::new(InetSocket::new_tcp(blocked))
             }
             SocketKind::Raw => {
+                if !uid::capable(Capability::NetRaw) {
+                    return Err(Errno::EPERM);
+                }
                 let proto = u8::try_from(protocol).map_err(|_| Errno::EPROTONOSUPPORT)?;
                 if proto == 0 {
                     return Err(Errno::EPROTONOSUPPORT);
@@ -231,8 +235,8 @@ fn bind_unix_socket(sock: &Arc<UnixSocket>, addr_ptr: UPtr<u8>, addrlen: usize) 
 
     sock.can_bind()?;
 
-    let (parent, name, absolute_path) = current::with_cwd(|cwd| {
-        let (parent, name) = vfs::load_parent_dentry_at(&cwd, path)?.ok_or(Errno::EINVAL)?;
+    let (parent, name, absolute_path) = current::with_root_cwd(|root, cwd| {
+        let (parent, name) = vfs::load_parent_dentry_at(&root, &cwd, path)?.ok_or(Errno::EINVAL)?;
         if name.as_ref() == "/" || name.is_empty() {
             return Err(Errno::EINVAL);
         }
