@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::fs::file::FileOps;
 use crate::fs::Dentry;
+use crate::fs::file::FileOps;
 use crate::kernel::errno::SysResult;
 
 use super::file::FanotifyListener;

@@ -1,9 +1,9 @@
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
+use crate::fs::Dentry;
 use crate::fs::file::FileOps;
 use crate::fs::inode::FileType;
-use crate::fs::Dentry;
 use crate::klib::SpinLock;
 
 use super::file::FanotifyListener;
