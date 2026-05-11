@@ -116,8 +116,10 @@ impl EventFd {
                 let was_empty = *counter == 0;
                 *counter += value;
                 drop(counter);
-                if was_empty && value != 0 {
-                    self.read_waiter.lock().wake_all(|event| event);
+                if value != 0 {
+                    if was_empty {
+                        self.read_waiter.lock().wake_all(|event| event);
+                    }
                     self.epoll_notifier.notify(FileEvent::READ_READY);
                 }
                 return Ok(());
