@@ -6,11 +6,11 @@ use core::usize;
 use crate::driver::char::serial::SerialOps;
 use crate::driver::{CharDriverOps, DeviceType, DriverOps};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, WaitQueue};
+use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue};
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::current;
-use crate::kernel::uapi::termios::{InputFlags, LocalFlags, OutputFlags, Termios};
+use crate::kernel::uapi::termios::{InputFlags, LocalFlags, OutputFlags, Termios, Termios2};
 use crate::klib::SpinLock;
 use crate::klib::ring::RingBuffer;
 
@@ -85,6 +85,7 @@ pub struct Stty {
     recv_buffer: SpinLock<RingBuffer<u8, 1024>>,
     line: SpinLock<LineBuffer<1024>>,
     waiters: SpinLock<WaitQueue<Event>>,
+    epoll_notifier: Arc<EpollNotifier>,
     winsize: SpinLock<(u16, u16)>, // (rows, cols)
 
     attr: SpinLock<Attr>,
@@ -98,6 +99,7 @@ impl Stty {
             recv_buffer: SpinLock::new(RingBuffer::new(0), "Stty::recv_buffer"),
             line: SpinLock::new(LineBuffer::new(), "Stty::line"),
             waiters: SpinLock::new(WaitQueue::new(), "Stty::waiters"),
+            epoll_notifier: Arc::new(EpollNotifier::new()),
             winsize: SpinLock::new((25, 80), "Stty::winsize"),
 
             attr: SpinLock::new(Attr::default(), "Stty::attr"),
@@ -247,9 +249,13 @@ impl DriverOps for Stty {
                 recv_buffer.push(c);
             }
         }
+        let read_ready = !recv_buffer.empty();
         drop(recv_buffer);
 
         self.waiters.lock().wake_all(|e| e);
+        if read_ready {
+            self.epoll_notifier.notify(FileEvent::READ_READY);
+        }
     }
 }
 
@@ -317,6 +323,9 @@ impl CharDriverOps for Stty {
                         c = b'\n';
                     } else if attr.inlcr && c == b'\n' {
                         c = b'\r';
+                    } else if attr.canonical && c == 0x4 {
+                        // EOF
+                        return Ok(read);
                     }
                     *i = c;
                     read += 1;
@@ -325,36 +334,45 @@ impl CharDriverOps for Stty {
                 }
             }
 
-            return Ok(read);
+            if read > 0 { Ok(read) } else { Err(Errno::EAGAIN) }
         }
     }
 
-    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
         let mut ready = FileEvent::empty();
 
         if event.contains(FileEvent::WRITE_READY) {
             ready |= FileEvent::WRITE_READY;
         }
 
-        if event.contains(FileEvent::READ_READY) {
-            if self.recv_buffer.lock().empty() {
-                if ready.is_empty() {
-                    self.waiters.lock().wait_current(Event::Poll {
-                        event: FileEvent::READ_READY,
-                        waker,
-                    });
-                    return Ok(None);
-                }
-            } else {
-                ready |= FileEvent::READ_READY;
-            }
+        if event.contains(FileEvent::READ_READY) && !self.recv_buffer.lock().empty() {
+            ready |= FileEvent::READ_READY;
         }
 
         if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        if let Some(ready) = self.poll_event(event)? {
+            return Ok(Some(ready));
+        }
+
+        if event.contains(FileEvent::READ_READY) {
+            self.waiters.lock().wait_current(Event::Poll {
+                event: FileEvent::READ_READY,
+                waker,
+            });
+        }
+
+        Ok(None)
+    }
+
     fn wait_event_cancel(&self) {
         self.waiters.lock().remove(current::task());
+    }
+
+    fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
+        Some(self.epoll_notifier.clone())
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
@@ -377,6 +395,7 @@ impl CharDriverOps for Stty {
             TIOCGWINSZ = 0x5413,
             TIOCSWINSZ = 0x5414,
             TCGETS2 = 0x802C542A,
+            TCSETS2 = 0x402C542B,
         }
 
         let req = IOCTLReq::try_from(request).map_err(|_| Errno::EINVAL)?;
@@ -448,6 +467,19 @@ impl CharDriverOps for Stty {
             }
             IOCTLReq::TCGETS2 => {
                 // TODO: implement TCGETS2
+                Ok(0)
+            }
+            IOCTLReq::TCSETS2 => {
+                let termios = addrspace.copy_from_user::<Termios2>(arg)?;
+                let termios = Termios {
+                    c_iflag: termios.c_iflag,
+                    c_oflag: termios.c_oflag,
+                    c_cflag: termios.c_cflag,
+                    c_lflag: termios.c_lflag,
+                    c_line: termios.c_line,
+                    c_cc: Default::default(),
+                };
+                self.set_termios(&termios);
                 Ok(0)
             }
             _ => Err(Errno::EINVAL),
