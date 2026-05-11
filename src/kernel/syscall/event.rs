@@ -97,7 +97,7 @@ pub fn epoll_ctl(epfd: usize, op: usize, fd: usize, uptr_event: UPtr<EpollEvent>
             if file.downcast_ref::<EpollFile>().is_some() {
                 return Err(Errno::EINVAL);
             }
-            let notifier = file.epoll_notifier().ok_or(Errno::EPERM)?;
+            let notifier = file.epoll_notifier().ok_or(Errno::EBADF)?;
             epoll.listener().add(fd, file, notifier, event.unwrap())?;
         }
         EpollCtlOp::Del => {
