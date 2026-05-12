@@ -333,6 +333,7 @@ impl TCB {
         let mut user_context = UserContext::new();
         user_context.set_user_stack_top(userstack_top);
         user_context.set_user_entry(user_entry);
+        user_context.set_tls(config::USER_RANDOM_ADDR_BASE + arch::PGSIZE / 2);
 
         let tcb = Self::new(
             tid,
@@ -464,6 +465,11 @@ impl TCB {
             let mut new_user_context = UserContext::new();
             new_user_context.set_user_stack_top(usetstack_top);
             new_user_context.set_user_entry(user_entry);
+            // Provide a non-zero initial tp so early TLS accesses in the
+            // dynamic linker (tp + negative offset) land in the read-only
+            // random page instead of faulting at kernel-range addresses.
+            // The real tp is set later via set_tid_address / set_thread_area.
+            new_user_context.set_tls(config::USER_RANDOM_ADDR_BASE + arch::PGSIZE / 2);
 
             let fdtable = self.fdtable();
             fdtable.lock().cloexec();

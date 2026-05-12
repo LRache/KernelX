@@ -198,7 +198,7 @@ fn load_interpreter(root: &Arc<Dentry>, path: &str, addrspace: &AddrSpace, perm:
 
     let ehdr = read_ehdr(&file)?;
 
-    if !ehdr.is_valid_elf() || !ehdr.is_64bit() || !ehdr.is_riscv() {
+    if !ehdr.is_valid_elf() || !ehdr.is_64bit() || !ehdr.is_native() {
         return Err(Errno::ENOEXEC);
     }
 

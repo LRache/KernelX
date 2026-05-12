@@ -36,6 +36,7 @@ pub extern "C" fn usertrap_handler() -> ! {
         csr::ecode::INE | csr::ecode::IPE => trap::illegal_inst(),
         csr::ecode::ALE => trap::memory_misaligned(),
         csr::ecode::ADE => handle_ade(),
+        csr::ecode::FPD => handle_fpu_disabled(),
         _ => {
             let badv = csr::read::<{ csr::num::BADV }>();
             let badi = csr::read::<{ csr::num::BADI }>();
@@ -111,6 +112,15 @@ fn handle_ade() {
 fn handle_page_modify() {
     let badv = csr::read::<{ csr::num::BADV }>();
     trap::memory_fault(badv, MemAccessType::Write);
+}
+
+/// FPD (Floating-Point Disabled): user hit a float/double instruction while
+/// EUEN.FPE=0.  Set the bit so the faulting instruction retries successfully.
+/// Phase 9 will add lazy FPU save/restore across context switches; for now
+/// we simply leave the FPU permanently enabled once first touched.
+fn handle_fpu_disabled() {
+    let euen = csr::read::<{ csr::num::EUEN }>();
+    csr::write::<{ csr::num::EUEN }>(euen | 0x1); // FPE = bit 0
 }
 
 pub fn return_to_user() -> ! {
