@@ -302,6 +302,7 @@ impl PCB {
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|tcb| {
             tcb.set_dead();
+            tcb.wake_parent_waiting_vfork();
             if tcb.resume_from_stopped() {
                 scheduler::push_task(tcb.clone());
             } else if tcb.resume_from_ptrace_stop(None).is_ok() {
