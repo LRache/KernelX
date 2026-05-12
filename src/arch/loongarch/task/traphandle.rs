@@ -19,6 +19,12 @@ pub extern "C" fn usertrap_handler() -> ! {
     // (trap_return will later assert it was opened here).
     trap::trap_enter();
 
+    // Save FPU/LSX state if either FPE or SXE was enabled for this task.
+    let euen = csr::read::<{ csr::num::EUEN }>();
+    if euen & 0x3 != 0 {
+        save_fpu_state();
+    }
+
     let era = csr::read::<{ csr::num::ERA }>();
     current::tcb().user_context().set_user_entry(era);
 
@@ -37,6 +43,7 @@ pub extern "C" fn usertrap_handler() -> ! {
         csr::ecode::ALE => trap::memory_misaligned(),
         csr::ecode::ADE => handle_ade(),
         csr::ecode::FPD => handle_fpu_disabled(),
+        csr::ecode::SXD => handle_lsx_disabled(),
         _ => {
             let badv = csr::read::<{ csr::num::BADV }>();
             let badi = csr::read::<{ csr::num::BADI }>();
@@ -116,11 +123,150 @@ fn handle_page_modify() {
 
 /// FPD (Floating-Point Disabled): user hit a float/double instruction while
 /// EUEN.FPE=0.  Set the bit so the faulting instruction retries successfully.
-/// Phase 9 will add lazy FPU save/restore across context switches; for now
-/// we simply leave the FPU permanently enabled once first touched.
 fn handle_fpu_disabled() {
-    let euen = csr::read::<{ csr::num::EUEN }>();
-    csr::write::<{ csr::num::EUEN }>(euen | 0x1); // FPE = bit 0
+    csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() | 0x1);
+    current::tcb().user_context().fpregs_dirty = true;
+}
+
+/// SXD (LSX Disabled): user hit a 128-bit SIMD instruction while EUEN.SXE=0.
+/// Enable both FPE (bit 0) and SXE (bit 1) — LSX requires FPU enabled too.
+fn handle_lsx_disabled() {
+    csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() | 0x3);
+    current::tcb().user_context().fpregs_dirty = true;
+}
+
+/// Save all 32 vector registers (128-bit LSX) + FCC + FCSR into UserContext.
+fn save_fpu_state() {
+    let uc = current::tcb().user_context();
+    unsafe {
+        // Enable LSX so we can use vst (it may only have FPE set, not SXE)
+        csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() | 0x3);
+        // Save $vr0..$vr31 (128-bit each) into uc.fpregs[0..32] (u128 array)
+        let base = uc.fpregs.as_mut_ptr() as usize;
+        core::arch::asm!(
+            "vst $vr0,  {base}, 0*16",
+            "vst $vr1,  {base}, 1*16",
+            "vst $vr2,  {base}, 2*16",
+            "vst $vr3,  {base}, 3*16",
+            "vst $vr4,  {base}, 4*16",
+            "vst $vr5,  {base}, 5*16",
+            "vst $vr6,  {base}, 6*16",
+            "vst $vr7,  {base}, 7*16",
+            "vst $vr8,  {base}, 8*16",
+            "vst $vr9,  {base}, 9*16",
+            "vst $vr10, {base}, 10*16",
+            "vst $vr11, {base}, 11*16",
+            "vst $vr12, {base}, 12*16",
+            "vst $vr13, {base}, 13*16",
+            "vst $vr14, {base}, 14*16",
+            "vst $vr15, {base}, 15*16",
+            "vst $vr16, {base}, 16*16",
+            "vst $vr17, {base}, 17*16",
+            "vst $vr18, {base}, 18*16",
+            "vst $vr19, {base}, 19*16",
+            "vst $vr20, {base}, 20*16",
+            "vst $vr21, {base}, 21*16",
+            "vst $vr22, {base}, 22*16",
+            "vst $vr23, {base}, 23*16",
+            "vst $vr24, {base}, 24*16",
+            "vst $vr25, {base}, 25*16",
+            "vst $vr26, {base}, 26*16",
+            "vst $vr27, {base}, 27*16",
+            "vst $vr28, {base}, 28*16",
+            "vst $vr29, {base}, 29*16",
+            "vst $vr30, {base}, 30*16",
+            "vst $vr31, {base}, 31*16",
+            base = in(reg) base,
+            options(nostack),
+        );
+        // Save FCSR0
+        let fcsr_val: u32;
+        core::arch::asm!("movfcsr2gr {tmp}, $fcsr0", tmp = out(reg) fcsr_val, options(nostack));
+        uc.fcsr = fcsr_val as u64;
+        // Save FCC (8 condition flags)
+        let mut fcc_val: u64 = 0;
+        let fcc_ptr = &mut fcc_val as *mut u64 as *mut u8;
+        let (t0, t1, t2, t3, t4, t5, t6, t7): (u32, u32, u32, u32, u32, u32, u32, u32);
+        core::arch::asm!("movcf2gr {t}, $fcc0", t = out(reg) t0, options(nostack));
+        core::arch::asm!("movcf2gr {t}, $fcc1", t = out(reg) t1, options(nostack));
+        core::arch::asm!("movcf2gr {t}, $fcc2", t = out(reg) t2, options(nostack));
+        core::arch::asm!("movcf2gr {t}, $fcc3", t = out(reg) t3, options(nostack));
+        core::arch::asm!("movcf2gr {t}, $fcc4", t = out(reg) t4, options(nostack));
+        core::arch::asm!("movcf2gr {t}, $fcc5", t = out(reg) t5, options(nostack));
+        core::arch::asm!("movcf2gr {t}, $fcc6", t = out(reg) t6, options(nostack));
+        core::arch::asm!("movcf2gr {t}, $fcc7", t = out(reg) t7, options(nostack));
+        fcc_ptr.write(t0 as u8);
+        fcc_ptr.add(1).write(t1 as u8);
+        fcc_ptr.add(2).write(t2 as u8);
+        fcc_ptr.add(3).write(t3 as u8);
+        fcc_ptr.add(4).write(t4 as u8);
+        fcc_ptr.add(5).write(t5 as u8);
+        fcc_ptr.add(6).write(t6 as u8);
+        fcc_ptr.add(7).write(t7 as u8);
+        uc.fcc = fcc_val;
+    }
+    // Disable FPU+LSX for kernel execution — kernel doesn't use FP/SIMD.
+    csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() & !0x3);
+}
+
+/// Restore all 32 vector registers (128-bit LSX) + FCC + FCSR from UserContext.
+fn restore_fpu_state() {
+    let uc = current::tcb().user_context();
+    unsafe {
+        // Enable FPU+LSX before restore
+        csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() | 0x3);
+        let base = uc.fpregs.as_ptr() as usize;
+        core::arch::asm!(
+            "vld $vr0,  {base}, 0*16",
+            "vld $vr1,  {base}, 1*16",
+            "vld $vr2,  {base}, 2*16",
+            "vld $vr3,  {base}, 3*16",
+            "vld $vr4,  {base}, 4*16",
+            "vld $vr5,  {base}, 5*16",
+            "vld $vr6,  {base}, 6*16",
+            "vld $vr7,  {base}, 7*16",
+            "vld $vr8,  {base}, 8*16",
+            "vld $vr9,  {base}, 9*16",
+            "vld $vr10, {base}, 10*16",
+            "vld $vr11, {base}, 11*16",
+            "vld $vr12, {base}, 12*16",
+            "vld $vr13, {base}, 13*16",
+            "vld $vr14, {base}, 14*16",
+            "vld $vr15, {base}, 15*16",
+            "vld $vr16, {base}, 16*16",
+            "vld $vr17, {base}, 17*16",
+            "vld $vr18, {base}, 18*16",
+            "vld $vr19, {base}, 19*16",
+            "vld $vr20, {base}, 20*16",
+            "vld $vr21, {base}, 21*16",
+            "vld $vr22, {base}, 22*16",
+            "vld $vr23, {base}, 23*16",
+            "vld $vr24, {base}, 24*16",
+            "vld $vr25, {base}, 25*16",
+            "vld $vr26, {base}, 26*16",
+            "vld $vr27, {base}, 27*16",
+            "vld $vr28, {base}, 28*16",
+            "vld $vr29, {base}, 29*16",
+            "vld $vr30, {base}, 30*16",
+            "vld $vr31, {base}, 31*16",
+            base = in(reg) base,
+            options(nostack),
+        );
+        // Restore FCSR0
+        let fcsr_val = uc.fcsr as u32;
+        core::arch::asm!("movgr2fcsr $fcsr0, {tmp}", tmp = in(reg) fcsr_val, options(nostack));
+        // Restore FCC
+        let fcc_val = uc.fcc;
+        let fcc_ptr = &fcc_val as *const u64 as *const u8;
+        core::arch::asm!("movgr2cf $fcc0, {tmp}", tmp = in(reg) fcc_ptr.read() as u32, options(nostack));
+        core::arch::asm!("movgr2cf $fcc1, {tmp}", tmp = in(reg) fcc_ptr.add(1).read() as u32, options(nostack));
+        core::arch::asm!("movgr2cf $fcc2, {tmp}", tmp = in(reg) fcc_ptr.add(2).read() as u32, options(nostack));
+        core::arch::asm!("movgr2cf $fcc3, {tmp}", tmp = in(reg) fcc_ptr.add(3).read() as u32, options(nostack));
+        core::arch::asm!("movgr2cf $fcc4, {tmp}", tmp = in(reg) fcc_ptr.add(4).read() as u32, options(nostack));
+        core::arch::asm!("movgr2cf $fcc5, {tmp}", tmp = in(reg) fcc_ptr.add(5).read() as u32, options(nostack));
+        core::arch::asm!("movgr2cf $fcc6, {tmp}", tmp = in(reg) fcc_ptr.add(6).read() as u32, options(nostack));
+        core::arch::asm!("movgr2cf $fcc7, {tmp}", tmp = in(reg) fcc_ptr.add(7).read() as u32, options(nostack));
+    }
 }
 
 pub fn return_to_user() -> ! {
@@ -148,6 +294,12 @@ pub fn return_to_user() -> ! {
 
     csr::write::<{ csr::num::ERA  }>(uc.get_user_entry());
     csr::write::<{ csr::num::PRMD }>(csr::prmd::USERFRAME);
+
+    // Restore FPU state if this task has ever used it.
+    if uc.fpregs_dirty {
+        csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() | 0x1);
+        restore_fpu_state();
+    }
 
     unsafe { asm_usertrap_return(uc as *const UserContext) }
 }
