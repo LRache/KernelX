@@ -2459,33 +2459,42 @@ pub fn statx(
 
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
-    let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
-        str256::new()
+    let path = if uptr_path.is_null() && flags.contains(AtFlags::AT_EMPTY_PATH) {
+        String::new()
     } else {
-        uptr_path.should_not_null()?;
-        uptr_path.read_fixed()?
+        uptr_path.read_path()?
     };
 
     let fstat = if path.is_empty() {
-        current::fdtable().lock().get(dirfd)?.fstat()?
-    } else {
-        let helper = if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
-            vfs::load_dentry_at_nofollow
+        if !flags.contains(AtFlags::AT_EMPTY_PATH) {
+            return Err(Errno::ENOENT);
+        }
+
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| cwd.get_inode().fstat())?
         } else {
-            vfs::load_dentry_at
+            current::fdtable().lock().get(dirfd)?.fstat()?
+        }
+    } else {
+        let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+            if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow(root, dir, &path)
+            } else {
+                vfs::load_dentry_at(root, dir, &path)
+            }
         };
         let dentry = if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| helper(&cwd, &path))
+            current::with_root_cwd(|root, cwd| helper(&root, &cwd))
         } else {
-            helper(
-                current::fdtable()
-                    .lock()
-                    .get(dirfd)?
-                    .get_dentry()
-                    .ok_or(Errno::ENOTDIR)?,
-                &path,
-            )
+            let dir = current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?
+                .clone();
+            current::with_root(|root| helper(&root, &dir))
         }?;
+
         dentry.get_inode().fstat()?
     };
 
