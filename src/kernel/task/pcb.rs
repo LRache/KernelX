@@ -653,6 +653,8 @@ impl PCB {
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|tcb| {
             tcb.set_dead();
+            // If this task was a vfork child, wake the blocked parent.
+            tcb.wake_parent_waiting_vfork();
         });
 
         // NOTE: Dropping `tasks` here would release ownership of each TCB and
