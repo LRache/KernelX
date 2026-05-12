@@ -2,10 +2,36 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::arch::loongarch::csr;
 use crate::arch::loongarch::eiointc;
+use crate::arch::loongarch::pch_pic;
+use crate::kernel::scheduler::current;
 use crate::kernel::trap;
 use crate::{kinfo, kwarn};
 
 static TIMER_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Print diagnostic info every ~10 seconds (assuming 100 Hz timer).
+/// Helps identify stuck tasks: shows which task is running and where.
+fn diagnose_stuck_tasks(era: usize) {
+    let ticks = TIMER_TICKS.load(Ordering::Relaxed);
+    if ticks % 500 == 0 && ticks > 0 {
+        if current::has_task() {
+            let tid = current::tid();
+            kinfo!("[heartbeat] tick={} tid={} ERA={:#x}", ticks, tid, era);
+        } else {
+            use crate::kernel::task::manager;
+            kinfo!("[heartbeat] tick={} IDLE — dumping tasks:", ticks);
+            let tcbs = manager::tcbs().lock();
+            for (&tid, tcb) in tcbs.iter() {
+                let ss = tcb.state().lock();
+                let task_state = ss.state();
+                let dead = ss.is_dead();
+                let has_pending = ss.pending_signal.is_some();
+                drop(ss);
+                kinfo!("  tid={} {:?} dead={} pending_sig={}", tid, task_state, dead, has_pending);
+            }
+        }
+    }
+}
 
 pub fn timer_tick_count() -> usize {
     TIMER_TICKS.load(Ordering::Relaxed)
@@ -29,6 +55,7 @@ pub extern "C" fn kerneltrap_handler() {
             while let Some(irq) = eiointc::claim_irq() {
                 trap::external_interrupt(irq);
                 eiointc::complete_irq(irq);
+                pch_pic::ack_irq(irq);
             }
         }
 
