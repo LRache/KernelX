@@ -16,7 +16,7 @@ pub struct UserContext {
     /* 34 */ pub user_pgd: usize,      // PGDL value for user
     /* 35 */ pub kernel_pgd: usize,    // unused; DMW covers kernel
     /* 36 */ pub usertrap_handler: usize,
-    /* 37 */ pub fpregs: [u64; 32],
+    /* 37 */ pub fpregs: [u128; 32], // 128-bit to cover LSX ($vr0..$vr31)
     pub fcc: u64,
     pub fcsr: u64,
     pub user_entry: usize,
@@ -32,7 +32,7 @@ impl UserContextTrait for UserContext {
             user_pgd: 0,
             kernel_pgd: 0,
             usertrap_handler: 0,
-            fpregs: [0; 32],
+            fpregs: [0u128; 32],
             fcc: 0,
             fcsr: 0,
             user_entry: 0,
@@ -173,7 +173,7 @@ unsafe impl Sync for KernelContext {}
 pub struct SigContext {
     pub pc: usize,
     pub gregs: [usize; 31], // $r1..$r31
-    pub fpregs: [u64; 32],
+    pub fpregs: [u128; 32],
     pub fcc: u64,
     pub fcsr: u64,
 }
@@ -183,7 +183,7 @@ impl SigContext {
         SigContext {
             pc: 0,
             gregs: [0; 31],
-            fpregs: [0; 32],
+            fpregs: [0u128; 32],
             fcc: 0,
             fcsr: 0,
         }
