@@ -5,6 +5,7 @@ use crate::arch::loongarch::eiointc;
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
+use crate::arch::loongarch::pch_pic;
 use crate::kwarn;
 
 unsafe extern "C" {
@@ -81,6 +82,7 @@ fn handle_interrupt(estat: usize) {
         while let Some(irq) = eiointc::claim_irq() {
             trap::external_interrupt(irq);
             eiointc::complete_irq(irq);
+            pch_pic::ack_irq(irq);
         }
     }
 
@@ -295,10 +297,13 @@ pub fn return_to_user() -> ! {
     csr::write::<{ csr::num::ERA  }>(uc.get_user_entry());
     csr::write::<{ csr::num::PRMD }>(csr::prmd::USERFRAME);
 
-    // Restore FPU state if this task has ever used it.
+    // Restore FPU/LSX state if this task has ever used it.
+    // Otherwise ensure EUEN is clear so this task doesn't see stale FP regs
+    // left by a previously-scheduled task's restore.
     if uc.fpregs_dirty {
-        csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() | 0x1);
         restore_fpu_state();
+    } else {
+        csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() & !0x3);
     }
 
     unsafe { asm_usertrap_return(uc as *const UserContext) }
