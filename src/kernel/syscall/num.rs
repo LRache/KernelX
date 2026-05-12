@@ -94,6 +94,7 @@ macro_rules! syscall_entries {
             // Memory
             214 => mm::brk(1),
             215 => mm::munmap(2),
+            216 => mm::mremap(5),
             222 => mm::mmap(6),
             226 => mm::mprotect(3),
             227 => mm::msync(3),
