@@ -116,6 +116,8 @@ enum State {
 pub struct PCB {
     pid: Tid,
     pub parent: SpinLock<Option<Arc<PCB>>>,
+    /// Parent thread that may wait this child when __WNOTHREAD is set.
+    wait_parent_tid: SpinLock<Tid>,
     state: SpinLock<State>,
     exec_path: SpinLock<String>,
     exec_inode: SpinLock<Option<Arc<dyn InodeOps>>>,
@@ -170,6 +172,7 @@ impl PCB {
         inherit: &Arc<PCB>,
         exit_signal: SignalNum,
         new_uts: bool,
+        wait_parent_tid: Tid,
     ) -> Arc<Self> {
         let exec_inode = parent.exec_inode.lock().clone();
         if let Some(inode) = exec_inode.as_ref() {
@@ -185,6 +188,7 @@ impl PCB {
         Arc::new(Self {
             pid,
             parent: SpinLock::new(Some(parent.clone()), "PCB::parent"),
+            wait_parent_tid: SpinLock::new(wait_parent_tid, "PCB::wait_parent_tid"),
             state: SpinLock::new(State::Running, "PCB::state"),
             exec_path: SpinLock::new(parent.exec_path.lock().clone(), "PCB::exec_path"),
             exec_inode: SpinLock::new(exec_inode, "PCB::exec_inode"),
@@ -249,6 +253,7 @@ impl PCB {
         let pcb = Arc::new(Self {
             pid: new_tid,
             parent: SpinLock::new(None, "PCB::parent"),
+            wait_parent_tid: SpinLock::new(0, "PCB::wait_parent_tid"),
             state: SpinLock::new(State::Running, "PCB::state"),
             exec_path: SpinLock::new(String::new(), "PCB::exec_path"),
             exec_inode: SpinLock::new(None, "PCB::exec_inode"),
@@ -307,6 +312,14 @@ impl PCB {
 
     pub fn pid(&self) -> Tid {
         self.pid
+    }
+
+    pub fn wait_parent_tid(&self) -> Tid {
+        *self.wait_parent_tid.lock()
+    }
+
+    fn set_wait_parent_tid(&self, tid: Tid) {
+        *self.wait_parent_tid.lock() = tid;
     }
 
     pub fn pgid(&self) -> Pid {
@@ -554,12 +567,20 @@ impl PCB {
         } else if flags.parent {
             // CLONE_PARENT: the new process shares the same parent as the caller
             let real_parent = self.parent.lock().clone().ok_or(Errno::EINVAL)?;
-            let new_pcb = PCB::new(new_tid, self.pgid(), &real_parent, self, exit_signal, flags.new_uts);
+            let new_pcb = PCB::new(
+                new_tid,
+                self.pgid(),
+                &real_parent,
+                self,
+                exit_signal,
+                flags.new_uts,
+                self.wait_parent_tid(),
+            );
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             real_parent.children.lock().push(new_pcb);
         } else {
-            let new_pcb = PCB::new(new_tid, self.pgid(), self, self, exit_signal, flags.new_uts);
+            let new_pcb = PCB::new(new_tid, self.pgid(), self, self, exit_signal, flags.new_uts, tcb.tid());
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
             self.children.lock().push(new_pcb);
@@ -702,6 +723,7 @@ impl PCB {
             let mut children = self.children.lock();
             children.iter_mut().for_each(|c| {
                 *c.parent.lock() = Some(init_process.clone());
+                c.set_wait_parent_tid(init_process.pid());
             });
             init_process.children.lock().append(&mut children);
         });
@@ -720,174 +742,146 @@ impl PCB {
         }
     }
 
-    pub fn wait_child(&self, pid: i32, blocked: bool) -> Result<Option<(Arc<PCB>, ExitStatus)>, Errno> {
-        let child = {
-            let children = self.children.lock();
-            children.iter().find(|c| c.pid() == pid).cloned()
-        };
+    fn child_matches_wait_thread(child: &PCB, wait_parent_tid: Option<Tid>) -> bool {
+        wait_parent_tid.is_none_or(|tid| child.wait_parent_tid() == tid)
+    }
 
-        if let Some(child) = child {
-            if let Some(status) = child.recycle() {
-                self.accumulate_waited_child(&child);
+    fn reap_child(&self, child: Arc<PCB>) -> Option<(Arc<PCB>, ExitStatus)> {
+        let status = child.recycle()?;
+        self.accumulate_waited_child(&child);
+        self.children.lock().retain(|c| c.pid() != child.pid());
+        Some((child, status))
+    }
 
-                let mut children = self.children.lock();
-                let positon = children.iter().position(|c| c.pid() == pid).unwrap();
-                children.swap_remove(positon);
+    fn wait_for_child_state_change(&self, reason: &'static str) -> SysResult<()> {
+        self.waiting_task.lock().push(current::task().clone());
 
-                return Ok(Some((child, status)));
+        let event = current::block(reason);
+        match event {
+            Event::Process { .. } => Ok(()),
+            Event::Signal => {
+                self.remove_current_waiting_task();
+                Err(Errno::EINTR)
+            }
+            _ => unreachable!("Unexpected event in wait: {:?}", event),
+        }
+    }
+
+    pub fn wait_child(
+        &self,
+        pid: i32,
+        blocked: bool,
+        wait_parent_tid: Option<Tid>,
+    ) -> Result<Option<(Arc<PCB>, ExitStatus)>, Errno> {
+        loop {
+            let child = {
+                let children = self.children.lock();
+                children.iter().find(|c| c.pid() == pid).cloned()
+            };
+
+            let child = child.ok_or(Errno::ECHILD)?;
+            if !Self::child_matches_wait_thread(&child, wait_parent_tid) {
+                return Err(Errno::ECHILD);
             }
 
-            if blocked {
-                loop {
-                    self.waiting_task.lock().push(current::task().clone());
+            if let Some(result) = self.reap_child(child) {
+                return Ok(Some(result));
+            }
 
-                    let event = current::block("wait_child");
-                    match event {
-                        Event::Process { child } => {
-                            if child == pid {
-                                break;
-                            }
-                        }
-                        Event::Signal => {
-                            self.remove_current_waiting_task();
-                            return Err(Errno::EINTR);
-                        }
-                        _ => {
-                            unreachable!("Unexpected event in wait_child: {:?}", event);
-                        }
-                    }
-                }
-
-                let status = if let Some(status) = child.recycle() {
-                    status
-                } else {
-                    return Err(Errno::ECHILD); // The child process was recycled by other waiters
-                };
-
-                self.accumulate_waited_child(&child);
-
-                let mut children = self.children.lock();
-                children.retain(|c| c.pid() != pid);
-
-                return Ok(Some((child, status)));
-            } else {
+            if !blocked {
                 return Ok(None);
             }
-        } else {
-            // No child found
-            return Err(Errno::ECHILD);
+
+            self.wait_for_child_state_change("wait_child")?;
         }
     }
 
-    pub fn wait_any_child(&self, blocked: bool) -> SysResult<Option<(Arc<PCB>, ExitStatus)>> {
-        if let Some(child) = {
-            let mut children = self.children.lock();
-            if children.is_empty() {
-                return Err(Errno::ECHILD);
-            }
-
-            // children.iter().for_each(|t| crate::kinfo!("{}", t.pid()));
-
-            if let Some(pos) = children.iter().position(|c| c.is_exited()) {
-                Some(children.swap_remove(pos))
-            } else {
-                None
-            }
-        } {
-            if let Some(status) = child.recycle() {
-                self.accumulate_waited_child(&child);
-                return Ok(Some((child, status)));
-            }
-        };
-
-        if !blocked {
-            return Ok(None);
-        }
-
+    pub fn wait_any_child(
+        &self,
+        blocked: bool,
+        wait_parent_tid: Option<Tid>,
+    ) -> SysResult<Option<(Arc<PCB>, ExitStatus)>> {
         loop {
-            self.waiting_task.lock().push(current::task().clone());
+            let (has_matching_child, exited_child) = {
+                let children = self.children.lock();
+                let mut has_matching_child = false;
+                let mut exited_child = None;
 
-            let event = current::block("wait_any_child");
-            match event {
-                Event::Process { child } => {
-                    let pid = child;
-                    let child = {
-                        let mut children = self.children.lock();
-
-                        if let Some(pos) = children.iter().position(|c| c.pid() == pid) {
-                            children.swap_remove(pos)
-                        } else {
-                            continue; // The child process was recycled by other waiters
-                        }
-                    };
-                    if let Some(status) = child.recycle() {
-                        self.accumulate_waited_child(&child);
-                        return Ok(Some((child, status)));
-                    } else {
-                        continue; // The child process was recycled by other waiters
-                    }
-                }
-                Event::Signal => {
-                    self.remove_current_waiting_task();
-                    return Err(Errno::EINTR);
-                }
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    pub fn wait_child_by_pgid(&self, pgid: Tid, blocked: bool) -> SysResult<Option<(Arc<PCB>, ExitStatus)>> {
-        if let Some(child) = {
-            let mut children = self.children.lock();
-            if !children.iter().any(|c| c.pgid() == pgid) {
-                return Err(Errno::ECHILD);
-            }
-
-            if let Some(pos) = children.iter().position(|c| c.pgid() == pgid && c.is_exited()) {
-                Some(children.swap_remove(pos))
-            } else {
-                None
-            }
-        } {
-            if let Some(status) = child.recycle() {
-                self.accumulate_waited_child(&child);
-                return Ok(Some((child, status)));
-            }
-        };
-
-        if !blocked {
-            return Ok(None);
-        }
-
-        loop {
-            self.waiting_task.lock().push(current::task().clone());
-
-            let event = current::block("wait_child_by_pgid");
-            match event {
-                Event::Process { child } => {
-                    let pid = child;
-                    let child = {
-                        let mut children = self.children.lock();
-
-                        if let Some(pos) = children.iter().position(|c| c.pid() == pid && c.pgid() == pgid) {
-                            children.swap_remove(pos)
-                        } else {
-                            continue;
-                        }
-                    };
-                    if let Some(status) = child.recycle() {
-                        self.accumulate_waited_child(&child);
-                        return Ok(Some((child, status)));
-                    } else {
+                for child in children.iter() {
+                    if !Self::child_matches_wait_thread(child, wait_parent_tid) {
                         continue;
                     }
+                    has_matching_child = true;
+                    if child.is_exited() {
+                        exited_child = Some(child.clone());
+                        break;
+                    }
                 }
-                Event::Signal => {
-                    self.remove_current_waiting_task();
-                    return Err(Errno::EINTR);
-                }
-                _ => unreachable!(),
+
+                (has_matching_child, exited_child)
+            };
+
+            if !has_matching_child {
+                return Err(Errno::ECHILD);
             }
+
+            if let Some(child) = exited_child {
+                if let Some(result) = self.reap_child(child) {
+                    return Ok(Some(result));
+                }
+                continue;
+            }
+
+            if !blocked {
+                return Ok(None);
+            }
+
+            self.wait_for_child_state_change("wait_any_child")?;
+        }
+    }
+
+    pub fn wait_child_by_pgid(
+        &self,
+        pgid: Tid,
+        blocked: bool,
+        wait_parent_tid: Option<Tid>,
+    ) -> SysResult<Option<(Arc<PCB>, ExitStatus)>> {
+        loop {
+            let (has_matching_child, exited_child) = {
+                let children = self.children.lock();
+                let mut has_matching_child = false;
+                let mut exited_child = None;
+
+                for child in children.iter() {
+                    if child.pgid() != pgid || !Self::child_matches_wait_thread(child, wait_parent_tid) {
+                        continue;
+                    }
+                    has_matching_child = true;
+                    if child.is_exited() {
+                        exited_child = Some(child.clone());
+                        break;
+                    }
+                }
+
+                (has_matching_child, exited_child)
+            };
+
+            if !has_matching_child {
+                return Err(Errno::ECHILD);
+            }
+
+            if let Some(child) = exited_child {
+                if let Some(result) = self.reap_child(child) {
+                    return Ok(Some(result));
+                }
+                continue;
+            }
+
+            if !blocked {
+                return Ok(None);
+            }
+
+            self.wait_for_child_state_change("wait_child_by_pgid")?;
         }
     }
 
