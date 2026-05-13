@@ -3,10 +3,6 @@ use crate::arch::arch::UserContextTrait;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::KernelStack;
 
-/// User-space register state saved on every kernel entry.
-///
-/// Offsets are consumed by the asm in `clib/.../usertrap.S`:
-/// `kernel_sp` must stay at byte 256, `kernel_percpu` at 264.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UserContext {

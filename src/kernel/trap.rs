@@ -94,12 +94,6 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
         Err(MemoryFaultSignal::Bus) => signum::SIGBUS,
     };
 
-    let era = current::tcb().user_context().get_user_entry();
-    crate::kwarn!(
-        "Unhandled {:?} fault: addr={:#x}, ERA={:#x}, access={:?}, tid={}",
-        signal, addr, era, access_type, current::tid()
-    );
-
     // TODO: Implement the sicode and fields for memory fault
     current::pcb()
         .send_signal(signal, SiCode::SI_KERNEL, 0, KSiFields::Empty, None)
