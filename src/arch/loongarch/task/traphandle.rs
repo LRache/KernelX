@@ -12,12 +12,8 @@ unsafe extern "C" {
     fn asm_usertrap_return(user_context: *const UserContext) -> !;
 }
 
-/// Called from asm_usertrap_entry after GPRs are saved into UserContext.
-/// Interrupts are disabled (hardware cleared CRMD.IE on exception entry).
 #[unsafe(no_mangle)]
 pub extern "C" fn usertrap_handler() -> ! {
-    // Close out the user-time accumulator before doing any kernel work
-    // (trap_return will later assert it was opened here).
     trap::trap_enter();
 
     // Save FPU/LSX state if either FPE or SXE was enabled for this task.
@@ -108,30 +104,16 @@ fn handle_ade() {
     }
 }
 
-/// PME (Page Modify Exception): the page is valid and mapped but D=0.
-/// On LoongArch, D=0 serves as the write-protect mechanism (there is no
-/// separate "writable" hardware bit). PME fires in two cases:
-///   1. CoW page: fork removed W from perm → mmap set D=0. The write must
-///      trigger a copy-on-write via the full memory_fault(Write) path which
-///      will allocate a new page and mmap_replace with D=1.
-///   2. Swap tracking: take_access_dirty_bit cleared D for eviction scoring.
-///      The page is still writable (W in area perm), so memory_fault(Write)
-///      will notice it's already Allocated and just re-map with D=1.
-/// In both cases, delegating to memory_fault(Write) is correct.
 fn handle_page_modify() {
     let badv = csr::read::<{ csr::num::BADV }>();
     trap::memory_fault(badv, MemAccessType::Write);
 }
 
-/// FPD (Floating-Point Disabled): user hit a float/double instruction while
-/// EUEN.FPE=0.  Set the bit so the faulting instruction retries successfully.
 fn handle_fpu_disabled() {
     csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() | 0x1);
     current::tcb().user_context().fpregs_dirty = true;
 }
 
-/// SXD (LSX Disabled): user hit a 128-bit SIMD instruction while EUEN.SXE=0.
-/// Enable both FPE (bit 0) and SXE (bit 1) — LSX requires FPU enabled too.
 fn handle_lsx_disabled() {
     csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() | 0x3);
     current::tcb().user_context().fpregs_dirty = true;
@@ -297,9 +279,6 @@ pub fn return_to_user() -> ! {
     csr::write::<{ csr::num::ERA  }>(uc.get_user_entry());
     csr::write::<{ csr::num::PRMD }>(csr::prmd::USERFRAME);
 
-    // Restore FPU/LSX state if this task has ever used it.
-    // Otherwise ensure EUEN is clear so this task doesn't see stale FP regs
-    // left by a previously-scheduled task's restore.
     if uc.fpregs_dirty {
         restore_fpu_state();
     } else {
