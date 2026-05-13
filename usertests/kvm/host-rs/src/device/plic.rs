@@ -1,5 +1,4 @@
 use std::mem;
-
 use num_enum::TryFromPrimitive;
 
 use crate::device::bus::{Bus, MmioDevice};
@@ -84,7 +83,12 @@ impl PlicDevice {
             if region.id == 0 || region.id as usize >= PLIC_SOURCE_COUNT {
                 continue;
             }
-            if region.device.borrow().interrupt_pending() {
+            if region
+                .device
+                .lock()
+                .expect("mmio device lock poisoned")
+                .interrupt_pending()
+            {
                 self.interrupt_sources[region.id as usize].pending = true;
             }
         }
@@ -118,7 +122,11 @@ impl PlicDevice {
             self.target_contexts[context].claim = best_source;
 
             if let Some(region) = bus.mmio_regions().iter().find(|region| region.id == best_source) {
-                region.device.borrow_mut().clear_interrupt();
+                region
+                    .device
+                    .lock()
+                    .expect("mmio device lock poisoned")
+                    .clear_interrupt();
             }
         }
     }

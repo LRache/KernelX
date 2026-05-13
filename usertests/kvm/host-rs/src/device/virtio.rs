@@ -1,8 +1,8 @@
 use std::{mem, ptr};
-
 use num_enum::TryFromPrimitive;
+use tokio::task::JoinHandle;
 
-use crate::device::bus::{Bus, MmioDevice};
+use crate::device::bus::{Bus, BusRef, MmioDevice};
 use crate::dtb::{DtbBuilder, DtbConfig, dtb_node_name, dtb_reg_cells};
 
 pub const MMIO_LENGTH: usize = 0x1000;
@@ -25,12 +25,18 @@ pub struct VirtioCommon {
     notify_pending: Box<[bool]>,
 }
 
-pub trait BackendOps {
+pub trait BackendOps: Send {
     fn device_id(&self) -> VirtioDeviceId;
     fn queue_count(&self) -> usize;
     fn queue_num_max(&self) -> u32;
     fn config(&self) -> &[u8];
-    fn handle_request(&mut self, bus: &Bus, buffers: &[RequestBuffer]) -> Option<u32>;
+    fn handle_request(&mut self, bus: &Bus, request: &VirtioRequest) -> VirtioRequestHandling;
+    fn pop_completion(&mut self, _bus: &Bus) -> Option<VirtioCompletion> {
+        None
+    }
+    fn spawn_tasks(&self, _bus: BusRef) -> Vec<JoinHandle<()>> {
+        Vec::new()
+    }
 }
 
 pub struct VirtioBackend<T: BackendOps> {
@@ -42,6 +48,17 @@ pub struct VirtioRequest {
     pub queue_idx: usize,
     pub desc_idx: u16,
     pub buffers: Vec<RequestBuffer>,
+}
+
+pub enum VirtioRequestHandling {
+    Complete(u32),
+    Pending,
+}
+
+pub struct VirtioCompletion {
+    pub queue_idx: usize,
+    pub desc_idx: u16,
+    pub len: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -473,10 +490,23 @@ impl<T: BackendOps> VirtioBackend<T> {
     }
 
     fn handle_queue(&mut self, bus: &Bus) {
+        self.push_pending_completions(bus);
         while let Some(request) = self.common.pop_avail_request(bus) {
-            let len = self.backend.handle_request(bus, &request.buffers).unwrap_or(0);
+            match self.backend.handle_request(bus, &request) {
+                VirtioRequestHandling::Complete(len) => {
+                    self.common
+                        .push_used_completion(bus, request.queue_idx, request.desc_idx, len);
+                }
+                VirtioRequestHandling::Pending => {}
+            }
+        }
+        self.push_pending_completions(bus);
+    }
+
+    fn push_pending_completions(&mut self, bus: &Bus) {
+        while let Some(completion) = self.backend.pop_completion(bus) {
             self.common
-                .push_used_completion(bus, request.queue_idx, request.desc_idx, len);
+                .push_used_completion(bus, completion.queue_idx, completion.desc_idx, completion.len);
         }
     }
 }
@@ -492,6 +522,10 @@ impl<T: BackendOps> MmioDevice for VirtioBackend<T> {
 
     fn update(&mut self, bus: &Bus) {
         self.handle_queue(bus);
+    }
+
+    fn spawn_tasks(&self, bus: BusRef, _guest_addr: usize, _length: usize, _id: u32) -> Vec<JoinHandle<()>> {
+        self.backend.spawn_tasks(bus)
     }
 
     fn interrupt_pending(&self) -> bool {

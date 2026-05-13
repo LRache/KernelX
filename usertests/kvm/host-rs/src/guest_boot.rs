@@ -1,7 +1,12 @@
+use std::sync::Arc;
+use std::time::Duration;
 use std::{env, fs};
+
+use tokio::{task, time};
 
 use crate::dtb::{DtbConfig, DtbRange, dtb_node_name};
 use crate::kvm::{GuestMapping, Kvm};
+use crate::vcpu::KvmCpu;
 
 pub const GUEST_MEMORY_BASE: usize = 0x8000_0000;
 const GUEST_MEMORY_SIZE: usize = 128 * 1024 * 1024;
@@ -149,7 +154,10 @@ pub fn prepare_guest(kvm: &Kvm, mapping: GuestMapping, options: &GuestBootOption
             riscv_isa: "rv64imafdch".to_string(),
             mmu_type: "riscv,sv39".to_string(),
         };
-        kvm.bus().borrow().build_dtb(&config)
+        kvm.bus()
+            .lock()
+            .map_err(|_| "kvm bus lock poisoned".to_string())?
+            .build_dtb(&config)
     };
 
     kvm.copy_to_guest(
@@ -165,8 +173,8 @@ pub fn prepare_guest(kvm: &Kvm, mapping: GuestMapping, options: &GuestBootOption
     })
 }
 
-pub fn boot_guest(kvm: &Kvm, mapping: GuestMapping, entry: GuestEntry) -> Result<(), String> {
-    let cpu = kvm.create_cpu()?;
+pub async fn boot_guest(kvm: &Kvm, mapping: GuestMapping, entry: GuestEntry) -> Result<(), String> {
+    let cpu = Arc::new(kvm.create_cpu()?);
     println!(
         "kvm host test ready: /dev/kvm fd={}, vcpu fd={}",
         kvm.raw_fd(),
@@ -179,7 +187,25 @@ pub fn boot_guest(kvm: &Kvm, mapping: GuestMapping, entry: GuestEntry) -> Result
         mapping.host_base
     );
     cpu.init(entry.pc, entry.a1, 0)?;
-    cpu.run()
+
+    let interrupt_task = tokio::spawn(sync_external_interrupt_task(cpu.clone()));
+    let run_cpu = cpu.clone();
+    let result = task::spawn_blocking(move || run_cpu.run())
+        .await
+        .map_err(|err| format!("kvm vcpu task failed: {err}"))?;
+    interrupt_task.abort();
+    result
+}
+
+async fn sync_external_interrupt_task(cpu: Arc<KvmCpu>) {
+    let mut interval = time::interval(Duration::from_millis(1));
+    loop {
+        interval.tick().await;
+        if let Err(err) = cpu.try_sync_external_interrupt() {
+            eprintln!("{err}");
+            return;
+        }
+    }
 }
 
 fn parse_usize_arg(text: &str) -> Option<usize> {

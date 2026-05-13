@@ -11,7 +11,7 @@ const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 impl KvmCpu {
     pub fn translate_read(&self, guest_vaddr: usize, buffer: &mut [u8]) -> bool {
         let bus = self.bus();
-        let bus = bus.borrow();
+        let bus = bus.lock().expect("kvm bus lock poisoned");
         let Some(chunks) = self.translate_chunks(&bus, guest_vaddr, buffer.len(), TranslateAccess::Read) else {
             return false;
         };
@@ -27,7 +27,7 @@ impl KvmCpu {
     #[allow(dead_code)]
     pub fn translate_write(&self, guest_vaddr: usize, buffer: &[u8]) -> bool {
         let bus = self.bus();
-        let bus = bus.borrow();
+        let bus = bus.lock().expect("kvm bus lock poisoned");
         let Some(chunks) = self.translate_chunks(&bus, guest_vaddr, buffer.len(), TranslateAccess::Write) else {
             return false;
         };

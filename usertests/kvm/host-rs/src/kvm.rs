@@ -1,7 +1,6 @@
-use std::cell::RefCell;
 use std::ffi::CString;
 use std::os::fd::RawFd;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::{io, ptr};
 
 use crate::abi::{KvmDeviceIoctl, KvmMapArea};
@@ -16,6 +15,8 @@ pub struct GuestMapping {
     pub guest_size: usize,
     pub host_base: *mut u8,
 }
+
+unsafe impl Send for GuestMapping {}
 
 impl GuestMapping {
     fn translate(&self, guest_addr: usize, length: usize) -> Option<*mut u8> {
@@ -45,7 +46,7 @@ impl Kvm {
         }
         Ok(Self {
             fd: Fd::new(fd),
-            bus: Rc::new(RefCell::new(bus)),
+            bus: Arc::new(Mutex::new(bus)),
         })
     }
 
@@ -80,7 +81,10 @@ impl Kvm {
     }
 
     fn map_area(&self, guest_addr: usize, length: usize) -> Result<*mut u8, String> {
-        self.bus.borrow_mut().map_area(self, guest_addr, length)
+        self.bus
+            .lock()
+            .map_err(|_| "kvm bus lock poisoned".to_string())?
+            .map_area(self, guest_addr, length)
     }
 
     pub fn add_memory(&self, guest_size: usize) -> Result<GuestMapping, String> {

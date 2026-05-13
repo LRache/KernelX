@@ -3,6 +3,8 @@ use std::ffi::c_void;
 pub struct StdinTermiosGuard {
     saved: KernelxTermios,
     enabled: bool,
+    saved_status_flags: libc::c_int,
+    status_flags_enabled: bool,
 }
 
 #[repr(C)]
@@ -73,6 +75,8 @@ impl Default for StdinTermiosGuard {
         Self {
             saved: KernelxTermios::default(),
             enabled: false,
+            saved_status_flags: 0,
+            status_flags_enabled: false,
         }
     }
 }
@@ -112,6 +116,17 @@ impl StdinTermiosGuard {
             self.enabled = true;
         }
     }
+
+    pub fn enable_nonblocking_input(&mut self) {
+        let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL) };
+        if flags < 0 {
+            return;
+        }
+        if unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) } == 0 {
+            self.saved_status_flags = flags;
+            self.status_flags_enabled = true;
+        }
+    }
 }
 
 impl Drop for StdinTermiosGuard {
@@ -124,6 +139,9 @@ impl Drop for StdinTermiosGuard {
                     &self.saved as *const KernelxTermios as *mut c_void,
                 )
             };
+        }
+        if self.status_flags_enabled {
+            let _ = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, self.saved_status_flags) };
         }
     }
 }

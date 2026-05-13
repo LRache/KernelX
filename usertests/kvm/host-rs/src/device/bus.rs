@@ -1,16 +1,23 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::Duration;
+use tokio::task::JoinHandle;
+use tokio::time;
 
 use crate::dtb::{DtbBuilder, DtbConfig};
 use crate::kvm::Kvm;
 
-pub type BusRef = Rc<RefCell<Bus>>;
-pub type DeviceRef = Rc<RefCell<dyn MmioDevice>>;
+pub type BusRef = Arc<Mutex<Bus>>;
+pub type DeviceRef = Arc<Mutex<dyn MmioDevice + Send>>;
 
-pub trait MmioDevice {
+pub trait MmioDevice: Send {
     fn read(&mut self, offset: usize, width: usize) -> Option<u64>;
     fn write(&mut self, offset: usize, width: usize, value: u64) -> bool;
-    fn update(&mut self, _bus: &Bus) {}
+    fn update(&mut self, bus: &Bus) {
+        let _ = bus;
+    }
+    fn spawn_tasks(&self, _bus: BusRef, _guest_addr: usize, _length: usize, _id: u32) -> Vec<JoinHandle<()>> {
+        Vec::new()
+    }
     fn interrupt_pending(&self) -> bool {
         false
     }
@@ -25,17 +32,19 @@ struct Area {
     host_addr: *mut u8,
 }
 
+unsafe impl Send for Area {}
+
 #[derive(Default)]
 pub struct BusBuilder {
     mmio_regions: Vec<MmioRegion>,
 }
 
 #[derive(Clone)]
-pub(super) struct MmioRegion {
-    pub(super) guest_addr: usize,
-    pub(super) length: usize,
-    pub(super) id: u32,
-    pub(super) device: DeviceRef,
+pub struct MmioRegion {
+    pub guest_addr: usize,
+    pub length: usize,
+    pub id: u32,
+    pub device: DeviceRef,
 }
 
 pub struct Bus {
@@ -44,17 +53,17 @@ pub struct Bus {
 }
 
 pub fn checked_range_end(start: usize, length: usize) -> Option<usize> {
-    if length == 0 { None } else { start.checked_add(length) }
+    (length != 0).then(|| start.checked_add(length)).flatten()
 }
 
 fn ranges_overlap(left_start: usize, left_length: usize, right_start: usize, right_length: usize) -> bool {
-    let Some(left_end) = checked_range_end(left_start, left_length) else {
-        return true;
-    };
-    let Some(right_end) = checked_range_end(right_start, right_length) else {
-        return true;
-    };
-    left_start < right_end && right_start < left_end
+    match (
+        checked_range_end(left_start, left_length),
+        checked_range_end(right_start, right_length),
+    ) {
+        (Some(left_end), Some(right_end)) => left_start < right_end && right_start < left_end,
+        _ => true,
+    }
 }
 
 impl BusBuilder {
@@ -97,7 +106,7 @@ impl BusBuilder {
 }
 
 impl Bus {
-    pub(super) fn mmio_regions(&self) -> &[MmioRegion] {
+    pub fn mmio_regions(&self) -> &[MmioRegion] {
         &self.mmio_regions
     }
 
@@ -148,7 +157,11 @@ impl Bus {
 
     pub fn read_mmio(&self, guest_addr: usize, width: usize) -> Option<u64> {
         let region = self.find_mmio_region(guest_addr, width)?;
-        region.device.borrow_mut().read(guest_addr - region.guest_addr, width)
+        region
+            .device
+            .lock()
+            .expect("mmio device lock poisoned")
+            .read(guest_addr - region.guest_addr, width)
     }
 
     pub fn write_mmio(&self, guest_addr: usize, width: usize, value: u64) -> bool {
@@ -157,7 +170,8 @@ impl Bus {
         };
         region
             .device
-            .borrow_mut()
+            .lock()
+            .expect("mmio device lock poisoned")
             .write(guest_addr - region.guest_addr, width, value)
     }
 
@@ -170,15 +184,60 @@ impl Bus {
     }
 
     pub fn external_interrupt_pending(&self) -> bool {
-        self.mmio_regions
-            .iter()
-            .any(|region| region.id == 0 && region.device.borrow().interrupt_pending())
+        self.mmio_regions.iter().any(|region| {
+            region.id == 0
+                && region
+                    .device
+                    .lock()
+                    .expect("mmio device lock poisoned")
+                    .interrupt_pending()
+        })
     }
 
     pub fn update(&self) {
-        let devices: Vec<DeviceRef> = self.mmio_regions.iter().map(|region| region.device.clone()).collect();
-        for device in devices {
-            device.borrow_mut().update(self);
+        for region in &self.mmio_regions {
+            region.device.lock().expect("mmio device lock poisoned").update(self);
+        }
+    }
+
+    pub fn spawn_runtime_tasks(bus: BusRef) -> Result<RuntimeTasks, String> {
+        let regions: Vec<(usize, usize, u32, DeviceRef)> = {
+            let bus = bus.lock().map_err(|_| "kvm bus lock poisoned".to_string())?;
+            bus.mmio_regions
+                .iter()
+                .map(|region| (region.guest_addr, region.length, region.id, region.device.clone()))
+                .collect()
+        };
+
+        let mut handles = Vec::with_capacity(regions.len());
+        for (guest_addr, length, id, device) in regions {
+            handles.extend(
+                device
+                    .lock()
+                    .map_err(|_| "mmio device lock poisoned".to_string())?
+                    .spawn_tasks(bus.clone(), guest_addr, length, id),
+            );
+        }
+        Ok(RuntimeTasks { handles })
+    }
+
+    pub async fn notify(bus: &BusRef) -> Result<(), String> {
+        loop {
+            if Self::try_notify(bus)? {
+                return Ok(());
+            }
+            time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    fn try_notify(bus: &BusRef) -> Result<bool, String> {
+        match bus.try_lock() {
+            Ok(bus) => {
+                bus.update();
+                Ok(true)
+            }
+            Err(TryLockError::WouldBlock) => Ok(false),
+            Err(TryLockError::Poisoned(_)) => Err("kvm bus lock poisoned".to_string()),
         }
     }
 
@@ -186,11 +245,26 @@ impl Bus {
         let mut builder = DtbBuilder::default();
         builder.config_dtb(config);
         for region in &self.mmio_regions {
-            region
-                .device
-                .borrow()
-                .config_dtb(&mut builder, config, region.guest_addr, region.length, region.id);
+            region.device.lock().expect("mmio device lock poisoned").config_dtb(
+                &mut builder,
+                config,
+                region.guest_addr,
+                region.length,
+                region.id,
+            );
         }
         builder.finish_dtb()
+    }
+}
+
+pub struct RuntimeTasks {
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl Drop for RuntimeTasks {
+    fn drop(&mut self) {
+        for handle in &self.handles {
+            handle.abort();
+        }
     }
 }

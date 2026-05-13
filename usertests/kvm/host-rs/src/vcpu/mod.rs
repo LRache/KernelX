@@ -5,6 +5,7 @@ mod pagetable;
 use std::ffi::{c_ulong, c_void};
 use std::io;
 use std::os::fd::RawFd;
+use std::sync::TryLockError;
 
 use crate::abi::{
     KvmExitReason, KvmInterrupt, KvmInterruptKind, KvmPageFault, KvmReg, KvmRegs, KvmSRegs, KvmVcpuIoctl,
@@ -42,7 +43,10 @@ impl KvmCpu {
 
     pub fn run(&self) -> Result<(), String> {
         loop {
-            self.bus.borrow().update();
+            self.bus
+                .lock()
+                .map_err(|_| "kvm bus lock poisoned".to_string())?
+                .update();
             self.sync_external_interrupt()?;
             let reason = self.run_once()?;
             match KvmExitReason::try_from(reason) {
@@ -148,9 +152,27 @@ impl KvmCpu {
         Ok(())
     }
 
-    fn sync_external_interrupt(&self) -> Result<(), String> {
+    pub fn sync_external_interrupt(&self) -> Result<(), String> {
+        let pending = self
+            .bus
+            .lock()
+            .map_err(|_| "kvm bus lock poisoned".to_string())?
+            .external_interrupt_pending();
+        self.set_external_interrupt_state(pending)
+    }
+
+    pub fn try_sync_external_interrupt(&self) -> Result<(), String> {
+        let pending = match self.bus.try_lock() {
+            Ok(bus) => bus.external_interrupt_pending(),
+            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::Poisoned(_)) => return Err("kvm bus lock poisoned".to_string()),
+        };
+        self.set_external_interrupt_state(pending)
+    }
+
+    fn set_external_interrupt_state(&self, pending: bool) -> Result<(), String> {
         let interrupt = KvmInterrupt::new(KvmInterruptKind::Hardware, 0);
-        if self.bus.borrow().external_interrupt_pending() {
+        if pending {
             self.set_interrupt_pending(interrupt)
         } else {
             self.clear_interrupt_pending(interrupt)

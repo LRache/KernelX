@@ -35,14 +35,24 @@ pub fn handle_memory_fault(cpu: &KvmCpu) -> Result<(), String> {
     let mut regs = cpu.get_regs()?;
     if decoded.is_write {
         let value = mask_to_width(regs.get_index(decoded.reg), decoded.width);
-        if !cpu.bus().borrow().write_mmio(page_fault.addr, decoded.width, value) {
+        let bus = cpu.bus();
+        if !bus.lock().map_err(|_| "kvm bus lock poisoned".to_string())?.write_mmio(
+            page_fault.addr,
+            decoded.width,
+            value,
+        ) {
             eprintln!(
                 "warning: unsupported kvm mmio write: addr=0x{:x} width={} value=0x{:x}",
                 page_fault.addr, decoded.width, value
             );
         }
     } else {
-        let value = match cpu.bus().borrow().read_mmio(page_fault.addr, decoded.width) {
+        let bus = cpu.bus();
+        let value = match bus
+            .lock()
+            .map_err(|_| "kvm bus lock poisoned".to_string())?
+            .read_mmio(page_fault.addr, decoded.width)
+        {
             Some(value) => value,
             None => {
                 eprintln!(

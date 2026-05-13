@@ -10,3 +10,4 @@ panic = "abort"
 [dependencies]
 libc = "0.2"
 num_enum = "0.7"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }

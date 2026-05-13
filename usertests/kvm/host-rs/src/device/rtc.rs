@@ -1,6 +1,5 @@
 use std::mem;
 use std::time::{SystemTime, UNIX_EPOCH};
-
 use num_enum::TryFromPrimitive;
 
 use crate::device::bus::{Bus, MmioDevice};
