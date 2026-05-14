@@ -15,7 +15,7 @@ use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::pidfd::PidFile;
-use crate::kernel::task::{ExitStatus, PCB, manager};
+use crate::kernel::task::{ChildWaitOptions, ExitStatus, PCB, WaitStatus, manager};
 use crate::kernel::uapi::{OpenFlags, Uid};
 use crate::kernel::{config, scheduler, task};
 
@@ -618,36 +618,41 @@ bitflags! {
     pub struct WaitOptions: usize {
         const WNOHANG      = 1 << 0;
         const WUNTRACED    = 1 << 1;
+        const WCONTINUED   = 1 << 3;
         const __WNOTHREAD  = 0x2000_0000;
         const __WALL       = 1 << 30; // TODO: Implement __WALL
     }
 }
 
-pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize) -> Result<usize, Errno> {
+pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize) -> SyscallRet {
     let pcb = current::pcb();
     let options = WaitOptions::from_bits(options).ok_or(Errno::EINVAL)?;
     let wait_parent_tid = options.contains(WaitOptions::__WNOTHREAD).then_some(current::tid());
     let pid = pid as i32;
 
     let wait_pid;
-    let exit_status: ExitStatus;
+    let wait_status: WaitStatus;
+    let wait_stopped = options.contains(WaitOptions::WUNTRACED);
+    let wait_continued = options.contains(WaitOptions::WCONTINUED);
+    let child_wait_options = ChildWaitOptions::new(!options.contains(WaitOptions::WNOHANG))
+        .wait_parent_tid(wait_parent_tid)
+        .wait_stopped(wait_stopped)
+        .wait_continued(wait_continued);
 
     if pid == -1 {
         // Wait for any child
-        if let Some((child, status)) = pcb.wait_any_child(!options.contains(WaitOptions::WNOHANG), wait_parent_tid)? {
+        if let Some((child, status)) = pcb.wait_any_child(child_wait_options)? {
             wait_pid = child.pid();
-            exit_status = status;
+            wait_status = status;
         } else {
             return Ok(0);
         }
     } else if pid == 0 {
         // Wait for any child whose pgid equals the caller's pgid
         let caller_pgid = pcb.pgid();
-        if let Some((child, status)) =
-            pcb.wait_child_by_pgid(caller_pgid, !options.contains(WaitOptions::WNOHANG), wait_parent_tid)?
-        {
+        if let Some((child, status)) = pcb.wait_child_by_pgid(caller_pgid, child_wait_options)? {
             wait_pid = child.pid();
-            exit_status = status;
+            wait_status = status;
         } else {
             return Ok(0);
         }
@@ -660,28 +665,24 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
         // Wait for any child whose pgid equals -pid
         let target_pgid = -pid;
 
-        if let Some((child, status)) =
-            pcb.wait_child_by_pgid(target_pgid, !options.contains(WaitOptions::WNOHANG), wait_parent_tid)?
-        {
+        if let Some((child, status)) = pcb.wait_child_by_pgid(target_pgid, child_wait_options)? {
             wait_pid = child.pid();
-            exit_status = status;
+            wait_status = status;
         } else {
             return Ok(0);
         }
     } else {
         // pid > 0: wait for specific child
-        if let Some((child, status)) =
-            pcb.wait_child(pid as i32, !options.contains(WaitOptions::WNOHANG), wait_parent_tid)?
-        {
+        if let Some((child, status)) = pcb.wait_child(pid as i32, child_wait_options)? {
             wait_pid = child.pid();
-            exit_status = status;
+            wait_status = status;
         } else {
             return Ok(0);
         }
     }
 
     if !status.is_null() {
-        status.write(exit_status.as_wstatus())?;
+        status.write(wait_status.as_wstatus())?;
     }
 
     Ok(wait_pid as usize)
@@ -707,11 +708,13 @@ bitflags! {
     }
 }
 
-fn waitid_siginfo(child: &PCB, status: ExitStatus) -> SigInfo {
+fn waitid_siginfo(child: &PCB, status: WaitStatus) -> SigInfo {
     let si_code = match status {
-        ExitStatus::Normal(_) => SiCode::CLD_EXITED,
-        ExitStatus::Signal { coredump: true, .. } => SiCode::CLD_DUMPED,
-        ExitStatus::Signal { coredump: false, .. } => SiCode::CLD_KILLED,
+        WaitStatus::Exited(ExitStatus::Normal(_)) => SiCode::CLD_EXITED,
+        WaitStatus::Exited(ExitStatus::Signal { coredump: true, .. }) => SiCode::CLD_DUMPED,
+        WaitStatus::Exited(ExitStatus::Signal { coredump: false, .. }) => SiCode::CLD_KILLED,
+        WaitStatus::Stopped(_) => SiCode::CLD_STOPPED,
+        WaitStatus::Continued => SiCode::CLD_CONTINUED,
     };
 
     SigInfo::sigchld(
@@ -738,24 +741,31 @@ pub fn waitid(
     let options = WaitIdOptions::from_bits(options).ok_or(Errno::EINVAL)?;
     let wait_parent_tid = options.contains(WaitIdOptions::__WNOTHREAD).then_some(current::tid());
 
-    if !options.contains(WaitIdOptions::WEXITED)
-        || options.intersects(WaitIdOptions::WSTOPPED | WaitIdOptions::WCONTINUED | WaitIdOptions::WNOWAIT)
-    {
+    if !options.intersects(WaitIdOptions::WEXITED | WaitIdOptions::WSTOPPED | WaitIdOptions::WCONTINUED) {
         return Err(Errno::EINVAL);
     }
+    let wait_exited = options.contains(WaitIdOptions::WEXITED);
+    let wait_stopped = options.contains(WaitIdOptions::WSTOPPED);
+    let wait_continued = options.contains(WaitIdOptions::WCONTINUED);
+    let consume = !options.contains(WaitIdOptions::WNOWAIT);
+    let child_wait_options = ChildWaitOptions::new(!options.contains(WaitIdOptions::WNOHANG))
+        .wait_parent_tid(wait_parent_tid)
+        .wait_exited(wait_exited)
+        .wait_stopped(wait_stopped)
+        .wait_continued(wait_continued)
+        .consume(consume);
 
     match idtype {
         WaitIdType::All => {
-            let (child, status) =
-                match current::pcb().wait_any_child(!options.contains(WaitIdOptions::WNOHANG), wait_parent_tid)? {
-                    Some(result) => result,
-                    None => {
-                        if !uptr_siginfo.is_null() {
-                            uptr_siginfo.write(SigInfo::empty())?;
-                        }
-                        return Ok(0);
+            let (child, status) = match current::pcb().wait_any_child(child_wait_options)? {
+                Some(result) => result,
+                None => {
+                    if !uptr_siginfo.is_null() {
+                        uptr_siginfo.write(SigInfo::empty())?;
                     }
-                };
+                    return Ok(0);
+                }
+            };
 
             if !uptr_siginfo.is_null() {
                 uptr_siginfo.write(waitid_siginfo(&child, status))?;
@@ -765,11 +775,7 @@ pub fn waitid(
         }
         WaitIdType::Pid => {
             let target_pid = i32::try_from(id).map_err(|_| Errno::EINVAL)?;
-            let (child, status) = match current::pcb().wait_child(
-                target_pid,
-                !options.contains(WaitIdOptions::WNOHANG),
-                wait_parent_tid,
-            )? {
+            let (child, status) = match current::pcb().wait_child(target_pid, child_wait_options)? {
                 Some(result) => result,
                 None => {
                     if !uptr_siginfo.is_null() {
@@ -795,7 +801,7 @@ pub fn waitid(
             let child_pid = child.pid() as usize;
             let block = pidfd.block() && !options.contains(WaitIdOptions::WNOHANG);
 
-            let status = match current::pcb().wait_child(child_pid as i32, block, wait_parent_tid)? {
+            let status = match current::pcb().wait_child(child_pid as i32, child_wait_options.blocked(block))? {
                 Some(result) => result,
                 None => {
                     if !uptr_siginfo.is_null() {
@@ -821,11 +827,7 @@ pub fn waitid(
             } else {
                 i32::try_from(id).map_err(|_| Errno::EINVAL)?
             };
-            let (child, status) = match current::pcb().wait_child_by_pgid(
-                target_pgid,
-                !options.contains(WaitIdOptions::WNOHANG),
-                wait_parent_tid,
-            )? {
+            let (child, status) = match current::pcb().wait_child_by_pgid(target_pgid, child_wait_options)? {
                 Some(result) => result,
                 None => {
                     if !uptr_siginfo.is_null() {

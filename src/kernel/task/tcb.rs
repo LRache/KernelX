@@ -12,7 +12,7 @@ use crate::fs::{Perm, PermFlags, vfs};
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FanotifyEventMask, notify_fanotify, timer, wait_fanotify_open_exec_permission};
-use crate::kernel::ipc::{PendingSignal, SignalSet, SignalStackState};
+use crate::kernel::ipc::{PendingSignal, SignalNum, SignalSet, SignalStackState};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::mm::{AddrSpace, elf};
 use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, WakeupFailure, current};
@@ -30,6 +30,8 @@ use crate::{arch, ktrace};
 pub struct TaskStateSet {
     state: TaskState,
     dead: bool,
+    stop_pending: bool,
+    stop_signal: Option<SignalNum>,
 
     pub pending_signal: Option<PendingSignal>,
     pub signal_to_wait: SignalSet,
@@ -43,6 +45,10 @@ impl TaskStateSet {
     pub fn is_dead(&self) -> bool {
         self.dead
     }
+
+    pub fn stop_pending(&self) -> bool {
+        self.stop_pending
+    }
 }
 
 impl Default for TaskStateSet {
@@ -50,6 +56,8 @@ impl Default for TaskStateSet {
         Self {
             state: TaskState::Ready,
             dead: false,
+            stop_pending: false,
+            stop_signal: None,
             pending_signal: None,
             signal_to_wait: SignalSet::empty(),
         }
@@ -506,17 +514,32 @@ impl TCB {
         self.time_counter.lock().resume_system_time(timer::now());
     }
 
-    // pub fn with_state_mut<F, R>(&self, f: F) -> R
-    // where
-    //     F: FnOnce(&mut TaskStateSet) -> R,
-    // {
-    //     let mut state = self.state.lock();
-    //     f(&mut state)
-    // }
-
     pub fn set_dead(&self) {
         let mut state = self.state.lock();
         state.dead = true;
+    }
+
+    pub fn request_stop_from_signal(&self, signum: SignalNum) -> bool {
+        let mut state = self.state.lock();
+        if state.dead || state.state == TaskState::Exited {
+            return false;
+        }
+        if !state.stop_pending {
+            state.stop_signal = Some(signum);
+        }
+        state.stop_pending = true;
+        state.state == TaskState::Blocked
+    }
+
+    pub fn resume_from_stopped(&self) -> bool {
+        let mut state = self.state.lock();
+        state.stop_pending = false;
+        state.stop_signal = None;
+        if state.state != TaskState::Stopped {
+            return false;
+        }
+        state.state = TaskState::Ready;
+        true
     }
 
     pub fn state_dead_to_exited(&self) -> bool {
@@ -526,6 +549,21 @@ impl TCB {
             true
         } else {
             false
+        }
+    }
+
+    pub fn state_stop_pending_to_stopped(&self) -> Option<SignalNum> {
+        let mut state = self.state.lock();
+        if state.dead || !state.stop_pending {
+            return None;
+        }
+
+        match state.state {
+            TaskState::Ready | TaskState::Running => {
+                state.state = TaskState::Stopped;
+                state.stop_signal
+            }
+            _ => None,
         }
     }
 

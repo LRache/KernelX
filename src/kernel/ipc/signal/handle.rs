@@ -4,9 +4,9 @@ use crate::arch::UserContextTrait;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
-use crate::kernel::ipc::{KSiFields, SiCode, SignalSet};
+use crate::kernel::ipc::{KSiFields, SiCode, SignalSet, signum};
 use crate::kernel::mm::vdso;
-use crate::kernel::scheduler::{Tid, WakeupFailure};
+use crate::kernel::scheduler::{Tid, WakeupFailure, current};
 use crate::kernel::task::{ExitStatus, PCB, TCB};
 use crate::kernel::{config, scheduler};
 
@@ -35,6 +35,15 @@ impl TCB {
             return;
         }
 
+        if signum == signum::SIGSTOP {
+            self.parent().stop_tasks_from_signal(signum);
+            if let Some(signum) = self.state_stop_pending_to_stopped() {
+                self.parent().notify_stopped(signum);
+                current::schedule();
+            }
+            return;
+        }
+
         if signal.si_code == SiCode::SI_TIMER {
             if let KSiFields::Timer(timer_info) = signal.fields {
                 if timer_info.si_tid >= 0 {
@@ -49,12 +58,19 @@ impl TCB {
 
         if action.is_default() {
             match signum.default_action() {
-                // TODO: Implement stop and cont actions
-                SignalDefaultAction::Term | SignalDefaultAction::Stop => {
+                SignalDefaultAction::Term => {
                     self.parent().exit(ExitStatus::Signal {
                         sig: signum.num() as u8,
                         coredump: false,
                     });
+                    return;
+                }
+                SignalDefaultAction::Stop => {
+                    self.parent().stop_tasks_from_signal(signum);
+                    if let Some(signum) = self.state_stop_pending_to_stopped() {
+                        self.parent().notify_stopped(signum);
+                        current::schedule();
+                    }
                     return;
                 }
                 SignalDefaultAction::Core => {
@@ -162,6 +178,10 @@ impl TCB {
             return false;
         }
 
+        if signum == signum::SIGSTOP && state.stop_pending() {
+            return true;
+        }
+
         if signum.is_unignorable() {
             state.pending_signal = Some(pending);
             drop(state);
@@ -213,6 +233,31 @@ impl TCB {
 }
 
 impl PCB {
+    fn stop_tasks_from_signal(&self, signum: SignalNum) {
+        let tasks = self.tasks.lock();
+        tasks.iter().for_each(|task| {
+            if task.request_stop_from_signal(signum) {
+                let _ = scheduler::wakeup_task(task.clone(), Event::Signal);
+            }
+        });
+    }
+
+    fn resume_stopped_tasks(&self) {
+        let mut resumed = false;
+        let tasks = self.tasks.lock();
+        tasks.iter().for_each(|task| {
+            if task.resume_from_stopped() {
+                resumed = true;
+                scheduler::push_task(task.clone());
+            }
+        });
+        drop(tasks);
+
+        if resumed {
+            self.notify_continued();
+        }
+    }
+
     pub fn send_signal(
         &self,
         signum: SignalNum,
@@ -229,9 +274,32 @@ impl PCB {
             dest,
         };
 
+        if signum == signum::SIGSTOP {
+            if let Some(dest) = dest {
+                let tasks = self.tasks.lock();
+                if !tasks.iter().any(|task| task.tid() == dest) {
+                    return Err(Errno::ESRCH);
+                }
+            }
+
+            self.stop_tasks_from_signal(signum);
+
+            return Ok(());
+        }
+
         if let Some(dest) = dest {
-            let tasks = self.tasks.lock();
-            if let Some(task) = tasks.iter().find(|t| t.tid() == dest).cloned() {
+            let task = {
+                let tasks = self.tasks.lock();
+                tasks.iter().find(|t| t.tid() == dest).cloned()
+            };
+
+            if let Some(task) = task {
+                if signum.is_continue() {
+                    self.resume_stopped_tasks();
+                } else if signum.is_kill() && task.resume_from_stopped() {
+                    // push to ready queue to make it exit by itself.
+                    scheduler::push_task(task.clone());
+                }
                 if !task.try_recive_pending_signal(pending) {
                     self.pending_signals().lock().add_pending(pending)?;
                 }
@@ -241,7 +309,21 @@ impl PCB {
             }
         }
 
-        for task in self.tasks.lock().iter() {
+        if signum.is_continue() {
+            self.resume_stopped_tasks();
+        }
+
+        let tasks = self.tasks.lock();
+
+        if signum.is_kill() {
+            tasks.iter().for_each(|task| {
+                if task.resume_from_stopped() {
+                    scheduler::push_task(task.clone());
+                }
+            });
+        }
+
+        for task in tasks.iter() {
             if task.try_recive_pending_signal(pending) {
                 return Ok(());
             }

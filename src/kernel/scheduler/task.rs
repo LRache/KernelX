@@ -24,6 +24,10 @@ pub enum TaskState {
     /// The task is blocked and cannot be interrupted until the event it is waiting for occurs.
     BlockedUninterruptible,
 
+    /// The task has been stopped by a job-control signal and waits for SIGCONT.
+    /// KThread is not affected by this state.
+    Stopped,
+
     /// The task has exited. This state MUST BE set by the task itself.
     Exited,
 }

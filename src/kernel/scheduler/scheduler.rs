@@ -22,9 +22,6 @@ impl Scheduler {
 
     fn push_task(&self, task: Arc<dyn Task>) {
         let mut ready_queue = self.ready_queue.lock();
-        ready_queue.iter().for_each(|t| {
-            debug_assert!(!Arc::ptr_eq(t, &task), "Task {} is already in ready queue!", t.tid());
-        });
         ready_queue.push_back(task);
     }
 

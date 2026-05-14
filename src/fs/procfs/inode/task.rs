@@ -619,6 +619,7 @@ impl TaskStatInode {
             TaskState::Running | TaskState::Ready => 'R',
             TaskState::Blocked => 'S',
             TaskState::BlockedUninterruptible => 'D',
+            TaskState::Stopped => 'T',
             TaskState::Exited => 'Z',
         }
     }
@@ -720,6 +721,7 @@ impl TaskStatusInode {
             TaskState::Running | TaskState::Ready => "running",
             TaskState::Blocked => "sleeping",
             TaskState::BlockedUninterruptible => "disk sleep",
+            TaskState::Stopped => "stopped",
             TaskState::Exited => "zombie",
         }
     }
