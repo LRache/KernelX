@@ -9,10 +9,10 @@ use crate::fs::procfs::inode::{fill_kstat_common, read_iter_text};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, Owner};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::MapPerm;
+use crate::kernel::scheduler::Tid;
 use crate::kernel::scheduler::tid::PID_MAX;
-use crate::kernel::scheduler::{TaskState, Tid};
-use crate::kernel::task::manager;
 use crate::kernel::task::pidfd::PidFile;
+use crate::kernel::task::{TCBState, manager};
 use crate::kernel::uapi::{FileStat, Uid};
 
 use super::RootInode;
@@ -611,16 +611,17 @@ impl TaskStatInode {
         Self::INO_BASE + tid as u32
     }
 
-    fn state_char(state: TaskState, dead: bool) -> char {
+    fn state_char(state: TCBState, dead: bool) -> char {
         if dead {
             return 'Z';
         }
         match state {
-            TaskState::Running | TaskState::Ready => 'R',
-            TaskState::Blocked => 'S',
-            TaskState::BlockedUninterruptible => 'D',
-            TaskState::Stopped => 'T',
-            TaskState::Exited => 'Z',
+            TCBState::Running | TCBState::Ready => 'R',
+            TCBState::Blocked => 'S',
+            TCBState::BlockedUninterruptible => 'D',
+            TCBState::Stopped => 'T',
+            TCBState::PtraceStop(_) => 't',
+            TCBState::Exited => 'Z',
         }
     }
 }
@@ -713,16 +714,17 @@ impl TaskStatusInode {
         Self::INO_BASE + tid as u32
     }
 
-    fn state_desc(state: TaskState, dead: bool) -> &'static str {
+    fn state_desc(state: TCBState, dead: bool) -> &'static str {
         if dead {
             return "zombie";
         }
         match state {
-            TaskState::Running | TaskState::Ready => "running",
-            TaskState::Blocked => "sleeping",
-            TaskState::BlockedUninterruptible => "disk sleep",
-            TaskState::Stopped => "stopped",
-            TaskState::Exited => "zombie",
+            TCBState::Running | TCBState::Ready => "running",
+            TCBState::Blocked => "sleeping",
+            TCBState::BlockedUninterruptible => "disk sleep",
+            TCBState::Stopped => "stopped",
+            TCBState::PtraceStop(_) => "tracing stop",
+            TCBState::Exited => "zombie",
         }
     }
 }

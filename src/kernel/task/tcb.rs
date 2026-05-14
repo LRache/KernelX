@@ -15,10 +15,10 @@ use crate::kernel::event::{Event, FanotifyEventMask, notify_fanotify, timer, wai
 use crate::kernel::ipc::{PendingSignal, SignalNum, SignalSet, SignalStackState};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::mm::{AddrSpace, elf};
-use crate::kernel::scheduler::{KernelStack, Task, TaskState, Tid, WakeupFailure, current};
+use crate::kernel::scheduler::{KernelStack, Task, Tid, WakeupFailure, current};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
-use crate::kernel::task::{PCB, manager};
+use crate::kernel::task::{PCB, WaitStatus, manager};
 use crate::kernel::uapi::Uid;
 use crate::kernel::usync::futex;
 use crate::kernel::{config, scheduler};
@@ -27,37 +27,90 @@ use crate::klib::{RWLock, SleepLock, SpinLock};
 use crate::{arch, ktrace};
 
 #[derive(Debug, Clone, Copy)]
-pub struct TaskStateSet {
-    state: TaskState,
-    dead: bool,
-    stop_pending: bool,
-    stop_signal: Option<SignalNum>,
+pub struct PtraceStop {
+    /// This signal will be reported to the tracer when waits.
+    pub signum: SignalNum,
+
+    /// The signal which caused the ptrace stop,
+    /// this is used for ptrace signal injection.
+    pub original_signal: Option<PendingSignal>,
+
+    /// Whether this ptrace stop has been reported to the tracer.
+    /// This is used to ensure that each ptrace stop is only reported once.
+    reported: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PendingTCBStateChange {
+    None,
+    Stop(SignalNum),
+    PtraceStop(PtraceStop),
+    Exit,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TCBState {
+    /// The task is currently running on a CPU.
+    Running,
+
+    /// The task is ready to run and can be scheduled on a CPU.
+    Ready,
+
+    /// The task is blocked, waiting for an event.
+    Blocked,
+
+    /// The task is blocked and cannot be interrupted until the event it is waiting for occurs.
+    BlockedUninterruptible,
+
+    /// The task has been stopped by a job-control signal and waits for SIGCONT.
+    Stopped,
+
+    /// The task has been stopped by ptrace and waits for tracer resume.
+    PtraceStop(PtraceStop),
+
+    /// The task has exited. This state MUST BE set by the task itself.
+    Exited,
+}
+
+impl PartialEq for TCBState {
+    fn eq(&self, other: &Self) -> bool {
+        core::mem::discriminant(self) == core::mem::discriminant(other)
+    }
+}
+
+impl Eq for TCBState {}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TCBStateSet {
+    state: TCBState,
+    pending_state_change: PendingTCBStateChange,
 
     pub pending_signal: Option<PendingSignal>,
     pub signal_to_wait: SignalSet,
 }
 
-impl TaskStateSet {
-    pub fn state(&self) -> TaskState {
+impl TCBStateSet {
+    pub fn state(&self) -> TCBState {
         self.state
     }
 
     pub fn is_dead(&self) -> bool {
-        self.dead
+        matches!(self.pending_state_change, PendingTCBStateChange::Exit)
     }
 
     pub fn stop_pending(&self) -> bool {
-        self.stop_pending
+        matches!(
+            self.pending_state_change,
+            PendingTCBStateChange::Stop(_) | PendingTCBStateChange::PtraceStop(_)
+        )
     }
 }
 
-impl Default for TaskStateSet {
+impl Default for TCBStateSet {
     fn default() -> Self {
         Self {
-            state: TaskState::Ready,
-            dead: false,
-            stop_pending: false,
-            stop_signal: None,
+            state: TCBState::Ready,
+            pending_state_change: PendingTCBStateChange::None,
             pending_signal: None,
             signal_to_wait: SignalSet::empty(),
         }
@@ -96,10 +149,26 @@ impl TimeCounter {
     }
 }
 
+pub struct Tracer {
+    pub pcb: Arc<PCB>,
+    pub tid: Tid,
+}
+
+impl Clone for Tracer {
+    fn clone(&self) -> Self {
+        Self {
+            pcb: self.pcb.clone(),
+            tid: self.tid,
+        }
+    }
+}
+
 pub struct TCB {
     tid: Tid,
     create_time: Duration,
     parent: Arc<PCB>,
+    pub tracer: SpinLock<Option<Tracer>>,
+    ptrace_signal_delivery: SpinLock<Option<SignalNum>>,
     tid_address: SpinLock<Option<usize>>,
     pub robust_list: SpinLock<Option<usize>>,
 
@@ -115,7 +184,7 @@ pub struct TCB {
     signal_stack: SpinLock<SignalStackState>,
     ucontext_syscall_retreg_backup: TaskLocal<Option<usize>>,
 
-    state: SpinLock<TaskStateSet>,
+    state: SpinLock<TCBStateSet>,
     pub wakeup_event: SpinLock<Option<Event>>,
     parent_waiting_vfork: SpinLock<Option<Arc<dyn Task>>>,
     pub time_counter: SpinLock<TimeCounter>,
@@ -148,6 +217,8 @@ impl TCB {
             tid,
             create_time: kclock::now().unwrap_or(Duration::ZERO),
             parent: parent.clone(),
+            tracer: SpinLock::new(None, "TCB::tracer"),
+            ptrace_signal_delivery: SpinLock::new(None, "TCB::ptrace_signal_delivery"),
             tid_address: SpinLock::new(None, "TCB::tid_address"),
             robust_list: SpinLock::new(None, "TCB::robust_list"),
 
@@ -163,7 +234,7 @@ impl TCB {
             signal_stack: SpinLock::new(SignalStackState::default(), "TCB::signal_stack"),
             ucontext_syscall_retreg_backup: TaskLocal::new(tid, None),
 
-            state: SpinLock::new(TaskStateSet::default(), "TCB::state"),
+            state: SpinLock::new(TCBStateSet::default(), "TCB::state"),
             wakeup_event: SpinLock::new(None, "TCB::wakeup_event"),
             parent_waiting_vfork: SpinLock::new(None, "TCB::parent_waiting_vfork"),
             time_counter: SpinLock::new(TimeCounter::new(), "TCB::time_counter"),
@@ -399,6 +470,7 @@ impl TCB {
 
             let new_tcb = TCB::new(self.tid, &self.parent, new_user_context, addrspace, fdtable);
             new_tcb.set_signal_mask(self.get_signal_mask());
+            *new_tcb.tracer.lock() = self.tracer.lock().clone();
 
             Ok((new_tcb, exec_path, exec_inode.clone()))
         })();
@@ -476,7 +548,147 @@ impl TCB {
         *self.tid_address.lock() = Some(addr);
     }
 
-    pub fn state(&self) -> &SpinLock<TaskStateSet> {
+    pub fn is_traced(&self) -> bool {
+        self.tracer.lock().is_some()
+    }
+
+    pub fn is_traced_by(&self, tracer: &Arc<PCB>) -> bool {
+        self.tracer
+            .lock()
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(&current.pcb, tracer))
+    }
+
+    pub fn is_traced_by_waiter(&self, tracer: &Arc<PCB>, wait_parent_tid: Option<Tid>) -> bool {
+        self.tracer.lock().as_ref().is_some_and(|current| {
+            Arc::ptr_eq(&current.pcb, tracer) && wait_parent_tid.map_or(true, |tid| current.tid == tid)
+        })
+    }
+
+    pub fn ptrace_original_signal(&self) -> Option<PendingSignal> {
+        match self.state.lock().state {
+            TCBState::PtraceStop(stop) => stop.original_signal,
+            _ => None,
+        }
+    }
+
+    pub fn is_ptrace_stopped(&self) -> bool {
+        matches!(self.state.lock().state, TCBState::PtraceStop(_))
+    }
+
+    pub fn set_ptrace_tracer(&self, new_tracer: Tracer) -> bool {
+        let mut tracer_lock = self.tracer.lock();
+        if tracer_lock.is_some() {
+            false
+        } else {
+            *tracer_lock = Some(new_tracer);
+            true
+        }
+    }
+
+    pub fn ptrace_wait_status(&self, tracer: &Arc<PCB>, consume: bool) -> Option<super::pcb::WaitStatus> {
+        if !self.is_traced_by(tracer) {
+            return None;
+        }
+
+        let mut state = self.state.lock();
+        let TCBState::PtraceStop(stop) = &mut state.state else {
+            return None;
+        };
+        if stop.reported {
+            return None;
+        }
+        if consume {
+            stop.reported = true;
+        }
+        Some(WaitStatus::PtraceStopped(stop.signum))
+    }
+
+    pub fn request_ptrace_stop(&self, signum: SignalNum, original_signal: Option<PendingSignal>) -> bool {
+        if !self.is_traced() {
+            return false;
+        }
+
+        let mut state = self.state.lock();
+        if matches!(state.pending_state_change, PendingTCBStateChange::Exit) || state.state == TCBState::Exited {
+            return false;
+        }
+        if matches!(state.pending_state_change, PendingTCBStateChange::PtraceStop(_))
+            || matches!(state.state, TCBState::PtraceStop(_))
+        {
+            return false;
+        }
+
+        let stop = PtraceStop {
+            signum,
+            original_signal,
+            reported: false,
+        };
+        let already_stopped = state.state == TCBState::Stopped;
+        state.pending_state_change = PendingTCBStateChange::PtraceStop(stop);
+        if already_stopped {
+            state.state = TCBState::PtraceStop(stop);
+        }
+        let should_wake = state.state == TCBState::Blocked;
+        drop(state);
+
+        if already_stopped {
+            self.notify_ptrace_stopped(signum);
+        }
+
+        should_wake
+    }
+
+    pub fn resume_from_ptrace_stop(&self, signal: Option<PendingSignal>) -> SysResult<()> {
+        let mut state = self.state.lock();
+        if !matches!(state.state, TCBState::PtraceStop(_)) {
+            return Err(Errno::ESRCH);
+        }
+
+        if !matches!(state.pending_state_change, PendingTCBStateChange::Exit) {
+            state.pending_state_change = PendingTCBStateChange::None;
+        }
+
+        if let Some(signal) = signal {
+            *self.ptrace_signal_delivery.lock() = Some(signal.signum);
+            if state.pending_signal.is_none() {
+                state.pending_signal = Some(signal);
+            } else {
+                self.parent.pending_signals().lock().add_pending(signal)?;
+            }
+        }
+
+        state.state = TCBState::Ready;
+        Ok(())
+    }
+
+    pub fn clear_ptrace_tracer(&self) {
+        *self.tracer.lock() = None;
+        let mut state = self.state.lock();
+        if matches!(state.pending_state_change, PendingTCBStateChange::PtraceStop(_)) {
+            state.pending_state_change = PendingTCBStateChange::None;
+        }
+    }
+
+    pub fn take_ptrace_signal_delivery(&self, signum: SignalNum) -> bool {
+        let mut delivery = self.ptrace_signal_delivery.lock();
+        if *delivery == Some(signum) {
+            *delivery = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn notify_ptrace_stopped(&self, signum: SignalNum) {
+        if let Some(tracer) = self.tracer.lock().clone() {
+            tracer
+                .pcb
+                .notify_ptrace_stopped(self.tid, self.parent.uid(), signum, tracer.tid);
+        }
+    }
+
+    pub fn state(&self) -> &SpinLock<TCBStateSet> {
         &self.state
     }
 
@@ -516,55 +728,69 @@ impl TCB {
 
     pub fn set_dead(&self) {
         let mut state = self.state.lock();
-        state.dead = true;
+        state.pending_state_change = PendingTCBStateChange::Exit;
     }
 
     pub fn request_stop_from_signal(&self, signum: SignalNum) -> bool {
         let mut state = self.state.lock();
-        if state.dead || state.state == TaskState::Exited {
+        if matches!(state.pending_state_change, PendingTCBStateChange::Exit) || state.state == TCBState::Exited {
             return false;
         }
-        if !state.stop_pending {
-            state.stop_signal = Some(signum);
+        if !matches!(state.pending_state_change, PendingTCBStateChange::Stop(_)) {
+            state.pending_state_change = PendingTCBStateChange::Stop(signum);
         }
-        state.stop_pending = true;
-        state.state == TaskState::Blocked
+        state.state == TCBState::Blocked
     }
 
     pub fn resume_from_stopped(&self) -> bool {
         let mut state = self.state.lock();
-        state.stop_pending = false;
-        state.stop_signal = None;
-        if state.state != TaskState::Stopped {
+        if matches!(state.pending_state_change, PendingTCBStateChange::Stop(_)) {
+            state.pending_state_change = PendingTCBStateChange::None;
+        }
+        if state.state != TCBState::Stopped {
             return false;
         }
-        state.state = TaskState::Ready;
+        state.state = TCBState::Ready;
         true
     }
 
-    pub fn state_dead_to_exited(&self) -> bool {
-        let mut state = self.state.lock();
-        if state.dead {
-            state.state = TaskState::Exited;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn state_stop_pending_to_stopped(&self) -> Option<SignalNum> {
-        let mut state = self.state.lock();
-        if state.dead || !state.stop_pending {
-            return None;
-        }
-
-        match state.state {
-            TaskState::Ready | TaskState::Running => {
-                state.state = TaskState::Stopped;
-                state.stop_signal
+    /// Called by the task itself to apply pending state changes.
+    /// Returns true if a state change was applied, false otherwise.
+    pub fn apply_pending_state_change(&self) -> bool {
+        let change = {
+            let mut state = self.state.lock();
+            match state.pending_state_change {
+                PendingTCBStateChange::Exit => {
+                    state.state = TCBState::Exited;
+                    Some(PendingTCBStateChange::Exit)
+                }
+                PendingTCBStateChange::Stop(signum) => match state.state {
+                    TCBState::Ready | TCBState::Running => {
+                        state.state = TCBState::Stopped;
+                        Some(PendingTCBStateChange::Stop(signum))
+                    }
+                    _ => None,
+                },
+                PendingTCBStateChange::PtraceStop(stop) => match state.state {
+                    TCBState::Ready | TCBState::Running | TCBState::Stopped => {
+                        state.state = TCBState::PtraceStop(stop);
+                        Some(PendingTCBStateChange::PtraceStop(stop))
+                    }
+                    _ => None,
+                },
+                PendingTCBStateChange::None => None,
             }
-            _ => None,
+        };
+
+        match change {
+            Some(PendingTCBStateChange::Stop(signum)) => self.parent().notify_stopped(signum),
+            Some(PendingTCBStateChange::PtraceStop(stop)) => self.notify_ptrace_stopped(stop.signum),
+            Some(PendingTCBStateChange::Exit) => {}
+            Some(PendingTCBStateChange::None) => unreachable!(),
+            None => return false,
         }
+
+        true
     }
 
     pub fn exit(&self, status: super::pcb::ExitStatus) {
@@ -576,7 +802,7 @@ impl TCB {
         );
 
         let mut state = self.state.lock();
-        state.dead = true;
+        state.pending_state_change = PendingTCBStateChange::Exit;
 
         drop(state);
 
@@ -607,7 +833,7 @@ impl TCB {
 
     pub fn is_exited(&self) -> bool {
         let state = self.state.lock();
-        state.state == TaskState::Exited
+        state.state == TCBState::Exited
     }
 
     pub fn set_parent_waiting_vfork(&self, parent: Option<Arc<dyn Task>>) {
@@ -676,19 +902,19 @@ impl Task for TCB {
 
     fn run_if_ready(&self) -> bool {
         let mut state = self.state.lock();
-        if state.state != TaskState::Ready {
+        if state.state != TCBState::Ready {
             return false;
         }
-        state.state = TaskState::Running;
+        state.state = TCBState::Running;
         return true;
     }
 
     fn state_running_to_ready(&self) -> bool {
         let mut state = self.state.lock();
-        if state.state != TaskState::Running {
+        if state.state != TCBState::Running {
             return false;
         }
-        state.state = TaskState::Ready;
+        state.state = TCBState::Ready;
         true
     }
 
@@ -702,10 +928,10 @@ impl Task for TCB {
 
         let mut state = self.state.lock();
         match state.state {
-            TaskState::Ready | TaskState::Running => {}
+            TCBState::Ready | TCBState::Running => {}
             _ => return false,
         }
-        state.state = TaskState::Blocked;
+        state.state = TCBState::Blocked;
         true
     }
 
@@ -714,35 +940,35 @@ impl Task for TCB {
 
         let mut state = self.state.lock();
         match state.state {
-            TaskState::Ready | TaskState::Running => {}
+            TCBState::Ready | TCBState::Running => {}
             _ => return false,
         }
-        state.state = TaskState::BlockedUninterruptible;
+        state.state = TCBState::BlockedUninterruptible;
         true
     }
 
     fn unblock(&self) {
         let mut state = self.state.lock();
-        debug_assert!(state.state == TaskState::Blocked);
-        state.state = TaskState::Running;
+        debug_assert!(state.state == TCBState::Blocked);
+        state.state = TCBState::Running;
     }
 
     fn wakeup(&self, event: Event) -> Result<(), WakeupFailure> {
         let mut state = self.state.lock();
         match state.state {
-            TaskState::Blocked => {
-                state.state = TaskState::Ready;
+            TCBState::Blocked => {
+                state.state = TCBState::Ready;
                 *self.wakeup_event.lock() = Some(event);
                 Ok(())
             }
-            TaskState::BlockedUninterruptible => Err(WakeupFailure::BlockedUninterruptible),
+            TCBState::BlockedUninterruptible => Err(WakeupFailure::BlockedUninterruptible),
             _ => Err(WakeupFailure::NotBlocked),
         }
     }
 
     fn wakeup_uninterruptible(&self, event: Event) -> bool {
         let mut state = self.state.lock();
-        if !matches!(state.state, TaskState::Blocked | TaskState::BlockedUninterruptible) {
+        if !matches!(state.state, TCBState::Blocked | TCBState::BlockedUninterruptible) {
             crate::kwarn!(
                 "Failed to wakeup_uninterruptible task {}, state is not blocked: {:?}",
                 self.tid,
@@ -750,7 +976,7 @@ impl Task for TCB {
             );
             return false;
         }
-        state.state = TaskState::Ready;
+        state.state = TCBState::Ready;
         *self.wakeup_event.lock() = Some(event);
         true
     }

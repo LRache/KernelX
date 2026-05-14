@@ -5,7 +5,7 @@ use spin::Mutex;
 use crate::arch;
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::task::Task;
-use crate::kernel::scheduler::{Tid, WakeupFailure, current, watchdog};
+use crate::kernel::scheduler::{WakeupFailure, current, watchdog};
 
 use super::processor::Processor;
 
@@ -55,16 +55,6 @@ pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) -> bool {
     if task.wakeup_uninterruptible(event) {
         watchdog::remove_blocked_task(task.tid());
         push_task(task);
-        true
-    } else {
-        false
-    }
-}
-
-pub fn remove_task(tid: Tid) -> bool {
-    let mut ready_queue = SCHEDULER.ready_queue.lock();
-    if let Some(pos) = ready_queue.iter().position(|t| t.tid() == tid) {
-        ready_queue.remove(pos);
         true
     } else {
         false

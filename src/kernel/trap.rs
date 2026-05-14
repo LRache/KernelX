@@ -53,12 +53,7 @@ pub fn trap_return() {
 
     tcb.pop_ucontext_syscall_retreg();
 
-    if tcb.state_dead_to_exited() {
-        current::schedule();
-    }
-
-    if let Some(signum) = tcb.state_stop_pending_to_stopped() {
-        tcb.parent().notify_stopped(signum);
+    if tcb.apply_pending_state_change() {
         current::schedule();
     }
 }

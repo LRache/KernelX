@@ -67,6 +67,7 @@ macro_rules! syscall_entries {
             94  => task::exit_group(1),
             95  => task::waitid(5),
             96  => task::set_tid_address(1),
+            117 => task::ptrace(4),
             124 => task::sched_yield(0),
             151 => task::setfsuid(1),
             152 => task::setfsgid(1),

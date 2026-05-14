@@ -7,7 +7,7 @@ use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::{FileType, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
-use crate::kernel::ipc::{SiCode, SiSigChld, SigInfo, SignalNum, signum};
+use crate::kernel::ipc::{KSiFields, PendingSignal, SiCode, SiSigChld, SigInfo, SignalNum, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
@@ -15,7 +15,7 @@ use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::pidfd::PidFile;
-use crate::kernel::task::{ChildWaitOptions, ExitStatus, PCB, WaitStatus, manager};
+use crate::kernel::task::{ChildWaitOptions, ExitStatus, PCB, Tracer, WaitResult, WaitStatus, manager};
 use crate::kernel::uapi::{OpenFlags, Uid};
 use crate::kernel::{config, scheduler, task};
 
@@ -178,6 +178,20 @@ fn can_access_pidfd_target(target: &task::PCB) -> bool {
     caller_gids.iter().all(|gid| target_gids.contains(gid))
 }
 
+fn can_trace_target(target: &task::PCB) -> bool {
+    let caller = current::pcb();
+    if caller.euid() == 0 {
+        return true;
+    }
+
+    let caller_uid = caller.uid();
+    let caller_euid = caller.euid();
+    caller_uid == target.uid()
+        || caller_uid == target.suid()
+        || caller_euid == target.uid()
+        || caller_euid == target.suid()
+}
+
 fn install_pidfd(pcb: &Arc<PCB>, blocked: bool) -> SysResult<usize> {
     let pidfd = Arc::new(PidFile::new(
         pcb,
@@ -266,6 +280,153 @@ pub fn kcmp(pid1: usize, pid2: usize, compare_type: usize, idx1: usize, idx2: us
     };
 
     Ok(r)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[repr(usize)]
+enum PtraceRequest {
+    Traceme = 0,
+    Cont = 7,
+    Kill = 8,
+    Attach = 16,
+    Detach = 17,
+}
+
+fn ptrace_signal(data: usize) -> SysResult<Option<SignalNum>> {
+    if data == 0 {
+        return Ok(None);
+    }
+
+    let signum = SignalNum::try_from(u32::try_from(data).map_err(|_| Errno::EINVAL)?)?;
+    if signum.is_empty() {
+        Err(Errno::EINVAL)
+    } else {
+        Ok(Some(signum))
+    }
+}
+
+fn ptrace_injected_signal(target: &Arc<task::TCB>, signum: SignalNum) -> PendingSignal {
+    if let Some(held) = target.ptrace_original_signal()
+        && held.signum == signum
+    {
+        return held;
+    }
+
+    PendingSignal {
+        signum,
+        si_errno: 0,
+        si_code: SiCode::SI_USER,
+        fields: KSiFields::kill(current::pid(), current::uid()),
+        dest: Some(target.tid()),
+    }
+}
+
+fn ptrace_resume(target: Arc<task::TCB>, signal: Option<SignalNum>) -> SysResult<()> {
+    let injected = signal.map(|signum| ptrace_injected_signal(&target, signum));
+    target.resume_from_ptrace_stop(injected)?;
+    scheduler::push_task(target);
+    Ok(())
+}
+
+/// Do ptrace(SIGKILL) on the target.
+fn ptrace_kill(target: Arc<task::TCB>) -> SysResult<()> {
+    let signal = ptrace_injected_signal(&target, signum::SIGKILL);
+    if target.is_ptrace_stopped() && target.resume_from_ptrace_stop(Some(signal)).is_ok() {
+        scheduler::push_task(target);
+        return Ok(());
+    }
+
+    target.parent().send_signal(
+        signum::SIGKILL,
+        SiCode::SI_USER,
+        0,
+        KSiFields::kill(current::pid(), current::uid()),
+        Some(target.tid()),
+    )
+}
+
+pub fn ptrace(request: usize, pid: usize, _addr: usize, data: usize) -> SyscallRet {
+    let request = PtraceRequest::try_from(request).map_err(|_| Errno::EINVAL)?;
+
+    match request {
+        PtraceRequest::Traceme => {
+            let tcb = current::tcb();
+            let parent = current::pcb().parent.lock().clone().ok_or(Errno::EPERM)?;
+
+            if !tcb.set_ptrace_tracer(Tracer {
+                pcb: parent,
+                tid: tcb.tid(),
+            }) {
+                // Target is already being traced by someone else, or has execed.
+                return Err(Errno::EPERM);
+            }
+
+            Ok(0)
+        }
+        PtraceRequest::Attach => {
+            let tid = Tid::try_from(pid).map_err(|_| Errno::ESRCH)?;
+            if tid <= 0 {
+                return Err(Errno::ESRCH);
+            }
+            if tid == current::tid() {
+                return Err(Errno::EPERM);
+            }
+
+            let target = manager::get(tid).ok_or(Errno::ESRCH)?;
+            if !can_trace_target(target.parent()) {
+                return Err(Errno::EPERM);
+            }
+
+            if !target.set_ptrace_tracer(Tracer {
+                pcb: current::pcb().clone(),
+                tid: current::tid(),
+            }) {
+                // Target is already being traced by someone else, or has execed.
+                return Err(Errno::EPERM);
+            }
+
+            if target.request_ptrace_stop(signum::SIGSTOP, None) {
+                let _ = scheduler::wakeup_task(target, Event::Signal);
+            }
+
+            Ok(0)
+        }
+        PtraceRequest::Cont => {
+            let signal = ptrace_signal(data)?;
+            let tid = Tid::try_from(pid).map_err(|_| Errno::ESRCH)?;
+            let target = manager::get(tid).ok_or(Errno::ESRCH)?;
+            if !target.is_traced_by(current::pcb()) {
+                return Err(Errno::ESRCH);
+            }
+            ptrace_resume(target, signal)?;
+            Ok(0)
+        }
+        PtraceRequest::Kill => {
+            let tid = Tid::try_from(pid).map_err(|_| Errno::ESRCH)?;
+            let target = manager::get(tid).ok_or(Errno::ESRCH)?;
+            if !target.is_traced_by(current::pcb()) {
+                return Err(Errno::ESRCH);
+            }
+
+            ptrace_kill(target)?;
+
+            Ok(0)
+        }
+        PtraceRequest::Detach => {
+            let signal = ptrace_signal(data)?;
+            let tid = Tid::try_from(pid).map_err(|_| Errno::ESRCH)?;
+            let target = manager::get(tid).ok_or(Errno::ESRCH)?;
+            if !target.is_traced_by(current::pcb()) {
+                return Err(Errno::ESRCH);
+            }
+
+            if target.is_ptrace_stopped() {
+                ptrace_resume(target.clone(), signal)?;
+            }
+            target.clear_ptrace_tracer();
+            Ok(0)
+        }
+    }
 }
 
 bitflags! {
@@ -630,29 +791,26 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
     let wait_parent_tid = options.contains(WaitOptions::__WNOTHREAD).then_some(current::tid());
     let pid = pid as i32;
 
-    let wait_pid;
-    let wait_status: WaitStatus;
     let wait_stopped = options.contains(WaitOptions::WUNTRACED);
     let wait_continued = options.contains(WaitOptions::WCONTINUED);
     let child_wait_options = ChildWaitOptions::new(!options.contains(WaitOptions::WNOHANG))
         .wait_parent_tid(wait_parent_tid)
         .wait_stopped(wait_stopped)
+        .wait_ptrace_stopped(true)
         .wait_continued(wait_continued);
 
-    if pid == -1 {
+    let result = if pid == -1 {
         // Wait for any child
-        if let Some((child, status)) = pcb.wait_any_child(child_wait_options)? {
-            wait_pid = child.pid();
-            wait_status = status;
+        if let Some(result) = pcb.wait_any_child(child_wait_options)? {
+            result
         } else {
             return Ok(0);
         }
     } else if pid == 0 {
         // Wait for any child whose pgid equals the caller's pgid
         let caller_pgid = pcb.pgid();
-        if let Some((child, status)) = pcb.wait_child_by_pgid(caller_pgid, child_wait_options)? {
-            wait_pid = child.pid();
-            wait_status = status;
+        if let Some(result) = pcb.wait_child_by_pgid(caller_pgid, child_wait_options)? {
+            result
         } else {
             return Ok(0);
         }
@@ -665,27 +823,25 @@ pub fn wait4(pid: usize, status: UPtr<u32>, options: usize, _user_rusages: usize
         // Wait for any child whose pgid equals -pid
         let target_pgid = -pid;
 
-        if let Some((child, status)) = pcb.wait_child_by_pgid(target_pgid, child_wait_options)? {
-            wait_pid = child.pid();
-            wait_status = status;
+        if let Some(result) = pcb.wait_child_by_pgid(target_pgid, child_wait_options)? {
+            result
         } else {
             return Ok(0);
         }
     } else {
         // pid > 0: wait for specific child
-        if let Some((child, status)) = pcb.wait_child(pid as i32, child_wait_options)? {
-            wait_pid = child.pid();
-            wait_status = status;
+        if let Some(result) = pcb.wait_child(pid as i32, child_wait_options)? {
+            result
         } else {
             return Ok(0);
         }
-    }
+    };
 
     if !status.is_null() {
-        status.write(wait_status.as_wstatus())?;
+        status.write(result.status.as_wstatus())?;
     }
 
-    Ok(wait_pid as usize)
+    Ok(result.tid as usize)
 }
 
 #[repr(usize)]
@@ -705,15 +861,17 @@ bitflags! {
         const WCONTINUED  = 1 << 3;
         const WNOWAIT     = 1 << 24;
         const __WNOTHREAD = 0x2000_0000;
+        const __WALL      = 1 << 30;
     }
 }
 
-fn waitid_siginfo(child: &PCB, status: WaitStatus) -> SigInfo {
-    let si_code = match status {
+fn waitid_siginfo(result: &WaitResult) -> SigInfo {
+    let si_code = match result.status {
         WaitStatus::Exited(ExitStatus::Normal(_)) => SiCode::CLD_EXITED,
         WaitStatus::Exited(ExitStatus::Signal { coredump: true, .. }) => SiCode::CLD_DUMPED,
         WaitStatus::Exited(ExitStatus::Signal { coredump: false, .. }) => SiCode::CLD_KILLED,
         WaitStatus::Stopped(_) => SiCode::CLD_STOPPED,
+        WaitStatus::PtraceStopped(_) => SiCode::CLD_TRAPPED,
         WaitStatus::Continued => SiCode::CLD_CONTINUED,
     };
 
@@ -721,9 +879,9 @@ fn waitid_siginfo(child: &PCB, status: WaitStatus) -> SigInfo {
         signum::SIGCHLD.num() as i32,
         si_code,
         SiSigChld {
-            si_pid: child.pid(),
-            si_uid: child.uid(),
-            si_status: status.si_status(),
+            si_pid: result.tid,
+            si_uid: result.pcb.uid(),
+            si_status: result.status.si_status(),
             si_utime: 0,
             si_stime: 0,
         },
@@ -752,12 +910,13 @@ pub fn waitid(
         .wait_parent_tid(wait_parent_tid)
         .wait_exited(wait_exited)
         .wait_stopped(wait_stopped)
+        .wait_ptrace_stopped(wait_stopped)
         .wait_continued(wait_continued)
         .consume(consume);
 
     match idtype {
         WaitIdType::All => {
-            let (child, status) = match current::pcb().wait_any_child(child_wait_options)? {
+            let result = match current::pcb().wait_any_child(child_wait_options)? {
                 Some(result) => result,
                 None => {
                     if !uptr_siginfo.is_null() {
@@ -768,14 +927,14 @@ pub fn waitid(
             };
 
             if !uptr_siginfo.is_null() {
-                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+                uptr_siginfo.write(waitid_siginfo(&result))?;
             }
 
             Ok(0)
         }
         WaitIdType::Pid => {
             let target_pid = i32::try_from(id).map_err(|_| Errno::EINVAL)?;
-            let (child, status) = match current::pcb().wait_child(target_pid, child_wait_options)? {
+            let result = match current::pcb().wait_child(target_pid, child_wait_options)? {
                 Some(result) => result,
                 None => {
                     if !uptr_siginfo.is_null() {
@@ -786,7 +945,7 @@ pub fn waitid(
             };
 
             if !uptr_siginfo.is_null() {
-                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+                uptr_siginfo.write(waitid_siginfo(&result))?;
             }
 
             Ok(0)
@@ -801,7 +960,7 @@ pub fn waitid(
             let child_pid = child.pid() as usize;
             let block = pidfd.block() && !options.contains(WaitIdOptions::WNOHANG);
 
-            let status = match current::pcb().wait_child(child_pid as i32, child_wait_options.blocked(block))? {
+            let result = match current::pcb().wait_child(child_pid as i32, child_wait_options.blocked(block))? {
                 Some(result) => result,
                 None => {
                     if !uptr_siginfo.is_null() {
@@ -813,10 +972,9 @@ pub fn waitid(
                     return Ok(0);
                 }
             };
-            let (child, status) = status;
 
             if !uptr_siginfo.is_null() {
-                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+                uptr_siginfo.write(waitid_siginfo(&result))?;
             }
 
             Ok(0)
@@ -827,7 +985,7 @@ pub fn waitid(
             } else {
                 i32::try_from(id).map_err(|_| Errno::EINVAL)?
             };
-            let (child, status) = match current::pcb().wait_child_by_pgid(target_pgid, child_wait_options)? {
+            let result = match current::pcb().wait_child_by_pgid(target_pgid, child_wait_options)? {
                 Some(result) => result,
                 None => {
                     if !uptr_siginfo.is_null() {
@@ -838,7 +996,7 @@ pub fn waitid(
             };
 
             if !uptr_siginfo.is_null() {
-                uptr_siginfo.write(waitid_siginfo(&child, status))?;
+                uptr_siginfo.write(waitid_siginfo(&result))?;
             }
 
             Ok(0)

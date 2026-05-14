@@ -43,6 +43,7 @@ impl ExitStatus {
 pub enum WaitStatus {
     Exited(ExitStatus),
     Stopped(SignalNum),
+    PtraceStopped(SignalNum),
     Continued,
 }
 
@@ -50,7 +51,7 @@ impl WaitStatus {
     pub fn as_wstatus(self) -> u32 {
         match self {
             WaitStatus::Exited(status) => status.as_wstatus(),
-            WaitStatus::Stopped(signum) => ((signum.num() & 0xff) << 8) | 0x7f,
+            WaitStatus::Stopped(signum) | WaitStatus::PtraceStopped(signum) => ((signum.num() & 0xff) << 8) | 0x7f,
             WaitStatus::Continued => 0xffff,
         }
     }
@@ -58,7 +59,7 @@ impl WaitStatus {
     pub fn si_status(self) -> i32 {
         match self {
             WaitStatus::Exited(status) => status.si_status(),
-            WaitStatus::Stopped(signum) => signum.num() as i32,
+            WaitStatus::Stopped(signum) | WaitStatus::PtraceStopped(signum) => signum.num() as i32,
             WaitStatus::Continued => signum::SIGCONT.num() as i32,
         }
     }

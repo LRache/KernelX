@@ -8,7 +8,7 @@ mod wait;
 pub use capability::{CapabilitySet, ProcessCapabilities};
 use status::{ChildWaitStatus, State};
 pub use status::{ExitStatus, ITimer, WaitStatus};
-pub use wait::ChildWaitOptions;
+pub use wait::{ChildWaitOptions, WaitResult};
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -48,7 +48,7 @@ pub struct PCB {
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
     file_size_limit: SpinLock<(usize, usize)>,
-    waiting_task: SpinLock<Vec<Arc<dyn Task>>>,
+    waiting_task: SpinLock<Vec<(Arc<dyn Task>, Option<Tid>)>>,
     pidfd_waiters: SpinLock<WaitQueue<Event>>,
     uts: UtsNamespace,
 

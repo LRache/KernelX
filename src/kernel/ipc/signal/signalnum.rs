@@ -146,10 +146,6 @@ impl SignalSet {
     pub fn contains(&self, num: SignalNum) -> bool {
         num.is_masked(*self)
     }
-
-    pub fn bits(&self) -> usize {
-        self.0
-    }
 }
 
 impl BitOr for SignalSet {

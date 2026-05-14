@@ -6,7 +6,7 @@ use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet, signum};
 use crate::kernel::mm::vdso;
-use crate::kernel::scheduler::{Tid, WakeupFailure, current};
+use crate::kernel::scheduler::{Tid, WakeupFailure};
 use crate::kernel::task::{ExitStatus, PCB, TCB};
 use crate::kernel::{config, scheduler};
 
@@ -35,12 +35,14 @@ impl TCB {
             return;
         }
 
+        let ptrace_signal_delivery = self.take_ptrace_signal_delivery(signum);
+        if self.is_traced() && !ptrace_signal_delivery {
+            self.request_ptrace_stop(signum, Some(signal));
+            return;
+        }
+
         if signum == signum::SIGSTOP {
-            self.parent().stop_tasks_from_signal(signum);
-            if let Some(signum) = self.state_stop_pending_to_stopped() {
-                self.parent().notify_stopped(signum);
-                current::schedule();
-            }
+            self.parent().stop_tasks_from_signal(signal);
             return;
         }
 
@@ -66,11 +68,7 @@ impl TCB {
                     return;
                 }
                 SignalDefaultAction::Stop => {
-                    self.parent().stop_tasks_from_signal(signum);
-                    if let Some(signum) = self.state_stop_pending_to_stopped() {
-                        self.parent().notify_stopped(signum);
-                        current::schedule();
-                    }
+                    self.parent().stop_tasks_from_signal(signal);
                     return;
                 }
                 SignalDefaultAction::Core => {
@@ -233,10 +231,15 @@ impl TCB {
 }
 
 impl PCB {
-    fn stop_tasks_from_signal(&self, signum: SignalNum) {
+    fn stop_tasks_from_signal(&self, pending: PendingSignal) {
+        let signum = pending.signum;
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|task| {
-            if task.request_stop_from_signal(signum) {
+            if task.is_traced() {
+                if task.request_ptrace_stop(signum, Some(pending)) {
+                    let _ = scheduler::wakeup_task(task.clone(), Event::Signal);
+                }
+            } else if task.request_stop_from_signal(signum) {
                 let _ = scheduler::wakeup_task(task.clone(), Event::Signal);
             }
         });
@@ -282,7 +285,7 @@ impl PCB {
                 }
             }
 
-            self.stop_tasks_from_signal(signum);
+            self.stop_tasks_from_signal(pending);
 
             return Ok(());
         }

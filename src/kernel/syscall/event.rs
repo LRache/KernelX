@@ -400,7 +400,11 @@ fn select(
     drop(fdtable);
 
     let tcb = current::tcb();
+    
+    // Blocked before waiting files to avoid losing wakeup events.
     tcb.block("select");
+    
+    // Use defer to ensure unblocking if we return early due to error or ready events.
     let defer = defer::defer(|| {
         tcb.unblock();
     });
@@ -495,7 +499,6 @@ fn select(
     old_signal_mask.map(|mask| {
         tcb.set_signal_mask(mask);
     });
-    // tcb.state().lock().state = TaskState::Running;
 
     let event = tcb.take_wakeup_event().unwrap();
 

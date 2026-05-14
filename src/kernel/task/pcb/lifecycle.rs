@@ -320,6 +320,8 @@ impl PCB {
             tcb.set_dead();
             if tcb.resume_from_stopped() {
                 scheduler::push_task(tcb.clone());
+            } else if tcb.resume_from_ptrace_stop(None).is_ok() {
+                scheduler::push_task(tcb.clone());
             }
         });
 
@@ -349,9 +351,7 @@ impl PCB {
         });
 
         if let Some(parent) = self.parent.lock().as_ref() {
-            parent.waiting_task.lock().drain(..).for_each(|t| {
-                let _ = scheduler::wakeup_task(t, Event::Process { child: self.pid });
-            });
+            parent.wake_waiting_tasks(self.pid, self.wait_parent_tid());
 
             let fields = KSiFields::SigChld(SiSigChld {
                 si_pid: self.pid,
