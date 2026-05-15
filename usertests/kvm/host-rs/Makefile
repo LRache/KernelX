@@ -5,11 +5,7 @@ PROFILE ?= release
 
 ifeq ($(ARCH),riscv64)
 RUST_TARGET ?= riscv64gc-unknown-linux-gnu
-ifneq ($(wildcard /Users/liuzhenrui/opt/riscv/bin/riscv64-unknown-linux-gnu-gcc),)
-CROSS_COMPILE ?= /Users/liuzhenrui/opt/riscv/bin/riscv64-unknown-linux-gnu-
-else
-CROSS_COMPILE ?= riscv64-linux-gnu-
-endif
+CROSS_COMPILE ?= riscv64-unknown-linux-gnu-
 else
 $(error unsupported ARCH for host-rs: $(ARCH))
 endif
