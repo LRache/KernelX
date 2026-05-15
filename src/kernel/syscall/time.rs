@@ -151,6 +151,7 @@ enum ClockId {
     CLOCK_THREAD_CPUTIME_ID = 3,
     CLOCK_MONOTONIC_RAW = 4,
     CLOCK_REALTIME_COARSE = 5,
+    CLOCK_MONOTONIC_COARSE = 6,
     CLOCK_BOOTTIME = 7,
     CLOCK_REALTIME_ALARM = 8,
     CLOCK_BOOTTIME_ALARM = 9,
@@ -167,7 +168,8 @@ impl ClockId {
             ClockId::CLOCK_MONOTONIC
             | ClockId::CLOCK_MONOTONIC_RAW
             | ClockId::CLOCK_BOOTTIME
-            | ClockId::CLOCK_BOOTTIME_ALARM => Ok(timer::now()),
+            | ClockId::CLOCK_BOOTTIME_ALARM
+            | ClockId::CLOCK_MONOTONIC_COARSE => Ok(timer::now()),
             ClockId::CLOCK_PROCESS_CPUTIME_ID => Ok(current::pcb().process_cpu_time()),
             ClockId::CLOCK_THREAD_CPUTIME_ID => Ok(current::tcb().thread_cpu_time()),
         }
