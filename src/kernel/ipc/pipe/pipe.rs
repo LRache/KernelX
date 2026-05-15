@@ -81,19 +81,23 @@ impl Pipe {
 
 impl FileOps for Pipe {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        self.read_with_blocked(buf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.read_with_blocked(buf, blocked)
     }
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        self.read_to_user_with_blocked(ubuf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.read_to_user_with_blocked(ubuf, blocked)
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
-        self.write_with_blocked(buf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.write_with_blocked(buf, blocked)
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        self.write_from_user_with_blocked(ubuf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.write_from_user_with_blocked(ubuf, blocked)
     }
 
     fn flags(&self) -> FileFlags {
