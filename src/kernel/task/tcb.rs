@@ -470,7 +470,8 @@ impl TCB {
 
             let new_tcb = TCB::new(self.tid, &self.parent, new_user_context, addrspace, fdtable);
             new_tcb.set_signal_mask(self.get_signal_mask());
-            *new_tcb.tracer.lock() = self.tracer.lock().clone();
+            let tracer = self.tracer.lock().clone();
+            *new_tcb.tracer.lock() = tracer;
 
             Ok((new_tcb, exec_path, exec_inode.clone()))
         })();
