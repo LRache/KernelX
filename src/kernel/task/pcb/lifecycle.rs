@@ -164,20 +164,6 @@ impl PCB {
         Ok((pcb, first_task))
     }
 
-    pub fn wait_for_all_tasks_exited_and_clear(&self) {
-        loop {
-            let mut tasks = self.tasks.lock();
-            if let Some(task) = tasks.pop() {
-                drop(tasks);
-                while !task.is_exited() {
-                    current::schedule();
-                }
-            } else {
-                break;
-            }
-        }
-    }
-
     pub fn leader(&self) -> Option<Arc<TCB>> {
         self.tasks.lock().get(0).cloned()
     }
@@ -189,8 +175,6 @@ impl PCB {
             _ => return None,
         };
         *state = State::Recycled;
-        drop(state);
-        self.wait_for_all_tasks_exited_and_clear();
         status
     }
 
