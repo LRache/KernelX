@@ -400,10 +400,10 @@ fn select(
     drop(fdtable);
 
     let tcb = current::tcb();
-    
+
     // Blocked before waiting files to avoid losing wakeup events.
     tcb.block("select");
-    
+
     // Use defer to ensure unblocking if we return early due to error or ready events.
     let defer = defer::defer(|| {
         tcb.unblock();

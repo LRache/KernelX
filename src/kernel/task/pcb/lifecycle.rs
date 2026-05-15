@@ -175,6 +175,8 @@ impl PCB {
             _ => return None,
         };
         *state = State::Recycled;
+        drop(state);
+        self.tasks.lock().clear();
         status
     }
 
@@ -302,10 +304,13 @@ impl PCB {
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|tcb| {
             tcb.set_dead();
+            manager::remove(tcb.tid());
             if tcb.resume_from_stopped() {
                 scheduler::push_task(tcb.clone());
             } else if tcb.resume_from_ptrace_stop(None).is_ok() {
                 scheduler::push_task(tcb.clone());
+            } else {
+                let _ = scheduler::wakeup_task(tcb.clone(), Event::Signal);
             }
         });
 
@@ -359,8 +364,6 @@ impl PCB {
             });
             init_process.children.lock().append(&mut children);
         });
-
-        manager::remove(self.pid);
     }
 
     fn replace_exec_inode(&self, new_inode: Option<Arc<dyn InodeOps>>) {

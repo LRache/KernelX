@@ -378,7 +378,7 @@ impl PCB {
         self.waiting_task
             .lock()
             .push((current::task().clone(), options.wait_parent_tid));
-        
+
         let event = current::block(reason);
         match event {
             Event::Process { .. } => Ok(()),
