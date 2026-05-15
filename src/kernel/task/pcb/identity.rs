@@ -145,7 +145,7 @@ impl PCB {
     }
 
     pub fn is_exited(&self) -> bool {
-        matches!(*self.state.lock(), State::Exited(_))
+        matches!(*self.state.lock(), State::Exited(_) | State::Recycled)
     }
 
     pub fn cwd(&self) -> Arc<Dentry> {
