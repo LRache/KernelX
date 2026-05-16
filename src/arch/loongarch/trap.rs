@@ -76,7 +76,7 @@ pub fn install_trap_entry() {
         fn asm_tlb_refill_entry() -> !;
     }
 
-    let entry_addr = asm_kerneltrap_entry as *const() as usize;
+    let entry_addr = asm_kerneltrap_entry as *const () as usize;
     debug_assert!(
         entry_addr & 0xfff == 0,
         "EENTRY must be page-aligned, got {:#x}",
@@ -86,7 +86,7 @@ pub fn install_trap_entry() {
     csr::write::<{ csr::num::EENTRY }>(entry_addr);
     csr::xchg::<{ csr::num::ECFG }>(0, csr::ecfg::VS_MASK);
 
-    let refill_va = asm_tlb_refill_entry as *const() as usize;
+    let refill_va = asm_tlb_refill_entry as *const () as usize;
     let refill_pa = crate::arch::kaddr_to_paddr(refill_va);
     debug_assert!(
         refill_pa & 0xfff == 0,
