@@ -9,12 +9,7 @@ use crate::klib::initcell::InitedCell;
 
 use super::boot::EARLY_UART;
 use super::context::KernelContext;
-use super::csr;
-use super::eiointc;
-use super::fdt;
-use super::pch_pic;
-use super::task;
-use super::trap;
+use super::{csr, eiointc, fdt, pch_pic, task, trap};
 
 const DMW1_MASK: usize = 0x9000_0000_0000_0000;
 const PA_MASK: usize = (1 << 48) - 1;
@@ -28,9 +23,9 @@ impl ArchTrait for Arch {
         trap::install_trap_entry();
 
         csr::write::<{ csr::num::STLBPS }>(csr::stlbps::PS_4K);
-        csr::write::<{ csr::num::PWCL   }>(csr::pwcl::THREE_LEVEL_9_9_9_12);
-        csr::write::<{ csr::num::PWCH   }>(csr::pwch::NONE);
-        csr::write::<{ csr::num::ASID   }>(0);
+        csr::write::<{ csr::num::PWCL }>(csr::pwcl::THREE_LEVEL_9_9_9_12);
+        csr::write::<{ csr::num::PWCH }>(csr::pwch::NONE);
+        csr::write::<{ csr::num::ASID }>(0);
 
         const TLBREHI_PS_SHIFT: usize = 24;
         csr::write::<{ csr::num::TLBREHI }>(12usize << TLBREHI_PS_SHIFT);
@@ -38,8 +33,7 @@ impl ArchTrait for Arch {
         STABLE_COUNTER_FREQ_HZ.init(csr::stable_counter_freq());
     }
 
-    fn setup_all_cores(_current_core: usize) {
-    }
+    fn setup_all_cores(_current_core: usize) {}
 
     #[inline(always)]
     fn set_percpu_data(data: usize) {
@@ -109,11 +103,9 @@ impl ArchTrait for Arch {
         paddr | DMW1_MASK
     }
 
-    fn map_kernel_addr(_kstart: usize, _pstart: usize, _size: usize, _perm: MapPerm) {
-    }
+    fn map_kernel_addr(_kstart: usize, _pstart: usize, _size: usize, _perm: MapPerm) {}
 
-    unsafe fn unmap_kernel_addr(_kstart: usize, _size: usize) {
-    }
+    unsafe fn unmap_kernel_addr(_kstart: usize, _size: usize) {}
 
     fn mmio_phys_to_kaddr(paddr: usize, _size: usize) -> usize {
         const DMW0_MASK: usize = 0x8000_0000_0000_0000;
@@ -131,9 +123,7 @@ impl ArchTrait for Arch {
 
     fn set_next_time_event_us(interval: u64) {
         let ticks = (interval * *STABLE_COUNTER_FREQ_HZ) / 1_000_000;
-        let tcfg = (ticks as usize) << csr::tcfg::INITVAL_SHIFT
-            | csr::tcfg::PERIODIC
-            | csr::tcfg::EN;
+        let tcfg = (ticks as usize) << csr::tcfg::INITVAL_SHIFT | csr::tcfg::PERIODIC | csr::tcfg::EN;
         csr::write::<{ csr::num::TCFG }>(tcfg);
     }
 

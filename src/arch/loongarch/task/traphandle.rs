@@ -1,11 +1,8 @@
 use crate::arch::UserContextTrait;
-use crate::arch::loongarch::UserContext;
-use crate::arch::loongarch::csr;
-use crate::arch::loongarch::eiointc;
+use crate::arch::loongarch::{UserContext, csr, eiointc, pch_pic};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
-use crate::arch::loongarch::pch_pic;
 use crate::kwarn;
 
 unsafe extern "C" {
@@ -276,7 +273,7 @@ pub fn return_to_user() -> ! {
         );
     }
 
-    csr::write::<{ csr::num::ERA  }>(uc.get_user_entry());
+    csr::write::<{ csr::num::ERA }>(uc.get_user_entry());
     csr::write::<{ csr::num::PRMD }>(csr::prmd::USERFRAME);
 
     if uc.fpregs_dirty {

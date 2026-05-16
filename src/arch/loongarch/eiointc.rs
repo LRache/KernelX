@@ -4,11 +4,11 @@ use crate::kinfo;
 const NR_IRQS: usize = 256;
 
 mod reg {
-    pub const MISC:        usize = 0x0420;
-    pub const IPMAP_BASE:  usize = 0x14c0;
+    pub const MISC: usize = 0x0420;
+    pub const IPMAP_BASE: usize = 0x14c0;
     pub const ENABLE_BASE: usize = 0x1600;
-    pub const ISR_BASE:    usize = 0x1800;
-    pub const ROUTE_BASE:  usize = 0x1c00;
+    pub const ISR_BASE: usize = 0x1800;
+    pub const ROUTE_BASE: usize = 0x1c00;
 }
 
 mod misc_bits {
@@ -108,7 +108,16 @@ pub fn dump_irq(irq: u32) {
     let misc = iocsr::iocsr_read_d(reg::MISC);
     crate::kinfo!(
         "eiointc dump irq={}: EN[{}]={:#x} (bit{}={}) ISR[{}]={:#x} IPMAP[irq>>5={}]={:#x} ROUTE[irq]={:#x} MISC={:#x}",
-        irq, word_idx, en, irq % 64, (en >> (irq % 64)) & 1,
-        word_idx, isr, ipmap_idx, ipmap_byte, route_byte, misc,
+        irq,
+        word_idx,
+        en,
+        irq % 64,
+        (en >> (irq % 64)) & 1,
+        word_idx,
+        isr,
+        ipmap_idx,
+        ipmap_byte,
+        route_byte,
+        misc,
     );
 }

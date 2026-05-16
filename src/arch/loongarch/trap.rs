@@ -1,41 +1,6 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-use crate::arch::loongarch::csr;
-use crate::arch::loongarch::eiointc;
-use crate::arch::loongarch::pch_pic;
-use crate::kernel::scheduler::current;
+use crate::arch::loongarch::{csr, eiointc, pch_pic};
 use crate::kernel::trap;
 use crate::{kinfo, kwarn};
-
-static TIMER_TICKS: AtomicUsize = AtomicUsize::new(0);
-
-/// Print diagnostic info every ~10 seconds (assuming 100 Hz timer).
-/// Helps identify stuck tasks: shows which task is running and where.
-fn diagnose_stuck_tasks(era: usize) {
-    let ticks = TIMER_TICKS.load(Ordering::Relaxed);
-    if ticks % 500 == 0 && ticks > 0 {
-        if current::has_task() {
-            let tid = current::tid();
-            kinfo!("[heartbeat] tick={} tid={} ERA={:#x}", ticks, tid, era);
-        } else {
-            use crate::kernel::task::manager;
-            kinfo!("[heartbeat] tick={} IDLE — dumping tasks:", ticks);
-            let tcbs = manager::tcbs().lock();
-            for (&tid, tcb) in tcbs.iter() {
-                let ss = tcb.state().lock();
-                let task_state = ss.state();
-                let dead = ss.is_dead();
-                let has_pending = ss.pending_signal.is_some();
-                drop(ss);
-                kinfo!("  tid={} {:?} dead={} pending_sig={}", tid, task_state, dead, has_pending);
-            }
-        }
-    }
-}
-
-pub fn timer_tick_count() -> usize {
-    TIMER_TICKS.load(Ordering::Relaxed)
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kerneltrap_handler() {
@@ -47,7 +12,6 @@ pub extern "C" fn kerneltrap_handler() {
     if ecode == csr::ecode::INT {
         if is & (1 << csr::ecfg::LINE_TIMER) != 0 {
             csr::write::<{ csr::num::TICLR }>(csr::ticlr::TIMER_ACK);
-            TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
             trap::timer_interrupt();
         }
 
@@ -61,11 +25,7 @@ pub extern "C" fn kerneltrap_handler() {
 
         let other = is & !(1 << csr::ecfg::LINE_TIMER) & !(1 << csr::ecfg::LINE_HWI0);
         if other != 0 {
-            kwarn!(
-                "loongarch: unroutable interrupt lines {:#x} @ ERA={:#x}",
-                other,
-                era
-            );
+            kwarn!("loongarch: unroutable interrupt lines {:#x} @ ERA={:#x}", other, era);
         }
         return;
     }
@@ -87,25 +47,25 @@ pub extern "C" fn kerneltrap_handler() {
 
 fn ecode_name(ecode: usize) -> &'static str {
     match ecode {
-        csr::ecode::INT   => "INT",
-        csr::ecode::PIL   => "PIL (load, NR)",
-        csr::ecode::PIS   => "PIS (store, no-PLV / NW)",
-        csr::ecode::PIF   => "PIF (fetch, NX)",
-        csr::ecode::PME   => "PME (first-write dirty)",
-        csr::ecode::PNR   => "PNR (page NR)",
-        csr::ecode::PNX   => "PNX (page NX)",
-        csr::ecode::PPI   => "PPI (privilege)",
-        csr::ecode::ADE   => "ADE (addr error)",
-        csr::ecode::ALE   => "ALE (unaligned)",
-        csr::ecode::BCE   => "BCE",
-        csr::ecode::SYS   => "SYS (syscall)",
-        csr::ecode::BRK   => "BRK (break)",
-        csr::ecode::INE   => "INE (illegal inst)",
-        csr::ecode::IPE   => "IPE (inst priv err)",
-        csr::ecode::FPD   => "FPD (FPU disabled)",
-        csr::ecode::SXD   => "SXD",
-        csr::ecode::ASXD  => "ASXD",
-        csr::ecode::FPE   => "FPE",
+        csr::ecode::INT => "INT",
+        csr::ecode::PIL => "PIL (load, NR)",
+        csr::ecode::PIS => "PIS (store, no-PLV / NW)",
+        csr::ecode::PIF => "PIF (fetch, NX)",
+        csr::ecode::PME => "PME (first-write dirty)",
+        csr::ecode::PNR => "PNR (page NR)",
+        csr::ecode::PNX => "PNX (page NX)",
+        csr::ecode::PPI => "PPI (privilege)",
+        csr::ecode::ADE => "ADE (addr error)",
+        csr::ecode::ALE => "ALE (unaligned)",
+        csr::ecode::BCE => "BCE",
+        csr::ecode::SYS => "SYS (syscall)",
+        csr::ecode::BRK => "BRK (break)",
+        csr::ecode::INE => "INE (illegal inst)",
+        csr::ecode::IPE => "IPE (inst priv err)",
+        csr::ecode::FPD => "FPD (FPU disabled)",
+        csr::ecode::SXD => "SXD",
+        csr::ecode::ASXD => "ASXD",
+        csr::ecode::FPE => "FPE",
         _ => "unknown",
     }
 }
@@ -116,7 +76,7 @@ pub fn install_trap_entry() {
         fn asm_tlb_refill_entry() -> !;
     }
 
-    let entry_addr = asm_kerneltrap_entry as usize;
+    let entry_addr = asm_kerneltrap_entry as *const() as usize;
     debug_assert!(
         entry_addr & 0xfff == 0,
         "EENTRY must be page-aligned, got {:#x}",
@@ -126,7 +86,7 @@ pub fn install_trap_entry() {
     csr::write::<{ csr::num::EENTRY }>(entry_addr);
     csr::xchg::<{ csr::num::ECFG }>(0, csr::ecfg::VS_MASK);
 
-    let refill_va = asm_tlb_refill_entry as usize;
+    let refill_va = asm_tlb_refill_entry as *const() as usize;
     let refill_pa = crate::arch::kaddr_to_paddr(refill_va);
     debug_assert!(
         refill_pa & 0xfff == 0,
@@ -138,6 +98,8 @@ pub fn install_trap_entry() {
     kinfo!(
         "loongarch: EENTRY = {:#x} (single-entry, Ecode-dispatched), \
          TLBRENTRY = {:#x} (PA of refill handler at VA {:#x})",
-        entry_addr, refill_pa, refill_va,
+        entry_addr,
+        refill_pa,
+        refill_va,
     );
 }

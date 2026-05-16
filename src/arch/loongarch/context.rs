@@ -1,4 +1,3 @@
-
 use crate::arch::arch::UserContextTrait;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::KernelStack;
@@ -9,8 +8,8 @@ pub struct UserContext {
     /*  0 */ pub gpr: [usize; 32],
     /* 32 */ pub kernel_sp: usize,
     /* 33 */ pub kernel_percpu: usize, // saved $r21 across trap boundary
-    /* 34 */ pub user_pgd: usize,      // PGDL value for user
-    /* 35 */ pub kernel_pgd: usize,    // unused; DMW covers kernel
+    /* 34 */ pub user_pgd: usize, // PGDL value for user
+    /* 35 */ pub kernel_pgd: usize, // unused; DMW covers kernel
     /* 36 */ pub usertrap_handler: usize,
     /* 37 */ pub fpregs: [u128; 32], // 128-bit to cover LSX ($vr0..$vr31)
     pub fcc: u64,
@@ -118,9 +117,9 @@ unsafe impl Sync for UserContext {}
 pub struct KernelContext {
     ra: usize,
     sp: usize,
-    fp: usize,        // $r22
-    s: [usize; 9],    // $s0..$s8
-    a0: usize,        // $r4: first arg to entry
+    fp: usize,     // $r22
+    s: [usize; 9], // $s0..$s8
+    a0: usize,     // $r4: first arg to entry
 }
 
 impl KernelContext {

@@ -1,19 +1,18 @@
-use crate::arch;
-use crate::kinfo;
+use crate::{arch, kinfo};
 
 /// 7A1000 exposes 64 inputs; sizing to 64 matches Linux.
 const NR_IRQS: usize = 64;
 
 mod reg {
-    pub const MASK:        usize = 0x20;
-    pub const HTMSI_EN:    usize = 0x40;
-    pub const EDGE:        usize = 0x60;
-    pub const CLEAR:       usize = 0x80;
-    pub const AUTO_CTRL0:  usize = 0xc0;
-    pub const AUTO_CTRL1:  usize = 0xe0;
-    pub const ROUTE_BASE:  usize = 0x100;
-    pub const HTVEC_BASE:  usize = 0x200;
-    pub const POL:         usize = 0x3e0;
+    pub const MASK: usize = 0x20;
+    pub const HTMSI_EN: usize = 0x40;
+    pub const EDGE: usize = 0x60;
+    pub const CLEAR: usize = 0x80;
+    pub const AUTO_CTRL0: usize = 0xc0;
+    pub const AUTO_CTRL1: usize = 0xe0;
+    pub const ROUTE_BASE: usize = 0x100;
+    pub const HTVEC_BASE: usize = 0x200;
+    pub const POL: usize = 0x3e0;
 }
 
 static mut BASE: usize = 0;
@@ -66,7 +65,9 @@ pub fn init(mmio_pa: usize, mmio_size: usize) {
 
     kinfo!(
         "loongarch: PCH-PIC initialized @ PA {:#x} / kaddr {:#x} ({} IRQs, all masked)",
-        mmio_pa, kaddr, NR_IRQS,
+        mmio_pa,
+        kaddr,
+        NR_IRQS,
     );
 }
 
@@ -78,7 +79,12 @@ pub fn dump_irq(irq: u32) {
     let route = unsafe { arch::read_volatile((base() + reg::ROUTE_BASE + irq as usize) as *const u8) };
     kinfo!(
         "pch-pic dump irq={}: MASK={:#x} (bit{}={}) HTVEC={:#x} ROUTE={:#x}",
-        irq, mask, irq, (mask >> irq) & 1, htvec, route,
+        irq,
+        mask,
+        irq,
+        (mask >> irq) & 1,
+        htvec,
+        route,
     );
 }
 

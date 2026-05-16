@@ -1,10 +1,9 @@
 use fdt::Fdt;
 use fdt::node::FdtNode;
 
-use crate::arch;
 use crate::driver::{Device, found_device};
 use crate::kernel::parse_boot_args;
-use crate::{kinfo, kwarn};
+use crate::{arch, kinfo, kwarn};
 
 use super::{eiointc, pch_pic, pci};
 
@@ -27,7 +26,8 @@ pub fn load_device_tree() -> Result<(), ()> {
     if magic != 0xd00dfeed {
         kwarn!(
             "loongarch: FDT magic mismatch at PA {:#x} (got {:#x}, want 0xd00dfeed)",
-            FDT_BASE_PA, magic,
+            FDT_BASE_PA,
+            magic,
         );
         return Err(());
     }

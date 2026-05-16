@@ -119,11 +119,7 @@ impl Addr {
 
     /// 48-bit VA split into three 9-bit indices (top to bottom).
     pub const fn vpn(self) -> [usize; PAGE_TABLE_LEVELS] {
-        [
-            (self.0 >> 30) & 0x1ff,
-            (self.0 >> 21) & 0x1ff,
-            (self.0 >> 12) & 0x1ff,
-        ]
+        [(self.0 >> 30) & 0x1ff, (self.0 >> 21) & 0x1ff, (self.0 >> 12) & 0x1ff]
     }
 
     /// PPN for embedding in a PTE. PA is taken first so DMW1 bits don't leak.
@@ -185,10 +181,7 @@ const FLAG_BITS_MASK: u64 = PTEFlags::all().bits();
 impl PTE {
     pub fn from_ptr(ptr: NonNull<u64>) -> Self {
         let bits = unsafe { ptr.as_ptr().read_volatile() };
-        Self {
-            bits,
-            ptr: Some(ptr),
-        }
+        Self { bits, ptr: Some(ptr) }
     }
 
     pub fn from_raw_ptr(ptr: *mut u64) -> Self {
@@ -426,7 +419,6 @@ impl Drop for PageTable {
 unsafe impl Send for PageTable {}
 unsafe impl Sync for PageTable {}
 
-
 impl PageTableTrait for PageTable {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
@@ -458,8 +450,7 @@ impl PageTableTrait for PageTable {
         let mut pte = self.find_pte_or_create(kaddr);
         pte.set_flags(flags);
         pte.set_ppn(PPN::from_paddr(paddr));
-        pte.write_back()
-            .expect("Failed to write back PTE on mmap_paddr");
+        pte.write_back().expect("Failed to write back PTE on mmap_paddr");
     }
 
     fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
@@ -472,8 +463,7 @@ impl PageTableTrait for PageTable {
         let mut pte = self.find_pte_or_create(uaddr);
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
-        pte.write_back()
-            .expect("Failed to write back PTE on mmap_replace");
+        pte.write_back().expect("Failed to write back PTE on mmap_replace");
     }
 
     fn mmap_replace_kaddr(&mut self, uaddr: usize, kaddr: usize) {
@@ -492,15 +482,13 @@ impl PageTableTrait for PageTable {
 
         let mut pte = self.find_pte_or_create(uaddr);
         pte.set_flags(flags);
-        pte.write_back()
-            .expect("Failed to write back PTE on mmap_replace_perm");
+        pte.write_back().expect("Failed to write back PTE on mmap_replace_perm");
     }
 
     fn munmap(&mut self, uaddr: usize) {
         let mut pte = self.find_pte(uaddr).expect("PTE not found for munmap");
         pte.set_flags(PTEFlags::empty());
-        pte.write_back()
-            .expect("Failed to write back PTE on munmap");
+        pte.write_back().expect("Failed to write back PTE on munmap");
     }
 
     fn munmap_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> bool {

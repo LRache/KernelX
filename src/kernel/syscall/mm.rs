@@ -226,13 +226,7 @@ bitflags! {
     }
 }
 
-pub fn mremap(
-    old_addr: usize,
-    old_size: usize,
-    new_size: usize,
-    flags: usize,
-    _new_addr: usize,
-) -> SyscallRet {
+pub fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: usize, _new_addr: usize) -> SyscallRet {
     let flags = MRemapFlags::from_bits(flags & 0x7).ok_or(Errno::EINVAL)?;
 
     if old_addr % arch::PGSIZE != 0 || new_size == 0 {
@@ -249,9 +243,8 @@ pub fn mremap(
     if new_pages < old_pages {
         let tail_addr = old_addr + new_pages * arch::PGSIZE;
         let tail_pages = old_pages - new_pages;
-        current::addrspace().with_map_manager_mut(|mgr| {
-            mgr.unmap_area(tail_addr, tail_pages, current::addrspace().pagetable())
-        })?;
+        current::addrspace()
+            .with_map_manager_mut(|mgr| mgr.unmap_area(tail_addr, tail_pages, current::addrspace().pagetable()))?;
         return Ok(old_addr);
     }
 
@@ -259,7 +252,14 @@ pub fn mremap(
         return Err(Errno::ENOMEM);
     }
 
-    let new_addr = mmap(0, new_pages * arch::PGSIZE, 0x3 /* R|W */, 0x22 /* PRIVATE|ANON */, usize::MAX, 0)?;
+    let new_addr = mmap(
+        0,
+        new_pages * arch::PGSIZE,
+        0x3,  /* R|W */
+        0x22, /* PRIVATE|ANON */
+        usize::MAX,
+        0,
+    )?;
 
     let copy_len = old_pages * arch::PGSIZE;
     let addrspace = current::addrspace();
@@ -273,9 +273,7 @@ pub fn mremap(
         }
     }
 
-    addrspace.with_map_manager_mut(|mgr| {
-        mgr.unmap_area(old_addr, old_pages, addrspace.pagetable())
-    })?;
+    addrspace.with_map_manager_mut(|mgr| mgr.unmap_area(old_addr, old_pages, addrspace.pagetable()))?;
 
     Ok(new_addr)
 }

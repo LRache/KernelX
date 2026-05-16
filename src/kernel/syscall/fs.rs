@@ -2447,14 +2447,7 @@ pub fn newfstat(fd: usize, uptr_stat: UPtr<FileStat>) -> SyscallRet {
     Ok(0)
 }
 
-/// statx(dirfd, path, flags, mask, buf)
-pub fn statx(
-    dirfd: usize,
-    uptr_path: UString,
-    flags: usize,
-    _mask: usize,
-    uptr_buf: UPtr<Statx>,
-) -> SyscallRet {
+pub fn statx(dirfd: usize, uptr_path: UString, flags: usize, _mask: usize, uptr_buf: UPtr<Statx>) -> SyscallRet {
     uptr_buf.should_not_null()?;
 
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;

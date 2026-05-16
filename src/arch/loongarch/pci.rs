@@ -3,18 +3,14 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use fdt::node::FdtNode;
 use spin::Mutex;
-use virtio_drivers::transport::pci::bus::{
-    BarInfo, Cam, Command, DeviceFunction, MemoryBarType, PciRoot,
-};
-use virtio_drivers::transport::pci::virtio_device_type;
-use virtio_drivers::transport::pci::PciTransport;
+use virtio_drivers::transport::pci::bus::{BarInfo, Cam, Command, DeviceFunction, MemoryBarType, PciRoot};
+use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
 use virtio_drivers::transport::{DeviceType as VirtioDeviceType, Transport};
 
-use crate::arch;
 use crate::driver::block::VirtIOBlockDriver;
 use crate::driver::virtio::VirtIOHal;
 use crate::driver::{DriverOps, register_irq_handler};
-use crate::{kinfo, kwarn};
+use crate::{arch, kinfo, kwarn};
 
 pub fn scan_pcie_bus(node: &FdtNode) {
     let (ecam_pa, ecam_size) = match first_reg(node) {
@@ -37,8 +33,10 @@ pub fn scan_pcie_bus(node: &FdtNode) {
 
     kinfo!(
         "loongarch: PCIe ECAM @ {:#x}..{:#x}, MMIO window {:#x}..{:#x}",
-        ecam_pa, ecam_pa + ecam_size,
-        mmio_pa, mmio_pa + mmio_size,
+        ecam_pa,
+        ecam_pa + ecam_size,
+        mmio_pa,
+        mmio_pa + mmio_size,
     );
 
     let ecam_kaddr = arch::mmio_phys_to_kaddr(ecam_pa, ecam_size);
@@ -57,7 +55,10 @@ pub fn scan_pcie_bus(node: &FdtNode) {
         if let Err(e) = assign_bars(&mut root, df, &mut alloc) {
             kwarn!(
                 "loongarch: BAR assignment failed for {:02x}:{:02x}.{}: {:?}",
-                df.bus, df.device, df.function, e,
+                df.bus,
+                df.device,
+                df.function,
+                e,
             );
             continue;
         }
@@ -76,7 +77,10 @@ pub fn scan_pcie_bus(node: &FdtNode) {
                 Err(e) => {
                     kwarn!(
                         "loongarch: virtio PciTransport::new failed for {:02x}:{:02x}.{}: {:?}",
-                        df.bus, df.device, df.function, e,
+                        df.bus,
+                        df.device,
+                        df.function,
+                        e,
                     );
                 }
             }
@@ -92,18 +96,21 @@ fn register_virtio_pci_device(
 ) {
     match vdev_type {
         VirtioDeviceType::Block => {
-            let driver: Arc<dyn DriverOps> =
-                Arc::new(VirtIOBlockDriver::new(name.clone(), transport));
+            let driver: Arc<dyn DriverOps> = Arc::new(VirtIOBlockDriver::new(name.clone(), transport));
             kinfo!(
                 "loongarch: PCIe block device registered as `{}` (INTx IRQ {:?})",
-                name, irq,
+                name,
+                irq,
             );
             crate::driver::register_matched_driver(driver.clone());
             if let Some(irq) = irq {
                 register_irq_handler(irq, driver.clone());
                 arch::enable_device_interrupt_irq(irq);
             } else {
-                kwarn!("loongarch: `{}` has no INTx IRQ; device will not receive interrupts", name);
+                kwarn!(
+                    "loongarch: `{}` has no INTx IRQ; device will not receive interrupts",
+                    name
+                );
             }
             crate::fs::devfs::add_device(name, driver);
         }
@@ -170,14 +177,8 @@ fn align_up(x: u64, align: u64) -> u64 {
     (x + align - 1) & !(align - 1)
 }
 
-fn assign_bars(
-    root: &mut PciRoot,
-    df: DeviceFunction,
-    alloc: &mut BumpAllocator,
-) -> Result<(), BarError> {
-    let bars = root
-        .bars(df)
-        .map_err(|_| BarError::NoSpace)?;
+fn assign_bars(root: &mut PciRoot, df: DeviceFunction, alloc: &mut BumpAllocator) -> Result<(), BarError> {
+    let bars = root.bars(df).map_err(|_| BarError::NoSpace)?;
 
     let mut bar_index = 0u8;
     while bar_index < 6 {
@@ -238,9 +239,7 @@ fn parse_mmio_range(node: &FdtNode) -> Option<(usize, usize)> {
 }
 
 fn read_interrupt_pin(ecam_kaddr: usize, df: DeviceFunction) -> u8 {
-    let slot_off = ((df.bus as usize) << 20)
-        | ((df.device as usize) << 15)
-        | ((df.function as usize) << 12);
+    let slot_off = ((df.bus as usize) << 20) | ((df.device as usize) << 15) | ((df.function as usize) << 12);
     let byte_ptr = (ecam_kaddr + slot_off + 0x3D) as *const u8;
     unsafe { arch::read_volatile(byte_ptr) }
 }
