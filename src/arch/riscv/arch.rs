@@ -138,6 +138,16 @@ impl ArchTrait for Arch {
         unsafe { kernelpagetable::unmap_kernel_addr(kstart, size) };
     }
 
+    fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize {
+        // RISC-V has a single kernel page table; MMIO needs an explicit
+        // mapping there. Allocate kernel pages to cover the region, then
+        // install an RW kernel mapping pointing at the MMIO PA.
+        let pages = arch::page_count(size);
+        let kbase = page::alloc_contiguous(pages);
+        kernelpagetable::map_kernel_addr(kbase, paddr, size, MapPerm::R | MapPerm::W);
+        kbase
+    }
+
     fn uptime() -> Duration {
         Duration::from_micros(Self::get_time_us())
     }

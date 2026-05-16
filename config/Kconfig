@@ -21,11 +21,19 @@ config RISCV64
 	help
 	  Support for RISC-V 64-bit architecture.
 
+config LOONGARCH64
+	bool "LoongArch 64-bit"
+	help
+	  Support for LoongArch 64-bit architecture (LA64).
+	  Runs on QEMU `virt` machine with the bare-metal
+	  `loongarch64-unknown-none` Rust target.
+
 endchoice
 
 config ARCH
 	string
 	default "riscv" if RISCV64
+	default "loongarch" if LOONGARCH64
 	help
 	  Target architecture for the kernel.
 	  Automatically selected based on the chosen platform.
@@ -33,15 +41,19 @@ config ARCH
 config ARCH_BITS
 	int
 	default 64 if RISCV64
+	default 64 if LOONGARCH64
 	help
 	  Architecture bit width (32 or 64).
 	  Automatically selected based on the chosen platform.
 
 config CROSS_COMPILE
 	string "Cross-compiler prefix"
-	default "riscv64-unknown-elf-"
+	default "riscv64-unknown-elf-" if RISCV64
+	default "loongarch64-unknown-elf-" if LOONGARCH64
 	help
 	  Prefix for cross-compilation tools (e.g., riscv64-unknown-elf-).
+	  On macOS we compile C/asm with Homebrew clang + ld.lld, so this
+	  prefix is only consulted when a real ${CROSS_COMPILE}gcc is needed.
 
 config OBJCOPY
 	string "objcopy util path"
@@ -64,7 +76,8 @@ config SYSROOT
 
 config RUST_TARGET
 	string
-	default "riscv64gc-unknown-none-elf"
+	default "riscv64gc-unknown-none-elf" if RISCV64
+	default "loongarch64-unknown-none"   if LOONGARCH64
 	help
 	  Rust target specification for compilation.
 
@@ -222,6 +235,19 @@ config QEMU_MACHINE
 	help
 	  QEMU machine type for virtualization.
 
+config QEMU_BIOS
+	string "QEMU -bios firmware (empty = omit the flag)"
+	default ""
+	help
+	  Passed as `-bios <value>` to qemu-system-${ARCH}. Leave empty to omit
+	  the flag entirely.
+
+	  - RISC-V virt: empty lets QEMU fall back to its built-in OpenSBI.
+	  - LoongArch virt: *must* be empty for raw `-kernel` boots. If you pass
+	    anything (even /dev/null), QEMU loads it as firmware and skips the
+	    aux_boot_code shim that hands PC off to our ELF entry, and the CPU
+	    just executes zeros out of reset.
+
 config QEMU_MEMORY
 	string "QEMU memory size"
 	default "256M"
@@ -237,7 +263,8 @@ config QEMU_CPUS
 
 config DISK_IMAGE
 	string "Disk image path"
-	default "./sdcard-rv.img"
+	default "./sdcard-rv.img" if RISCV64
+	default "./sdcard-la.img" if LOONGARCH64
 	help
 	  Path to the disk image file used as storage.
 
@@ -259,17 +286,17 @@ config INITCWD
 	help
 	  Working directory for the init process.
 
-config ROOT_FS_TYPE
-	string "Root filesystem type"
-	default "ext4"
-	help
-	  Filesystem type for the root filesystem.
-
 config ROOT_DEVICE
 	string "Root device name"
 	default "virtio_block0"
 	help
 	  Device path for the root filesystem.
+
+config ROOT_FSTYPE
+	string "Root filesystem type"
+	default "ext4"
+	help
+	  Filesystem type for the root filesystem (bootarg name rootfstype).
 
 config BOOTARGS
 	string "Additional boot arguments"

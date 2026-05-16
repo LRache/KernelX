@@ -61,10 +61,10 @@ arch_export! {
 
     get_kernel_stack_top() -> usize;
 
-    // kaddr_offset() -> usize;
     kaddr_to_paddr(kaddr: usize) -> usize;
     paddr_to_kaddr(paddr: usize) -> usize;
     map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
+    mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
 
     get_time_us() -> u64;
     uptime() -> Duration;

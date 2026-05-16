@@ -2,7 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use virtio_drivers::device::blk::{BlkReq, BlkResp, RespStatus, VirtIOBlk};
-use virtio_drivers::transport::mmio::MmioTransport;
+use virtio_drivers::transport::Transport;
 
 use crate::driver::virtio::VirtIOHal;
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
@@ -12,14 +12,14 @@ use crate::klib::SpinLock;
 
 const BLOCK_SIZE: usize = 512;
 
-pub struct VirtIOBlockDriver {
+pub struct VirtIOBlockDriver<T: Transport + Send + 'static> {
     device_name: String,
-    driver: SpinLock<VirtIOBlk<VirtIOHal, MmioTransport>>,
+    driver: SpinLock<VirtIOBlk<VirtIOHal, T>>,
     inflight: SpinLock<BTreeMap<u16, Arc<dyn Task>>>,
 }
 
-impl VirtIOBlockDriver {
-    pub fn new(device_name: String, transport: MmioTransport) -> Self {
+impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
+    pub fn new(device_name: String, transport: T) -> Self {
         let mut blk = VirtIOBlk::new(transport).unwrap();
         blk.enable_interrupts();
         Self {
@@ -33,18 +33,8 @@ impl VirtIOBlockDriver {
         let task = current::task().clone();
         task.block_uninterruptible("virtio_blk_io");
 
-        // Disable interrupts to make the following two steps atomic:
-        //   1. Register ourselves in inflight so the interrupt handler can find us.
-        //   2. Check whether the I/O already completed before we registered.
-        //
-        // Without this, the interrupt can fire between steps 1 and 2 (or before
-        // step 1), see an empty inflight map, and skip the wakeup — leaving the
-        // task blocked forever (lost-wakeup race).
         self.inflight.lock().insert(token, task.clone());
 
-        // If the interrupt fired before we inserted (inflight was empty at that
-        // point), the completion token is still sitting in the used ring.
-        // Detect this and self-wake so schedule() returns promptly.
         if self.driver.lock().peek_used() == Some(token) {
             if let Some(t) = self.inflight.lock().remove(&token) {
                 scheduler::wakeup_task_uninterruptible(t, Event::IOComplete);
@@ -65,7 +55,7 @@ impl VirtIOBlockDriver {
     }
 }
 
-impl DriverOps for VirtIOBlockDriver {
+impl<T: Transport + Send + 'static> DriverOps for VirtIOBlockDriver<T> {
     fn name(&self) -> &str {
         "virtio_blk_driver"
     }
@@ -94,7 +84,7 @@ impl DriverOps for VirtIOBlockDriver {
     }
 }
 
-impl BlockDriverOps for VirtIOBlockDriver {
+impl<T: Transport + Send + 'static> BlockDriverOps for VirtIOBlockDriver<T> {
     fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()> {
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();

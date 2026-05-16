@@ -1,8 +1,14 @@
 fn main() {
-    let platform = std::env::var("PLATFORM").unwrap_or_else(|_| "qemu-virt-riscv64".to_string());
     let arch = std::env::var("ARCH").unwrap();
     let arch_bits = std::env::var("ARCH_BITS").unwrap();
     let sysroot = std::env::var("SYSROOT").unwrap_or_default();
+    // Default PLATFORM based on the chosen ARCH so plain `make check` works.
+    let default_platform = match arch.as_str() {
+        "riscv" => "qemu-virt-riscv64",
+        "loongarch" => "qemu-virt-loongarch64",
+        other => panic!("build.rs: unsupported ARCH={}", other),
+    };
+    let platform = std::env::var("PLATFORM").unwrap_or_else(|_| default_platform.to_string());
 
     track_kernelx_env_vars();
 
@@ -18,9 +24,18 @@ fn main() {
     println!("cargo:rustc-env=KERNELX_SYMBOLS_PATH={}", symbols_path);
     println!("cargo:rerun-if-changed={}", symbols_path);
 
+    // Declare the custom cfg names we emit so `rustc --check-cfg` stays happy.
+    println!("cargo:rustc-check-cfg=cfg(platform_riscv_common)");
+    println!("cargo:rustc-check-cfg=cfg(platform_loongarch_common)");
+    println!("cargo:rustc-check-cfg=cfg(arch_riscv64)");
+    println!("cargo:rustc-check-cfg=cfg(arch_loongarch64)");
+
     match platform.as_str() {
         "qemu-virt-riscv64" => {
             println!("cargo:rustc-cfg=platform_riscv_common");
+        }
+        "qemu-virt-loongarch64" => {
+            println!("cargo:rustc-cfg=platform_loongarch_common");
         }
         _ => {
             println!("cargo:warning=Unknown platform: {}", platform);

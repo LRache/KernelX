@@ -46,6 +46,14 @@ pub fn register_matched_driver(driver: Arc<dyn DriverOps>) {
     DRIVERS.write().insert(name, driver);
 }
 
+/// Register `driver` as the handler for `irq`. Used when a device's
+/// interrupt number is discovered outside the usual `found_device` flow
+/// (e.g. PCIe INTx, which has to be resolved from `interrupt-map` after
+/// the bus is enumerated — the `Device` the matcher saw had no irq).
+pub fn register_irq_handler(irq: u32, driver: Arc<dyn DriverOps>) {
+    INTERRUPT_MAP.write().insert(irq, driver);
+}
+
 pub fn get_block_driver(name: &str) -> Option<Arc<dyn BlockDriverOps>> {
     DRIVERS
         .read()

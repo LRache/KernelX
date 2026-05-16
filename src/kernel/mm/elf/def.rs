@@ -36,6 +36,7 @@ pub const ET_CORE: u16 = 4;
 
 // e_machine constants
 pub const EM_RISCV: u16 = 243; // RISC-V
+pub const EM_LOONGARCH: u16 = 258; // LoongArch
 
 // ELF64文件头
 #[repr(C)]
@@ -99,6 +100,23 @@ impl Elf64Ehdr {
 
     pub fn is_riscv(&self) -> bool {
         self.e_machine == EM_RISCV
+    }
+
+    pub fn is_loongarch(&self) -> bool {
+        self.e_machine == EM_LOONGARCH
+    }
+
+    /// Matches the e_machine to the kernel's current build architecture.
+    /// Used by the vDSO loader to sanity-check the bytes it's linked against.
+    pub fn is_native(&self) -> bool {
+        #[cfg(arch_riscv64)]
+        {
+            self.is_riscv()
+        }
+        #[cfg(arch_loongarch64)]
+        {
+            self.is_loongarch()
+        }
     }
 
     pub fn is_executable(&self) -> bool {

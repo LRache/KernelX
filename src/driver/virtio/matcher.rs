@@ -3,11 +3,10 @@ use core::ptr::NonNull;
 use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
 use virtio_drivers::transport::{DeviceType, Transport};
 
-use crate::arch::{self, map_kernel_addr};
+use crate::arch;
 use crate::driver::block::VirtIOBlockDriver;
 use crate::driver::net::VirtioNetDriver;
 use crate::driver::{Device, DriverMatcher, DriverOps};
-use crate::kernel::mm::{MapPerm, page};
 use crate::net::interface::Interface;
 
 pub struct Matcher;
@@ -18,8 +17,10 @@ impl DriverMatcher for Matcher {
 
         let (mmio_base, mmio_size) = device.mmio()?;
 
-        let kbase = page::alloc_contiguous(arch::page_count(mmio_size));
-        map_kernel_addr(kbase, mmio_base, mmio_size, MapPerm::R | MapPerm::W);
+        // Uncached kernel-visible mirror of the MMIO region. RISC-V installs
+        // a page-table mapping under the hood; LoongArch returns the DMW0
+        // (strongly-ordered) window directly.
+        let kbase = arch::mmio_phys_to_kaddr(mmio_base, mmio_size);
 
         let transport = unsafe { MmioTransport::new(NonNull::new(kbase as *mut VirtIOHeader).unwrap()).ok() }?;
 
