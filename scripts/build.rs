@@ -111,8 +111,10 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
     if !sysroot.is_empty() {
         builder = builder
             .clang_arg(format!("--sysroot={sysroot}"))
+            .clang_arg(format!("-I{sysroot}/include"))
             .clang_arg(format!("-I{sysroot}/usr/include"));
     }
+    println!("cargo:rerun-if-env-changed=SYSROOT");
 
     let bindings = builder.generate().expect("Unable to generate ext4 bindings");
 
