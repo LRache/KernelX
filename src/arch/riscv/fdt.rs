@@ -28,7 +28,7 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     load_plic_node(&fdt, &soc_node);
 
     for child in soc_node.children() {
-        load_soc_node(&child);
+        load_soc_node(&fdt, child);
     }
 
     let chosen_node = fdt.find_node("/chosen").unwrap();
@@ -49,8 +49,8 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
     Ok(())
 }
 
-fn load_soc_node(child: &FdtNode) {
-    found_device(&Device::new(child));
+fn load_soc_node<'b, 'a: 'b>(fdt: &'b Fdt<'a>, child: FdtNode<'b, 'a>) {
+    found_device(&Device::new(fdt, child));
 }
 
 fn load_plic_node(fdt: &Fdt, soc_node: &FdtNode) {

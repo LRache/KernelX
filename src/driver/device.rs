@@ -1,22 +1,25 @@
+use fdt::Fdt;
 use fdt::node::FdtNode;
 
 pub enum DeviceType {
     Block,
     Char,
+    Pmu,
     Rtc,
     Net,
 }
 
-pub struct Device<'a> {
+pub struct Device<'b, 'a: 'b> {
     // mmio_base: usize,
     // mmio_size: usize,
     // name: &'a str,
     // compatible: &'a str,
     // interrupt_number: Option<u32>,
-    fdt_node: &'a FdtNode<'a, 'a>,
+    fdt: &'b Fdt<'a>,
+    fdt_node: FdtNode<'b, 'a>,
 }
 
-impl<'a> Device<'a> {
+impl<'b, 'a: 'b> Device<'b, 'a> {
     // pub fn new(mmio_base: usize, mmio_size: usize, name: &'a str, compatible: &'a str, interrupt_number: Option<u32>, fdt_node: &'a FdtNode) -> Device<'a> {
     //     Device {
     //         // mmio_base,
@@ -28,8 +31,8 @@ impl<'a> Device<'a> {
     //     }
     // }
 
-    pub fn new(fdt_node: &'a FdtNode) -> Device<'a> {
-        Device { fdt_node }
+    pub fn new(fdt: &'b Fdt<'a>, fdt_node: FdtNode<'b, 'a>) -> Self {
+        Self { fdt, fdt_node }
     }
 
     pub fn mmio(&self) -> Option<(usize, usize)> {
@@ -42,8 +45,12 @@ impl<'a> Device<'a> {
         self.fdt_node.name
     }
 
-    pub fn fdt_node(&self) -> &'a FdtNode<'a, 'a> {
+    pub fn fdt_node(&self) -> FdtNode<'b, 'a> {
         self.fdt_node
+    }
+
+    pub fn find_phandle(&self, phandle: u32) -> Option<FdtNode<'_, 'a>> {
+        self.fdt.find_phandle(phandle)
     }
 
     pub fn match_compatible(&self, mathches: &[&str]) -> Option<usize> {
@@ -74,7 +81,7 @@ impl<'a> Device<'a> {
     }
 }
 
-impl<'a> core::fmt::Debug for Device<'a> {
+impl core::fmt::Debug for Device<'_, '_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Device")
             .field("name", &self.name())

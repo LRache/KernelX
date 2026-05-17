@@ -31,7 +31,7 @@ impl ArchTrait for Arch {
         kernelpagetable::init();
 
         chosen::kconsole::register(&SBIKConsole);
-        chosen::kpmu::register(&SBIKPMU);
+        chosen::kpmu::register(Arc::new(SBIKPMU));
 
         driver::register_matched_driver(Arc::new(SBIConsoleDriver));
     }

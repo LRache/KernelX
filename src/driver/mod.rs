@@ -7,6 +7,7 @@ pub mod block;
 pub mod char;
 pub mod chosen;
 pub mod net;
+pub mod pmu;
 pub mod rtc;
 pub mod virtio;
 

@@ -44,7 +44,7 @@ pub fn load_device_tree() -> Result<(), ()> {
         kwarn!("loongarch: FDT has no root node?!");
     })?;
     for child in root.children() {
-        handle_root_child(&child);
+        handle_root_child(&fdt, child);
     }
 
     // Cmdline: prefer FDT `/chosen/bootargs` if QEMU ever starts populating
@@ -112,20 +112,20 @@ fn should_skip(node: &FdtNode) -> bool {
 
 const PCIE_HOST_COMPATIBLE: &[&str] = &["pci-host-ecam-generic", "pci-host-cam-generic"];
 
-fn handle_root_child(node: &FdtNode) {
-    if should_skip(node) {
+fn handle_root_child<'b, 'a: 'b>(fdt: &'b Fdt<'a>, node: FdtNode<'b, 'a>) {
+    if should_skip(&node) {
         return;
     }
     // PCIe host bridge: we own enumeration (BAR allocation, virtio match).
     if let Some(compat) = node.compatible() {
         for c in compat.all() {
             if PCIE_HOST_COMPATIBLE.contains(&c) {
-                pci::scan_pcie_bus(node);
+                pci::scan_pcie_bus(&node);
                 return;
             }
         }
     }
-    found_device(&Device::new(node));
+    found_device(&Device::new(fdt, node));
 }
 
 fn find_by_compatible<'a, 'b>(fdt: &'b Fdt<'a>, candidates: &[&str]) -> Option<FdtNode<'b, 'a>> {
