@@ -85,8 +85,11 @@ impl LoopInode {
         Ok(())
     }
 
-    fn clear_target_inode(&self) {
-        self.state.lock().target_inode = None;
+    fn clear_target_inode(&self) -> SysResult<usize> {
+        match self.state.lock().target_inode.take() {
+            Some(_) => Ok(0),
+            None => Err(Errno::ENXIO),
+        }
     }
 
     fn is_bound(&self) -> bool {
@@ -175,7 +178,7 @@ impl InodeOps for LoopInode {
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         #[derive(TryFromPrimitive)]
         #[allow(non_camel_case_types)]
-        #[repr(usize)]
+        #[repr(u32)]
         enum Request {
             LOOP_SET_FD = 0x4C00,
             LOOP_CLR_FD = 0x4C01,
@@ -184,7 +187,7 @@ impl InodeOps for LoopInode {
             LOOP_BLKGETSIZE64 = 0x80081272,
         }
 
-        let request = Request::try_from_primitive(request).map_err(|_| Errno::ENOTTY)?;
+        let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
         match request {
             Request::LOOP_SET_FD => {
                 let backing_file = current::fdtable().lock().get(arg)?;
@@ -196,8 +199,7 @@ impl InodeOps for LoopInode {
                 Ok(0)
             }
             Request::LOOP_CLR_FD => {
-                self.clear_target_inode();
-                Ok(0)
+                self.clear_target_inode()
             }
             Request::LOOP_SET_STATUS => self.set_status(arg, addrspace),
             Request::LOOP_GET_STATUS => self.get_status(arg, addrspace),
