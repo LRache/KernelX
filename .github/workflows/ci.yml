@@ -110,7 +110,7 @@ jobs:
       - name: Setup build environment
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
-            curl wget gnupg ca-certificates lsb-release software-properties-common \
+            curl wget gnupg ca-certificates lsb-release \
             make cmake ninja-build gcc g++ git python3 xz-utils file guestfish linux-image-amd64 \
             gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu binutils-loongarch64-linux-gnu libc6-dev-loong64-cross \
             qemu-system-misc \
@@ -155,7 +155,7 @@ jobs:
       - name: Test testsuits-for-oskernel-loongarch64
         timeout-minutes: 90
         run: |
-          qemu-system-loongarch64 -M virt -m 1G -nographic -smp 1
+          qemu-system-loongarch64 -M virt -m 1G -nographic -smp 1 \
             -kernel build/loongarch64/vmkernelx \
             -drive file=KernelX-testsuit/testsuit-for-oskernel/sdcard-la.img,if=none,id=x0,format=raw \
             -device virtio-blk-pci,drive=x0 \
