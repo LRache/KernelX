@@ -9,10 +9,10 @@ use crate::driver::BlockDriverOps;
 pub const EXT4_DEV_BSIZE: usize = 512;
 
 struct ResourceGuard {
-    driver: Box<Arc<dyn BlockDriverOps>>,
-    block_buf: Box<[u8; EXT4_DEV_BSIZE]>,
-    block_cache: Box<ext4_bcache>,
-    block_dev_iface: Box<ext4_blockdev_iface>,
+    _driver: Box<Arc<dyn BlockDriverOps>>,
+    _block_buf: Box<[u8; EXT4_DEV_BSIZE]>,
+    _block_cache: Box<ext4_bcache>,
+    _block_dev_iface: Box<ext4_blockdev_iface>,
 }
 
 pub struct Ext4BlockDevice {
@@ -68,10 +68,10 @@ impl Ext4BlockDevice {
         Ok(Self {
             inner: blockdev,
             _guard: ResourceGuard {
-                driver,
-                block_buf,
-                block_cache,
-                block_dev_iface,
+                _driver: driver,
+                _block_buf: block_buf,
+                _block_cache: block_cache,
+                _block_dev_iface: block_dev_iface,
             },
         })
     }

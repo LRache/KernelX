@@ -103,18 +103,11 @@ impl Addr {
         Self(paddr_to_kaddr(paddr))
     }
 
-    pub const fn vaddr(self) -> usize {
-        self.0
-    }
     pub const fn kaddr(self) -> usize {
         self.0
     }
     pub fn paddr(self) -> usize {
         kaddr_to_paddr(self.0)
-    }
-
-    pub const fn pgoff(self) -> usize {
-        self.0 & PGMASK
     }
 
     /// 48-bit VA split into three 9-bit indices (top to bottom).
@@ -440,18 +433,18 @@ impl PageTableTrait for PageTable {
         pte.write_back().expect("Failed to write back PTE on mmap");
     }
 
-    fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
-        let mut flags: PTEFlags = perm.into();
-        flags |= PTEFlags::P;
-        if perm.contains(MapPerm::W) {
-            flags |= PTEFlags::D;
-        }
+    // fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
+    //     let mut flags: PTEFlags = perm.into();
+    //     flags |= PTEFlags::P;
+    //     if perm.contains(MapPerm::W) {
+    //         flags |= PTEFlags::D;
+    //     }
 
-        let mut pte = self.find_pte_or_create(kaddr);
-        pte.set_flags(flags);
-        pte.set_ppn(PPN::from_paddr(paddr));
-        pte.write_back().expect("Failed to write back PTE on mmap_paddr");
-    }
+    //     let mut pte = self.find_pte_or_create(kaddr);
+    //     pte.set_flags(flags);
+    //     pte.set_ppn(PPN::from_paddr(paddr));
+    //     pte.write_back().expect("Failed to write back PTE on mmap_paddr");
+    // }
 
     fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
@@ -464,13 +457,6 @@ impl PageTableTrait for PageTable {
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE on mmap_replace");
-    }
-
-    fn mmap_replace_kaddr(&mut self, uaddr: usize, kaddr: usize) {
-        let mut pte = self.find_pte_or_create(uaddr);
-        pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
-        pte.write_back()
-            .expect("Failed to write back PTE on mmap_replace_kaddr");
     }
 
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {

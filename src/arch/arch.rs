@@ -4,25 +4,15 @@ use crate::kernel::mm::MapPerm;
 
 use super::{KernelContext, SigContext};
 
-#[derive(Debug, Clone, Copy)]
-pub struct MappedPage {
-    pub kaddr: usize,
-    pub perm: MapPerm,
-}
-
 pub trait PageTableTrait {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
-    fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm);
     fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
-    fn mmap_replace_kaddr(&mut self, uaddr: usize, kaddr: usize);
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm);
     fn munmap(&mut self, uaddr: usize);
     fn munmap_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> bool;
-    fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)>;
 
-    // fn mapped_page(&self, uaddr: usize) -> Option<MappedPage>;
-    // fn munmap_if_mapped(&mut self, uaddr: usize) -> bool;
-    // fn is_mapped(&self, uaddr: usize) -> bool;
+    #[allow(dead_code)]
+    fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)>;
 }
 
 pub trait ArchTrait {
@@ -46,6 +36,7 @@ pub trait ArchTrait {
     fn enable_device_interrupt(hartid: usize);
     fn enable_device_interrupt_irq(irq: u32);
 
+    #[allow(dead_code)]
     fn get_kernel_stack_top() -> usize;
 
     fn kaddr_to_paddr(kaddr: usize) -> usize;

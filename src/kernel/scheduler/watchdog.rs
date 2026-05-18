@@ -4,7 +4,6 @@ use core::time::Duration;
 use spin::mutex::SpinMutex;
 
 use crate::kernel::scheduler::{Task, Tid, current};
-use crate::klib::backtrace;
 
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -13,18 +12,19 @@ static BLOCKED_TASKS: SpinMutex<BTreeMap<Tid, (Arc<dyn Task>, u32)>> = SpinMutex
 pub fn kwatchdog() {
     loop {
         BLOCKED_TASKS.lock().iter_mut().for_each(|(tid, (task, ticks))| {
+            let _ = task;
             *ticks += 1;
             if *ticks >= 3 {
                 crate::kwarn!("Watchdog: Tid {} has been blocked for {} ticks", tid, ticks);
 
                 #[cfg(feature = "backtrace")]
-                backtrace::print_backtrace_from_fp(task.kcontext().frame_pointer());
+                crate::klib::backtrace::print_backtrace_from_fp(task.kcontext().frame_pointer());
 
                 #[cfg(feature = "deadlock-detect")]
                 if let Some((name, bt)) = task.lockstate().waiting() {
                     crate::kwarn!("Task is waiting on lock: {}", name);
                     crate::kwarn!("Lock was last acquired at:");
-                    backtrace::print_backtrace_chain(&bt);
+                    crate::klib::backtrace::print_backtrace_chain(&bt);
                 }
 
                 *ticks = 0;

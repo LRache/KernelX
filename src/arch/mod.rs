@@ -75,11 +75,13 @@ arch_export! {
     is_kernel_addr(addr: usize) -> bool;
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 pub fn get_frame_pointer() -> usize {
     Arch::get_frame_pointer()
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 pub unsafe fn frame_info(fp: usize) -> (usize, usize) {
     unsafe { Arch::frame_info(fp) }

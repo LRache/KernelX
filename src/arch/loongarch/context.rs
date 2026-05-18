@@ -1,4 +1,5 @@
 use crate::arch::arch::UserContextTrait;
+use crate::arch::loongarch::task::traphandle;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::KernelStack;
 
@@ -125,7 +126,7 @@ pub struct KernelContext {
 impl KernelContext {
     pub fn new(kernel_stack: &KernelStack) -> Self {
         KernelContext {
-            ra: super::task::traphandle::return_to_user as usize,
+            ra: traphandle::return_to_user as *const () as usize,
             sp: kernel_stack.get_top(),
             fp: 0,
             s: [0; 9],

@@ -30,7 +30,7 @@ impl UserContextTrait for UserContext {
             kernel_sp: 0,
             user_satp: 0,
             kernel_satp,
-            usertrap_handler: usertrap_handler as usize,
+            usertrap_handler: usertrap_handler as *const () as usize,
             fpregs: [0; 33],
             user_entry: 0,
             fpregs_dirty: true, // Clean the floating point registers on first use
@@ -122,7 +122,7 @@ pub struct KernelContext {
 impl KernelContext {
     pub fn new(kernel_stack: &KernelStack) -> Self {
         KernelContext {
-            ra: return_to_user as usize,
+            ra: return_to_user as *const () as usize,
             sp: kernel_stack.get_top(),
             s: [0; 12],
             a0: 0,
@@ -148,6 +148,7 @@ impl KernelContext {
         self
     }
 
+    #[allow(dead_code)] // Used to backtrace
     pub fn frame_pointer(&self) -> usize {
         self.s[0] // s0/fp
     }

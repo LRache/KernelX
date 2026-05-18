@@ -440,7 +440,6 @@ pub fn sync() -> SyscallRet {
 }
 
 const PER_LINUX: usize = 0x0000;
-const UNAME26: usize = 0x0020000;
 
 pub fn personality(persona: usize) -> SyscallRet {
     // If persona is 0xFFFFFFFF, return the current personality without changing it.
