@@ -62,14 +62,6 @@ pub fn get_block_driver(name: &str) -> Option<Arc<dyn BlockDriverOps>> {
         .and_then(|driver| driver.as_block_driver())
 }
 
-pub fn get_char_driver(name: &str) -> Option<Arc<dyn CharDriverOps>> {
-    DRIVERS
-        .read()
-        .get(name)
-        .cloned()
-        .and_then(|driver| driver.as_char_driver())
-}
-
 pub fn get_rtc_driver(name: &str) -> Option<Arc<dyn RTCDriverOps>> {
     DRIVERS
         .read()

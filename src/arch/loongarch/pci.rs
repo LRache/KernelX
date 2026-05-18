@@ -8,6 +8,7 @@ use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
 use virtio_drivers::transport::{DeviceType as VirtioDeviceType, Transport};
 
 use crate::driver::block::VirtIOBlockDriver;
+use crate::driver::char::serial::virtconsole;
 use crate::driver::virtio::VirtIOHal;
 use crate::driver::{DriverOps, register_irq_handler};
 use crate::{arch, kinfo, kwarn};
@@ -114,6 +115,25 @@ fn register_virtio_pci_device(
             }
             crate::fs::devfs::add_device(name, driver);
         }
+        VirtioDeviceType::Console => {
+            let driver = virtconsole::new_driver(name.clone(), transport);
+            kinfo!(
+                "loongarch: PCIe console device registered as `{}` (INTx IRQ {:?})",
+                name,
+                irq,
+            );
+            crate::driver::register_matched_driver(driver.clone());
+            if let Some(irq) = irq {
+                register_irq_handler(irq, driver.clone());
+                arch::enable_device_interrupt_irq(irq);
+            } else {
+                kwarn!(
+                    "loongarch: `{}` has no INTx IRQ; device will not receive interrupts",
+                    name
+                );
+            }
+            crate::fs::devfs::add_device(name, driver);
+        }
         VirtioDeviceType::Network => {
             kwarn!("loongarch: PCIe virtio-net ignored (networking deferred)");
         }
@@ -142,6 +162,9 @@ fn device_name(_df: DeviceFunction, vdev_type: VirtioDeviceType) -> alloc::strin
         }
         VirtioDeviceType::Network => {
             let _ = write!(&mut s, "virtio_net");
+        }
+        VirtioDeviceType::Console => {
+            let _ = write!(&mut s, "{}", virtconsole::device_name());
         }
         other => {
             let _ = write!(&mut s, "virtio_{:?}", other);

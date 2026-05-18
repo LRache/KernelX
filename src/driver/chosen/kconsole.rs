@@ -1,23 +1,42 @@
-use spin::RwLock;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 
-pub trait KConsole: Sync {
+use crate::driver::CharDriverOps;
+use crate::klib::RWLock;
+
+pub trait KConsole: Send + Sync {
     fn kputs(&self, s: &str);
 }
 
-struct EmptyKConsole;
+struct CharDriverKConsole {
+    driver: Arc<dyn CharDriverOps>,
+}
 
-impl KConsole for EmptyKConsole {
-    fn kputs(&self, _s: &str) {
-        // Do nothing
+impl CharDriverKConsole {
+    fn new(driver: Arc<dyn CharDriverOps>) -> Self {
+        Self { driver }
     }
 }
 
-static KCONSOLE: RwLock<&'static dyn KConsole> = RwLock::new(&EmptyKConsole);
+impl KConsole for CharDriverKConsole {
+    fn kputs(&self, s: &str) {
+        let _ = self.driver.write(s.as_bytes());
+    }
+}
 
-pub fn register(console: &'static dyn KConsole) {
-    *KCONSOLE.write() = console;
+static KCONSOLE: RWLock<Option<Box<dyn KConsole>>> = RWLock::new(None, "static::KCONSOLE");
+
+pub fn register(console: Box<dyn KConsole>) {
+    *KCONSOLE.write() = Some(console);
+}
+
+pub fn register_driver(driver: Arc<dyn CharDriverOps>) {
+    register(Box::new(CharDriverKConsole::new(driver)));
 }
 
 pub fn kputs(s: &str) {
-    KCONSOLE.read().kputs(s);
+    let console = KCONSOLE.read();
+    if let Some(console) = console.as_ref() {
+        console.kputs(s);
+    }
 }

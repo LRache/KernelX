@@ -22,6 +22,10 @@ impl CharDevInode {
             lock_state: SpinLock::new(InodeLockState::new(), "CharDevInode::lock_state"),
         }
     }
+
+    pub fn driver(&self) -> &Arc<dyn CharDriverOps> {
+        &self.driver
+    }
 }
 
 impl InodeOps for CharDevInode {

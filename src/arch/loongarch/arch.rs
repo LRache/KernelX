@@ -1,5 +1,6 @@
 //! LoongArch64 `ArchTrait` implementation.
 
+use alloc::boxed::Box;
 use core::time::Duration;
 
 use crate::arch::arch::{Arch, ArchTrait, UserContextTrait};
@@ -7,7 +8,7 @@ use crate::driver::chosen;
 use crate::kernel::mm::MapPerm;
 use crate::klib::initcell::InitedCell;
 
-use super::boot::EARLY_UART;
+use super::boot::EarlyUart;
 use super::context::KernelContext;
 use super::{csr, eiointc, fdt, pch_pic, task, trap};
 
@@ -18,7 +19,7 @@ static STABLE_COUNTER_FREQ_HZ: InitedCell<u64> = InitedCell::uninit();
 
 impl ArchTrait for Arch {
     fn init() {
-        chosen::kconsole::register(&EARLY_UART);
+        chosen::kconsole::register(Box::new(EarlyUart));
 
         trap::install_trap_entry();
 

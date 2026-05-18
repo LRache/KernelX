@@ -5,6 +5,7 @@ use virtio_drivers::transport::{DeviceType, Transport};
 
 use crate::arch;
 use crate::driver::block::VirtIOBlockDriver;
+use crate::driver::char::serial::virtconsole;
 use crate::driver::net::VirtioNetDriver;
 use crate::driver::{Device, DriverMatcher, DriverOps};
 use crate::net::interface::Interface;
@@ -30,6 +31,7 @@ impl DriverMatcher for Matcher {
 
         match transport.device_type() {
             DeviceType::Block => Some(Arc::new(VirtIOBlockDriver::new(device.name().into(), transport))),
+            DeviceType::Console => Some(virtconsole::new_driver(virtconsole::device_name(), transport)),
             DeviceType::Network => {
                 let net_driver = Arc::new(VirtioNetDriver::new(transport));
                 let iface = Arc::new(Interface::new(device.name().into(), net_driver));

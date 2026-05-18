@@ -28,5 +28,3 @@ impl KConsole for EarlyUart {
         }
     }
 }
-
-pub static EARLY_UART: EarlyUart = EarlyUart;

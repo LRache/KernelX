@@ -1,5 +1,6 @@
 use core::time::Duration;
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
@@ -27,10 +28,10 @@ impl ArchTrait for Arch {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;
         }
-        stvec::write(asm_kerneltrap_entry as usize);
+        stvec::write(asm_kerneltrap_entry as *const () as usize);
         kernelpagetable::init();
 
-        chosen::kconsole::register(&SBIKConsole);
+        chosen::kconsole::register(Box::new(SBIKConsole));
         chosen::kpmu::register(Arc::new(SBIKPMU));
 
         driver::register_matched_driver(Arc::new(SBIConsoleDriver));
