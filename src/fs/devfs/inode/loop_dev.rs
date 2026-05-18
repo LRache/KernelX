@@ -198,9 +198,7 @@ impl InodeOps for LoopInode {
                 self.bind_target_inode(target_inode)?;
                 Ok(0)
             }
-            Request::LOOP_CLR_FD => {
-                self.clear_target_inode()
-            }
+            Request::LOOP_CLR_FD => self.clear_target_inode(),
             Request::LOOP_SET_STATUS => self.set_status(arg, addrspace),
             Request::LOOP_GET_STATUS => self.get_status(arg, addrspace),
             Request::LOOP_BLKGETSIZE64 => {
