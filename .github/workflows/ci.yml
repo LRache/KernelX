@@ -150,7 +150,8 @@ jobs:
             CONFIG_NO_SMP=y \
             CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
             COMPILE_MODE=release \
-            OBJCOPY=llvm-objcopy-21
+            OBJCOPY=llvm-objcopy-21 \
+            SYSROOT=/usr/loongarch64-linux-gnu
 
       - name: Test testsuits-for-oskernel-loongarch64
         timeout-minutes: 90
