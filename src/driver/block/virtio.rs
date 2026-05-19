@@ -30,8 +30,8 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
     }
 
     fn wait_for_token(&self, token: u16) {
-        let task = current::task().clone();
-        task.block_uninterruptible("virtio_blk_io");
+        let task = current::task();
+        scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_io");
 
         self.inflight.lock().insert(token, task.clone());
 

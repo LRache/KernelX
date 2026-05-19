@@ -40,9 +40,9 @@ pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
     SCHEDULER.fetch_next_task()
 }
 
-pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &str) {
+pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &'static str) {
     task.block_uninterruptible(reason);
-    watchdog::add_blocked_task(task);
+    watchdog::add_blocked_task(task, reason);
 }
 
 pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> Result<(), WakeupFailure> {

@@ -5,39 +5,54 @@ use spin::mutex::SpinMutex;
 
 use crate::kernel::scheduler::{Task, Tid, current};
 
-const WATCHDOG_INTERVAL: Duration = Duration::from_secs(1);
+const WATCHDOG_TICK: Duration = Duration::from_secs(1);
+const WATCHDOG_THRESHOLD_TICKS: u8 = 3;
+const WATCHDOG_REPORT_ALIVE_TICKS: u8 = 60;
 
-static BLOCKED_TASKS: SpinMutex<BTreeMap<Tid, (Arc<dyn Task>, u32)>> = SpinMutex::new(BTreeMap::new());
+static BLOCKED_TASKS: SpinMutex<BTreeMap<Tid, (Arc<dyn Task>, u8, &'static str)>> = SpinMutex::new(BTreeMap::new());
 
 pub fn kwatchdog() {
+    let mut alive_ticks = 0u8;
     loop {
-        BLOCKED_TASKS.lock().iter_mut().for_each(|(tid, (task, ticks))| {
-            let _ = task;
-            *ticks += 1;
-            if *ticks >= 3 {
-                crate::kwarn!("Watchdog: Tid {} has been blocked for {} ticks", tid, ticks);
+        current::sleep(WATCHDOG_TICK);
+        BLOCKED_TASKS
+            .lock()
+            .iter_mut()
+            .for_each(|(tid, (task, ticks, reason))| {
+                let _ = task;
+                *ticks += 1;
+                if *ticks >= WATCHDOG_THRESHOLD_TICKS {
+                    crate::kwarn!(
+                        "Watchdog: Tid {} has been blocked for {} ticks, reason: {}",
+                        tid,
+                        ticks,
+                        reason
+                    );
 
-                #[cfg(feature = "backtrace")]
-                crate::klib::backtrace::print_backtrace_from_fp(task.kcontext().frame_pointer());
+                    #[cfg(feature = "backtrace")]
+                    crate::klib::backtrace::print_backtrace_from_fp(task.kcontext().frame_pointer());
 
-                #[cfg(feature = "deadlock-detect")]
-                if let Some((name, bt)) = task.lockstate().waiting() {
-                    crate::kwarn!("Task is waiting on lock: {}", name);
-                    crate::kwarn!("Lock was last acquired at:");
-                    crate::klib::backtrace::print_backtrace_chain(&bt);
+                    #[cfg(feature = "deadlock-detect")]
+                    if let Some((name, bt)) = task.lockstate().waiting() {
+                        crate::kwarn!("Task is waiting on lock: {}", name);
+                        crate::kwarn!("Lock was last acquired at:");
+                        crate::klib::backtrace::print_backtrace_chain(&bt);
+                    }
+
+                    *ticks = 0;
                 }
-
-                *ticks = 0;
-            }
-        });
-
-        current::sleep(WATCHDOG_INTERVAL);
+            });
+        alive_ticks = alive_ticks + 1;
+        if alive_ticks >= WATCHDOG_REPORT_ALIVE_TICKS {
+            crate::kdebug!("kwatchdog: alive");
+            alive_ticks = 0;
+        }
     }
 }
 
-pub fn add_blocked_task(task: Arc<dyn Task>) {
+pub fn add_blocked_task(task: Arc<dyn Task>, reason: &'static str) {
     let tid = task.tid();
-    BLOCKED_TASKS.lock().insert(tid, (task, 0));
+    BLOCKED_TASKS.lock().insert(tid, (task, 0, reason));
 }
 
 pub fn remove_blocked_task(tid: Tid) {
