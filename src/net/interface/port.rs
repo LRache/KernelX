@@ -50,7 +50,7 @@ impl PortMap {
         }
     }
 
-    pub(super) fn bind(&mut self, port: u16) -> &mut PacketQueue {
+    fn bind(&mut self, port: u16) -> &mut PacketQueue {
         self.ports.entry(port).or_insert_with(PacketQueue::new)
     }
 
