@@ -4,18 +4,17 @@ mod arch;
 mod boot;
 mod context;
 mod csr;
-pub(crate) mod eiointc;
+pub mod eiointc;
 mod fdt;
 mod iocsr;
 mod pagetable;
-pub(crate) mod pch_pic;
+pub mod pch_pic;
 mod pci;
 mod task;
-pub(crate) mod trap;
+pub mod trap;
 
 pub use context::{KernelContext, SigContext, UserContext};
 pub use pagetable::PageTable;
-pub use task::kernel_switch;
 
 /// 4 KiB base page, matching Linux's default LoongArch configuration.
 pub const PGBITS: usize = 12;

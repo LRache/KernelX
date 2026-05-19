@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub mod num {
     pub const CRMD: u32 = 0x00;
     pub const PRMD: u32 = 0x01;
@@ -88,6 +89,7 @@ pub mod pwcl {
 }
 
 /// PWCH — page-walk configuration (high half). 3 levels → 0.
+#[allow(dead_code)]
 pub mod pwch {
     pub const DIR3_BASE_SHIFT: u32 = 0;
     pub const DIR3_WIDTH_SHIFT: u32 = 6;
@@ -104,14 +106,14 @@ pub mod stlbps {
 
 /// ECFG — interrupt enable and vector size.
 pub mod ecfg {
-    pub const LIE_SHIFT: usize = 0;
-    pub const VS_SHIFT: usize = 16;
+    const VS_SHIFT: usize = 16;
     pub const VS_MASK: usize = 0b111 << VS_SHIFT;
 
     /// Bit in LIE[12:0] for the timer.
     pub const LINE_TIMER: usize = 11;
     /// Bit in LIE[12:0] for HWI0 (EIOINTC fanout on QEMU virt).
     pub const LINE_HWI0: usize = 2;
+    pub const HWI_COUNT: usize = 8;
 }
 
 /// ESTAT — decoded by the trap dispatcher.
@@ -125,25 +127,57 @@ pub mod estat {
 
 /// Known ESTAT.Ecode values.
 pub mod ecode {
-    pub const INT: usize = 0x00;
-    pub const PIL: usize = 0x01; // page illegal load (NR)
-    pub const PIS: usize = 0x02; // page illegal store (NW / no-PLV)
-    pub const PIF: usize = 0x03; // page illegal fetch (NX)
-    pub const PME: usize = 0x04; // page modify (first-write D bit)
-    pub const PNR: usize = 0x05; // page not-readable
-    pub const PNX: usize = 0x06; // page not-executable
-    pub const PPI: usize = 0x07; // page privilege invalid
-    pub const ADE: usize = 0x08; // address error
-    pub const ALE: usize = 0x09; // unaligned access
-    pub const BCE: usize = 0x0a; // bound check
-    pub const SYS: usize = 0x0b; // syscall
-    pub const BRK: usize = 0x0c; // break
-    pub const INE: usize = 0x0d; // illegal instruction
-    pub const IPE: usize = 0x0e; // instruction privilege error
-    pub const FPD: usize = 0x0f; // FPU disabled
-    pub const SXD: usize = 0x10;
-    pub const ASXD: usize = 0x11;
-    pub const FPE: usize = 0x12;
+    use num_enum::TryFromPrimitive;
+
+    #[derive(Clone, Copy, Eq, PartialEq, TryFromPrimitive)]
+    #[repr(usize)]
+    pub enum Ecode {
+        Int = 0x00,
+        Pil = 0x01, // page illegal load (NR)
+        Pis = 0x02, // page illegal store (NW / no-PLV)
+        Pif = 0x03, // page illegal fetch (NX)
+        Pme = 0x04, // page modify (first-write D bit)
+        Pnr = 0x05, // page not-readable
+        Pnx = 0x06, // page not-executable
+        Ppi = 0x07, // page privilege invalid
+        Ade = 0x08, // address error
+        Ale = 0x09, // unaligned access
+        Bce = 0x0a, // bound check
+        Sys = 0x0b, // syscall
+        Brk = 0x0c, // break
+        Ine = 0x0d, // illegal instruction
+        Ipe = 0x0e, // instruction privilege error
+        Fpd = 0x0f, // FPU disabled
+        Sxd = 0x10,
+        Asxd = 0x11,
+        Fpe = 0x12,
+    }
+
+    impl Ecode {
+        pub const fn to_str(self) -> &'static str {
+            match self {
+                Self::Int => "INT",
+                Self::Pil => "PIL (load, NR)",
+                Self::Pis => "PIS (store, no-PLV / NW)",
+                Self::Pif => "PIF (fetch, NX)",
+                Self::Pme => "PME (first-write dirty)",
+                Self::Pnr => "PNR (page NR)",
+                Self::Pnx => "PNX (page NX)",
+                Self::Ppi => "PPI (privilege)",
+                Self::Ade => "ADE (addr error)",
+                Self::Ale => "ALE (unaligned)",
+                Self::Bce => "BCE",
+                Self::Sys => "SYS (syscall)",
+                Self::Brk => "BRK (break)",
+                Self::Ine => "INE (illegal inst)",
+                Self::Ipe => "IPE (inst priv err)",
+                Self::Fpd => "FPD (FPU disabled)",
+                Self::Sxd => "SXD",
+                Self::Asxd => "ASXD",
+                Self::Fpe => "FPE",
+            }
+        }
+    }
 }
 
 /// TCFG — stable-timer control. Armed by a single store combining

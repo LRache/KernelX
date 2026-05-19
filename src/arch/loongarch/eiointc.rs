@@ -1,7 +1,9 @@
 use super::{csr, iocsr};
 use crate::kinfo;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const NR_IRQS: usize = 256;
+static PARENT_LINE: AtomicUsize = AtomicUsize::new(csr::ecfg::LINE_HWI0);
 
 mod reg {
     pub const MISC: usize = 0x0420;
@@ -13,13 +15,19 @@ mod reg {
 
 mod misc_bits {
     pub const EXT_IOI_EN: u64 = 1 << 48;
-    pub const INT_ENCODE: u64 = 1 << 49;
 }
 
 /// All IRQs start masked; drivers call `enable_irq` explicitly.
-pub fn init() {
+pub fn init(parent_line: usize) {
+    let parent_line = if (csr::ecfg::LINE_HWI0..csr::ecfg::LINE_HWI0 + csr::ecfg::HWI_COUNT).contains(&parent_line) {
+        parent_line
+    } else {
+        csr::ecfg::LINE_HWI0
+    };
+    PARENT_LINE.store(parent_line, Ordering::Relaxed);
+
     let mut misc = iocsr::iocsr_read_d(reg::MISC);
-    misc |= misc_bits::EXT_IOI_EN | misc_bits::INT_ENCODE;
+    misc |= misc_bits::EXT_IOI_EN;
     iocsr::iocsr_write_d(reg::MISC, misc);
 
     // Mask every IRQ.
@@ -27,9 +35,19 @@ pub fn init() {
         iocsr::iocsr_write_d(reg::ENABLE_BASE + i * 8, 0);
     }
 
-    // IPMAP: each byte is a HWI-line bitmap for 32 IRQs. 0x01 = HWI0 only.
+    let hwi_bit = 1u64 << (parent_line - csr::ecfg::LINE_HWI0);
+    let ipmap = hwi_bit
+        | (hwi_bit << 8)
+        | (hwi_bit << 16)
+        | (hwi_bit << 24)
+        | (hwi_bit << 32)
+        | (hwi_bit << 40)
+        | (hwi_bit << 48)
+        | (hwi_bit << 56);
+
+    // IPMAP: each byte is a HWI-line bitmap for 32 IRQs.
     for i in 0..4 {
-        iocsr::iocsr_write_d(reg::IPMAP_BASE + i * 8, 0x0101_0101_0101_0101);
+        iocsr::iocsr_write_d(reg::IPMAP_BASE + i * 8, ipmap);
     }
 
     // ROUTE: per-IRQ CPU bitmap. Single-core → 0x01 for every byte.
@@ -37,12 +55,19 @@ pub fn init() {
         iocsr::iocsr_write_d(reg::ROUTE_BASE + i * 8, 0x0101_0101_0101_0101);
     }
 
-    // ECFG.LIE bit 2 so the CPU responds when EIOINTC raises HWI0.
+    // ECFG.LIE bit so the CPU responds when EIOINTC raises its parent HWI.
     // Idempotent with `Arch::enable_device_interrupt`.
-    let bit = 1usize << csr::ecfg::LINE_HWI0;
+    let bit = 1usize << parent_line;
     csr::xchg::<{ csr::num::ECFG }>(bit, bit);
 
-    kinfo!("loongarch: EIOINTC initialized (256 IRQs → HWI0, all masked)");
+    kinfo!(
+        "loongarch: EIOINTC initialized (256 IRQs -> HWI{}, all masked)",
+        parent_line - csr::ecfg::LINE_HWI0
+    );
+}
+
+pub fn parent_line() -> usize {
+    PARENT_LINE.load(Ordering::Relaxed)
 }
 
 /// Unmask `irq` on EIOINTC. Caller must also unmask at PCH-PIC.

@@ -5,7 +5,7 @@ use crate::driver::{Device, found_device};
 use crate::kernel::parse_boot_args;
 use crate::{arch, kinfo, kwarn};
 
-use super::{eiointc, pch_pic, pci};
+use super::{csr, eiointc, pch_pic, pci};
 
 const FDT_BASE_PA: usize = 0x100000;
 
@@ -65,8 +65,8 @@ pub fn load_device_tree() -> Result<(), ()> {
 }
 
 fn init_interrupt_controllers(fdt: &Fdt) {
-    if let Some(_eiointc_node) = find_by_compatible(fdt, EIOINTC_COMPATIBLE) {
-        eiointc::init();
+    if let Some(eiointc_node) = find_by_compatible(fdt, EIOINTC_COMPATIBLE) {
+        eiointc::init(eiointc_parent_line(&eiointc_node));
     } else {
         kwarn!("loongarch: no EIOINTC node in FDT — device interrupts will not fire");
     }
@@ -86,6 +86,27 @@ fn init_interrupt_controllers(fdt: &Fdt) {
     } else {
         kwarn!("loongarch: no PCH-PIC node in FDT — device interrupts will not route");
     }
+}
+
+fn eiointc_parent_line(node: &FdtNode) -> usize {
+    let Some(parent_line) = first_interrupt_cell(node).map(|line| line as usize) else {
+        return csr::ecfg::LINE_HWI0;
+    };
+    if (csr::ecfg::LINE_HWI0..csr::ecfg::LINE_HWI0 + csr::ecfg::HWI_COUNT).contains(&parent_line) {
+        parent_line
+    } else {
+        kwarn!(
+            "loongarch: invalid EIOINTC parent interrupt {}; falling back to HWI0",
+            parent_line
+        );
+        csr::ecfg::LINE_HWI0
+    }
+}
+
+fn first_interrupt_cell(node: &FdtNode) -> Option<u32> {
+    let prop = node.property("interrupts")?;
+    let bytes = prop.value.get(0..4)?;
+    Some(u32::from_be_bytes(bytes.try_into().ok()?))
 }
 
 fn is_interrupt_controller(node: &FdtNode) -> bool {

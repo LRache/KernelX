@@ -49,9 +49,10 @@ pub fn init(mmio_pa: usize, mmio_size: usize) {
 
     debug_assert!(kaddr >> 60 == 0x8, "PCH-PIC kaddr {:#x} not in DMW0", kaddr);
 
-    // Defaults: all IRQs masked, level-triggered, high-polarity, no MSI.
+    // Defaults: all IRQs masked, level-triggered, high-polarity, HT message
+    // conversion enabled so PCH-PIC inputs can reach EIOINTC.
     write_d(reg::MASK, !0u64);
-    write_d(reg::HTMSI_EN, 0);
+    write_d(reg::HTMSI_EN, !0u64);
     write_d(reg::EDGE, 0);
     write_d(reg::POL, 0);
     write_d(reg::AUTO_CTRL0, 0);

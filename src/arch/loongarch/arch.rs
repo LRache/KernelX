@@ -78,7 +78,7 @@ impl ArchTrait for Arch {
     }
 
     fn enable_device_interrupt(_hartid: usize) {
-        let bit = 1usize << csr::ecfg::LINE_HWI0;
+        let bit = 1usize << eiointc::parent_line();
         csr::xchg::<{ csr::num::ECFG }>(bit, bit);
     }
 
