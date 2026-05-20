@@ -46,15 +46,6 @@ config ARCH_BITS
 	  Architecture bit width (32 or 64).
 	  Automatically selected based on the chosen platform.
 
-config CROSS_COMPILE
-	string "Cross-compiler prefix"
-	default "riscv64-unknown-elf-" if RISCV64
-	default "loongarch64-unknown-elf-" if LOONGARCH64
-	help
-	  Prefix for cross-compilation tools (e.g., riscv64-unknown-elf-).
-	  On macOS we compile C/asm with Homebrew clang + ld.lld, so this
-	  prefix is only consulted when a real ${CROSS_COMPILE}gcc is needed.
-
 config OBJCOPY
 	string "objcopy util path"
 	default "objcopy"
