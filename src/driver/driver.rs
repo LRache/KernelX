@@ -148,6 +148,14 @@ pub trait BlockDriverOps: DriverOps + Downcast {
         false
     }
 
+    fn get_readahead(&self) -> usize {
+        0
+    }
+
+    fn set_readahead(&self, readahead: usize) {
+        let _ = readahead;
+    }
+
     fn get_block_size(&self) -> u32;
 
     fn get_block_count(&self) -> u64;

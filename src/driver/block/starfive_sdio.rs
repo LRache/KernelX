@@ -1,5 +1,6 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use visionfive2_sd::{SDIo, SleepOps, Vf2SdDriver};
 
@@ -55,6 +56,7 @@ impl SleepOps for SleepOpsImpls {
 pub struct Driver {
     name: String,
     inner: SpinLock<Vf2SdDriver<SDIOImpls, SleepOpsImpls>>,
+    readahead: AtomicUsize,
 }
 
 impl Driver {
@@ -63,6 +65,7 @@ impl Driver {
         Driver {
             name,
             inner: SpinLock::new(inner, "Driver::inner"),
+            readahead: AtomicUsize::new(0),
         }
     }
 
@@ -106,6 +109,14 @@ impl BlockDriverOps for Driver {
 
     fn get_block_size(&self) -> u32 {
         512
+    }
+
+    fn get_readahead(&self) -> usize {
+        self.readahead.load(Ordering::Relaxed)
+    }
+
+    fn set_readahead(&self, readahead: usize) {
+        self.readahead.store(readahead, Ordering::Relaxed);
     }
 
     fn get_block_count(&self) -> u64 {

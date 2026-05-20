@@ -1,6 +1,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use virtio_drivers::device::blk::{BlkReq, BlkResp, RespStatus, VirtIOBlk};
 use virtio_drivers::transport::Transport;
 
@@ -17,6 +18,7 @@ pub struct VirtIOBlockDriver<T: Transport + Send + 'static> {
     driver: SpinLock<VirtIOBlk<VirtIOHal, T>>,
     inflight: SpinLock<BTreeMap<u16, Arc<dyn Task>>>,
     read_only: bool,
+    readahead: AtomicUsize,
 }
 
 impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
@@ -29,6 +31,7 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             driver: SpinLock::new(blk, "VirtIOBlockDriver::driver"),
             inflight: SpinLock::new(BTreeMap::new(), "VirtIOBlockDriver::inflight"),
             read_only,
+            readahead: AtomicUsize::new(0),
         }
     }
 
@@ -271,6 +274,14 @@ impl<T: Transport + Send + 'static> BlockDriverOps for VirtIOBlockDriver<T> {
 
     fn is_readonly(&self) -> bool {
         self.read_only
+    }
+
+    fn get_readahead(&self) -> usize {
+        self.readahead.load(Ordering::Relaxed)
+    }
+
+    fn set_readahead(&self, readahead: usize) {
+        self.readahead.store(readahead, Ordering::Relaxed);
     }
 
     fn get_block_size(&self) -> u32 {

@@ -1,10 +1,12 @@
 use alloc::sync::Arc;
+use num_enum::TryFromPrimitive;
 
 use crate::driver::{BlockDriverOps, CharDriverOps};
 use crate::fs::file::{CharFile, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::InodeLockState;
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
@@ -138,6 +140,28 @@ impl InodeOps for BlockDevInode {
 
     fn size(&self) -> SysResult<u64> {
         Ok(self.driver.get_block_size() as u64 * self.driver.get_block_count())
+    }
+
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        #[derive(TryFromPrimitive)]
+        #[allow(non_camel_case_types)]
+        #[repr(u32)]
+        enum Request {
+            BLKRASET = 0x1262,
+            BLKRAGET = 0x1263,
+        }
+
+        let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
+        match request {
+            Request::BLKRASET => {
+                self.driver.set_readahead(arg);
+                Ok(0)
+            }
+            Request::BLKRAGET => {
+                addrspace.copy_to_user(arg, self.driver.get_readahead())?;
+                Ok(0)
+            }
+        }
     }
 
     fn type_name(&self) -> &'static str {
