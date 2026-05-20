@@ -139,7 +139,7 @@ impl FileOps for Pipe {
     fn fstatfs(&self) -> SysResult<Statfs> {
         let mut kstatfs = Statfs::default();
         kstatfs.f_type = 0x50495045; // "PIPE"
-        Ok(kstatfs) 
+        Ok(kstatfs)
     }
 
     fn fsync(&self) -> SysResult<()> {

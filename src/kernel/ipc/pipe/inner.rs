@@ -540,7 +540,7 @@ impl PipeInner {
         if (size as isize) < 0 {
             return Err(Errno::EINVAL);
         }
-        
+
         let aligned = if size == 0 {
             arch::PGSIZE
         } else {
