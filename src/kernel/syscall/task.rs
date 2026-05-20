@@ -1063,6 +1063,9 @@ pub fn chdir(uptr_path: UString) -> SysResult<usize> {
 pub fn fchdir(fd: usize) -> SysResult<usize> {
     let file = current::fdtable().lock().get(fd)?;
     let dentry = file.get_dentry().ok_or(Errno::ENOTDIR)?;
+    if !dentry.get_inode().check_perm(&Perm::current(PermFlags::X))? {
+        return Err(Errno::EACCES);
+    }
     current::pcb().set_cwd(&dentry);
     Ok(0)
 }
