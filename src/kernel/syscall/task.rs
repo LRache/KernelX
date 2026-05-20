@@ -54,6 +54,16 @@ pub fn getpgid(pid: usize) -> SyscallRet {
     }
 }
 
+pub fn getsid(pid: usize) -> SyscallRet {
+    let pid = pid as Tid;
+    if pid == 0 {
+        Ok(current::pcb().sid() as usize)
+    } else {
+        let pcb = find_process(pid).ok_or(Errno::ESRCH)?;
+        Ok(pcb.sid() as usize)
+    }
+}
+
 pub fn setpgid(pid: usize, pgid: usize) -> SyscallRet {
     let pid = pid as Tid;
     let pgid = pgid as Tid;

@@ -75,6 +75,7 @@ macro_rules! syscall_entries {
             153 => misc::times(1),
             154 => task::setpgid(2),
             155 => task::getpgid(1),
+            156 => task::getsid(1),
             157 => task::setsid(0),
             158 => uid::getgroups(2),
             159 => uid::setgroups(2),

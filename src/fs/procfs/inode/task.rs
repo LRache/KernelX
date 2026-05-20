@@ -641,6 +641,7 @@ impl InodeOps for TaskStatInode {
         let pid = pcb.pid();
         let ppid = pcb.parent.lock().as_ref().map_or(0, |p| p.pid());
         let pgid = pcb.pgid();
+        let sid = pcb.sid();
         let exec_path = pcb.exec_path();
         let comm = exec_path.rsplit('/').next().unwrap_or(&exec_path);
         let state_set = tcb.state().lock();
@@ -653,8 +654,8 @@ impl InodeOps for TaskStatInode {
         let mut content = String::with_capacity(128);
         let _ = writeln!(
             content,
-            "{} ({}) {} {} {} 0 0 0 0 0 0 0 0 {} {}",
-            pid, comm, state_char, ppid, pgid, utime, stime
+            "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 {} {}",
+            pid, comm, state_char, ppid, pgid, sid, utime, stime
         );
 
         let content_bytes = content.as_bytes();
