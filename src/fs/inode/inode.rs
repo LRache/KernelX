@@ -253,7 +253,7 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
-        Err(Errno::ENOSYS)
+        Err(Errno::ENOTTY)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {

@@ -5,7 +5,6 @@ mod filestat;
 mod openflags;
 mod sigaction;
 mod statfs;
-pub mod termios;
 
 pub use dirent::*;
 pub use filestat::*;
