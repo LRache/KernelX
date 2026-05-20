@@ -184,6 +184,7 @@ impl InodeOps for LoopInode {
             LOOP_CLR_FD = 0x4C01,
             LOOP_SET_STATUS = 0x4C02,
             LOOP_GET_STATUS = 0x4C03,
+            LOOP_BLKGETSIZE = 0x1260,
             LOOP_BLKGETSIZE64 = 0x80081272,
         }
 
@@ -201,6 +202,12 @@ impl InodeOps for LoopInode {
             Request::LOOP_CLR_FD => self.clear_target_inode(),
             Request::LOOP_SET_STATUS => self.set_status(arg, addrspace),
             Request::LOOP_GET_STATUS => self.get_status(arg, addrspace),
+            Request::LOOP_BLKGETSIZE => {
+                let size = self.size()?;
+                let blocks = size / 512;
+                addrspace.copy_to_user(arg, blocks as u32)?;
+                Ok(0)
+            }
             Request::LOOP_BLKGETSIZE64 => {
                 let size = self.size()?;
                 addrspace.copy_to_user(arg, size)?;
