@@ -10,6 +10,7 @@ use crate::kernel::ipc::unixsocket::{UnixSocket, UnixSocketType};
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::syscall::uptr::UArray;
+use crate::kernel::task::CapabilitySet;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::net::protocol::ipv4::IpProtocol;
 use crate::net::socket::{
@@ -18,7 +19,6 @@ use crate::net::socket::{
 
 use super::SyscallRet;
 use super::fs::IOVec;
-use super::uid::{self, Capability};
 use super::uptr::{UBuffer, UPtr, UserPointer, UserStruct};
 
 const MSG_IOV_MAX: usize = 1024;
@@ -168,7 +168,7 @@ pub fn socket(domain: usize, sock_type: usize, protocol: usize) -> SyscallRet {
                 Arc::new(InetSocket::new_tcp(blocked))
             }
             SocketKind::Raw => {
-                if !uid::capable(Capability::NetRaw) {
+                if !current::capable(CapabilitySet::NET_RAW) {
                     return Err(Errno::EPERM);
                 }
                 let proto = u8::try_from(protocol).map_err(|_| Errno::EPROTONOSUPPORT)?;

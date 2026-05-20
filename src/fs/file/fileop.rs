@@ -3,12 +3,12 @@ use alloc::sync::Arc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::fs::file::FileFlags;
-use crate::fs::{Dentry, InodeOps};
+use crate::fs::{Dentry, InodeOps, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::uapi::FileStat;
+use crate::kernel::uapi::{FileStat, Statfs};
 
 #[derive(Debug, Clone, Copy)]
 pub enum SeekWhence {
@@ -67,6 +67,10 @@ pub trait FileOps: DowncastSync {
     }
     fn fstat(&self) -> SysResult<FileStat>;
     fn fsync(&self) -> SysResult<()>;
+    fn fstatfs(&self) -> SysResult<Statfs> {
+        let sno = self.get_dentry().ok_or(Errno::EINVAL)?.sno();
+        vfs::statfs(sno)
+    }
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>>;
     fn get_dentry(&self) -> Option<&Arc<Dentry>>;

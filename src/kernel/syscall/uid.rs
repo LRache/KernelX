@@ -27,13 +27,6 @@ pub fn getegid() -> SysResult<usize> {
 
 const PREFERRED_CAPABILITY_VERSION: u32 = 0x2008_0522;
 
-#[derive(Clone, Copy)]
-pub(crate) enum Capability {
-    NetRaw,
-    SetPcap,
-    SysTime,
-}
-
 #[derive(TryFromPrimitive)]
 #[repr(u32)]
 enum CapabilityVersion {
@@ -108,17 +101,8 @@ impl CapUserData {
     }
 }
 
-pub(crate) fn capable(capability: Capability) -> bool {
-    let capability_set = match capability {
-        Capability::NetRaw => CapabilitySet::NET_RAW,
-        Capability::SetPcap => CapabilitySet::SETPCAP,
-        Capability::SysTime => CapabilitySet::SYS_TIME,
-    };
-    current::pcb().capabilities().effective.contains(capability_set)
-}
-
 pub(super) fn drop_capability_from_bounding(capability: usize) -> SysResult<usize> {
-    if !capable(Capability::SetPcap) {
+    if !current::capable(CapabilitySet::SETPCAP) {
         return Err(Errno::EPERM);
     }
 

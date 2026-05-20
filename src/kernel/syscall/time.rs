@@ -10,9 +10,9 @@ use crate::kernel::event::{Event, Timer, TimerClockId, TimerNotify, timer};
 use crate::kernel::ipc::SignalNum;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UPtr, UserPointer, UserStruct};
+use crate::kernel::task::CapabilitySet;
 
 use super::common::{ITimerSpec, Timespec, Timeval};
-use super::uid::{self, Capability};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -64,7 +64,7 @@ pub fn clock_settime(clockid: usize, uptr_timespec: UPtr<SetTimespec>) -> SysRes
         return Err(Errno::EINVAL);
     }
 
-    if !uid::capable(Capability::SysTime) {
+    if !current::capable(CapabilitySet::SYS_TIME) {
         return Err(Errno::EPERM);
     }
 
@@ -88,7 +88,7 @@ pub fn settimeofday(uptr_timeval: UPtr<SetTimeval>, uptr_timezone: UPtr<Timezone
         uptr_timezone.read()?;
     }
 
-    if !uid::capable(Capability::SysTime) {
+    if !current::capable(CapabilitySet::SYS_TIME) {
         return Err(Errno::EPERM);
     }
 

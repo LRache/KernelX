@@ -10,6 +10,7 @@ use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::FixedContiguousPhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
+use crate::kernel::task::CapabilitySet;
 use crate::klib::{SleepLock, SpinLock};
 
 const PIPE_CAPACITY: usize = arch::PGSIZE * config::PIPE_BUFFER_PAGES;
@@ -536,17 +537,26 @@ impl PipeInner {
     }
 
     pub fn set_capacity(&self, size: usize) -> SysResult<usize> {
+        if (size as isize) < 0 {
+            return Err(Errno::EINVAL);
+        }
+        
         let aligned = if size == 0 {
             arch::PGSIZE
         } else {
             size.div_ceil(arch::PGSIZE) * arch::PGSIZE
         };
-        if aligned > PIPE_CAPACITY {
-            return Err(Errno::EINVAL);
-        }
 
         let used = self.fifo.lock().len();
         if aligned < used {
+            return Err(Errno::EBUSY);
+        }
+
+        if !current::capable(CapabilitySet::SYS_RESOURCE) {
+            return Err(Errno::EPERM);
+        }
+
+        if aligned > PIPE_CAPACITY {
             return Err(Errno::EINVAL);
         }
 

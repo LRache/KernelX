@@ -7,7 +7,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::uapi::FileStat;
+use crate::kernel::uapi::{FileStat, Statfs};
 use crate::klib::SpinLock;
 
 use super::PipeInner;
@@ -134,6 +134,12 @@ impl FileOps for Pipe {
         kstat.st_nlink = 1;
 
         Ok(kstat)
+    }
+
+    fn fstatfs(&self) -> SysResult<Statfs> {
+        let mut kstatfs = Statfs::default();
+        kstatfs.f_type = 0x50495045; // "PIPE"
+        Ok(kstatfs) 
     }
 
     fn fsync(&self) -> SysResult<()> {

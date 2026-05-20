@@ -10,7 +10,8 @@ use crate::fs::inode::{InodeLockState, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
-use crate::kernel::syscall::{Capability, capable};
+use crate::kernel::scheduler::current;
+use crate::kernel::task::CapabilitySet;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
@@ -140,7 +141,7 @@ impl FileOps for RtcFile {
                 Ok(0)
             }
             Request::RTC_SET_TIME => {
-                if !capable(Capability::SysTime) {
+                if !current::capable(CapabilitySet::SYS_TIME) {
                     return Err(Errno::EPERM);
                 }
                 let rtc_time: RtcTime = addrspace.copy_from_user(arg)?;

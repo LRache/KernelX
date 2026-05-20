@@ -4,8 +4,8 @@ use crate::kernel::mm::MapPerm;
 
 use super::{KernelContext, SigContext};
 
-/// ABI hall of shame: some architectures (RISC-V) pass the `tls` argument to `clone` before the `ctid` argument, 
-/// while others (LoongArch) do the opposite. 
+/// ABI hall of shame: some architectures (RISC-V) pass the `tls` argument to `clone` before the `ctid` argument,
+/// while others (LoongArch) do the opposite.
 /// The `CloneABI` enum and `ArchTrait::clone_abi()` method allow the kernel to abstract over this difference.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]

@@ -2428,10 +2428,7 @@ pub fn fstatfs64(fd: usize, uptr_buf: UPtr<Statfs>) -> SyscallRet {
     uptr_buf.should_not_null()?;
 
     let file = current::fdtable().lock().get(fd)?;
-    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
-
-    let statfs = vfs::statfs(dentry.sno())?;
-
+    let statfs = file.fstatfs()?;
     uptr_buf.write(statfs)?;
 
     Ok(0)
@@ -2447,10 +2444,20 @@ pub fn newfstat(fd: usize, uptr_stat: UPtr<FileStat>) -> SyscallRet {
     Ok(0)
 }
 
-pub fn statx(dirfd: usize, uptr_path: UString, flags: usize, _mask: usize, uptr_buf: UPtr<Statx>) -> SyscallRet {
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StatxMask: usize {
+        const STATX__RESERVED = 0x8000_0000;
+    }
+}
+
+pub fn statx(dirfd: usize, uptr_path: UString, flags: usize, mask: usize, uptr_buf: UPtr<Statx>) -> SyscallRet {
     uptr_buf.should_not_null()?;
 
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if StatxMask::from_bits_retain(mask).contains(StatxMask::STATX__RESERVED) {
+        return Err(Errno::EINVAL);
+    }
 
     let path = if uptr_path.is_null() && flags.contains(AtFlags::AT_EMPTY_PATH) {
         String::new()
