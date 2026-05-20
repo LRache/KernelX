@@ -4,6 +4,19 @@ use crate::kernel::mm::MapPerm;
 
 use super::{KernelContext, SigContext};
 
+/// ABI hall of shame: some architectures (RISC-V) pass the `tls` argument to `clone` before the `ctid` argument, 
+/// while others (LoongArch) do the opposite. 
+/// The `CloneABI` enum and `ArchTrait::clone_abi()` method allow the kernel to abstract over this difference.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub enum CloneABI {
+    /// flags, stack, ptid, ctid, tls
+    Normal,
+
+    /// flags, stack, ptid, tls, ctid
+    Backwards,
+}
+
 pub trait PageTableTrait {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
     fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
@@ -18,6 +31,7 @@ pub trait PageTableTrait {
 pub trait ArchTrait {
     fn init();
     fn setup_all_cores(current_core: usize);
+    fn clone_abi() -> CloneABI;
 
     /* ----- Per-CPU Data ----- */
     fn set_percpu_data(data: usize);

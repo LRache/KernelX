@@ -3,6 +3,8 @@ use alloc::vec::Vec;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
+use crate::arch;
+use crate::arch::CloneABI;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::{FileType, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
@@ -487,7 +489,7 @@ fn check_clone_flags(flags: &CloneFlags) -> SysResult<()> {
     Ok(())
 }
 
-fn do_clone(args: CloneArgs) -> SyscallRet {
+fn do_clone(args: &CloneArgs) -> SyscallRet {
     let child = current::pcb().clone_task(current::tcb(), args.stack, &args.task_flags, args.tls, args.exit_signal)?;
     let child_tid = child.tid();
 
@@ -528,13 +530,18 @@ fn do_clone(args: CloneArgs) -> SyscallRet {
     Ok(child_tid as usize)
 }
 
-pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, tls: usize, uptr_child_tid: usize) -> SyscallRet {
+pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, arg3: usize, arg4: usize) -> SyscallRet {
     let exit_signal = SignalNum::try_from((flags & 0xff) as u32)?;
     let flags = CloneFlags::from_bits((flags & !0xff) as i32).ok_or(Errno::EINVAL)?;
 
     check_clone_flags(&flags)?;
 
-    do_clone(CloneArgs {
+    let (tls, uptr_child_tid) = match arch::clone_abi() {
+        CloneABI::Normal => (arg4, arg3),
+        CloneABI::Backwards => (arg3, arg4),
+    };
+
+    do_clone(&CloneArgs {
         task_flags: TaskCloneFlags {
             vm: flags.contains(CloneFlags::VM),
             files: flags.contains(CloneFlags::FILES),
@@ -619,7 +626,7 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
         0
     };
 
-    do_clone(CloneArgs {
+    do_clone(&CloneArgs {
         task_flags: TaskCloneFlags {
             vm: flags.contains(CloneFlags::VM),
             files: flags.contains(CloneFlags::FILES),

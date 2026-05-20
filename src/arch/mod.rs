@@ -23,7 +23,7 @@ pub const USEREND: usize = arch_impl::USEREND;
 
 mod arch;
 use arch::{Arch, ArchTrait};
-pub use arch::{PageTableTrait, UserContextTrait};
+pub use arch::{CloneABI, PageTableTrait, UserContextTrait};
 
 macro_rules! arch_export {
     ($($func:ident($($arg:ident: $type:ty),*) -> $ret:ty);* $(;)?) => {
@@ -41,6 +41,7 @@ use core::time::Duration;
 arch_export! {
     init() -> ();
     setup_all_cores(current_core: usize) -> ();
+    clone_abi() -> CloneABI;
 
     /* ----- Per-CPU Data ----- */
     set_percpu_data(data: usize) -> ();

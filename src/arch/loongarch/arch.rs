@@ -3,7 +3,7 @@
 use alloc::boxed::Box;
 use core::time::Duration;
 
-use crate::arch::arch::{Arch, ArchTrait, UserContextTrait};
+use crate::arch::arch::{Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
 use crate::kernel::mm::MapPerm;
 use crate::klib::initcell::InitedCell;
@@ -35,6 +35,10 @@ impl ArchTrait for Arch {
     }
 
     fn setup_all_cores(_current_core: usize) {}
+
+    fn clone_abi() -> CloneABI {
+        CloneABI::Normal
+    }
 
     #[inline(always)]
     fn set_percpu_data(data: usize) {

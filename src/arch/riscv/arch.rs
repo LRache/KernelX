@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
 use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task};
-use crate::arch::{self, Arch, ArchTrait, UserContextTrait};
+use crate::arch::{self, Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
 use crate::kernel::config;
 use crate::kernel::mm::{MapPerm, page};
@@ -58,6 +58,10 @@ impl ArchTrait for Arch {
                 }
             }
         }
+    }
+
+    fn clone_abi() -> CloneABI {
+        CloneABI::Backwards
     }
 
     #[inline(always)]
