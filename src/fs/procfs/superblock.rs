@@ -51,6 +51,8 @@ impl SuperBlockOps for SuperBlock {
             inode::SysKernelDirInode::INO => Ok(Arc::new(inode::SysKernelDirInode)),
             inode::PidMaxInode::INO => Ok(Arc::new(inode::PidMaxInode)),
             inode::TaintedInode::INO => Ok(Arc::new(inode::TaintedInode)),
+            inode::SysKernelRandomDirInode::INO => Ok(Arc::new(inode::SysKernelRandomDirInode)),
+            inode::EntropyAvailInode::INO => Ok(Arc::new(inode::EntropyAvailInode)),
             inode::SysFsDirInode::INO => Ok(Arc::new(inode::SysFsDirInode)),
             inode::PipeMaxSizeInode::INO => Ok(Arc::new(inode::PipeMaxSizeInode)),
             inode::PipeUserPagesSoftInode::INO => Ok(Arc::new(inode::PipeUserPagesSoftInode)),

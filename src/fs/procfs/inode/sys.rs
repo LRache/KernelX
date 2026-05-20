@@ -128,6 +128,7 @@ impl InodeOps for SysKernelDirInode {
             ".." => Ok(SysDirInode::INO),
             "pid_max" => Ok(PidMaxInode::INO),
             "tainted" => Ok(TaintedInode::INO),
+            "random" => Ok(SysKernelRandomDirInode::INO),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -153,6 +154,11 @@ impl InodeOps for SysKernelDirInode {
                 ino: TaintedInode::INO,
                 name: "tainted".into(),
                 file_type: FileType::Regular,
+            }),
+            4 => Some(DirResult {
+                ino: SysKernelRandomDirInode::INO,
+                name: "random".into(),
+                file_type: FileType::Directory,
             }),
             _ => None,
         };
@@ -242,6 +248,124 @@ impl InodeOps for TaintedInode {
 
     fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let content = b"0\n";
+        if offset >= content.len() {
+            return Ok(0);
+        }
+        let len = min(buf.len(), content.len() - offset);
+        buf[..len].copy_from_slice(&content[offset..offset + len]);
+        Ok(len)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    }
+}
+
+// /proc/sys/kernel/random/
+pub struct SysKernelRandomDirInode;
+
+impl SysKernelRandomDirInode {
+    pub const INO: u32 = 15;
+}
+
+impl InodeOps for SysKernelRandomDirInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_sys_kernel_random"
+    }
+
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
+        Err(Errno::EISDIR)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn lookup(&self, name: &str) -> SysResult<u32> {
+        match name {
+            "." => Ok(Self::INO),
+            ".." => Ok(SysKernelDirInode::INO),
+            "entropy_avail" => Ok(EntropyAvailInode::INO),
+            _ => Err(Errno::ENOENT),
+        }
+    }
+
+    fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        let d = match index {
+            0 => Some(DirResult {
+                ino: Self::INO,
+                name: ".".into(),
+                file_type: FileType::Directory,
+            }),
+            1 => Some(DirResult {
+                ino: SysKernelDirInode::INO,
+                name: "..".into(),
+                file_type: FileType::Directory,
+            }),
+            2 => Some(DirResult {
+                ino: EntropyAvailInode::INO,
+                name: "entropy_avail".into(),
+                file_type: FileType::Regular,
+            }),
+            _ => None,
+        };
+        Ok(d.map(|r| (r, index + 1)))
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFDIR
+            | Mode::S_IRUSR
+            | Mode::S_IXUSR
+            | Mode::S_IRGRP
+            | Mode::S_IXGRP
+            | Mode::S_IROTH
+            | Mode::S_IXOTH)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+
+    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let dentry = dentry.expect("procfs sys kernel random dir requires associated dentry");
+        Arc::new(RandomAccessFile::new(self, dentry, flags))
+    }
+}
+
+// /proc/sys/kernel/random/entropy_avail
+pub struct EntropyAvailInode;
+
+impl EntropyAvailInode {
+    pub const INO: u32 = 16;
+}
+
+impl InodeOps for EntropyAvailInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_entropy_avail"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
+        let content = b"256\n";
         if offset >= content.len() {
             return Ok(0);
         }

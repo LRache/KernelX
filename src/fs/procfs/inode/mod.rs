@@ -5,8 +5,8 @@ mod taskself;
 
 pub use root::{MemInfoInode, MountsInode, RootInode};
 pub use sys::{
-    DropCachesInode, PidMaxInode, PipeMaxSizeInode, PipeUserPagesSoftInode, SysDirInode, SysFsDirInode,
-    SysKernelDirInode, SysVmDirInode, TaintedInode, VfsCachePressureInode,
+    DropCachesInode, EntropyAvailInode, PidMaxInode, PipeMaxSizeInode, PipeUserPagesSoftInode, SysDirInode,
+    SysFsDirInode, SysKernelDirInode, SysKernelRandomDirInode, SysVmDirInode, TaintedInode, VfsCachePressureInode,
 };
 pub use task::{
     TaskDirInode, TaskExeInode, TaskFdDirInode, TaskFdEntryInode, TaskFdInfoDirInode, TaskFdInfoEntryInode,
