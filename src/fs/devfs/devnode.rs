@@ -111,6 +111,10 @@ impl InodeOps for BlockDevInode {
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        if self.driver.is_readonly() {
+            return Err(Errno::EROFS);
+        }
+
         self.driver
             .write_at(offset, buf)
             .map(|_| buf.len())

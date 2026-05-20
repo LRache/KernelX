@@ -16,16 +16,19 @@ pub struct VirtIOBlockDriver<T: Transport + Send + 'static> {
     device_name: String,
     driver: SpinLock<VirtIOBlk<VirtIOHal, T>>,
     inflight: SpinLock<BTreeMap<u16, Arc<dyn Task>>>,
+    read_only: bool,
 }
 
 impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
     pub fn new(device_name: String, transport: T) -> Self {
         let mut blk = VirtIOBlk::new(transport).unwrap();
         blk.enable_interrupts();
+        let read_only = blk.readonly();
         Self {
             device_name,
             driver: SpinLock::new(blk, "VirtIOBlockDriver::driver"),
             inflight: SpinLock::new(BTreeMap::new(), "VirtIOBlockDriver::inflight"),
+            read_only,
         }
     }
 
@@ -110,6 +113,10 @@ impl<T: Transport + Send + 'static> BlockDriverOps for VirtIOBlockDriver<T> {
     }
 
     fn write_block(&self, block: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();
 
@@ -158,6 +165,10 @@ impl<T: Transport + Send + 'static> BlockDriverOps for VirtIOBlockDriver<T> {
     }
 
     fn write_blocks(&self, start_block: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();
 
@@ -215,6 +226,10 @@ impl<T: Transport + Send + 'static> BlockDriverOps for VirtIOBlockDriver<T> {
     }
 
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let mut length = buf.len();
         let mut block = offset / BLOCK_SIZE;
 
@@ -252,6 +267,10 @@ impl<T: Transport + Send + 'static> BlockDriverOps for VirtIOBlockDriver<T> {
 
     fn flush(&self) -> Result<(), ()> {
         Ok(())
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.read_only
     }
 
     fn get_block_size(&self) -> u32 {
