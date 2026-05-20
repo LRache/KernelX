@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::time::Duration;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::fs::Dentry;
+use crate::fs::{Dentry, Perm};
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
@@ -228,6 +228,11 @@ pub trait InodeOps: DowncastSync {
 
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::empty())
+    }
+
+    fn check_perm(&self, perm: &Perm) -> SysResult<bool> {
+        let owner = self.owner()?;
+        Ok(self.mode()?.check_perm(perm, owner.0, owner.1))
     }
 
     fn chmod(&self, _mode: Mode) -> SysResult<()> {

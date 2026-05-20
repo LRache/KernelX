@@ -1,5 +1,6 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::fs::file::FileFlags;
@@ -87,6 +88,14 @@ pub trait FileOps: DowncastSync {
 
     fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
         None
+    }
+
+    fn epoll_notifiers(&self) -> Option<Vec<Arc<EpollNotifier>>> {
+        self.epoll_notifier().map(|notifier| {
+            let mut notifiers = Vec::new();
+            notifiers.push(notifier);
+            notifiers
+        })
     }
 
     fn set_flags(&self, flags: FileFlags) {

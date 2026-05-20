@@ -1,8 +1,9 @@
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{Event, FileEvent, WaitQueue};
+use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
 use crate::klib::{SleepLock, SpinLock};
@@ -63,6 +64,8 @@ pub struct MessagePipeInner {
     queue: SleepLock<MessageQueue>,
     read_waiter: SpinLock<WaitQueue<Event>>,
     write_waiter: SpinLock<WaitQueue<Event>>,
+    read_notifier: Arc<EpollNotifier>,
+    write_notifier: Arc<EpollNotifier>,
     writer_count: SpinLock<u32>,
     reader_count: SpinLock<u32>,
 }
@@ -73,6 +76,8 @@ impl MessagePipeInner {
             queue: SleepLock::new(MessageQueue::new(capacity), "MessagePipeInner::queue"),
             read_waiter: SpinLock::new(WaitQueue::new(), "MessagePipeInner::read_waiter"),
             write_waiter: SpinLock::new(WaitQueue::new(), "MessagePipeInner::write_waiter"),
+            read_notifier: Arc::new(EpollNotifier::new()),
+            write_notifier: Arc::new(EpollNotifier::new()),
             writer_count: SpinLock::new(0, "MessagePipeInner::writer_count"),
             reader_count: SpinLock::new(0, "MessagePipeInner::reader_count"),
         }
@@ -90,6 +95,7 @@ impl MessagePipeInner {
                 buf[..copy_len].copy_from_slice(&msg[..copy_len]);
                 drop(queue);
                 self.write_waiter.lock().wake_all(|e| e);
+                self.write_notifier.notify(FileEvent::WRITE_READY);
                 return Ok(copy_len);
             }
 
@@ -128,6 +134,7 @@ impl MessagePipeInner {
                 ubuf.write(0, &msg[..copy_len])?;
                 drop(queue);
                 self.write_waiter.lock().wake_all(|e| e);
+                self.write_notifier.notify(FileEvent::WRITE_READY);
                 return Ok(copy_len);
             }
 
@@ -166,6 +173,7 @@ impl MessagePipeInner {
                 queue.push(msg);
                 drop(queue);
                 self.read_waiter.lock().wake_all(|e| e);
+                self.read_notifier.notify(FileEvent::READ_READY);
                 return Ok(buf.len());
             }
             drop(queue);
@@ -210,6 +218,7 @@ impl MessagePipeInner {
                 queue.push(msg);
                 drop(queue);
                 self.read_waiter.lock().wake_all(|e| e);
+                self.read_notifier.notify(FileEvent::READ_READY);
                 return Ok(len);
             }
             drop(queue);
@@ -233,6 +242,38 @@ impl MessagePipeInner {
                 _ => unreachable!(),
             }
         }
+    }
+
+    pub fn poll_event(&self, event: FileEvent, is_writer: bool) -> SysResult<Option<FileEvent>> {
+        let want_read = event.contains(FileEvent::READ_READY) && !is_writer;
+        let want_write = event.contains(FileEvent::WRITE_READY) && is_writer;
+        if !want_read && !want_write {
+            return Ok(None);
+        }
+
+        let queue = self.queue.lock();
+        let mut ready = FileEvent::empty();
+
+        if want_read {
+            if *self.writer_count.lock() == 0 {
+                ready |= FileEvent::HANG_UP;
+                if !queue.is_empty() {
+                    ready |= FileEvent::READ_READY;
+                }
+            } else if !queue.is_empty() {
+                ready |= FileEvent::READ_READY;
+            }
+        }
+
+        if want_write {
+            if *self.reader_count.lock() == 0 {
+                ready |= FileEvent::HANG_UP;
+            } else if queue.available_space() > 0 && queue.available_messages() > 0 {
+                ready |= FileEvent::WRITE_READY;
+            }
+        }
+
+        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
     pub fn wait_event(&self, waker: usize, event: FileEvent, is_writer: bool) -> SysResult<Option<FileEvent>> {
@@ -296,6 +337,14 @@ impl MessagePipeInner {
         self.write_waiter.lock().remove(current::task());
     }
 
+    pub fn epoll_notifier(&self, is_writer: bool) -> Arc<EpollNotifier> {
+        if is_writer {
+            self.write_notifier.clone()
+        } else {
+            self.read_notifier.clone()
+        }
+    }
+
     pub fn increment_reader_count(&self) {
         *self.reader_count.lock() += 1;
     }
@@ -306,6 +355,7 @@ impl MessagePipeInner {
         *count -= 1;
         if *count == 0 {
             self.write_waiter.lock().wake_all(|e| e);
+            self.write_notifier.notify(FileEvent::HANG_UP);
         }
     }
 
@@ -330,6 +380,7 @@ impl MessagePipeInner {
                 },
                 _ => e,
             });
+            self.read_notifier.notify(wake_event);
         }
     }
 }

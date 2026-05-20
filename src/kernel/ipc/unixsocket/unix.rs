@@ -1,11 +1,12 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::FileEvent;
+use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
@@ -230,6 +231,35 @@ impl FileOps for UnixSocket {
         None
     }
 
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let channel = self.channel.lock().clone();
+        match channel {
+            Channel::Unconnected => Ok(Some(FileEvent::HANG_UP)),
+            Channel::Stream { rx, tx, .. } => {
+                let mut ready = FileEvent::empty();
+                if let Some(ev) = rx.poll_event(event, false)? {
+                    ready |= ev;
+                }
+                if let Some(ev) = tx.poll_event(event, true)? {
+                    ready |= ev;
+                }
+
+                if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
+            }
+            Channel::Message { rx, tx, .. } => {
+                let mut ready = FileEvent::empty();
+                if let Some(ev) = rx.poll_event(event, false)? {
+                    ready |= ev;
+                }
+                if let Some(ev) = tx.poll_event(event, true)? {
+                    ready |= ev;
+                }
+
+                if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
+            }
+        }
+    }
+
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
         let channel = self.channel.lock().clone();
         match channel {
@@ -312,6 +342,25 @@ impl FileOps for UnixSocket {
             Channel::Message { rx, tx, .. } => {
                 rx.wait_event_cancel();
                 tx.wait_event_cancel();
+            }
+        }
+    }
+
+    fn epoll_notifiers(&self) -> Option<Vec<Arc<EpollNotifier>>> {
+        let channel = self.channel.lock().clone();
+        match channel {
+            Channel::Unconnected => None,
+            Channel::Stream { rx, tx, .. } => {
+                let mut notifiers = Vec::new();
+                notifiers.push(rx.epoll_notifier(false));
+                notifiers.push(tx.epoll_notifier(true));
+                Some(notifiers)
+            }
+            Channel::Message { rx, tx, .. } => {
+                let mut notifiers = Vec::new();
+                notifiers.push(rx.epoll_notifier(false));
+                notifiers.push(tx.epoll_notifier(true));
+                Some(notifiers)
             }
         }
     }
