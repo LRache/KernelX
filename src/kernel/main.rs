@@ -70,6 +70,9 @@ fn kinit() {
 
 #[unsafe(link_section = ".text.init")]
 pub fn parse_boot_args(bootargs: &'static str) {
+    if bootargs.is_empty() {
+        return parse_boot_args(config::DEFAULT_BOOTARGS);
+    }
     let mut bootargs_map = BTreeMap::new();
     for arg in bootargs.split_whitespace() {
         if let Some((key, value)) = arg.split_once('=') {
