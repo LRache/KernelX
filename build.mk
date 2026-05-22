@@ -83,6 +83,8 @@ RUST_FEATURES += backtrace
 RUSTFLAGS += -C force-frame-pointers=yes
 endif
 
+-include $(KERNELX_HOME)/scripts/$(ARCH)$(ARCH_BITS).mk
+
 CARGO_FLAGS += --target $(RUST_TARGET)
 CARGO_FLAGS += --no-default-features --features "$(RUST_FEATURES)"
 ifeq ($(COMPILE_MODE),release)
