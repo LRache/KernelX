@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 use core::time::Duration;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::fs::{Dentry, Perm};
 use crate::fs::file::{DirResult, FileFlags, FileOps};
+use crate::fs::{Dentry, Perm};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
 use crate::kernel::mm::AddrSpace;
