@@ -6,6 +6,15 @@ DEFCONFIG ?= config/defconfig
 CONFIG_FILE := $(KCONFIG_CONFIG)
 -include $(CONFIG_FILE)
 
+ifeq ($(origin ARCH),command line)
+CONFIG_ARCH_SOURCE := $(ARCH)
+else
+CONFIG_ARCH_SOURCE := $(or $(CONFIG_ARCH),$(ARCH),riscv)
+endif
+CONFIG_ARCH_UNQUOTED := $(subst ",,$(CONFIG_ARCH_SOURCE))
+EXPORT_CONFIG ?= config/$(CONFIG_ARCH_UNQUOTED)
+IMPORT_CONFIG ?= $(EXPORT_CONFIG)
+
 ARCH = $(CONFIG_ARCH)
 ARCH_BITS = $(CONFIG_ARCH_BITS)
 
@@ -84,6 +93,31 @@ defconfig:
 savedefconfig:
 	@if command -v kconfig-conf >/dev/null 2>&1; then \
 		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --savedefconfig=$(DEFCONFIG) $(KCONFIG_FILE); \
+	else \
+		echo "Error: kconfig-conf not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		exit 1; \
+	fi
+
+exportconfig:
+	@if command -v kconfig-conf >/dev/null 2>&1; then \
+		mkdir -p $(dir $(EXPORT_CONFIG)); \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --savedefconfig=$(EXPORT_CONFIG) $(KCONFIG_FILE); \
+		echo "Exported config to $(EXPORT_CONFIG)"; \
+	else \
+		echo "Error: kconfig-conf not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		exit 1; \
+	fi
+
+importconfig:
+	@if command -v kconfig-conf >/dev/null 2>&1; then \
+		if [ ! -f $(IMPORT_CONFIG) ]; then \
+			echo "Error: config file not found: $(IMPORT_CONFIG)"; \
+			exit 1; \
+		fi; \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --defconfig=$(IMPORT_CONFIG) $(KCONFIG_FILE); \
+		echo "Imported config from $(IMPORT_CONFIG) to $(KCONFIG_CONFIG)"; \
 	else \
 		echo "Error: kconfig-conf not found. Please install one of:"; \
 		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \

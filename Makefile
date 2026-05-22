@@ -52,4 +52,4 @@ package: kernel
 count:
 	@ find src clib/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" -o -name "*.S" | xargs wc -l
 
-.PHONY: all init run run-bt gdb clean count check defconfig savedefconfig menuconfig objdump kernel vdso clib
+.PHONY: all init run run-bt gdb clean count check defconfig savedefconfig exportconfig importconfig menuconfig objdump kernel vdso clib
