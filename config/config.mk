@@ -1,5 +1,9 @@
 # Include configuration if it exists
-CONFIG_FILE := config/.config
+KCONFIG_FILE ?= config/Kconfig
+KCONFIG_CONFIG ?= config/.config
+DEFCONFIG ?= config/defconfig
+
+CONFIG_FILE := $(KCONFIG_CONFIG)
 -include $(CONFIG_FILE)
 
 ARCH = $(CONFIG_ARCH)
@@ -68,13 +72,31 @@ KERNEL_CONFIG = \
 	OBJCOPY=$(CONFIG_OBJCOPY)
 
 # Configuration targets
+defconfig:
+	@if command -v kconfig-conf >/dev/null 2>&1; then \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --defconfig=$(DEFCONFIG) $(KCONFIG_FILE); \
+	else \
+		echo "Error: kconfig-conf not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		exit 1; \
+	fi
+
+savedefconfig:
+	@if command -v kconfig-conf >/dev/null 2>&1; then \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --savedefconfig=$(DEFCONFIG) $(KCONFIG_FILE); \
+	else \
+		echo "Error: kconfig-conf not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		exit 1; \
+	fi
+
 menuconfig:
 	@if command -v kconfig-mconf >/dev/null 2>&1; then \
-		KCONFIG_CONFIG=config/.config kconfig-mconf config/Kconfig; \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-mconf $(KCONFIG_FILE); \
 	elif command -v menuconfig >/dev/null 2>&1; then \
-		KCONFIG_CONFIG=config/.config menuconfig config/Kconfig; \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) menuconfig $(KCONFIG_FILE); \
 	elif python3 -c "import menuconfig" 2>/dev/null; then \
-		KCONFIG_CONFIG=config/.config python3 -m menuconfig config/Kconfig; \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) python3 -m menuconfig $(KCONFIG_FILE); \
 	else \
 		echo "Error: menuconfig not found. Please install one of:"; \
 		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
