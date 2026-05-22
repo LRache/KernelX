@@ -63,6 +63,13 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
     use std::path::{Path, PathBuf};
 
     let target = std::env::var("TARGET").unwrap();
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let clang_target = match target_arch.as_str() {
+        "riscv64" => "riscv64-unknown-elf",
+        "loongarch64" => "loongarch64-unknown-elf",
+        _ => panic!("unsupported clang target for target_arch={target_arch}"),
+    };
+
     if target.ends_with("-softfloat") {
         unsafe {
             std::env::set_var("TARGET", target.replace("-softfloat", ""));
@@ -82,7 +89,7 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
         .clang_arg(format!("-I{}", clib_include.display()))
         .clang_arg(format!("-I{}", lwext4_include.display()))
         .clang_arg(format!("-I{}", generated_include.display()))
-        .clang_arg(format!("--target={}", target))
+        .clang_arg(format!("--target={clang_target}"))
         .allowlist_function("(ext4|kernelx_ext4)_.*")
         .allowlist_type("ext4_.*")
         .allowlist_type("jbd_.*")
