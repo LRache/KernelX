@@ -11,6 +11,7 @@ include config/config.mk
 ARCH             := $(subst ",,$(ARCH))
 ARCH_BITS        := $(subst ",,$(ARCH_BITS))
 CONFIG_QEMU_BIOS := $(subst ",,$(CONFIG_QEMU_BIOS))
+qemu_unquote = $(subst ",,$(1))
 
 IMAGE = build/$(ARCH)$(ARCH_BITS)/Image
 VMKERNELX = build/$(ARCH)$(ARCH_BITS)/vmkernelx
@@ -60,30 +61,37 @@ ifneq ($(CONFIG_QEMU_BIOS),)
 QEMU_FLAGS += -bios $(CONFIG_QEMU_BIOS)
 endif
 
-BOOTARGS += $(CONFIG_BOOTARGS)
+CONFIG_BOOTARGS_UNQUOTED    := $(call qemu_unquote,$(CONFIG_BOOTARGS))
+CONFIG_INITPATH_UNQUOTED    := $(call qemu_unquote,$(CONFIG_INITPATH))
+CONFIG_INITARGS_UNQUOTED    := $(call qemu_unquote,$(CONFIG_INITARGS))
+CONFIG_INITCWD_UNQUOTED     := $(call qemu_unquote,$(CONFIG_INITCWD))
+CONFIG_ROOT_DEVICE_UNQUOTED := $(call qemu_unquote,$(CONFIG_ROOT_DEVICE))
+CONFIG_ROOT_FSTYPE_UNQUOTED := $(call qemu_unquote,$(CONFIG_ROOT_FSTYPE))
+
+BOOTARGS += $(CONFIG_BOOTARGS_UNQUOTED)
 
 # Set bootargs
-ifneq ($(CONFIG_INITPATH),)
-BOOTARGS += init=$(CONFIG_INITPATH)
+ifneq ($(CONFIG_INITPATH_UNQUOTED),)
+BOOTARGS += init="$(CONFIG_INITPATH_UNQUOTED)"
 endif
 
-ifneq ($(CONFIG_INITARGS),)
-BOOTARGS += initargs=$(CONFIG_INITARGS)
+ifneq ($(CONFIG_INITARGS_UNQUOTED),)
+BOOTARGS += initargs="$(CONFIG_INITARGS_UNQUOTED)"
 endif
 
-ifneq ($(CONFIG_INITCWD),)
-BOOTARGS += initcwd=$(CONFIG_INITCWD)
+ifneq ($(CONFIG_INITCWD_UNQUOTED),)
+BOOTARGS += initcwd="$(CONFIG_INITCWD_UNQUOTED)"
 endif
 
-ifneq ($(CONFIG_ROOT_DEVICE),)
-BOOTARGS += root=$(CONFIG_ROOT_DEVICE)
+ifneq ($(CONFIG_ROOT_DEVICE_UNQUOTED),)
+BOOTARGS += root="$(CONFIG_ROOT_DEVICE_UNQUOTED)"
 endif
 
-ifneq ($(CONFIG_ROOT_FSTYPE),)
-BOOTARGS += rootfstype=$(CONFIG_ROOT_FSTYPE)
+ifneq ($(CONFIG_ROOT_FSTYPE_UNQUOTED),)
+BOOTARGS += rootfstype="$(CONFIG_ROOT_FSTYPE_UNQUOTED)"
 endif
 
-QEMU_FLAGS += -append "$(BOOTARGS)"
+QEMU_FLAGS += -append '$(BOOTARGS)'
 
 qemu-run:
 	truncate -s $(TMPDISK_SIZE) $(TMPDISK)
