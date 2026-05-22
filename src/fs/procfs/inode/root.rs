@@ -201,7 +201,7 @@ impl InodeOps for MemInfoInode {
 
     fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let total_kb = page::total_pages() * arch::PGSIZE / 1024;
-        let available_kb = page::free_pages() * arch::PGSIZE / 1024 / 2;
+        let available_kb = page::free_pages() * arch::PGSIZE / 1024;
         let mut content = String::with_capacity(128);
         let _ = writeln!(content, "MemTotal:       {} kB", total_kb);
         let _ = writeln!(content, "MemAvailable:   {} kB", available_kb);
