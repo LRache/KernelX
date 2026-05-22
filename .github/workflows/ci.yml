@@ -33,7 +33,6 @@ jobs:
             name=$(basename "$bin")
             ln -sf "$bin" "/usr/local/bin/riscv64-unknown-linux-gnu-${name#riscv64-linux-gnu-}"
           done
-          sed -i 's|^# include <gnu/stubs-lp64.h>|//&|' /usr/riscv64-linux-gnu/include/gnu/stubs.h
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain nightly
           export PATH=/usr/local/cargo/bin:$PATH
           rustup target add riscv64gc-unknown-none-elf

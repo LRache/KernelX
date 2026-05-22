@@ -64,9 +64,9 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
 
     let target = std::env::var("TARGET").unwrap();
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let clang_target = match target_arch.as_str() {
-        "riscv64" => "riscv64-unknown-elf",
-        "loongarch64" => "loongarch64-unknown-elf",
+    let (clang_target, clang_arch_args): (&str, &[&str]) = match target_arch.as_str() {
+        "riscv64" => ("riscv64-unknown-elf", &["-march=rv64gc", "-mabi=lp64d"]),
+        "loongarch64" => ("loongarch64-unknown-elf", &["-mabi=lp64d"]),
         _ => panic!("unsupported clang target for target_arch={target_arch}"),
     };
 
@@ -90,6 +90,7 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
         .clang_arg(format!("-I{}", lwext4_include.display()))
         .clang_arg(format!("-I{}", generated_include.display()))
         .clang_arg(format!("--target={clang_target}"))
+        .clang_args(clang_arch_args)
         .allowlist_function("(ext4|kernelx_ext4)_.*")
         .allowlist_type("ext4_.*")
         .allowlist_type("jbd_.*")
