@@ -82,6 +82,7 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
         .clang_arg(format!("-I{}", clib_include.display()))
         .clang_arg(format!("-I{}", lwext4_include.display()))
         .clang_arg(format!("-I{}", generated_include.display()))
+        .clang_arg(format!("--target={}", target))
         .allowlist_function("(ext4|kernelx_ext4)_.*")
         .allowlist_type("ext4_.*")
         .allowlist_type("jbd_.*")
