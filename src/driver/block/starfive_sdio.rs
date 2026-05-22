@@ -5,7 +5,7 @@ use core::time::Duration;
 use visionfive2_sd::{SDIo, SleepOps, Vf2SdDriver};
 
 use crate::arch::map_kernel_addr;
-use crate::driver::{BlockDriverOps, Device, DeviceType, DriverMatcher, DriverOps};
+use crate::driver::{BlockDriverOps, Device, DeviceType, DriverOps, MMIOMatcher as MMIOMatcherTrait};
 use crate::kernel::event::timer;
 use crate::kernel::mm::{MapPerm, page};
 use crate::klib::SpinLock;
@@ -125,9 +125,9 @@ impl BlockDriverOps for Driver {
     }
 }
 
-pub struct Matcher;
+pub struct MMIOMatcher;
 
-impl DriverMatcher for Matcher {
+impl MMIOMatcherTrait for MMIOMatcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         device.match_compatible(&["snps,dw-mshc"])?;
 

@@ -115,7 +115,9 @@ fn handle_interrupt(estat: usize) -> usize {
         while let Some(irq) = eiointc::claim_irq() {
             eiointc::complete_irq(irq);
             trap::external_interrupt(irq);
-            pch_pic::ack_irq(irq);
+            if pch_pic::contains_irq(irq) {
+                pch_pic::ack_irq(irq);
+            }
         }
     }
 

@@ -9,7 +9,6 @@ mod fdt;
 mod iocsr;
 mod pagetable;
 pub mod pch_pic;
-mod pci;
 mod task;
 pub mod trap;
 

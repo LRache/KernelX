@@ -6,8 +6,7 @@ use fdt::node::FdtNode;
 
 use crate::arch;
 use crate::driver::chosen::kpmu::{self, KPMU};
-use crate::driver::matcher::DriverMatcher;
-use crate::driver::{Device, DeviceType, DriverOps};
+use crate::driver::{Device, DeviceType, DriverOps, MMIOMatcher as MMIOMatcherTrait};
 
 #[derive(Clone, Copy)]
 enum RegWidth {
@@ -91,9 +90,9 @@ impl KPMU for SysconPoweroff {
     }
 }
 
-pub struct Matcher;
+pub struct MMIOMatcher;
 
-impl DriverMatcher for Matcher {
+impl MMIOMatcherTrait for MMIOMatcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         device.match_compatible(&["syscon-poweroff"])?;
 

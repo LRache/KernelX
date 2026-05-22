@@ -87,7 +87,9 @@ impl ArchTrait for Arch {
     }
 
     fn enable_device_interrupt_irq(irq: u32) {
-        pch_pic::enable_irq(irq);
+        if pch_pic::contains_irq(irq) {
+            pch_pic::enable_irq(irq);
+        }
         eiointc::enable_irq(irq);
     }
 

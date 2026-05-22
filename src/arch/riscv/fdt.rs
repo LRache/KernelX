@@ -50,7 +50,8 @@ pub fn load_device_tree(fdt: *const u8) -> Result<(), ()> {
 }
 
 fn load_soc_node<'b, 'a: 'b>(fdt: &'b Fdt<'a>, child: FdtNode<'b, 'a>) {
-    found_device(&Device::new(fdt, child));
+    let mut device = Device::new(fdt, child);
+    found_device(&mut device);
 }
 
 fn load_plic_node(fdt: &Fdt, soc_node: &FdtNode) {

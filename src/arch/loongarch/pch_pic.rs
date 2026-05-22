@@ -111,3 +111,7 @@ pub fn ack_irq(irq: u32) {
     debug_assert!((irq as usize) < NR_IRQS, "PCH-PIC irq {} out of range", irq);
     write_d(reg::CLEAR, 1u64 << irq);
 }
+
+pub fn contains_irq(irq: u32) -> bool {
+    (irq as usize) < NR_IRQS
+}

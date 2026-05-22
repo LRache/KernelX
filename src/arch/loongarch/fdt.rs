@@ -5,7 +5,7 @@ use crate::driver::{Device, found_device};
 use crate::kernel::parse_boot_args;
 use crate::{arch, kinfo, kwarn};
 
-use super::{csr, eiointc, pch_pic, pci};
+use super::{csr, eiointc, pch_pic};
 
 const FDT_BASE_PA: usize = 0x100000;
 
@@ -131,22 +131,12 @@ fn should_skip(node: &FdtNode) -> bool {
         || is_interrupt_controller(node)
 }
 
-const PCIE_HOST_COMPATIBLE: &[&str] = &["pci-host-ecam-generic", "pci-host-cam-generic"];
-
 fn handle_root_child<'b, 'a: 'b>(fdt: &'b Fdt<'a>, node: FdtNode<'b, 'a>) {
     if should_skip(&node) {
         return;
     }
-    // PCIe host bridge: we own enumeration (BAR allocation, virtio match).
-    if let Some(compat) = node.compatible() {
-        for c in compat.all() {
-            if PCIE_HOST_COMPATIBLE.contains(&c) {
-                pci::scan_pcie_bus(&node);
-                return;
-            }
-        }
-    }
-    found_device(&Device::new(fdt, node));
+    let mut device = Device::new(fdt, node);
+    found_device(&mut device);
 }
 
 fn find_by_compatible<'a, 'b>(fdt: &'b Fdt<'a>, candidates: &[&str]) -> Option<FdtNode<'b, 'a>> {

@@ -3,8 +3,7 @@ use alloc::sync::Arc;
 use core::time::Duration;
 
 use crate::arch;
-use crate::driver::matcher::DriverMatcher;
-use crate::driver::{Device, DeviceType, DriverOps, RTCDriverOps};
+use crate::driver::{Device, DeviceType, DriverOps, MMIOMatcher as MMIOMatcherTrait, RTCDriverOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{MapPerm, page};
 use crate::klib::SpinLock;
@@ -93,9 +92,9 @@ impl RTCDriverOps for Driver {
     }
 }
 
-pub struct Matcher;
+pub struct MMIOMatcher;
 
-impl DriverMatcher for Matcher {
+impl MMIOMatcherTrait for MMIOMatcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         device.match_compatible(&["google,goldfish-rtc"])?;
 
