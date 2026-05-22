@@ -74,14 +74,49 @@ pub fn parse_boot_args(bootargs: &'static str) {
         return parse_boot_args(config::DEFAULT_BOOTARGS);
     }
     let mut bootargs_map = BTreeMap::new();
-    for arg in bootargs.split_whitespace() {
+    let mut insert_arg = |arg: &'static str| {
+        if arg.is_empty() {
+            return;
+        }
         if let Some((key, value)) = arg.split_once('=') {
+            let value = value.trim_matches('"');
             bootargs_map.insert(key, value);
             kinfo!("bootarg: {}={}", key, value);
         } else {
+            let arg = arg.trim_matches('"');
+            if arg.is_empty() {
+                return;
+            }
             bootargs_map.insert(arg, "");
             kinfo!("bootarg: {}", arg);
         }
+    };
+
+    let mut start = None;
+    let mut in_quotes = false;
+    for (i, c) in bootargs.char_indices() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if let Some(begin) = start.take() {
+                    insert_arg(&bootargs[begin..i]);
+                }
+            }
+            _ => {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
+        }
+    }
+
+    if let Some(begin) = start {
+        insert_arg(&bootargs[begin..]);
     }
 
     BOOT_ARGS.init(bootargs_map);
