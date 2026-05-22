@@ -39,7 +39,7 @@ use crate::kernel::mm::MapPerm;
 use core::time::Duration;
 
 arch_export! {
-    init() -> ();
+    init(memory_top: usize) -> ();
     setup_all_cores(current_core: usize) -> ();
     clone_abi() -> CloneABI;
 

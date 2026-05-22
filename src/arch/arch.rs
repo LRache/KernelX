@@ -29,7 +29,7 @@ pub trait PageTableTrait {
 }
 
 pub trait ArchTrait {
-    fn init();
+    fn init(memory_top: usize);
     fn setup_all_cores(current_core: usize);
     fn clone_abi() -> CloneABI;
 
@@ -65,8 +65,8 @@ pub trait ArchTrait {
     /// semantics — cache coherence with DMA engines lives outside kernel
     /// control for these regions.
     ///
-    /// - RISC-V: allocates backing kernel pages and installs a `MapPerm::RW`
-    ///   mapping via the kernel page table.
+    /// - RISC-V: reserves kernel virtual addresses above `memory_top + kaddr_offset`
+    ///   and installs a `MapPerm::RW` mapping via the kernel page table.
     /// - LoongArch: returns the DMW0 window mirror of the PA (no allocation,
     ///   no page-table edits — DMW0 is MAT=SUC, uncached by hardware).
     fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;

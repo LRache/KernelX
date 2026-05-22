@@ -140,7 +140,7 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     if FIRST_BOOTED.swap(false, Ordering::SeqCst) {
         kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
         mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
-        arch::init();
+        arch::init(memory_top);
         fs::init();
         driver::init();
         arch::scan_device();

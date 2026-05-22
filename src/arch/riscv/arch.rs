@@ -10,6 +10,7 @@ use crate::driver::chosen;
 use crate::kernel::config;
 use crate::kernel::mm::{MapPerm, page};
 use crate::kernel::scheduler::current;
+use crate::klib::{InitedCell, SpinLock};
 use crate::{driver, kinfo, kwarn};
 
 use super::csr::{SIE, Sstatus, stvec};
@@ -23,11 +24,34 @@ unsafe extern "C" {
     static __riscv_kaddr_offset: usize;
 }
 
+static NEXT_MMIO_KADDR: InitedCell<SpinLock<usize>> = InitedCell::uninit();
+
+fn init_mmio_kaddr(memory_top: usize) {
+    NEXT_MMIO_KADDR.init(SpinLock::new(align_up(memory_top, arch::PGSIZE), "NEXT_MMIO_KADDR"));
+}
+
+fn alloc_mmio_kaddr(size: usize) -> usize {
+    let mut next = NEXT_MMIO_KADDR.lock();
+    let kaddr = *next;
+    let new_next = kaddr.checked_add(size).expect("RISC-V MMIO virtual address overflow");
+    if new_next > super::TRAMPOLINE_BASE {
+        panic!("RISC-V MMIO virtual address space exhausted");
+    }
+    *next = new_next;
+    kaddr
+}
+
+fn align_up(addr: usize, align: usize) -> usize {
+    debug_assert!(align.is_power_of_two());
+    (addr + align - 1) & !(align - 1)
+}
+
 impl ArchTrait for Arch {
-    fn init() {
+    fn init(memory_top: usize) {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;
         }
+        init_mmio_kaddr(memory_top);
         stvec::write(asm_kerneltrap_entry as *const () as usize);
         kernelpagetable::init();
 
@@ -144,13 +168,13 @@ impl ArchTrait for Arch {
     }
 
     fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize {
-        // RISC-V has a single kernel page table; MMIO needs an explicit
-        // mapping there. Allocate kernel pages to cover the region, then
-        // install an RW kernel mapping pointing at the MMIO PA.
-        let pages = arch::page_count(size);
-        let kbase = page::alloc_contiguous(pages);
-        kernelpagetable::map_kernel_addr(kbase, paddr, size, MapPerm::R | MapPerm::W);
-        kbase
+        let offset = paddr & arch::PGMASK;
+        let pbase = paddr - offset;
+        let size = size.checked_add(offset).expect("RISC-V MMIO mapping size overflow");
+        let mapped_size = arch::page_count(size) * arch::PGSIZE;
+        let kbase = alloc_mmio_kaddr(mapped_size);
+        kernelpagetable::map_kernel_addr(kbase, pbase, mapped_size, MapPerm::R | MapPerm::W);
+        kbase + offset
     }
 
     fn uptime() -> Duration {

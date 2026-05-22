@@ -18,7 +18,7 @@ const PA_MASK: usize = (1 << 48) - 1;
 static STABLE_COUNTER_FREQ_HZ: InitedCell<u64> = InitedCell::uninit();
 
 impl ArchTrait for Arch {
-    fn init() {
+    fn init(_memory_top: usize) {
         chosen::kconsole::register(Box::new(EarlyUart));
 
         trap::install_trap_entry();
