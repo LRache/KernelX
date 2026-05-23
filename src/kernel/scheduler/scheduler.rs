@@ -5,7 +5,7 @@ use spin::Mutex;
 use crate::arch;
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::task::Task;
-use crate::kernel::scheduler::{Tid, WakeupFailure, current, watchdog};
+use crate::kernel::scheduler::{WakeupFailure, current, watchdog};
 
 use super::processor::Processor;
 
@@ -22,9 +22,6 @@ impl Scheduler {
 
     fn push_task(&self, task: Arc<dyn Task>) {
         let mut ready_queue = self.ready_queue.lock();
-        ready_queue.iter().for_each(|t| {
-            debug_assert!(!Arc::ptr_eq(t, &task), "Task {} is already in ready queue!", t.tid());
-        });
         ready_queue.push_back(task);
     }
 
@@ -43,9 +40,9 @@ pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
     SCHEDULER.fetch_next_task()
 }
 
-pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &str) {
+pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &'static str) {
     task.block_uninterruptible(reason);
-    watchdog::add_blocked_task(task);
+    watchdog::add_blocked_task(task, reason);
 }
 
 pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> Result<(), WakeupFailure> {
@@ -58,16 +55,6 @@ pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) -> bool {
     if task.wakeup_uninterruptible(event) {
         watchdog::remove_blocked_task(task.tid());
         push_task(task);
-        true
-    } else {
-        false
-    }
-}
-
-pub fn remove_task(tid: Tid) -> bool {
-    let mut ready_queue = SCHEDULER.ready_queue.lock();
-    if let Some(pos) = ready_queue.iter().position(|t| t.tid() == tid) {
-        ready_queue.remove(pos);
         true
     } else {
         false

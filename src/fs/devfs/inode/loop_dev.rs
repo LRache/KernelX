@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use num_enum::TryFromPrimitive;
 
 use crate::driver::BlockDriverOps;
@@ -59,6 +60,8 @@ pub struct LoopInode {
     minor: u32,
     lock_state: SpinLock<InodeLockState>,
     state: SpinLock<LoopState>,
+    readahead: Arc<AtomicUsize>,
+    read_only: Arc<AtomicBool>,
 }
 
 impl LoopInode {
@@ -68,6 +71,8 @@ impl LoopInode {
             minor,
             lock_state: SpinLock::new(InodeLockState::new(), "LoopInode::lock_state"),
             state: SpinLock::new(LoopState::default(), "LoopInode::state"),
+            readahead: Arc::new(AtomicUsize::new(0)),
+            read_only: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -85,8 +90,14 @@ impl LoopInode {
         Ok(())
     }
 
-    fn clear_target_inode(&self) {
-        self.state.lock().target_inode = None;
+    fn clear_target_inode(&self) -> SysResult<usize> {
+        match self.state.lock().target_inode.take() {
+            Some(_) => {
+                self.read_only.store(false, Ordering::Relaxed);
+                Ok(0)
+            }
+            None => Err(Errno::ENXIO),
+        }
     }
 
     fn is_bound(&self) -> bool {
@@ -98,7 +109,11 @@ impl LoopInode {
     }
 
     pub fn driver(&self) -> SysResult<Arc<dyn BlockDriverOps>> {
-        Ok(LoopDevice::new(self.target_inode()?))
+        Ok(LoopDevice::new(
+            self.target_inode()?,
+            self.readahead.clone(),
+            self.read_only.clone(),
+        ))
     }
 
     fn get_status(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
@@ -147,6 +162,10 @@ impl InodeOps for LoopInode {
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        if !buf.is_empty() && self.read_only.load(Ordering::Relaxed) {
+            return Err(Errno::EROFS);
+        }
+
         self.target_inode()?.writeat(buf, offset)
     }
 
@@ -175,32 +194,65 @@ impl InodeOps for LoopInode {
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         #[derive(TryFromPrimitive)]
         #[allow(non_camel_case_types)]
-        #[repr(usize)]
+        #[repr(u32)]
         enum Request {
             LOOP_SET_FD = 0x4C00,
             LOOP_CLR_FD = 0x4C01,
             LOOP_SET_STATUS = 0x4C02,
             LOOP_GET_STATUS = 0x4C03,
+            BLKROSET = 0x125D,
+            BLKROGET = 0x125E,
+            LOOP_BLKGETSIZE = 0x1260,
+            BLKRASET = 0x1262,
+            BLKRAGET = 0x1263,
             LOOP_BLKGETSIZE64 = 0x80081272,
         }
 
-        let request = Request::try_from_primitive(request).map_err(|_| Errno::ENOTTY)?;
+        let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
         match request {
             Request::LOOP_SET_FD => {
                 let backing_file = current::fdtable().lock().get(arg)?;
                 let target_inode = backing_file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+                let read_only = !backing_file.writable();
                 if target_inode.clone().downcast_arc::<LoopInode>().is_ok() {
                     return Err(Errno::EINVAL);
                 }
                 self.bind_target_inode(target_inode)?;
+                self.read_only.store(read_only, Ordering::Relaxed);
                 Ok(0)
             }
-            Request::LOOP_CLR_FD => {
-                self.clear_target_inode();
-                Ok(0)
-            }
+            Request::LOOP_CLR_FD => self.clear_target_inode(),
             Request::LOOP_SET_STATUS => self.set_status(arg, addrspace),
             Request::LOOP_GET_STATUS => self.get_status(arg, addrspace),
+            Request::BLKROSET => {
+                let read_only = match arg {
+                    0 | 1 => arg != 0,
+                    _ => {
+                        let value: u32 = addrspace.copy_from_user(arg)?;
+                        value != 0
+                    }
+                };
+                self.read_only.store(read_only, Ordering::Relaxed);
+                Ok(0)
+            }
+            Request::BLKROGET => {
+                addrspace.copy_to_user(arg, self.read_only.load(Ordering::Relaxed) as u32)?;
+                Ok(0)
+            }
+            Request::LOOP_BLKGETSIZE => {
+                let size = self.size()?;
+                let blocks = size / 512;
+                addrspace.copy_to_user(arg, blocks as u32)?;
+                Ok(0)
+            }
+            Request::BLKRASET => {
+                self.readahead.store(arg, Ordering::Relaxed);
+                Ok(0)
+            }
+            Request::BLKRAGET => {
+                addrspace.copy_to_user(arg, self.readahead.load(Ordering::Relaxed))?;
+                Ok(0)
+            }
             Request::LOOP_BLKGETSIZE64 => {
                 let size = self.size()?;
                 addrspace.copy_to_user(arg, size)?;

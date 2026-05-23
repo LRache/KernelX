@@ -2,6 +2,7 @@
 mod kvm;
 mod loop_dev;
 mod null;
+mod pty;
 mod rtc;
 mod urandom;
 mod zero;
@@ -10,6 +11,7 @@ mod zero;
 pub use kvm::KvmInode;
 pub use loop_dev::LoopInode;
 pub use null::NullInode;
+pub use pty::PtmxInode;
 pub use rtc::RtcInode;
 pub use urandom::URandomInode;
 pub use zero::ZeroInode;

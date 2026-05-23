@@ -29,7 +29,7 @@ pub const USEREND: usize = arch_impl::USEREND;
 
 mod arch;
 use arch::{Arch, ArchTrait};
-pub use arch::{PageTableTrait, UserContextTrait};
+pub use arch::{CloneABI, PageTableTrait, UserContextTrait};
 
 macro_rules! arch_export {
     ($($func:ident($($arg:ident: $type:ty),*) -> $ret:ty);* $(;)?) => {
@@ -45,8 +45,9 @@ use crate::kernel::mm::MapPerm;
 use core::time::Duration;
 
 arch_export! {
-    init() -> ();
+    init(memory_top: usize) -> ();
     setup_all_cores(current_core: usize) -> ();
+    clone_abi() -> CloneABI;
 
     /* ----- Per-CPU Data ----- */
     set_percpu_data(data: usize) -> ();
@@ -67,10 +68,10 @@ arch_export! {
 
     get_kernel_stack_top() -> usize;
 
-    // kaddr_offset() -> usize;
     kaddr_to_paddr(kaddr: usize) -> usize;
     paddr_to_kaddr(paddr: usize) -> usize;
     map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
+    mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
 
     get_time_us() -> u64;
     uptime() -> Duration;
@@ -81,11 +82,13 @@ arch_export! {
     is_kernel_addr(addr: usize) -> bool;
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 pub fn get_frame_pointer() -> usize {
     Arch::get_frame_pointer()
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 pub unsafe fn frame_info(fp: usize) -> (usize, usize) {
     unsafe { Arch::frame_info(fp) }

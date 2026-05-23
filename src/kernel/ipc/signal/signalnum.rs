@@ -60,11 +60,15 @@ impl SignalNum {
     }
 
     pub fn is_kill(&self) -> bool {
-        *self == SIGKILL || *self == SIGSTOP
+        *self == SIGKILL
     }
 
     pub fn is_unignorable(&self) -> bool {
         *self == SIGKILL || *self == SIGSTOP
+    }
+
+    pub fn is_continue(&self) -> bool {
+        *self == SIGCONT
     }
 
     pub fn to_mask(&self) -> usize {
@@ -141,10 +145,6 @@ impl SignalSet {
 
     pub fn contains(&self, num: SignalNum) -> bool {
         num.is_masked(*self)
-    }
-
-    pub fn bits(&self) -> usize {
-        self.0
     }
 }
 

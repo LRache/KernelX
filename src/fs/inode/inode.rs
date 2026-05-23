@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 use core::time::Duration;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
+use crate::fs::{Dentry, Perm};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
 use crate::kernel::mm::AddrSpace;
@@ -230,6 +230,11 @@ pub trait InodeOps: DowncastSync {
         Ok(Mode::empty())
     }
 
+    fn check_perm(&self, perm: &Perm) -> SysResult<bool> {
+        let owner = self.owner()?;
+        Ok(self.mode()?.check_perm(perm, owner.0, owner.1))
+    }
+
     fn chmod(&self, _mode: Mode) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -253,7 +258,7 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
-        Err(Errno::ENOSYS)
+        Err(Errno::ENOTTY)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {

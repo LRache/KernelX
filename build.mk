@@ -17,6 +17,9 @@ BUILD_ENV = \
 	ARCH_BITS=$(ARCH_BITS) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
 	AR=$(AR) \
+	RUST_TARGET=$(RUST_TARGET) \
+	KERNELX_INITPATH=$(INITPATH) \
+	KERNELX_INITCWD=$(INITCWD) \
 	KERNELX_RELEASE=$(KERNELX_RELEASE) \
 	KERNELX_HOME=$(KERNELX_HOME) \
 	CONFIG_DEFAULT_BOOT_DEVICE=$(CONFIG_DEFAULT_BOOT_ROOT_DEVICE) \
@@ -29,7 +32,9 @@ BUILD_ENV = \
 	COMPILE_MODE=$(COMPILE_MODE) \
 	RUSTFLAGS="$(RUSTFLAGS)"
 
-RUST_TARGET = riscv64gc-unknown-none-elf
+# Rust target triple — passed in from config/config.mk based on Kconfig.
+# Fallback for direct `make -f build.mk ...` invocations.
+RUST_TARGET ?= riscv64gc-unknown-none-elf
 RUST_TARGET_DIR ?= $(abspath target/$(RUST_TARGET)/$(COMPILE_MODE))
 RUST_KERNEL ?= $(RUST_TARGET_DIR)/kernelx
 RUST_DEPENDENCIES = $(RUST_TARGET_DIR)/kernelx.d
@@ -81,6 +86,8 @@ ifeq ($(CONFIG_BACKTRACE),y)
 RUST_FEATURES += backtrace
 RUSTFLAGS += -C force-frame-pointers=yes
 endif
+
+-include $(KERNELX_HOME)/scripts/$(ARCH)$(ARCH_BITS).mk
 
 CARGO_FLAGS += --target $(RUST_TARGET)
 CARGO_FLAGS += --no-default-features --features "$(RUST_FEATURES)"

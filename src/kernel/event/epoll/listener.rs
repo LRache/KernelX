@@ -75,7 +75,7 @@ pub enum EpollCtlOp {
 struct EpollEntry {
     fd: usize,
     file: Arc<dyn FileOps>,
-    notifier: Arc<EpollNotifier>,
+    notifiers: Vec<Arc<EpollNotifier>>,
     event: EpollEvent,
     ready_event: FileEvent,
     queued: bool,
@@ -83,11 +83,11 @@ struct EpollEntry {
 }
 
 impl EpollEntry {
-    fn new(fd: usize, file: Arc<dyn FileOps>, notifier: Arc<EpollNotifier>, event: EpollEvent) -> Self {
+    fn new(fd: usize, file: Arc<dyn FileOps>, notifiers: Vec<Arc<EpollNotifier>>, event: EpollEvent) -> Self {
         Self {
             fd,
             file,
-            notifier,
+            notifiers,
             event,
             ready_event: FileEvent::empty(),
             queued: false,
@@ -185,7 +185,7 @@ impl EpollListener {
         self: &Arc<Self>,
         fd: usize,
         file: Arc<dyn FileOps>,
-        notifier: Arc<EpollNotifier>,
+        notifiers: Vec<Arc<EpollNotifier>>,
         event: EpollEvent,
     ) -> SysResult<()> {
         let mut inner = self.inner.lock();
@@ -193,8 +193,8 @@ impl EpollListener {
             return Err(Errno::EEXIST);
         }
 
-        notifier.add_listener(self);
-        inner.entries.insert(fd, EpollEntry::new(fd, file, notifier, event));
+        notifiers.iter().for_each(|notifier| notifier.add_listener(self));
+        inner.entries.insert(fd, EpollEntry::new(fd, file, notifiers, event));
         drop(inner);
 
         self.refresh_fd(fd);
@@ -220,15 +220,24 @@ impl EpollListener {
         let mut inner = self.inner.lock();
         let entry = inner.entries.remove(&fd).ok_or(Errno::ENOENT)?;
         inner.ready.retain(|ready_fd| *ready_fd != fd);
-        let still_listening = inner
-            .entries
-            .values()
-            .any(|other| other.notifier.id() == entry.notifier.id());
+        let stale_notifiers = entry
+            .notifiers
+            .iter()
+            .filter(|notifier| {
+                !inner.entries.values().any(|other| {
+                    other
+                        .notifiers
+                        .iter()
+                        .any(|other_notifier| other_notifier.id() == notifier.id())
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         drop(inner);
 
-        if !still_listening {
-            entry.notifier.remove_listener(self.id());
-        }
+        stale_notifiers
+            .into_iter()
+            .for_each(|notifier| notifier.remove_listener(self.id()));
         Ok(())
     }
 
@@ -240,7 +249,10 @@ impl EpollListener {
         };
 
         entries.into_values().for_each(|entry| {
-            entry.notifier.remove_listener(self.id());
+            entry
+                .notifiers
+                .iter()
+                .for_each(|notifier| notifier.remove_listener(self.id()));
         });
     }
 
@@ -249,7 +261,13 @@ impl EpollListener {
         let fds = inner
             .entries
             .iter()
-            .filter_map(|(fd, entry)| (entry.notifier.id() == notifier_id).then_some(*fd))
+            .filter_map(|(fd, entry)| {
+                entry
+                    .notifiers
+                    .iter()
+                    .any(|notifier| notifier.id() == notifier_id)
+                    .then_some(*fd)
+            })
             .collect::<Vec<_>>();
 
         let mut wake = false;

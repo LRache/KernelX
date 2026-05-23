@@ -10,7 +10,7 @@ use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::Processor;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::fdtable::FDTable;
-use crate::kernel::task::{PCB, TCB};
+use crate::kernel::task::{CapabilitySet, PCB, TCB};
 use crate::kernel::uapi::Uid;
 use crate::klib::{SleepLock, SpinLock};
 
@@ -76,6 +76,10 @@ pub fn uid() -> Uid {
 
 pub fn pcb() -> &'static Arc<PCB> {
     tcb().parent()
+}
+
+pub fn capable(capability: CapabilitySet) -> bool {
+    pcb().capabilities().effective.contains(capability)
 }
 
 pub fn signal_actions() -> &'static SpinLock<SignalActionTable> {

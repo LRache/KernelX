@@ -2,7 +2,7 @@ use crate::arch::PageTableTrait;
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
 
-use super::pte::{Addr, PTE, PTEFlags, PTETable};
+use super::pte::{Addr, PTEFlags, PTETable, PTE};
 
 const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
@@ -119,6 +119,22 @@ impl Sv39x4PageTable {
             ptetable.free();
         }
     }
+
+    pub fn mmap_paddr(&mut self, gaddr: usize, paddr: usize, perm: MapPerm) {
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::A | PTEFlags::D;
+
+        let mut pte = self.find_pte_or_create(gaddr);
+        pte.set_flags(flags);
+        pte.set_ppn(Addr::from_paddr(paddr).ppn());
+        pte.write_back().expect("Failed to write back Sv39x4 PTE");
+    }
+
+    pub fn mmap_replace_kaddr(&mut self, gaddr: usize, kaddr: usize) {
+        let mut pte = self.find_pte_or_create(gaddr);
+        pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
+        pte.write_back().expect("Failed to write back Sv39x4 PTE");
+    }
 }
 
 impl PageTableTrait for Sv39x4PageTable {
@@ -139,28 +155,12 @@ impl PageTableTrait for Sv39x4PageTable {
         pte.write_back().expect("Failed to write back Sv39x4 PTE");
     }
 
-    fn mmap_paddr(&mut self, gaddr: usize, paddr: usize, perm: MapPerm) {
-        let mut flags: PTEFlags = perm.into();
-        flags |= PTEFlags::A | PTEFlags::D;
-
-        let mut pte = self.find_pte_or_create(gaddr);
-        pte.set_flags(flags);
-        pte.set_ppn(Addr::from_paddr(paddr).ppn());
-        pte.write_back().expect("Failed to write back Sv39x4 PTE");
-    }
-
     fn mmap_replace(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
         flags |= PTEFlags::A | PTEFlags::D;
 
         let mut pte = self.find_pte_or_create(gaddr);
         pte.set_flags(flags);
-        pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
-        pte.write_back().expect("Failed to write back Sv39x4 PTE");
-    }
-
-    fn mmap_replace_kaddr(&mut self, gaddr: usize, kaddr: usize) {
-        let mut pte = self.find_pte_or_create(gaddr);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back Sv39x4 PTE");
     }

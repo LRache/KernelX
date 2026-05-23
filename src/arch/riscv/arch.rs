@@ -1,14 +1,16 @@
 use core::time::Duration;
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
 use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task};
-use crate::arch::{self, Arch, ArchTrait, UserContextTrait};
+use crate::arch::{self, Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
 use crate::kernel::config;
 use crate::kernel::mm::{MapPerm, page};
 use crate::kernel::scheduler::current;
+use crate::klib::{InitedCell, SpinLock};
 use crate::{driver, kinfo, kwarn};
 
 use super::csr::{SIE, Sstatus, stvec};
@@ -22,16 +24,39 @@ unsafe extern "C" {
     static __riscv_kaddr_offset: usize;
 }
 
+static NEXT_MMIO_KADDR: InitedCell<SpinLock<usize>> = InitedCell::uninit();
+
+fn init_mmio_kaddr(memory_top: usize) {
+    NEXT_MMIO_KADDR.init(SpinLock::new(align_up(memory_top, arch::PGSIZE), "NEXT_MMIO_KADDR"));
+}
+
+fn alloc_mmio_kaddr(size: usize) -> usize {
+    let mut next = NEXT_MMIO_KADDR.lock();
+    let kaddr = *next;
+    let new_next = kaddr.checked_add(size).expect("RISC-V MMIO virtual address overflow");
+    if new_next > super::TRAMPOLINE_BASE {
+        panic!("RISC-V MMIO virtual address space exhausted");
+    }
+    *next = new_next;
+    kaddr
+}
+
+fn align_up(addr: usize, align: usize) -> usize {
+    debug_assert!(align.is_power_of_two());
+    (addr + align - 1) & !(align - 1)
+}
+
 impl ArchTrait for Arch {
-    fn init() {
+    fn init(memory_top: usize) {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;
         }
-        stvec::write(asm_kerneltrap_entry as usize);
+        init_mmio_kaddr(memory_top);
+        stvec::write(asm_kerneltrap_entry as *const () as usize);
         kernelpagetable::init();
 
-        chosen::kconsole::register(&SBIKConsole);
-        chosen::kpmu::register(&SBIKPMU);
+        chosen::kconsole::register(Box::new(SBIKConsole));
+        chosen::kpmu::register(Arc::new(SBIKPMU));
 
         driver::register_matched_driver(Arc::new(SBIConsoleDriver));
     }
@@ -57,6 +82,10 @@ impl ArchTrait for Arch {
                 }
             }
         }
+    }
+
+    fn clone_abi() -> CloneABI {
+        CloneABI::Backwards
     }
 
     #[inline(always)]
@@ -136,6 +165,16 @@ impl ArchTrait for Arch {
 
     unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
         unsafe { kernelpagetable::unmap_kernel_addr(kstart, size) };
+    }
+
+    fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize {
+        let offset = paddr & arch::PGMASK;
+        let pbase = paddr - offset;
+        let size = size.checked_add(offset).expect("RISC-V MMIO mapping size overflow");
+        let mapped_size = arch::page_count(size) * arch::PGSIZE;
+        let kbase = alloc_mmio_kaddr(mapped_size);
+        kernelpagetable::map_kernel_addr(kbase, pbase, mapped_size, MapPerm::R | MapPerm::W);
+        kbase + offset
     }
 
     fn uptime() -> Duration {

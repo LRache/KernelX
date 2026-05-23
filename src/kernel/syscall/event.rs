@@ -97,8 +97,11 @@ pub fn epoll_ctl(epfd: usize, op: usize, fd: usize, uptr_event: UPtr<EpollEvent>
             if file.downcast_ref::<EpollFile>().is_some() {
                 return Err(Errno::EINVAL);
             }
-            let notifier = file.epoll_notifier().ok_or(Errno::EBADF)?;
-            epoll.listener().add(fd, file, notifier, event.unwrap())?;
+            let notifiers = file.epoll_notifiers().ok_or(Errno::EBADF)?;
+            if notifiers.is_empty() {
+                return Err(Errno::EBADF);
+            }
+            epoll.listener().add(fd, file, notifiers, event.unwrap())?;
         }
         EpollCtlOp::Del => {
             epoll.listener().delete(fd)?;
@@ -400,7 +403,11 @@ fn select(
     drop(fdtable);
 
     let tcb = current::tcb();
+
+    // Blocked before waiting files to avoid losing wakeup events.
     tcb.block("select");
+
+    // Use defer to ensure unblocking if we return early due to error or ready events.
     let defer = defer::defer(|| {
         tcb.unblock();
     });
@@ -495,7 +502,6 @@ fn select(
     old_signal_mask.map(|mask| {
         tcb.set_signal_mask(mask);
     });
-    // tcb.state().lock().state = TaskState::Running;
 
     let event = tcb.take_wakeup_event().unwrap();
 

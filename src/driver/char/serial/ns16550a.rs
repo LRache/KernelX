@@ -7,8 +7,7 @@ use alloc::sync::Arc;
 use crate::arch;
 use crate::driver::char::serial::SerialOps;
 use crate::driver::char::serial::stty::Stty;
-use crate::driver::{Device, DriverMatcher, DriverOps};
-use crate::kernel::mm::{MapPerm, page};
+use crate::driver::{Device, DriverOps, MMIOMatcher as MMIOMatcherTrait};
 
 mod regs {
     pub const RHR: usize = 0; // receive holding register (for input bytes)
@@ -111,16 +110,15 @@ impl SerialOps for Serial {
     }
 }
 
-pub struct Matcher;
+pub struct MMIOMatcher;
 
-impl DriverMatcher for Matcher {
+impl MMIOMatcherTrait for MMIOMatcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         static SUPPORTED_COMPAT: &[&str] = &["ns16550a", "snps,dw-apb-uart"];
         device.match_compatible(SUPPORTED_COMPAT)?;
 
         let (mmio_base, mmio_size) = device.mmio()?;
-        let kbase = page::alloc_contiguous(arch::page_count(mmio_size));
-        arch::map_kernel_addr(kbase, mmio_base, mmio_size, MapPerm::RW);
+        let kbase = arch::mmio_phys_to_kaddr(mmio_base, mmio_size);
 
         let io_width = device
             .fdt_node()

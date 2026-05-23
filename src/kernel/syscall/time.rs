@@ -10,9 +10,9 @@ use crate::kernel::event::{Event, Timer, TimerClockId, TimerNotify, timer};
 use crate::kernel::ipc::SignalNum;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UPtr, UserPointer, UserStruct};
+use crate::kernel::task::CapabilitySet;
 
 use super::common::{ITimerSpec, Timespec, Timeval};
-use super::uid::{self, Capability};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -64,7 +64,7 @@ pub fn clock_settime(clockid: usize, uptr_timespec: UPtr<SetTimespec>) -> SysRes
         return Err(Errno::EINVAL);
     }
 
-    if !uid::capable(Capability::SysTime) {
+    if !current::capable(CapabilitySet::SYS_TIME) {
         return Err(Errno::EPERM);
     }
 
@@ -88,7 +88,7 @@ pub fn settimeofday(uptr_timeval: UPtr<SetTimeval>, uptr_timezone: UPtr<Timezone
         uptr_timezone.read()?;
     }
 
-    if !uid::capable(Capability::SysTime) {
+    if !current::capable(CapabilitySet::SYS_TIME) {
         return Err(Errno::EPERM);
     }
 
@@ -151,6 +151,7 @@ enum ClockId {
     CLOCK_THREAD_CPUTIME_ID = 3,
     CLOCK_MONOTONIC_RAW = 4,
     CLOCK_REALTIME_COARSE = 5,
+    CLOCK_MONOTONIC_COARSE = 6,
     CLOCK_BOOTTIME = 7,
     CLOCK_REALTIME_ALARM = 8,
     CLOCK_BOOTTIME_ALARM = 9,
@@ -167,7 +168,8 @@ impl ClockId {
             ClockId::CLOCK_MONOTONIC
             | ClockId::CLOCK_MONOTONIC_RAW
             | ClockId::CLOCK_BOOTTIME
-            | ClockId::CLOCK_BOOTTIME_ALARM => Ok(timer::now()),
+            | ClockId::CLOCK_BOOTTIME_ALARM
+            | ClockId::CLOCK_MONOTONIC_COARSE => Ok(timer::now()),
             ClockId::CLOCK_PROCESS_CPUTIME_ID => Ok(current::pcb().process_cpu_time()),
             ClockId::CLOCK_THREAD_CPUTIME_ID => Ok(current::tcb().thread_cpu_time()),
         }

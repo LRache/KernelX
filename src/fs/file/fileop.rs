@@ -1,14 +1,15 @@
 use alloc::string::String;
 use alloc::sync::Arc;
-use downcast_rs::{DowncastSync, impl_downcast};
+use alloc::vec::Vec;
+use downcast_rs::{impl_downcast, DowncastSync};
 
 use crate::fs::file::FileFlags;
-use crate::fs::{Dentry, InodeOps};
+use crate::fs::{vfs, Dentry, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
-use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::uapi::FileStat;
+use crate::kernel::mm::AddrSpace;
+use crate::kernel::uapi::{FileStat, Statfs};
 
 #[derive(Debug, Clone, Copy)]
 pub enum SeekWhence {
@@ -63,9 +64,14 @@ pub trait FileOps: DowncastSync {
     }
 
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
-        Err(Errno::ENOSYS)
+        Err(Errno::ENOTTY)
     }
     fn fstat(&self) -> SysResult<FileStat>;
+
+    fn fstatfs(&self) -> SysResult<Statfs> {
+        let sno = self.get_dentry().ok_or(Errno::EINVAL)?.sno();
+        vfs::statfs(sno)
+    }
 
     fn fsync(&self) -> SysResult<()> {
         Ok(())
@@ -90,6 +96,14 @@ pub trait FileOps: DowncastSync {
 
     fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
         None
+    }
+
+    fn epoll_notifiers(&self) -> Option<Vec<Arc<EpollNotifier>>> {
+        self.epoll_notifier().map(|notifier| {
+            let mut notifiers = Vec::new();
+            notifiers.push(notifier);
+            notifiers
+        })
     }
 
     fn set_flags(&self, flags: FileFlags) {

@@ -42,9 +42,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     && rustup target add riscv64gc-unknown-none-elf \
     && rustup component add rust-src
 
-# --- Patch ---
-RUN sed -i 's|^# include <gnu/stubs-lp64.h>|//&|' /usr/riscv64-linux-gnu/include/gnu/stubs.h
-
 # --- Working directory ---
 WORKDIR /workspace
 

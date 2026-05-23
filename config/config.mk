@@ -1,6 +1,19 @@
 # Include configuration if it exists
-CONFIG_FILE := config/.config
+KCONFIG_FILE ?= config/Kconfig
+KCONFIG_CONFIG ?= config/.config
+DEFCONFIG ?= config/defconfig
+
+CONFIG_FILE := $(KCONFIG_CONFIG)
 -include $(CONFIG_FILE)
+
+ifeq ($(origin ARCH),command line)
+CONFIG_ARCH_SOURCE := $(ARCH)
+else
+CONFIG_ARCH_SOURCE := $(or $(CONFIG_ARCH),$(ARCH),riscv)
+endif
+CONFIG_ARCH_UNQUOTED := $(subst ",,$(CONFIG_ARCH_SOURCE))
+EXPORT_CONFIG ?= config/$(CONFIG_ARCH_UNQUOTED)
+IMPORT_CONFIG ?= $(EXPORT_CONFIG)
 
 ARCH = $(CONFIG_ARCH)
 ARCH_BITS = $(CONFIG_ARCH_BITS)
@@ -20,6 +33,12 @@ INITCWD ?= /
 
 CROSS_COMPILE ?= $(CONFIG_CROSS_COMPILE)
 CROSS_COMPILE ?= riscv64-unknown-elf-
+
+# Rust target triple, chosen per architecture via Kconfig.
+RUST_TARGET ?= $(CONFIG_RUST_TARGET)
+ifeq ($(RUST_TARGET),)
+RUST_TARGET := riscv64gc-unknown-none-elf
+endif
 
 SYSROOT ?= $(CONFIG_SYSROOT)
 
@@ -44,6 +63,7 @@ KERNEL_CONFIG = \
 	ARCH=$(ARCH) \
 	ARCH_BITS=$(ARCH_BITS) \
 	CROSS_COMPILE=$(CROSS_COMPILE) \
+	RUST_TARGET=$(RUST_TARGET) \
 	KERNELX_RELEASE=$(KERNELX_RELEASE) \
 	CONFIG_LOG_LEVEL=$(LOG_LEVEL) \
 	CONFIG_LOG_SYSCALL=$(CONFIG_LOG_SYSCALL) \
@@ -62,13 +82,56 @@ KERNEL_CONFIG = \
 	OBJCOPY=$(CONFIG_OBJCOPY)
 
 # Configuration targets
+defconfig:
+	@if command -v kconfig-conf >/dev/null 2>&1; then \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --defconfig=$(DEFCONFIG) $(KCONFIG_FILE); \
+	else \
+		echo "Error: kconfig-conf not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		exit 1; \
+	fi
+
+savedefconfig:
+	@if command -v kconfig-conf >/dev/null 2>&1; then \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --savedefconfig=$(DEFCONFIG) $(KCONFIG_FILE); \
+	else \
+		echo "Error: kconfig-conf not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		exit 1; \
+	fi
+
+exportconfig:
+	@if command -v kconfig-conf >/dev/null 2>&1; then \
+		mkdir -p $(dir $(EXPORT_CONFIG)); \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --savedefconfig=$(EXPORT_CONFIG) $(KCONFIG_FILE); \
+		echo "Exported config to $(EXPORT_CONFIG)"; \
+	else \
+		echo "Error: kconfig-conf not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		exit 1; \
+	fi
+
+importconfig:
+	@if command -v kconfig-conf >/dev/null 2>&1; then \
+		if [ ! -f $(IMPORT_CONFIG) ]; then \
+			echo "Error: config file not found: $(IMPORT_CONFIG)"; \
+			exit 1; \
+		fi; \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-conf --defconfig=$(IMPORT_CONFIG) $(KCONFIG_FILE); \
+		echo "Imported config from $(IMPORT_CONFIG) to $(KCONFIG_CONFIG)"; \
+	else \
+		echo "Error: kconfig-conf not found. Please install one of:"; \
+		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \
+		exit 1; \
+	fi
+
 menuconfig:
 	@if command -v kconfig-mconf >/dev/null 2>&1; then \
-		KCONFIG_CONFIG=config/.config kconfig-mconf config/Kconfig; \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) kconfig-mconf $(KCONFIG_FILE); \
 	elif command -v menuconfig >/dev/null 2>&1; then \
-		KCONFIG_CONFIG=config/.config menuconfig config/Kconfig; \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) menuconfig $(KCONFIG_FILE); \
 	elif python3 -c "import menuconfig" 2>/dev/null; then \
-		KCONFIG_CONFIG=config/.config python3 -m menuconfig config/Kconfig; \
+		KCONFIG_CONFIG=$(KCONFIG_CONFIG) python3 -m menuconfig $(KCONFIG_FILE); \
 	else \
 		echo "Error: menuconfig not found. Please install one of:"; \
 		echo "  kconfig-frontends: sudo apt-get install kconfig-frontends"; \

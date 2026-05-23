@@ -7,7 +7,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::uapi::FileStat;
+use crate::kernel::uapi::{FileStat, Statfs};
 use crate::klib::SpinLock;
 
 use super::PipeInner;
@@ -81,19 +81,23 @@ impl Pipe {
 
 impl FileOps for Pipe {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
-        self.read_with_blocked(buf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.read_with_blocked(buf, blocked)
     }
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        self.read_to_user_with_blocked(ubuf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.read_to_user_with_blocked(ubuf, blocked)
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
-        self.write_with_blocked(buf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.write_with_blocked(buf, blocked)
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        self.write_from_user_with_blocked(ubuf, *self.blocked.lock())
+        let blocked = *self.blocked.lock();
+        self.write_from_user_with_blocked(ubuf, blocked)
     }
 
     fn flags(&self) -> FileFlags {
@@ -130,6 +134,12 @@ impl FileOps for Pipe {
         kstat.st_nlink = 1;
 
         Ok(kstat)
+    }
+
+    fn fstatfs(&self) -> SysResult<Statfs> {
+        let mut kstatfs = Statfs::default();
+        kstatfs.f_type = 0x50495045; // "PIPE"
+        Ok(kstatfs)
     }
 
     fn fsync(&self) -> SysResult<()> {

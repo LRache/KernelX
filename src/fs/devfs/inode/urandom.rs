@@ -1,11 +1,19 @@
 use alloc::sync::Arc;
 
+use num_enum::TryFromPrimitive;
+
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::InodeLockState;
 use crate::fs::{Dentry, InodeOps, Mode};
-use crate::kernel::errno::SysResult;
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 use crate::klib::{SpinLock, random};
+
+#[repr(i32)]
+enum Entropy {
+    Available = 256,
+}
 
 pub struct URandomInode {
     ino: u32,
@@ -43,6 +51,23 @@ impl InodeOps for URandomInode {
 
     fn writeat(&self, buf: &[u8], _offset: usize) -> SysResult<usize> {
         Ok(buf.len())
+    }
+
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        #[derive(TryFromPrimitive)]
+        #[allow(non_camel_case_types)]
+        #[repr(u32)]
+        enum Request {
+            RNDGETENTCNT = 0x80045200,
+        }
+
+        let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
+        match request {
+            Request::RNDGETENTCNT => {
+                addrspace.copy_to_user(arg, Entropy::Available as i32)?;
+                Ok(0)
+            }
+        }
     }
 
     fn size(&self) -> SysResult<u64> {

@@ -10,24 +10,6 @@ use crate::kernel::uapi::Uid;
 
 use super::Tid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    /// The task is currently running on a CPU.
-    Running,
-
-    /// The task is ready to run and can be scheduled on a CPU.
-    Ready,
-
-    /// The task is blocked, waiting for an event.
-    Blocked,
-
-    /// The task is blocked and cannot be interrupted until the event it is waiting for occurs.
-    BlockedUninterruptible,
-
-    /// The task has exited. This state MUST BE set by the task itself.
-    Exited,
-}
-
 pub struct KernelStack {
     top: usize,
     page_count: usize,

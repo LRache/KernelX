@@ -1,8 +1,9 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use virtio_drivers::device::blk::{BlkReq, BlkResp, RespStatus, VirtIOBlk};
-use virtio_drivers::transport::mmio::MmioTransport;
+use virtio_drivers::transport::Transport;
 
 use crate::driver::virtio::VirtIOHal;
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
@@ -12,39 +13,34 @@ use crate::klib::SpinLock;
 
 const BLOCK_SIZE: usize = 512;
 
-pub struct VirtIOBlockDriver {
+pub struct VirtIOBlockDriver<T: Transport + Send + 'static> {
     device_name: String,
-    driver: SpinLock<VirtIOBlk<VirtIOHal, MmioTransport>>,
+    driver: SpinLock<VirtIOBlk<VirtIOHal, T>>,
     inflight: SpinLock<BTreeMap<u16, Arc<dyn Task>>>,
+    read_only: bool,
+    readahead: AtomicUsize,
 }
 
-impl VirtIOBlockDriver {
-    pub fn new(device_name: String, transport: MmioTransport) -> Self {
+impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
+    pub fn new(device_name: String, transport: T) -> Self {
         let mut blk = VirtIOBlk::new(transport).unwrap();
         blk.enable_interrupts();
+        let read_only = blk.readonly();
         Self {
             device_name,
             driver: SpinLock::new(blk, "VirtIOBlockDriver::driver"),
             inflight: SpinLock::new(BTreeMap::new(), "VirtIOBlockDriver::inflight"),
+            read_only,
+            readahead: AtomicUsize::new(0),
         }
     }
 
     fn wait_for_token(&self, token: u16) {
-        let task = current::task().clone();
-        task.block_uninterruptible("virtio_blk_io");
+        let task = current::task();
+        scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_io");
 
-        // Disable interrupts to make the following two steps atomic:
-        //   1. Register ourselves in inflight so the interrupt handler can find us.
-        //   2. Check whether the I/O already completed before we registered.
-        //
-        // Without this, the interrupt can fire between steps 1 and 2 (or before
-        // step 1), see an empty inflight map, and skip the wakeup — leaving the
-        // task blocked forever (lost-wakeup race).
         self.inflight.lock().insert(token, task.clone());
 
-        // If the interrupt fired before we inserted (inflight was empty at that
-        // point), the completion token is still sitting in the used ring.
-        // Detect this and self-wake so schedule() returns promptly.
         if self.driver.lock().peek_used() == Some(token) {
             if let Some(t) = self.inflight.lock().remove(&token) {
                 scheduler::wakeup_task_uninterruptible(t, Event::IOComplete);
@@ -65,7 +61,7 @@ impl VirtIOBlockDriver {
     }
 }
 
-impl DriverOps for VirtIOBlockDriver {
+impl<T: Transport + Send + 'static> DriverOps for VirtIOBlockDriver<T> {
     fn name(&self) -> &str {
         "virtio_blk_driver"
     }
@@ -94,7 +90,7 @@ impl DriverOps for VirtIOBlockDriver {
     }
 }
 
-impl BlockDriverOps for VirtIOBlockDriver {
+impl<T: Transport + Send + 'static> BlockDriverOps for VirtIOBlockDriver<T> {
     fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()> {
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();
@@ -120,6 +116,10 @@ impl BlockDriverOps for VirtIOBlockDriver {
     }
 
     fn write_block(&self, block: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();
 
@@ -168,6 +168,10 @@ impl BlockDriverOps for VirtIOBlockDriver {
     }
 
     fn write_blocks(&self, start_block: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();
 
@@ -225,6 +229,10 @@ impl BlockDriverOps for VirtIOBlockDriver {
     }
 
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let mut length = buf.len();
         let mut block = offset / BLOCK_SIZE;
 
@@ -262,6 +270,18 @@ impl BlockDriverOps for VirtIOBlockDriver {
 
     fn flush(&self) -> Result<(), ()> {
         Ok(())
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.read_only
+    }
+
+    fn get_readahead(&self) -> usize {
+        self.readahead.load(Ordering::Relaxed)
+    }
+
+    fn set_readahead(&self, readahead: usize) {
+        self.readahead.store(readahead, Ordering::Relaxed);
     }
 
     fn get_block_size(&self) -> u32 {

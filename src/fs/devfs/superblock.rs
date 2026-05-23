@@ -6,15 +6,15 @@ use crate::driver::{DeviceType, DriverOps};
 use crate::fs::devfs::devnode::CharDevInode;
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::memtreefs::inode::Inode as MemInode;
-use crate::fs::{InodeOps, Mode, Owner, memtreefs};
+use crate::fs::{memtreefs, InodeOps, Mode, Owner};
 use crate::kernel::errno::SysResult;
 use crate::klib::InitedCell;
 
 #[cfg(feature = "kvm")]
 use super::inode::KvmInode;
-use super::{LoopInode, NullInode, RtcInode, URandomInode, ZeroInode};
+use super::{LoopInode, NullInode, PtmxInode, RtcInode, URandomInode, ZeroInode};
 
-struct DevfsInfo;
+pub struct DevfsInfo;
 impl memtreefs::StaticFsInfo for DevfsInfo {
     fn type_name() -> &'static str {
         "devfs"
@@ -41,7 +41,7 @@ impl FileSystemOps for FileSystem {
 }
 
 pub fn init() {
-    let superblock = memtreefs::SuperBlock::new(false);
+    let superblock = Arc::new(memtreefs::SuperBlock::new(false));
     let root = superblock.root_inode();
     root.add_child("null".into(), Arc::new(NullInode::new(superblock.alloc_inode_number())))
         .unwrap();
@@ -55,6 +55,23 @@ pub fn init() {
     #[cfg(feature = "kvm")]
     root.add_child("kvm".into(), Arc::new(KvmInode::new(superblock.alloc_inode_number())))
         .unwrap();
+    let pts_dir = root
+        .create(
+            "pts",
+            Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap(),
+            Owner::root(),
+        )
+        .unwrap();
+    let pts_dir = pts_dir.downcast_arc::<MemInode<DevfsInfo>>().ok().unwrap();
+    root.add_child(
+        "ptmx".into(),
+        Arc::new(PtmxInode::new(
+            superblock.alloc_inode_number(),
+            superblock.clone(),
+            pts_dir.clone(),
+        )),
+    )
+    .unwrap();
 
     // Create /dev/misc/ directory and add rtc
     let misc_dir = root
@@ -78,7 +95,7 @@ pub fn init() {
         .unwrap();
     }
 
-    DEV_SUPERBLOCK.init(Arc::new(superblock));
+    DEV_SUPERBLOCK.init(superblock);
 }
 
 pub fn add_device(name: String, driver: Arc<dyn DriverOps>) {

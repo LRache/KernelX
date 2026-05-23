@@ -215,7 +215,67 @@ pub fn madvise() -> SyscallRet {
     Ok(0)
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct MRemapFlags: usize {
+        const MAYMOVE  = 1;
+        const FIXED    = 2;
+        const DONTUNMAP = 4;
+    }
+}
+
+pub fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: usize, _new_addr: usize) -> SyscallRet {
+    let flags = MRemapFlags::from_bits(flags & 0x7).ok_or(Errno::EINVAL)?;
+
+    if old_addr % arch::PGSIZE != 0 || new_size == 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let old_pages = arch::page_count(old_size);
+    let new_pages = arch::page_count(new_size);
+
+    if new_pages == old_pages {
+        return Ok(old_addr);
+    }
+
+    if new_pages < old_pages {
+        let tail_addr = old_addr + new_pages * arch::PGSIZE;
+        let tail_pages = old_pages - new_pages;
+        current::addrspace()
+            .with_map_manager_mut(|mgr| mgr.unmap_area(tail_addr, tail_pages, current::addrspace().pagetable()))?;
+        return Ok(old_addr);
+    }
+
+    if !flags.contains(MRemapFlags::MAYMOVE) {
+        return Err(Errno::ENOMEM);
+    }
+
+    let new_addr = mmap(
+        0,
+        new_pages * arch::PGSIZE,
+        0x3,  /* R|W */
+        0x22, /* PRIVATE|ANON */
+        usize::MAX,
+        0,
+    )?;
+
+    let copy_len = old_pages * arch::PGSIZE;
+    let addrspace = current::addrspace();
+    for offset in (0..copy_len).step_by(arch::PGSIZE) {
+        let src = addrspace.with_map_manager_mut(|mgr| mgr.translate_read(old_addr + offset, &addrspace));
+        let dst = addrspace.with_map_manager_mut(|mgr| mgr.translate_write(new_addr + offset, &addrspace));
+        if let (Some(src), Some(dst)) = (src, dst) {
+            unsafe {
+                core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, arch::PGSIZE);
+            }
+        }
+    }
+
+    addrspace.with_map_manager_mut(|mgr| mgr.unmap_area(old_addr, old_pages, addrspace.pagetable()))?;
+
+    Ok(new_addr)
+}
+
 pub fn mlock(_start: usize, _length: usize) -> SyscallRet {
-    // Currently no-op
     Ok(0)
 }

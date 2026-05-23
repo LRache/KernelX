@@ -7,15 +7,17 @@ use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue};
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
-use crate::kernel::mm::page;
+use crate::kernel::mm::FixedContiguousPhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
+use crate::kernel::task::CapabilitySet;
 use crate::klib::{SleepLock, SpinLock};
 
 const PIPE_CAPACITY: usize = arch::PGSIZE * config::PIPE_BUFFER_PAGES;
+type PipeBuffer = FixedContiguousPhysPageFrame<{ config::PIPE_BUFFER_PAGES }>;
 
 struct FIFO {
-    data: *mut [u8; PIPE_CAPACITY],
+    data: PipeBuffer,
     head: usize,
     tail: usize,
     length: usize,
@@ -23,9 +25,8 @@ struct FIFO {
 
 impl FIFO {
     fn new() -> Self {
-        let data = page::alloc_contiguous(config::PIPE_BUFFER_PAGES) as *mut [u8; PIPE_CAPACITY];
         Self {
-            data,
+            data: PipeBuffer::alloc(),
             head: 0,
             tail: 0,
             length: 0,
@@ -36,12 +37,12 @@ impl FIFO {
         self.length
     }
 
-    fn data_mut(&mut self) -> &mut [u8; PIPE_CAPACITY] {
-        unsafe { &mut *self.data }
+    fn data_mut(&mut self) -> &mut [u8] {
+        self.data.slice()
     }
 
-    fn data(&self) -> &[u8; PIPE_CAPACITY] {
-        unsafe { &*self.data }
+    fn data(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.data.ptr(), PIPE_CAPACITY) }
     }
 
     fn pop_front(&mut self) -> Option<u8> {
@@ -132,8 +133,6 @@ impl FIFO {
         Ok(n)
     }
 }
-
-unsafe impl Send for FIFO {}
 
 pub struct PipeInner {
     fifo: SleepLock<FIFO>,
@@ -538,17 +537,26 @@ impl PipeInner {
     }
 
     pub fn set_capacity(&self, size: usize) -> SysResult<usize> {
+        if (size as isize) < 0 {
+            return Err(Errno::EINVAL);
+        }
+
         let aligned = if size == 0 {
             arch::PGSIZE
         } else {
             size.div_ceil(arch::PGSIZE) * arch::PGSIZE
         };
-        if aligned > PIPE_CAPACITY {
-            return Err(Errno::EINVAL);
-        }
 
         let used = self.fifo.lock().len();
         if aligned < used {
+            return Err(Errno::EBUSY);
+        }
+
+        if !current::capable(CapabilitySet::SYS_RESOURCE) {
+            return Err(Errno::EPERM);
+        }
+
+        if aligned > PIPE_CAPACITY {
             return Err(Errno::EINVAL);
         }
 

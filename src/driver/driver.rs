@@ -49,6 +49,10 @@ pub trait BlockDriverOps: DriverOps + Downcast {
     }
 
     fn write_blocks(&self, start_block: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let block_size = self.get_block_size() as usize;
         debug_assert!(block_size <= 512);
         let block_count = buf.len() / block_size;
@@ -94,6 +98,10 @@ pub trait BlockDriverOps: DriverOps + Downcast {
         Ok(())
     }
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let block_size = self.get_block_size() as usize;
         debug_assert!(block_size <= 512);
 
@@ -134,6 +142,18 @@ pub trait BlockDriverOps: DriverOps + Downcast {
 
     fn flush(&self) -> Result<(), ()> {
         Ok(())
+    }
+
+    fn is_readonly(&self) -> bool {
+        false
+    }
+
+    fn get_readahead(&self) -> usize {
+        0
+    }
+
+    fn set_readahead(&self, readahead: usize) {
+        let _ = readahead;
     }
 
     fn get_block_size(&self) -> u32;

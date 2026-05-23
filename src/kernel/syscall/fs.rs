@@ -25,7 +25,7 @@ use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct, utils};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::pidfd::PidFile;
-use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Uid};
+use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Statx, Uid};
 
 use super::common::Timespec;
 use super::def::*;
@@ -2058,8 +2058,13 @@ pub fn faccessat2(dirfd: usize, uptr_path: UString, mode: usize, flags: usize) -
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AtFlags: usize {
-        const AT_SYMLINK_NOFOLLOW = 0x100;
-        const AT_EMPTY_PATH = 0x1000;
+        const AT_SYMLINK_NOFOLLOW   = 0x100;
+        const AT_SYMLINK_FOLLOW     = 0x400;
+        const AT_NO_AUTOMOUNT       = 0x800;
+        const AT_EMPTY_PATH         = 0x1000;
+        const AT_STATX_SYNC_AS_STAT = 0x0000;
+        const AT_STATX_FORCE_SYNC   = 0x2000;
+        const AT_STATX_DONT_SYNC    = 0x4000;
     }
 }
 
@@ -2423,10 +2428,7 @@ pub fn fstatfs64(fd: usize, uptr_buf: UPtr<Statfs>) -> SyscallRet {
     uptr_buf.should_not_null()?;
 
     let file = current::fdtable().lock().get(fd)?;
-    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
-
-    let statfs = vfs::statfs(dentry.sno())?;
-
+    let statfs = file.fstatfs()?;
     uptr_buf.write(statfs)?;
 
     Ok(0)
@@ -2438,6 +2440,65 @@ pub fn newfstat(fd: usize, uptr_stat: UPtr<FileStat>) -> SyscallRet {
     let fstat = file.fstat()?;
 
     uptr_stat.write(fstat)?;
+
+    Ok(0)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StatxMask: usize {
+        const STATX__RESERVED = 0x8000_0000;
+    }
+}
+
+pub fn statx(dirfd: usize, uptr_path: UString, flags: usize, mask: usize, uptr_buf: UPtr<Statx>) -> SyscallRet {
+    uptr_buf.should_not_null()?;
+
+    let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if StatxMask::from_bits_retain(mask).contains(StatxMask::STATX__RESERVED) {
+        return Err(Errno::EINVAL);
+    }
+
+    let path = if uptr_path.is_null() && flags.contains(AtFlags::AT_EMPTY_PATH) {
+        String::new()
+    } else {
+        uptr_path.read_path()?
+    };
+
+    let fstat = if path.is_empty() {
+        if !flags.contains(AtFlags::AT_EMPTY_PATH) {
+            return Err(Errno::ENOENT);
+        }
+
+        if dirfd as isize == AT_FDCWD {
+            current::with_cwd(|cwd| cwd.get_inode().fstat())?
+        } else {
+            current::fdtable().lock().get(dirfd)?.fstat()?
+        }
+    } else {
+        let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+            if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow(root, dir, &path)
+            } else {
+                vfs::load_dentry_at(root, dir, &path)
+            }
+        };
+        let dentry = if dirfd as isize == AT_FDCWD {
+            current::with_root_cwd(|root, cwd| helper(&root, &cwd))
+        } else {
+            let dir = current::fdtable()
+                .lock()
+                .get(dirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?
+                .clone();
+            current::with_root(|root| helper(&root, &dir))
+        }?;
+
+        dentry.get_inode().fstat()?
+    };
+
+    uptr_buf.write(Statx::from(fstat))?;
 
     Ok(0)
 }

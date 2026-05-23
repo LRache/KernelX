@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::ptr::NonNull;
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "deadlock-detect")]
 use alloc::collections::vec_deque::VecDeque;
 
 use crate::arch;
@@ -13,9 +13,8 @@ pub struct Processor {
     task: Option<NonNull<Arc<dyn Task>>>,
     idle_kernel_context: arch::KernelContext,
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "deadlock-detect")]
     locked_spin: VecDeque<&'static str>,
-    // irq_spinlock_count: usize,
 }
 
 impl<'a> Processor {
@@ -24,7 +23,7 @@ impl<'a> Processor {
             hart_id,
             task: None,
             idle_kernel_context: arch::KernelContext::new_idle(),
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "deadlock-detect")]
             locked_spin: VecDeque::new(),
             // irq_spinlock_count: 0,
         }
@@ -85,9 +84,6 @@ impl<'a> Processor {
         self.locked_spin.push_back(name);
     }
 
-    #[cfg(not(feature = "deadlock-detect"))]
-    pub fn acquire_spinlock(&mut self, _name: &'static str) {}
-
     #[cfg(feature = "deadlock-detect")]
     pub fn release_spinlock(&mut self, name: &'static str) {
         if let Some(pos) = self.locked_spin.iter().rposition(|&n| n == name) {
@@ -99,7 +95,4 @@ impl<'a> Processor {
             );
         }
     }
-
-    #[cfg(not(feature = "deadlock-detect"))]
-    pub fn release_spinlock(&mut self, _name: &'static str) {}
 }

@@ -1,5 +1,4 @@
 fn main() {
-    let platform = std::env::var("PLATFORM").unwrap_or_else(|_| "qemu-virt-riscv64".to_string());
     let arch = std::env::var("ARCH").unwrap();
     let arch_bits = std::env::var("ARCH_BITS").unwrap();
     let sysroot = std::env::var("SYSROOT").unwrap_or_default();
@@ -18,14 +17,12 @@ fn main() {
     println!("cargo:rustc-env=KERNELX_SYMBOLS_PATH={}", symbols_path);
     println!("cargo:rerun-if-changed={}", symbols_path);
 
-    match platform.as_str() {
-        "qemu-virt-riscv64" => {
-            println!("cargo:rustc-cfg=platform_riscv_common");
-        }
-        _ => {
-            println!("cargo:warning=Unknown platform: {}", platform);
-        }
-    }
+    // Declare the custom cfg names we emit so `rustc --check-cfg` stays happy.
+    println!("cargo:rustc-check-cfg=cfg(platform_riscv_common)");
+    println!("cargo:rustc-check-cfg=cfg(platform_loongarch_common)");
+    println!("cargo:rustc-check-cfg=cfg(arch_riscv64)");
+    println!("cargo:rustc-check-cfg=cfg(arch_loongarch64)");
+
     println!("cargo:rustc-cfg=arch_{}{}", arch, arch_bits);
 
     // Link C library
@@ -66,6 +63,13 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
     use std::path::{Path, PathBuf};
 
     let target = std::env::var("TARGET").unwrap();
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let (clang_target, clang_arch_args): (&str, &[&str]) = match target_arch.as_str() {
+        "riscv64" => ("riscv64-unknown-elf", &["-march=rv64gc", "-mabi=lp64d"]),
+        "loongarch64" => ("loongarch64-unknown-elf", &["-mabi=lp64d"]),
+        _ => panic!("unsupported clang target for target_arch={target_arch}"),
+    };
+
     if target.ends_with("-softfloat") {
         unsafe {
             std::env::set_var("TARGET", target.replace("-softfloat", ""));
@@ -85,6 +89,8 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
         .clang_arg(format!("-I{}", clib_include.display()))
         .clang_arg(format!("-I{}", lwext4_include.display()))
         .clang_arg(format!("-I{}", generated_include.display()))
+        .clang_arg(format!("--target={clang_target}"))
+        .clang_args(clang_arch_args)
         .allowlist_function("(ext4|kernelx_ext4)_.*")
         .allowlist_type("ext4_.*")
         .allowlist_type("jbd_.*")
@@ -96,8 +102,10 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
     if !sysroot.is_empty() {
         builder = builder
             .clang_arg(format!("--sysroot={sysroot}"))
+            .clang_arg(format!("-I{sysroot}/include"))
             .clang_arg(format!("-I{sysroot}/usr/include"));
     }
+    println!("cargo:rerun-if-env-changed=SYSROOT");
 
     let bindings = builder.generate().expect("Unable to generate ext4 bindings");
 

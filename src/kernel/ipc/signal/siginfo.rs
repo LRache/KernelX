@@ -60,6 +60,7 @@ impl SiCode {
     pub const CLD_EXITED: Self = Self(1);
     pub const CLD_KILLED: Self = Self(2);
     pub const CLD_DUMPED: Self = Self(3);
+    pub const CLD_TRAPPED: Self = Self(4);
     pub const CLD_STOPPED: Self = Self(5);
     pub const CLD_CONTINUED: Self = Self(6);
 }

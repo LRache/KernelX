@@ -5,7 +5,7 @@ use alloc::collections::BTreeMap;
 use crate::kernel::event::timer;
 use crate::kernel::scheduler::{Processor, Task};
 use crate::kernel::{config, kthread, mm, scheduler, task};
-use crate::klib::{InitedCell, kalloc};
+use crate::klib::{kalloc, InitedCell};
 use crate::{arch, driver, fs, kinfo, net, print};
 
 #[allow(dead_code)]
@@ -70,22 +70,32 @@ fn kinit() {
 
 #[unsafe(link_section = ".text.init")]
 pub fn parse_boot_args(bootargs: &'static str) {
+    if bootargs.is_empty() {
+        return parse_boot_args(config::DEFAULT_BOOTARGS);
+    }
     let mut bootargs_map = BTreeMap::new();
-    let mut start = None;
-    let mut in_quotes = false;
 
-    let mut parse_arg = |arg: &'static str| {
+    let mut insert_arg = |arg: &'static str| {
         let arg = arg.trim_matches('"');
+        if arg.is_empty() {
+            return;
+        }
         if let Some((key, value)) = arg.split_once('=') {
             let value = value.trim_matches('"');
             bootargs_map.insert(key, value);
             kinfo!("bootarg: {}={}", key, value);
         } else {
+            let arg = arg.trim_matches('"');
+            if arg.is_empty() {
+                return;
+            }
             bootargs_map.insert(arg, "");
             kinfo!("bootarg: {}", arg);
         }
     };
 
+    let mut start = None;
+    let mut in_quotes = false;
     for (i, c) in bootargs.char_indices() {
         match c {
             '"' => {
@@ -95,9 +105,8 @@ pub fn parse_boot_args(bootargs: &'static str) {
                 }
             }
             c if c.is_whitespace() && !in_quotes => {
-                if let Some(begin) = start {
-                    parse_arg(&bootargs[begin..i]);
-                    start = None;
+                if let Some(begin) = start.take() {
+                    insert_arg(&bootargs[begin..i]);
                 }
             }
             _ => {
@@ -109,7 +118,7 @@ pub fn parse_boot_args(bootargs: &'static str) {
     }
 
     if let Some(begin) = start {
-        parse_arg(&bootargs[begin..]);
+        insert_arg(&bootargs[begin..]);
     }
 
     BOOT_ARGS.init(bootargs_map);
@@ -133,7 +142,7 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     if FIRST_BOOTED.swap(false, Ordering::SeqCst) {
         kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
         mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
-        arch::init();
+        arch::init(memory_top);
         fs::init();
         driver::init();
         arch::scan_device();

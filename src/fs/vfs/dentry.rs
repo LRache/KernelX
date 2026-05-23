@@ -457,12 +457,6 @@ impl Dentry {
         inode.symlink(target)
     }
 
-    pub fn symlink(self: &Arc<Self>, target: &str) -> SysResult<()> {
-        let inode = self.get_inode();
-
-        inode.symlink(target)
-    }
-
     pub fn link(self: &Arc<Self>, name: &str, target: &Arc<Dentry>) -> SysResult<()> {
         self.check_child_mutation_perm()?;
 

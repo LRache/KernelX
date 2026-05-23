@@ -4,30 +4,34 @@ use crate::kernel::mm::MapPerm;
 
 use super::{KernelContext, SigContext};
 
+/// ABI hall of shame: some architectures (RISC-V) pass the `tls` argument to `clone` before the `ctid` argument,
+/// while others (LoongArch) do the opposite.
+/// The `CloneABI` enum and `ArchTrait::clone_abi()` method allow the kernel to abstract over this difference.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
-pub struct MappedPage {
-    pub kaddr: usize,
-    pub perm: MapPerm,
+pub enum CloneABI {
+    /// flags, stack, ptid, ctid, tls
+    Normal,
+
+    /// flags, stack, ptid, tls, ctid
+    Backwards,
 }
 
 pub trait PageTableTrait {
     fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
-    fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm);
     fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
-    fn mmap_replace_kaddr(&mut self, uaddr: usize, kaddr: usize);
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm);
     fn munmap(&mut self, uaddr: usize);
     fn munmap_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> bool;
-    fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)>;
 
-    // fn mapped_page(&self, uaddr: usize) -> Option<MappedPage>;
-    // fn munmap_if_mapped(&mut self, uaddr: usize) -> bool;
-    // fn is_mapped(&self, uaddr: usize) -> bool;
+    #[allow(dead_code)]
+    fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)>;
 }
 
 pub trait ArchTrait {
-    fn init();
+    fn init(memory_top: usize);
     fn setup_all_cores(current_core: usize);
+    fn clone_abi() -> CloneABI;
 
     /* ----- Per-CPU Data ----- */
     fn set_percpu_data(data: usize);
@@ -46,6 +50,7 @@ pub trait ArchTrait {
     fn enable_device_interrupt(hartid: usize);
     fn enable_device_interrupt_irq(irq: u32);
 
+    #[allow(dead_code)]
     fn get_kernel_stack_top() -> usize;
 
     fn kaddr_to_paddr(kaddr: usize) -> usize;
@@ -53,6 +58,18 @@ pub trait ArchTrait {
     fn scan_device();
     fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm);
     unsafe fn unmap_kernel_addr(kstart: usize, size: usize);
+
+    /// Translate a device MMIO physical address into a kernel-accessible VA
+    /// suitable for volatile reads/writes. The returned address must resolve
+    /// to the same physical region with *uncached* (device / strongly-ordered)
+    /// semantics — cache coherence with DMA engines lives outside kernel
+    /// control for these regions.
+    ///
+    /// - RISC-V: reserves kernel virtual addresses above `memory_top + kaddr_offset`
+    ///   and installs a `MapPerm::RW` mapping via the kernel page table.
+    /// - LoongArch: returns the DMW0 window mirror of the PA (no allocation,
+    ///   no page-table edits — DMW0 is MAT=SUC, uncached by hardware).
+    fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
 
     fn uptime() -> Duration;
     fn get_time_us() -> u64;

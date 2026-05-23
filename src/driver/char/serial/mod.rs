@@ -1,5 +1,6 @@
 pub mod ns16550a;
 mod stty;
+pub mod virtconsole;
 
 trait SerialOps: Send {
     fn getchar(&mut self) -> Option<u8>;
