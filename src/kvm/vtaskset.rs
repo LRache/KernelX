@@ -58,7 +58,7 @@ impl VTaskSet {
 
         let guest_area = VMMapArea::new(req.addr, MapPerm::R | MapPerm::W | MapPerm::X, page_count);
         let shared_frames = guest_area.shared_frames();
-        self.addrspace.map_area(req.addr, Box::new(guest_area))?;
+        self.addrspace.map_area(req.addr, guest_area)?;
 
         let user_area = Box::new(KVMSharedArea::new(
             user_ubase,

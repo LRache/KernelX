@@ -358,8 +358,7 @@ pub fn detach_shm_by_addr(pid: Tid, shmaddr: usize, addr_space: &AddrSpace) -> S
     };
     // Unmap the area; ShmArea::drop will call on_area_drop to fix up ref_count.
     if page_count > 0 {
-        addr_space
-            .with_map_manager_mut(|map_manager| map_manager.unmap_area(shmaddr, page_count, addr_space.pagetable()))?;
+        addr_space.unmap_area(shmaddr, page_count)?;
     }
     let _ = shmid; // ref_count decremented by ShmArea::drop
     Ok(())

@@ -4,10 +4,10 @@ use bitflags::bitflags;
 use crate::arch;
 use crate::fs::file::{FileOps, RandomAccessFile};
 use crate::kernel::errno::Errno;
-use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{
     Area, PrivateAnonymousArea, PrivateFileMapArea, SharedAnonymousArea, SharedFileMapArea,
 };
+use crate::kernel::mm::MapPerm;
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::SyscallRet;
 
@@ -152,30 +152,30 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         }
     };
 
-    current::addrspace().with_map_manager_mut(|map_manager| {
-        let ubase = if fixed_noreplace {
+    let addrspace = current::addrspace();
+    let ubase = addrspace.with_map_manager_mut(|map_manager| {
+        if fixed_noreplace {
             if map_manager.is_range_mapped(addr, map_size) {
                 return Err(Errno::EEXIST);
             }
-            addr
+            Ok(addr)
         } else if fixed {
-            addr
+            Ok(addr)
         } else if addr == 0 || map_manager.is_range_mapped(addr, map_size) {
-            map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)?
+            map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)
         } else {
-            addr
-        };
-
-        area.set_ubase(ubase);
-
-        if fixed && !fixed_noreplace {
-            map_manager.map_area_fixed(ubase, area, current::addrspace().pagetable());
-        } else {
-            map_manager.map_area(ubase, area);
+            Ok(addr)
         }
+    })?;
 
-        Ok(ubase)
-    })
+    area.set_ubase(ubase);
+    if fixed && !fixed_noreplace {
+        addrspace.map_area_fixed(ubase, area)?;
+    } else {
+        addrspace.map_area(ubase, area)?;
+    }
+
+    Ok(ubase)
 }
 
 pub fn munmap(addr: usize, length: usize) -> SyscallRet {
@@ -185,9 +185,7 @@ pub fn munmap(addr: usize, length: usize) -> SyscallRet {
 
     let page_count = arch::page_count(length);
 
-    current::addrspace().with_map_manager_mut(|map_manager| {
-        map_manager.unmap_area(addr, page_count, current::addrspace().pagetable())
-    })?;
+    current::addrspace().unmap_area(addr, page_count)?;
 
     Ok(0)
 }

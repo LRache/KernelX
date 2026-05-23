@@ -166,6 +166,10 @@ impl Manager {
         start >= config::USER_BRK_BASE && end <= heap_end
     }
 
+    pub fn userbrk_page_count(&self) -> usize {
+        self.userbrk.page_count
+    }
+
     fn find_overlapped_areas(&self, start: usize, end: usize) -> Vec<usize> {
         let mut overlapped_areas = Vec::new();
 
