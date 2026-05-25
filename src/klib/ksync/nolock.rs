@@ -46,6 +46,15 @@ impl<T> NoLockMutex<T> {
         }
     }
 
+    /// Matches the normal lock API when lockdep is compiled out.
+    ///
+    /// # Safety
+    ///
+    /// The caller is responsible for the same invariants as `lock`.
+    pub unsafe fn lock_unchecked(&self) -> NoLockGuard<'_, T> {
+        self.lock()
+    }
+
     pub fn is_locked(&self) -> bool {
         false
     }

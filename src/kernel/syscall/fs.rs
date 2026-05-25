@@ -25,7 +25,9 @@ use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct, utils};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::pidfd::PidFile;
-use crate::kernel::uapi::{Dirent, DirentType, FileStat, OpenFlags, Statfs, Statx, Uid};
+use crate::kernel::uapi::{
+    Dirent, DirentType, FileFallocateFlags, FileSealFlags, FileStat, MemFdCreateFlags, OpenFlags, Statfs, Statx, Uid,
+};
 
 use super::common::Timespec;
 use super::def::*;
@@ -82,24 +84,14 @@ pub enum FcntlCmd {
     F_DUPFD_CLOEXEC = 1030,
     F_SETPIPE_SZ = 1031,
     F_GETPIPE_SZ = 1032,
+    F_ADD_SEALS = 1033,
+    F_GET_SEALS = 1034,
 }
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct FDArgs: usize {
         const FD_CLOEXEC = 1;
-    }
-}
-
-bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct OpenResolveFlags: u64 {
-        const RESOLVE_NO_XDEV = 0x01;
-        const RESOLVE_NO_MAGICLINKS = 0x02;
-        const RESOLVE_NO_SYMLINKS = 0x04;
-        const RESOLVE_BENEATH = 0x08;
-        const RESOLVE_IN_ROOT = 0x10;
-        const RESOLVE_CACHED = 0x20;
     }
 }
 
@@ -116,18 +108,6 @@ struct Flock {
 }
 
 impl UserStruct for Flock {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct OpenHow {
-    flags: u64,
-    mode: u64,
-    resolve: u64,
-}
-
-impl UserStruct for OpenHow {}
-
-const OPEN_HOW_SIZE: usize = size_of::<OpenHow>();
 
 #[derive(TryFromPrimitive)]
 #[repr(i16)]
@@ -413,6 +393,23 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             let file = current::fdtable().lock().get(fd)?;
             let pipe = file.downcast_ref::<Pipe>().ok_or(Errno::EINVAL)?;
             Ok(pipe.get_pipe_size())
+        }
+
+        FcntlCmd::F_ADD_SEALS => {
+            let seals = FileSealFlags::from_bits(arg).ok_or(Errno::EINVAL)?;
+            let file = current::fdtable().lock().get(fd)?;
+            if !file.writable() {
+                return Err(Errno::EPERM);
+            }
+            let inode = file.get_inode().ok_or(Errno::EINVAL)?;
+            inode.add_seals(seals)?;
+            Ok(0)
+        }
+
+        FcntlCmd::F_GET_SEALS => {
+            let file = current::fdtable().lock().get(fd)?;
+            let inode = file.get_inode().ok_or(Errno::EINVAL)?;
+            Ok(inode.seals()?.bits())
         }
     }
 }
@@ -765,6 +762,62 @@ pub fn openat(dirfd: usize, uptr_filename: UString, flags: usize, mode: usize) -
     do_openat(dirfd, path, flags, mode)
 }
 
+pub fn memfd_create(uptr_name: UString, flags: usize) -> SyscallRet {
+    let flags = MemFdCreateFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
+    if flags.contains(MemFdCreateFlags::MFD_NOEXEC_SEAL) && flags.contains(MemFdCreateFlags::MFD_EXEC) {
+        return Err(Errno::EINVAL);
+    }
+    let name = uptr_name.read_string_fixed::<250>().map_err(|err| match err {
+        Errno::ENAMETOOLONG => Errno::EINVAL,
+        err => err,
+    })?;
+
+    let file_flags = FileFlags {
+        readable: true,
+        writable: true,
+        blocked: true,
+        append: false,
+        direct: false,
+    };
+    let fd_flags = FDFlags {
+        cloexec: flags.contains(MemFdCreateFlags::MFD_CLOEXEC),
+    };
+    let initial_seals = if flags.contains(MemFdCreateFlags::MFD_ALLOW_SEALING) {
+        FileSealFlags::empty()
+    } else {
+        FileSealFlags::F_SEAL_SEAL
+    };
+    let (mode, initial_seals) = if flags.contains(MemFdCreateFlags::MFD_NOEXEC_SEAL) {
+        (0o666, initial_seals | FileSealFlags::F_SEAL_EXEC)
+    } else {
+        (0o777, initial_seals)
+    };
+    let file = vfs::create_memfd(
+        name.as_str(),
+        file_flags,
+        Mode::S_IFREG | Mode::from_bits_truncate(mode),
+        initial_seals,
+    )?;
+
+    let time = driver::chosen::kclock::now()?;
+    update_file_times(file.as_ref(), &time, false)?;
+    update_file_times(file.as_ref(), &time, true)?;
+
+    current::fdtable().lock().push(file, fd_flags)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+impl UserStruct for OpenHow {}
+
+const OPEN_HOW_SIZE: usize = size_of::<OpenHow>();
+
 fn read_open_how(uptr_how: UPtr<OpenHow>, size: usize) -> SysResult<OpenHow> {
     if size < OPEN_HOW_SIZE {
         return Err(Errno::EINVAL);
@@ -782,6 +835,18 @@ fn read_open_how(uptr_how: UPtr<OpenHow>, size: usize) -> SysResult<OpenHow> {
     }
 
     Ok(how)
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct OpenResolveFlags: u64 {
+        const RESOLVE_NO_XDEV = 0x01;
+        const RESOLVE_NO_MAGICLINKS = 0x02;
+        const RESOLVE_NO_SYMLINKS = 0x04;
+        const RESOLVE_BENEATH = 0x08;
+        const RESOLVE_IN_ROOT = 0x10;
+        const RESOLVE_CACHED = 0x20;
+    }
 }
 
 pub fn openat2(dirfd: usize, uptr_filename: UString, uptr_how: UPtr<OpenHow>, size: usize) -> SyscallRet {
@@ -3114,20 +3179,50 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn fallocate(fd: usize, mode: usize, _offset: usize, _len: usize) -> SyscallRet {
-    let file = current::fdtable().lock().get(fd)?;
+pub fn fallocate(fd: usize, mode: usize, offset: usize, len: usize) -> SyscallRet {
+    let file = {
+        let fdtable = current::fdtable();
+        let mut fdtable = fdtable.lock();
+        fdtable.get(fd)?
+    };
 
     if !file.writable() {
         return Err(Errno::EBADF);
     }
 
-    if mode != 0 {
+    let offset = truncate_length(offset)?;
+    let len = truncate_length(len)?;
+    if len == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let flags = FileFallocateFlags::from_bits(mode).ok_or(Errno::EINVAL)?;
+    if !flags.is_empty()
+        && flags != (FileFallocateFlags::FALLOC_FL_KEEP_SIZE | FileFallocateFlags::FALLOC_FL_PUNCH_HOLE)
+    {
         return Err(Errno::EINVAL);
     }
 
-    // file.downcast_arc::<RandomAccessFile>()
-    //     .map_err(|_| Errno::EINVAL)?
-    //     .fallocate(offset as u64, len as u64)?;
+    let inode = file.get_inode().ok_or(Errno::EINVAL)?;
+    if inode.inode_type()? != FileType::Regular {
+        return Err(Errno::EINVAL);
+    }
+
+    if flags.is_empty() {
+        let new_size = offset.checked_add(len).ok_or(Errno::EFBIG)?;
+        check_file_size_limit(new_size)?;
+
+        let old_size = inode.size()?;
+        if new_size <= old_size {
+            return Ok(0);
+        }
+    }
+
+    inode.fallocate(flags, offset, len)?;
+
+    notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
+
+    let time = driver::chosen::kclock::now()?;
+    update_file_times(file.as_ref(), &time, true)?;
 
     Ok(0)
 }

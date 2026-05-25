@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::maparea::area::{Area, Frame, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
@@ -191,6 +192,10 @@ impl Area for SharedAnonymousArea {
         };
 
         (Box::new(left), Box::new(right))
+    }
+
+    fn check_set_perm(&self, _perm: MapPerm) -> SysResult<()> {
+        Ok(())
     }
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {

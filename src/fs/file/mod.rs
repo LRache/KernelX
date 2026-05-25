@@ -6,4 +6,4 @@ mod fileop;
 pub use charfile::CharFile;
 pub use dirresult::DirResult;
 pub use file::*;
-pub use fileop::{FileOps, SeekWhence};
+pub use fileop::{FileMmapRequest, FileOps, SeekWhence};

@@ -963,7 +963,11 @@ impl InodeOps for TaskFdEntryInode {
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
         let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
-        let file = tcb.fdtable().lock().get(self.fd).map_err(|_| Errno::ENOENT)?;
+        let file = {
+            let fdtable = tcb.fdtable();
+            let mut fdtable = fdtable.lock();
+            fdtable.get(self.fd).map_err(|_| Errno::ENOENT)?
+        };
         let target = if let Some(dentry) = file.get_dentry() {
             dentry.get_path()
         } else {
@@ -977,6 +981,16 @@ impl InodeOps for TaskFdEntryInode {
         let to_copy = min(buf.len(), bytes.len());
         buf[..to_copy].copy_from_slice(&bytes[..to_copy]);
         Ok(Some(to_copy))
+    }
+
+    fn follow_magic_link(&self) -> SysResult<Option<Arc<Dentry>>> {
+        let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
+        let file = {
+            let fdtable = tcb.fdtable();
+            let mut fdtable = fdtable.lock();
+            fdtable.get(self.fd).map_err(|_| Errno::ENOENT)?
+        };
+        Ok(file.get_dentry().cloned())
     }
 
     fn fstat(&self) -> SysResult<FileStat> {

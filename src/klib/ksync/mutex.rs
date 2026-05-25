@@ -83,8 +83,22 @@ impl<T, R: LockerTrait> Mutex<T, R> {
     }
 
     pub fn lock(&self) -> LockGuard<'_, T, R> {
+        self.lock_inner(true)
+    }
+
+    /// Acquires this lock without running lockdep's pre-acquire chain check.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that this acquisition cannot participate in a
+    /// real lock-order deadlock that lockdep would otherwise catch.
+    pub unsafe fn lock_unchecked(&self) -> LockGuard<'_, T, R> {
+        self.lock_inner(false)
+    }
+
+    fn lock_inner(&self, check_lockdep: bool) -> LockGuard<'_, T, R> {
         #[cfg(feature = "deadlock-detect")]
-        if current::has_task() {
+        if check_lockdep && current::has_task() {
             use crate::klib::ksync::lockdep;
 
             let task = current::task();

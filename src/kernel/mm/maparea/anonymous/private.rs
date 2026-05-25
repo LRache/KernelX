@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::maparea::area::{Area, MemoryFaultSignal};
 use crate::kernel::mm::maparea::nofilemap::FrameState;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
@@ -252,6 +253,10 @@ impl Area for PrivateAnonymousArea {
 
     fn ubase(&self) -> usize {
         self.ubase
+    }
+
+    fn check_set_perm(&self, _perm: MapPerm) -> SysResult<()> {
+        Ok(())
     }
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
