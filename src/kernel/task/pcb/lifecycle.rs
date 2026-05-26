@@ -176,7 +176,12 @@ impl PCB {
         };
         *state = State::Recycled;
         drop(state);
-        self.tasks.lock().clear();
+
+        let mut tasks = self.tasks.lock();
+        tasks.iter().for_each(|tcb| {
+            manager::remove(tcb.tid());
+        });
+        tasks.clear();
         status
     }
 
@@ -306,7 +311,9 @@ impl PCB {
             tcb.fdtable().lock().close_all();
             tcb.set_dead();
             tcb.wake_parent_waiting_vfork();
-            manager::remove(tcb.tid());
+            if tcb.tid() != self.pid {
+                manager::remove(tcb.tid());
+            }
             if tcb.resume_from_stopped() {
                 scheduler::push_task(tcb.clone());
             } else if tcb.resume_from_ptrace_stop(None).is_ok() {

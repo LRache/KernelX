@@ -2,6 +2,8 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 #[cfg(feature = "no-smp")]
 use core::cell::UnsafeCell;
+#[cfg(not(feature = "no-smp"))]
+use core::sync::atomic::Ordering;
 use spin::mutex::SpinMutex;
 
 use crate::kernel::event::Event;

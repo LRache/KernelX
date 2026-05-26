@@ -10,7 +10,8 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::shm::IpcGetFlag;
 use crate::kernel::ipc::{
-    KSiFields, PendingSignal, Pipe, SiCode, SigInfo, SignalAction, SignalNum, SignalSet, SignalStackFlags, shm, signum,
+    KSiFields, PendingSignal, Pipe, SiCode, SigInfo, SignalAction, SignalNum, SignalSet, SignalStackFlags, sem, shm,
+    signum,
 };
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
@@ -555,6 +556,98 @@ pub fn shmget(key: usize, size: usize, shmflg: usize) -> SyscallRet {
     Ok(shmid)
 }
 
+pub fn semget(key: usize, nsems: usize, semflg: usize) -> SyscallRet {
+    let flags = IpcGetFlag::from_bits_truncate(semflg);
+    let mode = (semflg & 0o777) as u32;
+    sem::get_or_create_sem(key, nsems, flags, mode, current::euid(), current::egid())
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UserSembuf {
+    sem_num: u16,
+    sem_op: i16,
+    sem_flg: i16,
+}
+
+impl UserStruct for UserSembuf {}
+
+fn read_sem_ops(sops: UArray<UserSembuf>, nsops: usize) -> SysResult<Vec<sem::SemOp>> {
+    if sops.is_null() || nsops == 0 {
+        return Err(Errno::EINVAL);
+    }
+    if nsops > sem::limit::MAX_OPS_PER_CALL {
+        return Err(Errno::E2BIG);
+    }
+
+    let mut ops = Vec::new();
+    for i in 0..nsops {
+        let op = sops.index(i).read()?;
+        ops.push(sem::SemOp {
+            sem_num: op.sem_num,
+            sem_op: op.sem_op,
+            sem_flg: op.sem_flg,
+        });
+    }
+
+    Ok(ops)
+}
+
+fn do_semtimedop(semid: usize, ops: &[sem::SemOp], timeout: Option<Duration>) -> SyscallRet {
+    let deadline = timeout.map(|timeout| timer::now() + timeout);
+
+    loop {
+        match sem::begin_semop(semid, ops, current::euid(), current::egid(), current::pid())? {
+            sem::SemopStatus::Done => return Ok(0),
+            sem::SemopStatus::WouldBlock => {}
+        }
+
+        let wait_timeout = if let Some(deadline) = deadline {
+            let remaining = deadline.checked_sub(timer::now()).unwrap_or(Duration::ZERO);
+            if remaining.is_zero() {
+                sem::remove_current_waiter(semid);
+                return Err(Errno::EAGAIN);
+            }
+            Some(remaining)
+        } else {
+            None
+        };
+
+        let timer_id = wait_timeout.map(|timeout| timer::add_timer(current::task().clone(), timeout));
+        let event = current::block("semop");
+        if !matches!(event, Event::Sem) {
+            sem::remove_current_waiter(semid);
+        }
+        if let Some(timer_id) = timer_id {
+            if event != Event::Timeout {
+                timer::remove_timer(timer_id);
+            }
+        }
+
+        match event {
+            Event::Sem => {}
+            Event::Timeout => return Err(Errno::EAGAIN),
+            Event::Signal => return Err(Errno::EINTR),
+            _ => unreachable!("unexpected event while waiting on semop: {:?}", event),
+        }
+    }
+}
+
+pub fn semop(semid: usize, sops: UArray<UserSembuf>, nsops: usize) -> SyscallRet {
+    let ops = read_sem_ops(sops, nsops)?;
+    do_semtimedop(semid, &ops, None)
+}
+
+pub fn semtimedop(semid: usize, sops: UArray<UserSembuf>, nsops: usize, timeout: UPtr<Timespec>) -> SyscallRet {
+    let ops = read_sem_ops(sops, nsops)?;
+    let timeout = if timeout.is_null() {
+        None
+    } else {
+        Some(timeout.read()?.try_into()?)
+    };
+    do_semtimedop(semid, &ops, timeout)
+}
+
 pub fn shmat(shmid: usize, shmaddr: usize, shmflg: usize) -> SyscallRet {
     let flags = shm::ShmFlag::from_bits_truncate(shmflg);
     let addrspace = current::addrspace();
@@ -621,6 +714,191 @@ impl From<shm::ShmStat> for UserShmidDs {
             shm_nattch: stat.nattch,
             reserved5: 0,
             reserved6: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserSemidDs {
+    sem_perm: UserIpcPerm,
+    sem_otime: i64,
+    sem_ctime: i64,
+    sem_nsems: usize,
+    reserved3: usize,
+    reserved4: usize,
+}
+
+impl UserStruct for UserSemidDs {}
+
+impl From<sem::SemStat> for UserSemidDs {
+    fn from(stat: sem::SemStat) -> Self {
+        Self {
+            sem_perm: UserIpcPerm {
+                key: stat.ds.key as i32,
+                uid: stat.ds.uid,
+                gid: stat.ds.gid,
+                cuid: stat.ds.cuid,
+                cgid: stat.ds.cgid,
+                mode: stat.ds.mode,
+                seq: 0,
+                pad2: 0,
+                reserved1: 0,
+                reserved2: 0,
+            },
+            sem_otime: stat.ds.otime as i64,
+            sem_ctime: stat.ds.ctime as i64,
+            sem_nsems: stat.ds.nsems,
+            reserved3: 0,
+            reserved4: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserSemInfo {
+    semmap: i32,
+    semmni: i32,
+    semmns: i32,
+    semmnu: i32,
+    semmsl: i32,
+    semopm: i32,
+    semume: i32,
+    semusz: i32,
+    semvmx: i32,
+    semaem: i32,
+}
+
+impl UserStruct for UserSemInfo {}
+
+impl From<sem::SemInfo> for UserSemInfo {
+    fn from(info: sem::SemInfo) -> Self {
+        Self {
+            semmap: info.semmap,
+            semmni: info.semmni,
+            semmns: info.semmns,
+            semmnu: info.semmnu,
+            semmsl: info.semmsl,
+            semopm: info.semopm,
+            semume: info.semume,
+            semusz: info.semusz,
+            semvmx: info.semvmx,
+            semaem: info.semaem,
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[repr(usize)]
+#[derive(Debug, TryFromPrimitive)]
+enum SemCtlCmd {
+    IPC_RMID = 0,
+    IPC_SET = 1,
+    IPC_STAT = 2,
+    IPC_INFO = 3,
+    GETPID = 11,
+    GETVAL = 12,
+    GETALL = 13,
+    GETNCNT = 14,
+    GETZCNT = 15,
+    SETVAL = 16,
+    SETALL = 17,
+    SEM_STAT = 18,
+    SEM_INFO = 19,
+}
+
+bitflags! {
+    struct IpcCtlFlags: usize {
+        const IPC_64 = 0x0100;
+    }
+}
+
+pub fn semctl(semid: usize, semnum: usize, cmd: usize, arg: usize) -> SyscallRet {
+    let cmd = SemCtlCmd::try_from(cmd & !IpcCtlFlags::IPC_64.bits()).map_err(|_| Errno::EINVAL)?;
+
+    match cmd {
+        SemCtlCmd::IPC_RMID => {
+            sem::remove_sem(semid, current::euid())?;
+            Ok(0)
+        }
+        SemCtlCmd::IPC_STAT => {
+            let uptr_buf = UPtr::<UserSemidDs>::from_uaddr(arg);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            uptr_buf.write(sem::stat_sem(semid, current::euid(), current::egid())?.into())?;
+            Ok(0)
+        }
+        SemCtlCmd::IPC_SET => {
+            let uptr_buf = UPtr::<UserSemidDs>::from_uaddr(arg);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            let ds = uptr_buf.read()?;
+            sem::set_perm_sem(
+                semid,
+                ds.sem_perm.uid,
+                ds.sem_perm.gid,
+                ds.sem_perm.mode,
+                current::euid(),
+            )?;
+            Ok(0)
+        }
+        SemCtlCmd::IPC_INFO => {
+            let uptr_buf = UPtr::<UserSemInfo>::from_uaddr(arg);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            let (highest_index, info) = sem::info_sem(false);
+            uptr_buf.write(info.into())?;
+            Ok(highest_index)
+        }
+        SemCtlCmd::GETPID => sem::getpid(semid, semnum, current::euid(), current::egid()),
+        SemCtlCmd::GETVAL => sem::getval(semid, semnum, current::euid(), current::egid()),
+        SemCtlCmd::GETALL => {
+            if arg == 0 {
+                return Err(Errno::EFAULT);
+            }
+            let values = sem::getall(semid, current::euid(), current::egid())?;
+            current::copy_to_user::slice(arg, &values)?;
+            Ok(0)
+        }
+        SemCtlCmd::GETNCNT => sem::getncnt(semid, semnum, current::euid(), current::egid()),
+        SemCtlCmd::GETZCNT => sem::getzcnt(semid, semnum, current::euid(), current::egid()),
+        SemCtlCmd::SETVAL => {
+            // SETVAL reads union semun.val, so stale upper bits from other union members are ignored.
+            let value = arg as i32;
+            sem::setval(semid, semnum, value, current::euid(), current::egid(), current::pid())?;
+            Ok(0)
+        }
+        SemCtlCmd::SETALL => {
+            if arg == 0 {
+                return Err(Errno::EFAULT);
+            }
+            let nsems = sem::nsems(semid)?;
+            let mut values = alloc::vec![0u16; nsems];
+            current::copy_from_user::slice(arg, &mut values)?;
+            sem::setall(semid, &values, current::euid(), current::egid(), current::pid())?;
+            Ok(0)
+        }
+        SemCtlCmd::SEM_STAT => {
+            let uptr_buf = UPtr::<UserSemidDs>::from_uaddr(arg);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            let (id, stat) = sem::stat_index_sem(semid, current::euid(), current::egid())?;
+            uptr_buf.write(stat.into())?;
+            Ok(id)
+        }
+        SemCtlCmd::SEM_INFO => {
+            let uptr_buf = UPtr::<UserSemInfo>::from_uaddr(arg);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            let (highest_index, info) = sem::info_sem(true);
+            uptr_buf.write(info.into())?;
+            Ok(highest_index)
         }
     }
 }

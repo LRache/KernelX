@@ -12,6 +12,7 @@ pub enum Event {
     Timeout,
     Futex,
     FutexWaitv { index: usize },
+    Sem,
     Process { child: Tid },
     WaitSignal { signum: SignalNum },
     Signal,

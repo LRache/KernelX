@@ -44,6 +44,16 @@ impl<T> WaitQueue<T> {
         });
     }
 
+    pub fn count_by(&self, mut predicate: impl FnMut(&T) -> bool) -> usize {
+        let mut count = 0;
+        for item in &self.waiters {
+            if predicate(&item.arg) {
+                count += 1;
+            }
+        }
+        count
+    }
+
     pub fn remove(&mut self, task: &Arc<dyn Task>) {
         self.waiters.retain(|item| !Arc::ptr_eq(&item.task, task));
     }
