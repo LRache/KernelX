@@ -2,10 +2,10 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use downcast_rs::{impl_downcast, DowncastSync};
+use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::fs::file::FileFlags;
-use crate::fs::{vfs, Dentry, InodeOps};
+use crate::fs::{Dentry, InodeOps, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::maparea::Area;

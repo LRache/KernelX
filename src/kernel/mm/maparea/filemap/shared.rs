@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::fs::inode::Index as InodeIndex;
 use crate::fs::InodeOps;
+use crate::fs::inode::Index as InodeIndex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};

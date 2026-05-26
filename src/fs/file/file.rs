@@ -8,7 +8,7 @@ use crate::fs::vfs::Dentry;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
-use crate::kernel::ipc::{signum, KSiFields, SiCode};
+use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::maparea::{Area, PrivateFileMapArea, SharedFileMapArea};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::{AddrSpace, MapPerm};
@@ -286,11 +286,7 @@ impl FileOps for RandomAccessFile {
             ready |= FileEvent::WRITE_READY;
         }
 
-        if ready.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(ready))
-        }
+        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
     fn wait_event(&self, _waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
