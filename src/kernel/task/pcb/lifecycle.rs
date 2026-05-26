@@ -303,6 +303,7 @@ impl PCB {
 
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|tcb| {
+            tcb.fdtable().lock().close_all();
             tcb.set_dead();
             tcb.wake_parent_waiting_vfork();
             manager::remove(tcb.tid());

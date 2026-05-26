@@ -239,10 +239,8 @@ impl FDTable {
             .filter_map(|(fd, item)| item.as_ref().map(|_| fd))
             .collect()
     }
-}
 
-impl Drop for FDTable {
-    fn drop(&mut self) {
+    pub fn close_all(&mut self) {
         self.table.iter_mut().for_each(|item| {
             let Some(fd_item) = item.take() else {
                 return;
@@ -250,5 +248,11 @@ impl Drop for FDTable {
             release_posix_locks_from_file(&fd_item.file, self.owner);
             fd_item.file.on_fd_remove();
         });
+    }
+}
+
+impl Drop for FDTable {
+    fn drop(&mut self) {
+        self.close_all();
     }
 }
