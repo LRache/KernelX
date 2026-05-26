@@ -102,7 +102,6 @@ qemu-run-bt:
 	truncate -s $(TMPDISK_SIZE) $(TMPDISK)
 	python3 scripts/backtrace_run.py \
 		--elf $(VMKERNELX) \
-		--cross-compile $(CROSS_COMPILE) \
 		-- $(QEMU) $(QEMU_FLAGS)
 	@ rm -f $(TMPDISK)
 
