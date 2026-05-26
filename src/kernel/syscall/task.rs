@@ -6,7 +6,7 @@ use num_enum::TryFromPrimitive;
 use crate::arch;
 use crate::arch::CloneABI;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
-use crate::fs::{FileType, Perm, PermFlags, vfs};
+use crate::fs::{Dentry, FileType, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignal, SiCode, SiSigChld, SigInfo, SignalNum, signum};
@@ -721,8 +721,8 @@ bitflags! {
 }
 
 fn open_execveat_file(
-    root: &Arc<crate::fs::Dentry>,
-    dir: &Arc<crate::fs::Dentry>,
+    root: &Arc<Dentry>,
+    dir: &Arc<Dentry>,
     path: &str,
     flags: ExecveAtFlags,
     perm: &Perm,

@@ -2434,6 +2434,8 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
         uptr_path.read_path()?
     };
 
+    // crate::kdebug!("fstatat: dirfd={}, path=\"{}\", flags={:#x}", dirfd, path, flags.bits());
+
     let fstat = if path.is_empty() {
         if !flags.contains(AtFlags::AT_EMPTY_PATH) {
             return Err(Errno::ENOENT);
@@ -2446,6 +2448,7 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
         }
     } else {
         let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+            // crate::kdebug!("cwd=\"{}\", path=\"{}\"", dir.get_path(), path);
             if flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW) {
                 vfs::load_dentry_at_nofollow(root, dir, &path)
             } else {
