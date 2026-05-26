@@ -161,6 +161,10 @@ impl UString {
         copy_from_user::string(self.uaddr)
     }
 
+    pub fn read_string_fixed<const N: usize>(&self) -> SysResult<tstr<N>> {
+        copy_from_user::string_fixed::<N>(self.uaddr)
+    }
+
     pub fn read_path(&self) -> SysResult<String> {
         copy_from_user::path_string(self.uaddr)
     }

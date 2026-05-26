@@ -340,7 +340,7 @@ impl AddrSpace {
     pub fn cleanup(&self) {
         // let pagetable = &mut self.pagetable.write();
         let mut map_manager = self.map_manager.lock();
-        map_manager.cleanup();
+        map_manager.cleanup(&self.pagetable);
     }
 
     #[cfg(feature = "swap-memory")]

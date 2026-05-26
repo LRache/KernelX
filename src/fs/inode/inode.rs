@@ -6,9 +6,9 @@ use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::{Dentry, Perm};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
-use crate::kernel::mm::AddrSpace;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::uapi::{FileStat, Uid};
+use crate::kernel::mm::{AddrSpace, PhysPageFrame};
+use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
 use crate::klib::SpinLock;
 
 use super::bsd_flock::BsdFlockState;
@@ -76,6 +76,20 @@ pub fn release_bsd_flock(inode: &Arc<dyn InodeOps>, owner: usize) {
     }
 }
 
+pub trait InodeSealOps: Send + Sync {
+    fn init_seals(&self, seals: FileSealFlags) -> SysResult<()>;
+
+    fn seals(&self) -> SysResult<FileSealFlags>;
+
+    fn add_seals(&self, seals: FileSealFlags) -> SysResult<()>;
+
+    fn begin_shared_mmap(&self, _writable: bool) {}
+
+    fn update_shared_mmap_writable(&self, _old_writable: bool, _new_writable: bool) {}
+
+    fn end_shared_mmap(&self, _writable: bool) {}
+}
+
 pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
 
@@ -98,6 +112,10 @@ pub trait InodeOps: DowncastSync {
 
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify()
+    }
+
+    fn as_seal_ops(&self) -> Option<&dyn InodeSealOps> {
+        None
     }
 
     fn begin_write_open(&self) -> SysResult<()> {
@@ -224,7 +242,41 @@ pub trait InodeOps: DowncastSync {
         Ok(None)
     }
 
+    fn follow_magic_link(&self) -> SysResult<Option<Arc<Dentry>>> {
+        Ok(None)
+    }
+
     fn size(&self) -> SysResult<u64>;
+
+    fn mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<Arc<PhysPageFrame>>> {
+        let offset = file_page_index.checked_mul(crate::arch::PGSIZE).ok_or(Errno::EFBIG)?;
+        let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
+        if offset >= file_size {
+            return Ok(None);
+        }
+
+        let len = core::cmp::min(file_size - offset, crate::arch::PGSIZE);
+        let frame = PhysPageFrame::alloc_zeroed();
+        let read_len = self.readat(&mut frame.slice()[..len], offset, false)?;
+        if read_len < len {
+            frame.slice()[read_len..len].fill(0);
+        }
+        Ok(Some(Arc::new(frame)))
+    }
+
+    fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
+        let offset = file_page_index.checked_mul(crate::arch::PGSIZE).ok_or(Errno::EFBIG)?;
+        let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
+        if offset >= file_size {
+            return Ok(());
+        }
+
+        let len = core::cmp::min(file_size - offset, crate::arch::PGSIZE);
+        self.writeat(&frame.slice()[..len], offset)?;
+        Ok(())
+    }
+
+    fn release_mmap_shared_page(&self, _file_page_index: usize) {}
 
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::empty())
@@ -272,6 +324,19 @@ pub trait InodeOps: DowncastSync {
 
     fn truncate(&self, _new_size: u64) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
+    }
+
+    fn fallocate(&self, flags: FileFallocateFlags, offset: u64, len: u64) -> SysResult<()> {
+        if !flags.is_empty() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+
+        let new_size = offset.checked_add(len).ok_or(Errno::EFBIG)?;
+        if new_size <= self.size()? {
+            return Ok(());
+        }
+
+        self.truncate(new_size)
     }
 
     fn update_atime(&self, time: &Duration) -> SysResult<()> {

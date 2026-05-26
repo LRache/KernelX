@@ -1,13 +1,64 @@
 use alloc::borrow::Cow;
+use alloc::format;
 use alloc::sync::Arc;
 
+use crate::driver::BlockDriverOps;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::inode::{FileType, Mode, Owner};
+use crate::fs::memtreefs;
 use crate::fs::perm::Perm;
 use crate::fs::vfs::dentry::{self, Dentry};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::FileSealFlags;
+use crate::klib::SpinLock;
 
 use super::{LookupFlags, vfs};
+
+struct MemfdFsInfo;
+
+impl memtreefs::StaticFsInfo for MemfdFsInfo {
+    fn type_name() -> &'static str {
+        "memfd"
+    }
+
+    fn statfs_magic() -> u64 {
+        0x01021994
+    }
+}
+
+struct MemfdFileSystem;
+
+impl FileSystemOps for MemfdFileSystem {
+    fn create(
+        &self,
+        _fsno: u32,
+        _driver: Option<Arc<dyn BlockDriverOps>>,
+        options: MountOptions,
+    ) -> SysResult<Arc<dyn SuperBlockOps>> {
+        Ok(Arc::new(memtreefs::SuperBlock::<MemfdFsInfo>::new(options.read_only)))
+    }
+}
+
+static MEMFD_SUPERBLOCK_SNO: SpinLock<Option<u32>> = SpinLock::new(None, "vfs::fileop::MEMFD_SUPERBLOCK_SNO");
+
+fn memfd_superblock_sno() -> SysResult<u32> {
+    if let Some(sno) = *MEMFD_SUPERBLOCK_SNO.lock() {
+        return Ok(sno);
+    }
+
+    let sno = vfs()
+        .superblock_table
+        .lock()
+        .mount(&MemfdFileSystem, None, MountOptions::default())?;
+    let mut slot = MEMFD_SUPERBLOCK_SNO.lock();
+    if let Some(existing) = *slot {
+        Ok(existing)
+    } else {
+        *slot = Some(sno);
+        Ok(sno)
+    }
+}
 
 fn new_file(dentry: Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Arc<dyn FileOps>> {
     let inode = dentry.get_inode();
@@ -172,5 +223,21 @@ pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysRes
     let inode = superblock.create_temp(mode)?;
     let dentry = Arc::new(Dentry::new("", dentry, &inode, dentry.sno()));
 
+    Ok(Arc::new(RandomAccessFile::new(inode, dentry, flags)))
+}
+
+pub fn create_memfd(
+    name: &str,
+    flags: FileFlags,
+    mode: Mode,
+    initial_seals: FileSealFlags,
+) -> SysResult<Arc<dyn FileOps>> {
+    let sno = memfd_superblock_sno()?;
+    let superblock = vfs().superblock_table.lock().get(sno).ok_or(Errno::ENOENT)?;
+    let inode = superblock.create_temp(mode)?;
+    inode.as_seal_ops().ok_or(Errno::EINVAL)?.init_seals(initial_seals)?;
+
+    let dentry_name = format!("memfd:{} (deleted)", name);
+    let dentry = Arc::new(Dentry::new(&dentry_name, vfs().get_root(), &inode, sno));
     Ok(Arc::new(RandomAccessFile::new(inode, dentry, flags)))
 }

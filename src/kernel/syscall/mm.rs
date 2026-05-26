@@ -2,12 +2,11 @@ use alloc::boxed::Box;
 use bitflags::bitflags;
 
 use crate::arch;
-use crate::fs::file::{FileOps, RandomAccessFile};
+
+use crate::fs::file::FileMmapRequest;
 use crate::kernel::errno::Errno;
+use crate::kernel::mm::maparea::{Area, PrivateAnonymousArea, SharedAnonymousArea};
 use crate::kernel::mm::MapPerm;
-use crate::kernel::mm::maparea::{
-    Area, PrivateAnonymousArea, PrivateFileMapArea, SharedAnonymousArea, SharedFileMapArea,
-};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::SyscallRet;
 
@@ -114,42 +113,18 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
             return Err(Errno::EINVAL);
         }
 
-        let file = file.downcast_arc::<RandomAccessFile>().map_err(|_| Errno::EBADF)?;
-
-        if !file.flags.readable {
-            return Err(Errno::EACCES);
-        }
-        if flags.contains(MMapFlags::SHARED) && prot.contains(MMapProt::WRITE) && !file.flags.writable {
-            return Err(Errno::EACCES);
-        }
-
         if fixed_noreplace
             && current::addrspace().with_map_manager_mut(|map_manager| map_manager.is_range_mapped(addr, map_size))
         {
             return Err(Errno::EEXIST);
         }
 
-        let dentry = file.get_dentry().unwrap();
-        let inode = file.get_inode().unwrap().clone();
-        let index = dentry.get_inode_index();
-
-        if shared {
-            // if length % arch::PGSIZE != 0 {
-            //     return Err(Errno::EINVAL);
-            // }
-
-            Box::new(SharedFileMapArea::new(
-                0,
-                perm,
-                inode,
-                index,
-                offset,
-                page_count,
-                dentry.get_path(),
-            ))
-        } else {
-            Box::new(PrivateFileMapArea::new(0, perm, file, offset, length))
-        }
+        file.mmap_area(FileMmapRequest {
+            shared,
+            perm,
+            offset,
+            length,
+        })?
     };
 
     current::addrspace().with_map_manager_mut(|map_manager| {

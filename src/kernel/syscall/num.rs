@@ -51,6 +51,7 @@ macro_rules! syscall_entries {
             166 => fs::umask(1),
             267 => fs::syncfs(1),
             276 => fs::renameat2(5),
+            279 => fs::memfd_create(2),
             285 => fs::copy_file_range(6),
             286 => fs::preadv2(6),
             287 => fs::pwritev2(6),

@@ -1,8 +1,4 @@
-// TODO: Test and verify the shared file mapping area implementation.
-// TODO: Implement the swapped filed page frame
-
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -10,115 +6,37 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::fs::InodeOps;
 use crate::fs::inode::Index as InodeIndex;
+use crate::fs::InodeOps;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
-use crate::klib::{SleepLock, SpinLock};
+use crate::kernel::uapi::FileSealFlags;
+use crate::klib::SpinLock;
 
-struct MappedFileEntry {
-    inode: Arc<dyn InodeOps>,
-    shared: BTreeMap<usize, PhysPageFrame>,
-    ref_count: usize,
-}
-
-impl MappedFileEntry {
-    fn get_page(&mut self, file_page_index: usize) -> Option<usize> {
-        if let Some(frame) = self.shared.get(&file_page_index) {
-            Some(frame.get_page())
-        } else {
-            let offset = file_page_index.checked_mul(arch::PGSIZE)?;
-            let file_size = usize::try_from(self.inode.size().ok()?).ok()?;
-            if offset >= file_size {
-                return None;
-            }
-
-            let length = core::cmp::min(file_size - offset, arch::PGSIZE);
-            let frame = PhysPageFrame::alloc_zeroed();
-            self.inode
-                .readat(&mut frame.slice()[..length], offset, false)
-                .expect("Failed to read.");
-            let kpage = frame.get_page();
-            self.shared.insert(file_page_index, frame);
-            Some(kpage)
-        }
-    }
-}
-
-impl Drop for MappedFileEntry {
-    fn drop(&mut self) {
-        // Write back all pages
-        for (page_index, frame) in self.shared.iter() {
-            let offset = page_index * arch::PGSIZE;
-            self.inode
-                .writeat(frame.slice(), offset)
-                .expect("Failed to write back.");
-        }
-    }
-}
-
-struct Manager {
-    mapped: SpinLock<BTreeMap<InodeIndex, Arc<SleepLock<MappedFileEntry>>>>,
-}
-
-impl Manager {
-    pub const fn new() -> Self {
-        Self {
-            mapped: SpinLock::new(BTreeMap::new(), "static::filemap::shared::Manager"),
-        }
-    }
-
-    pub fn open_mapped_file(&self, inode: Arc<dyn InodeOps>, index: InodeIndex) -> Arc<SleepLock<MappedFileEntry>> {
-        let mut mapped = self.mapped.lock();
-        if let Some(entry) = mapped.get(&index) {
-            entry.lock().ref_count += 1;
-            return entry.clone();
-        } else {
-            let entry = Arc::new(SleepLock::new(
-                MappedFileEntry {
-                    inode: inode,
-                    shared: BTreeMap::new(),
-                    ref_count: 1,
-                },
-                "MappedFileEntry",
-            ));
-            mapped.insert(index, entry.clone());
-            return entry;
-        }
-    }
-
-    pub fn close_mapped_file(&self, index: InodeIndex) {
-        let mut mapped = self.mapped.lock();
-        let mut should_remove = false;
-        if let Some(entry) = mapped.get(&index) {
-            let mut entry_lock = entry.lock();
-            entry_lock.ref_count -= 1;
-            if entry_lock.ref_count == 0 {
-                should_remove = true;
-            }
-        }
-        if should_remove {
-            mapped.remove(&index);
-        }
-    }
-}
-
-static MANAGER: Manager = Manager::new();
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 enum FrameState {
     Unallocated,
-    Allocated,
+    Loaded { frame: Arc<PhysPageFrame>, mapped: bool },
+}
+
+impl FrameState {
+    fn is_mapped(&self) -> bool {
+        matches!(self, FrameState::Loaded { mapped: true, .. })
+    }
 }
 
 pub struct SharedFileMapArea {
-    entry: Arc<SleepLock<MappedFileEntry>>,
+    inode: Arc<dyn InodeOps>,
     ubase: usize,
     offset: usize,
     states: Vec<FrameState>,
     perm: MapPerm,
+    writable: bool,
     inode_index: InodeIndex,
     path: String,
+    shared_mmap_accounted: bool,
+    writable_accounted: bool,
 }
 
 impl SharedFileMapArea {
@@ -128,35 +46,67 @@ impl SharedFileMapArea {
         inode: Arc<dyn InodeOps>,
         index: InodeIndex,
         offset: usize,
-        page_count: usize,
+        length: usize,
+        writable: bool,
         path: String,
     ) -> Self {
-        let states = vec![FrameState::Unallocated; page_count];
-        let entry = MANAGER.open_mapped_file(inode, index);
+        let page_count = arch::page_count(length);
+        let writable_accounted = perm.contains(MapPerm::W);
+        if let Some(seal_ops) = inode.as_seal_ops() {
+            seal_ops.begin_shared_mmap(writable_accounted);
+        }
+
         Self {
-            entry,
+            inode,
             ubase,
             offset,
-            states,
+            states: vec![FrameState::Unallocated; page_count],
             perm,
+            writable,
             inode_index: index,
             path,
+            shared_mmap_accounted: true,
+            writable_accounted,
         }
-    }
-
-    fn translate(&self, uaddr: usize) -> Option<usize> {
-        let page_index = (uaddr - self.ubase) / arch::PGSIZE;
-        if page_index >= self.states.len() {
-            return None;
-        }
-
-        let file_page_index = self.file_page_index(page_index)?;
-        let kpage = self.entry.lock().get_page(file_page_index)?;
-        Some(kpage + uaddr % arch::PGSIZE)
     }
 
     fn file_page_index(&self, page_index: usize) -> Option<usize> {
         (self.offset / arch::PGSIZE).checked_add(page_index)
+    }
+
+    fn ensure_page(&mut self, page_index: usize) -> SysResult<Option<usize>> {
+        if page_index >= self.states.len() {
+            return Ok(None);
+        }
+
+        if let FrameState::Loaded { frame, .. } = &self.states[page_index] {
+            return Ok(Some(frame.get_page()));
+        }
+
+        let file_page_index = self.file_page_index(page_index).ok_or(Errno::EFBIG)?;
+        let Some(frame) = self.inode.mmap_shared_page(file_page_index)? else {
+            return Ok(None);
+        };
+        let kpage = frame.get_page();
+        self.states[page_index] = FrameState::Loaded { frame, mapped: false };
+        Ok(Some(kpage))
+    }
+
+    fn translate(&mut self, uaddr: usize) -> Option<usize> {
+        let page_index = (uaddr - self.ubase) / arch::PGSIZE;
+        let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
+        let kpage = self.ensure_page(page_index).ok()??;
+        Some(kpage + page_offset)
+    }
+
+    fn end_shared_mmap_accounting(&mut self) {
+        if self.shared_mmap_accounted {
+            if let Some(seal_ops) = self.inode.as_seal_ops() {
+                seal_ops.end_shared_mmap(self.writable_accounted);
+            }
+            self.shared_mmap_accounted = false;
+            self.writable_accounted = false;
+        }
     }
 }
 
@@ -173,11 +123,39 @@ impl Area for SharedFileMapArea {
         self.perm
     }
 
+    fn check_set_perm(&self, perm: MapPerm) -> SysResult<()> {
+        if perm.contains(MapPerm::W) {
+            if !self.writable {
+                return Err(Errno::EACCES);
+            }
+
+            if let Some(seal_ops) = self.inode.as_seal_ops() {
+                if let Ok(seals) = seal_ops.seals() {
+                    if seals.contains(FileSealFlags::F_SEAL_WRITE)
+                        || (!self.perm.contains(MapPerm::W) && seals.contains(FileSealFlags::F_SEAL_FUTURE_WRITE))
+                    {
+                        return Err(Errno::EPERM);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
+        let new_writable_accounted = perm.contains(MapPerm::W);
+        if self.shared_mmap_accounted && self.writable_accounted != new_writable_accounted {
+            if let Some(seal_ops) = self.inode.as_seal_ops() {
+                seal_ops.update_shared_mmap_writable(self.writable_accounted, new_writable_accounted);
+            }
+            self.writable_accounted = new_writable_accounted;
+        }
         self.perm = perm;
+
         let mut pagetable = pagetable.lock();
-        self.states.iter().enumerate().for_each(|(page_index, &state)| {
-            if state == FrameState::Allocated {
+        self.states.iter().enumerate().for_each(|(page_index, state)| {
+            if state.is_mapped() {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
                 pagetable.mmap_replace_perm(uaddr, perm);
             }
@@ -193,14 +171,21 @@ impl Area for SharedFileMapArea {
     }
 
     fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, _fork_pagetable: &mut PageTable) -> Box<dyn Area> {
+        let writable_accounted = self.perm.contains(MapPerm::W);
+        if let Some(seal_ops) = self.inode.as_seal_ops() {
+            seal_ops.begin_shared_mmap(writable_accounted);
+        }
         let new_area = SharedFileMapArea {
-            entry: self.entry.clone(),
+            inode: self.inode.clone(),
             ubase: self.ubase,
             offset: self.offset,
             states: vec![FrameState::Unallocated; self.states.len()],
             perm: self.perm,
+            writable: self.writable,
             inode_index: self.inode_index,
             path: self.path.clone(),
+            shared_mmap_accounted: true,
+            writable_accounted,
         };
 
         Box::new(new_area)
@@ -225,36 +210,78 @@ impl Area for SharedFileMapArea {
             return Err(MemoryFaultSignal::Segv);
         }
 
-        let Some(file_page_index) = self.file_page_index(page_index) else {
+        let Some(kpage) = self.ensure_page(page_index).map_err(|_| MemoryFaultSignal::Bus)? else {
             return Err(MemoryFaultSignal::Bus);
         };
-        let Some(file_offset) = file_page_index.checked_mul(arch::PGSIZE) else {
-            return Err(MemoryFaultSignal::Bus);
-        };
-        let mut entry = self.entry.lock();
-        let Some(kpage) = entry.get_page(file_page_index) else {
-            let file_size = entry.inode.size().ok().and_then(|size| usize::try_from(size).ok());
-            return Err(match file_size {
-                Some(file_size) if file_offset >= file_size => MemoryFaultSignal::Bus,
-                _ => MemoryFaultSignal::Segv,
-            });
-        };
-        let mut pagetable = addrspace.pagetable().lock();
-        pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
-        self.states[page_index] = FrameState::Allocated;
+
+        if !self.states[page_index].is_mapped() {
+            let mut pagetable = addrspace.pagetable().lock();
+            pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
+            if let FrameState::Loaded { mapped, .. } = &mut self.states[page_index] {
+                *mapped = true;
+            }
+        }
 
         Ok(kpage + (uaddr - self.ubase) % arch::PGSIZE)
     }
 
+    fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
+        debug_assert!(uaddr % arch::PGSIZE == 0, "Split address must be page-aligned");
+        debug_assert!(uaddr > self.ubase, "Split address must be greater than ubase");
+        debug_assert!(uaddr < self.ubase + self.size(), "Split address out of bounds");
+
+        let split_index = (uaddr - self.ubase) / arch::PGSIZE;
+        let split_offset = split_index * arch::PGSIZE;
+        let right_states = self.states.split_off(split_index);
+
+        let writable_accounted = self.perm.contains(MapPerm::W);
+        if let Some(seal_ops) = self.inode.as_seal_ops() {
+            seal_ops.begin_shared_mmap(writable_accounted);
+        }
+        let right = SharedFileMapArea {
+            inode: self.inode.clone(),
+            ubase: uaddr,
+            offset: self.offset + split_offset,
+            states: right_states,
+            perm: self.perm,
+            writable: self.writable,
+            inode_index: self.inode_index,
+            path: self.path.clone(),
+            shared_mmap_accounted: true,
+            writable_accounted,
+        };
+
+        (self, Box::new(right))
+    }
+
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let mut pagetable = pagetable.lock();
-        self.states.iter().enumerate().for_each(|(page_index, &state)| {
-            if state == FrameState::Allocated {
+        for page_index in 0..self.states.len() {
+            let state = core::mem::replace(&mut self.states[page_index], FrameState::Unallocated);
+            let FrameState::Loaded { frame, mapped } = state else {
+                continue;
+            };
+
+            if mapped {
+                let mut pagetable = pagetable.lock();
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
                 pagetable.munmap(uaddr);
             }
-        });
-        MANAGER.close_mapped_file(self.inode_index);
+
+            // Write back the page if it was loaded, regardless of whether it was mapped or not.
+            // SAFETY: page_index MUST be valid, which is guaranteed by the loop condition.
+            let file_page_index = self.file_page_index(page_index).unwrap();
+            if let Err(e) = self.inode.writeback_mmap_shared_page(file_page_index, &frame) {
+                crate::kwarn!("Failed to write back shared mmap page: {:?}", e);
+            }
+            drop(frame);
+
+            // Release the page in the inode after writing back.
+            if let Some(file_page_index) = self.file_page_index(page_index) {
+                self.inode.release_mmap_shared_page(file_page_index);
+            }
+        }
+
+        self.end_shared_mmap_accounting();
     }
 
     fn type_name(&self) -> &'static str {
@@ -269,5 +296,11 @@ impl Area for SharedFileMapArea {
         info.inode = self.inode_index.ino as u64;
         info.path = Some(self.path.clone());
         info
+    }
+}
+
+impl Drop for SharedFileMapArea {
+    fn drop(&mut self) {
+        self.end_shared_mmap_accounting();
     }
 }

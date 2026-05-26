@@ -266,6 +266,14 @@ impl Dentry {
     ) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
+            if let Some(target) = inode.follow_magic_link()? {
+                if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
+                    return Err(Errno::ELOOP);
+                }
+                *symlink_depth += 1;
+                return Ok(target.get_mount_to());
+            }
+
             let mut buffer = [0u8; 255];
             if let Some(length) = inode.readlink(&mut buffer)? {
                 if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
@@ -289,6 +297,14 @@ impl Dentry {
     ) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.parent.as_ref() {
             let inode = self.get_inode();
+            if let Some(target) = inode.follow_magic_link()? {
+                if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
+                    return Err(Errno::ELOOP);
+                }
+                *symlink_depth += 1;
+                return Ok(target.get_mount_to());
+            }
+
             let mut buffer = [0u8; 255];
             if let Some(length) = inode.readlink(&mut buffer)? {
                 if *symlink_depth >= config::MAX_SYMLINK_DEPTH {

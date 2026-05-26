@@ -1,14 +1,16 @@
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use downcast_rs::{DowncastSync, impl_downcast};
+use downcast_rs::{impl_downcast, DowncastSync};
 
 use crate::fs::file::FileFlags;
-use crate::fs::{Dentry, InodeOps, vfs};
+use crate::fs::{vfs, Dentry, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
-use crate::kernel::mm::AddrSpace;
+use crate::kernel::mm::maparea::Area;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
+use crate::kernel::mm::{AddrSpace, MapPerm};
 use crate::kernel::uapi::{FileStat, Statfs};
 
 #[derive(Debug, Clone, Copy)]
@@ -16,6 +18,14 @@ pub enum SeekWhence {
     BEG,
     CUR,
     END,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FileMmapRequest {
+    pub shared: bool,
+    pub perm: MapPerm,
+    pub offset: usize,
+    pub length: usize,
 }
 
 pub trait FileOps: DowncastSync {
@@ -75,6 +85,11 @@ pub trait FileOps: DowncastSync {
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>>;
     fn get_dentry(&self) -> Option<&Arc<Dentry>>;
+
+    fn mmap_area(self: Arc<Self>, request: FileMmapRequest) -> SysResult<Box<dyn Area>> {
+        let _ = request;
+        Err(Errno::ENODEV)
+    }
 
     fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
         let _ = event;

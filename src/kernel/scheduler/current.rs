@@ -166,9 +166,9 @@ pub mod copy_from_user {
         addrspace().get_user_string(uaddr)
     }
 
-    // pub fn string_fixed<const N: usize>(uaddr: usize) -> SysResult<tstr<N>> {
-    //     addrspace().get_user_string_fixed::<N>(uaddr)
-    // }
+    pub fn string_fixed<const N: usize>(uaddr: usize) -> SysResult<tstr<N>> {
+        addrspace().get_user_string_fixed::<N>(uaddr)
+    }
 
     pub fn path_string(uaddr: usize) -> SysResult<String> {
         addrspace().get_user_path_string(uaddr)

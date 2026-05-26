@@ -128,7 +128,7 @@ bitflags! {
 impl From<MapPerm> for PTEFlags {
     fn from(perm: MapPerm) -> Self {
         let mut flags = PTEFlags::V;
-        if perm.contains(MapPerm::R) {
+        if perm.intersects(MapPerm::R | MapPerm::W) {
             flags |= PTEFlags::R;
         }
         if perm.contains(MapPerm::W) {
