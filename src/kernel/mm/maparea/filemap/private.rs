@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::{FileOps, RandomAccessFile};
-use crate::kernel::errno::SysResult;
 use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
@@ -296,10 +295,6 @@ impl Area for PrivateFileMapArea {
         };
 
         (self, Box::new(new_area))
-    }
-
-    fn check_set_perm(&self, _perm: MapPerm) -> SysResult<()> {
-        Ok(())
     }
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {

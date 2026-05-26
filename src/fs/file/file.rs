@@ -8,7 +8,7 @@ use crate::fs::vfs::Dentry;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
-use crate::kernel::ipc::{KSiFields, SiCode, signum};
+use crate::kernel::ipc::{signum, KSiFields, SiCode};
 use crate::kernel::mm::maparea::{Area, PrivateFileMapArea, SharedFileMapArea};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::{AddrSpace, MapPerm};
@@ -246,9 +246,11 @@ impl FileOps for RandomAccessFile {
                     return Err(Errno::EACCES);
                 }
 
-                if let Ok(seals) = self.inode.seals() {
-                    if seals.intersects(FileSealFlags::F_SEAL_WRITE | FileSealFlags::F_SEAL_FUTURE_WRITE) {
-                        return Err(Errno::EPERM);
+                if let Some(seal_ops) = self.inode.as_seal_ops() {
+                    if let Ok(seals) = seal_ops.seals() {
+                        if seals.intersects(FileSealFlags::F_SEAL_WRITE | FileSealFlags::F_SEAL_FUTURE_WRITE) {
+                            return Err(Errno::EPERM);
+                        }
                     }
                 }
             }
@@ -259,7 +261,7 @@ impl FileOps for RandomAccessFile {
                 self.inode.clone(),
                 self.dentry.get_inode_index(),
                 request.offset,
-                request.page_count,
+                request.length,
                 self.flags.writable,
                 self.dentry.get_path(),
             )))
@@ -284,7 +286,11 @@ impl FileOps for RandomAccessFile {
             ready |= FileEvent::WRITE_READY;
         }
 
-        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
+        if ready.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(ready))
+        }
     }
 
     fn wait_event(&self, _waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {

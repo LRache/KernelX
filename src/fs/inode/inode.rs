@@ -76,6 +76,20 @@ pub fn release_bsd_flock(inode: &Arc<dyn InodeOps>, owner: usize) {
     }
 }
 
+pub trait InodeSealOps: Send + Sync {
+    fn init_seals(&self, seals: FileSealFlags) -> SysResult<()>;
+
+    fn seals(&self) -> SysResult<FileSealFlags>;
+
+    fn add_seals(&self, seals: FileSealFlags) -> SysResult<()>;
+
+    fn begin_shared_mmap(&self, _writable: bool) {}
+
+    fn update_shared_mmap_writable(&self, _old_writable: bool, _new_writable: bool) {}
+
+    fn end_shared_mmap(&self, _writable: bool) {}
+}
+
 pub trait InodeOps: DowncastSync {
     fn get_ino(&self) -> u32;
 
@@ -98,6 +112,10 @@ pub trait InodeOps: DowncastSync {
 
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify()
+    }
+
+    fn as_seal_ops(&self) -> Option<&dyn InodeSealOps> {
+        None
     }
 
     fn begin_write_open(&self) -> SysResult<()> {
@@ -260,12 +278,6 @@ pub trait InodeOps: DowncastSync {
 
     fn release_mmap_shared_page(&self, _file_page_index: usize) {}
 
-    fn begin_shared_mmap(&self, _writable: bool) {}
-
-    fn update_shared_mmap_writable(&self, _old_writable: bool, _new_writable: bool) {}
-
-    fn end_shared_mmap(&self, _writable: bool) {}
-
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::empty())
     }
@@ -325,18 +337,6 @@ pub trait InodeOps: DowncastSync {
         }
 
         self.truncate(new_size)
-    }
-
-    fn init_seals(&self, _seals: FileSealFlags) -> SysResult<()> {
-        Err(Errno::EINVAL)
-    }
-
-    fn seals(&self) -> SysResult<FileSealFlags> {
-        Err(Errno::EINVAL)
-    }
-
-    fn add_seals(&self, _seals: FileSealFlags) -> SysResult<()> {
-        Err(Errno::EINVAL)
     }
 
     fn update_atime(&self, time: &Duration) -> SysResult<()> {

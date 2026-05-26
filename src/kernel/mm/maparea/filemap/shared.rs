@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::fs::InodeOps;
 use crate::fs::inode::Index as InodeIndex;
+use crate::fs::InodeOps;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
@@ -46,12 +46,15 @@ impl SharedFileMapArea {
         inode: Arc<dyn InodeOps>,
         index: InodeIndex,
         offset: usize,
-        page_count: usize,
+        length: usize,
         writable: bool,
         path: String,
     ) -> Self {
+        let page_count = arch::page_count(length);
         let writable_accounted = perm.contains(MapPerm::W);
-        inode.begin_shared_mmap(writable_accounted);
+        if let Some(seal_ops) = inode.as_seal_ops() {
+            seal_ops.begin_shared_mmap(writable_accounted);
+        }
 
         Self {
             inode,
@@ -96,20 +99,11 @@ impl SharedFileMapArea {
         Some(kpage + page_offset)
     }
 
-    fn writeback_page(&self, page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
-        let file_page_index = self.file_page_index(page_index).ok_or(Errno::EFBIG)?;
-        self.inode.writeback_mmap_shared_page(file_page_index, frame)
-    }
-
-    fn release_page(&self, page_index: usize) {
-        if let Some(file_page_index) = self.file_page_index(page_index) {
-            self.inode.release_mmap_shared_page(file_page_index);
-        }
-    }
-
     fn end_shared_mmap_accounting(&mut self) {
         if self.shared_mmap_accounted {
-            self.inode.end_shared_mmap(self.writable_accounted);
+            if let Some(seal_ops) = self.inode.as_seal_ops() {
+                seal_ops.end_shared_mmap(self.writable_accounted);
+            }
             self.shared_mmap_accounted = false;
             self.writable_accounted = false;
         }
@@ -135,11 +129,13 @@ impl Area for SharedFileMapArea {
                 return Err(Errno::EACCES);
             }
 
-            if let Ok(seals) = self.inode.seals() {
-                if seals.contains(FileSealFlags::F_SEAL_WRITE)
-                    || (!self.perm.contains(MapPerm::W) && seals.contains(FileSealFlags::F_SEAL_FUTURE_WRITE))
-                {
-                    return Err(Errno::EPERM);
+            if let Some(seal_ops) = self.inode.as_seal_ops() {
+                if let Ok(seals) = seal_ops.seals() {
+                    if seals.contains(FileSealFlags::F_SEAL_WRITE)
+                        || (!self.perm.contains(MapPerm::W) && seals.contains(FileSealFlags::F_SEAL_FUTURE_WRITE))
+                    {
+                        return Err(Errno::EPERM);
+                    }
                 }
             }
         }
@@ -150,8 +146,9 @@ impl Area for SharedFileMapArea {
     fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
         let new_writable_accounted = perm.contains(MapPerm::W);
         if self.shared_mmap_accounted && self.writable_accounted != new_writable_accounted {
-            self.inode
-                .update_shared_mmap_writable(self.writable_accounted, new_writable_accounted);
+            if let Some(seal_ops) = self.inode.as_seal_ops() {
+                seal_ops.update_shared_mmap_writable(self.writable_accounted, new_writable_accounted);
+            }
             self.writable_accounted = new_writable_accounted;
         }
         self.perm = perm;
@@ -175,7 +172,9 @@ impl Area for SharedFileMapArea {
 
     fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, _fork_pagetable: &mut PageTable) -> Box<dyn Area> {
         let writable_accounted = self.perm.contains(MapPerm::W);
-        self.inode.begin_shared_mmap(writable_accounted);
+        if let Some(seal_ops) = self.inode.as_seal_ops() {
+            seal_ops.begin_shared_mmap(writable_accounted);
+        }
         let new_area = SharedFileMapArea {
             inode: self.inode.clone(),
             ubase: self.ubase,
@@ -236,7 +235,9 @@ impl Area for SharedFileMapArea {
         let right_states = self.states.split_off(split_index);
 
         let writable_accounted = self.perm.contains(MapPerm::W);
-        self.inode.begin_shared_mmap(writable_accounted);
+        if let Some(seal_ops) = self.inode.as_seal_ops() {
+            seal_ops.begin_shared_mmap(writable_accounted);
+        }
         let right = SharedFileMapArea {
             inode: self.inode.clone(),
             ubase: uaddr,
@@ -266,10 +267,18 @@ impl Area for SharedFileMapArea {
                 pagetable.munmap(uaddr);
             }
 
-            self.writeback_page(page_index, &frame)
-                .expect("Failed to write back shared mmap page");
+            // Write back the page if it was loaded, regardless of whether it was mapped or not.
+            // SAFETY: page_index MUST be valid, which is guaranteed by the loop condition.
+            let file_page_index = self.file_page_index(page_index).unwrap();
+            if let Err(e) = self.inode.writeback_mmap_shared_page(file_page_index, &frame) {
+                crate::kwarn!("Failed to write back shared mmap page: {:?}", e);
+            }
             drop(frame);
-            self.release_page(page_index);
+
+            // Release the page in the inode after writing back.
+            if let Some(file_page_index) = self.file_page_index(page_index) {
+                self.inode.release_mmap_shared_page(file_page_index);
+            }
         }
 
         self.end_shared_mmap_accounting();

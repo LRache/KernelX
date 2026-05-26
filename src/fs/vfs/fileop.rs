@@ -235,7 +235,7 @@ pub fn create_memfd(
     let sno = memfd_superblock_sno()?;
     let superblock = vfs().superblock_table.lock().get(sno).ok_or(Errno::ENOENT)?;
     let inode = superblock.create_temp(mode)?;
-    inode.init_seals(initial_seals)?;
+    inode.as_seal_ops().ok_or(Errno::EINVAL)?.init_seals(initial_seals)?;
 
     let dentry_name = format!("memfd:{} (deleted)", name);
     let dentry = Arc::new(Dentry::new(&dentry_name, vfs().get_root(), &inode, sno));

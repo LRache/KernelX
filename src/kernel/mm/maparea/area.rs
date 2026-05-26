@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::arch::PageTable;
-use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -84,7 +84,7 @@ pub trait Area {
     }
 
     fn check_set_perm(&self, _perm: MapPerm) -> SysResult<()> {
-        Err(Errno::EACCES)
+        Ok(())
     }
 
     fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>) {

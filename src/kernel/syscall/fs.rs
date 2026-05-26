@@ -402,14 +402,14 @@ pub fn fcntl64(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 return Err(Errno::EPERM);
             }
             let inode = file.get_inode().ok_or(Errno::EINVAL)?;
-            inode.add_seals(seals)?;
+            inode.as_seal_ops().ok_or(Errno::EINVAL)?.add_seals(seals)?;
             Ok(0)
         }
 
         FcntlCmd::F_GET_SEALS => {
             let file = current::fdtable().lock().get(fd)?;
             let inode = file.get_inode().ok_or(Errno::EINVAL)?;
-            Ok(inode.seals()?.bits())
+            Ok(inode.as_seal_ops().ok_or(Errno::EINVAL)?.seals()?.bits())
         }
     }
 }

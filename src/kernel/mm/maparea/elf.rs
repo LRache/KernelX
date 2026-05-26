@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::{FileOps, RandomAccessFile};
-use crate::kernel::errno::SysResult;
 use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
@@ -280,10 +279,6 @@ impl Area for ELFArea {
             }
             *frame = Frame::Unallocated;
         }
-    }
-
-    fn check_set_perm(&self, _perm: MapPerm) -> SysResult<()> {
-        Ok(())
     }
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {

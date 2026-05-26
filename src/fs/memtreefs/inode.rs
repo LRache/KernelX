@@ -6,7 +6,7 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, Mode, Owner};
+use crate::fs::inode::{InodeLockState, InodeSealOps, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
@@ -147,9 +147,109 @@ impl<T: StaticFsInfo> Inode<T> {
     }
 }
 
+impl<T: StaticFsInfo> InodeSealOps for Inode<T> {
+    fn init_seals(&self, seals: FileSealFlags) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return Err(Errno::EINVAL);
+        }
+        if meta.seals.is_some() {
+            return Err(Errno::EINVAL);
+        }
+        meta.seals = Some(seals);
+        Ok(())
+    }
+
+    fn seals(&self) -> SysResult<FileSealFlags> {
+        self.meta.lock().seals.ok_or(Errno::EINVAL)
+    }
+
+    fn add_seals(&self, seals: FileSealFlags) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return Err(Errno::EINVAL);
+        }
+
+        let current = meta.seals.ok_or(Errno::EINVAL)?;
+        if current.contains(FileSealFlags::F_SEAL_SEAL) {
+            return Err(Errno::EPERM);
+        }
+        if seals.contains(FileSealFlags::F_SEAL_WRITE) && meta.writable_shared_mmap_count > 0 {
+            return Err(Errno::EBUSY);
+        }
+
+        meta.seals = Some(current | seals);
+        Ok(())
+    }
+
+    fn begin_shared_mmap(&self, writable: bool) {
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return;
+        }
+
+        meta.shared_mmap_count = meta
+            .shared_mmap_count
+            .checked_add(1)
+            .expect("memtreefs shared_mmap_count overflow");
+        if writable {
+            meta.writable_shared_mmap_count = meta
+                .writable_shared_mmap_count
+                .checked_add(1)
+                .expect("memtreefs writable_shared_mmap_count overflow");
+        }
+    }
+
+    fn update_shared_mmap_writable(&self, old_writable: bool, new_writable: bool) {
+        if old_writable == new_writable {
+            return;
+        }
+
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return;
+        }
+
+        if new_writable {
+            meta.writable_shared_mmap_count = meta
+                .writable_shared_mmap_count
+                .checked_add(1)
+                .expect("memtreefs writable_shared_mmap_count overflow");
+        } else {
+            debug_assert!(
+                meta.writable_shared_mmap_count > 0,
+                "memtreefs writable mmap count underflow"
+            );
+            meta.writable_shared_mmap_count = meta.writable_shared_mmap_count.saturating_sub(1);
+        }
+    }
+
+    fn end_shared_mmap(&self, writable: bool) {
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return;
+        }
+
+        debug_assert!(meta.shared_mmap_count > 0, "memtreefs shared mmap count underflow");
+        meta.shared_mmap_count = meta.shared_mmap_count.saturating_sub(1);
+
+        if writable {
+            debug_assert!(
+                meta.writable_shared_mmap_count > 0,
+                "memtreefs writable mmap count underflow"
+            );
+            meta.writable_shared_mmap_count = meta.writable_shared_mmap_count.saturating_sub(1);
+        }
+    }
+}
+
 impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn filesystem_refcount_bias(&self) -> usize {
         1
+    }
+
+    fn as_seal_ops(&self) -> Option<&dyn InodeSealOps> {
+        Some(self)
     }
 
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
@@ -575,66 +675,6 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         Ok(())
     }
 
-    fn begin_shared_mmap(&self, writable: bool) {
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return;
-        }
-
-        meta.shared_mmap_count = meta
-            .shared_mmap_count
-            .checked_add(1)
-            .expect("memtreefs shared_mmap_count overflow");
-        if writable {
-            meta.writable_shared_mmap_count = meta
-                .writable_shared_mmap_count
-                .checked_add(1)
-                .expect("memtreefs writable_shared_mmap_count overflow");
-        }
-    }
-
-    fn update_shared_mmap_writable(&self, old_writable: bool, new_writable: bool) {
-        if old_writable == new_writable {
-            return;
-        }
-
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return;
-        }
-
-        if new_writable {
-            meta.writable_shared_mmap_count = meta
-                .writable_shared_mmap_count
-                .checked_add(1)
-                .expect("memtreefs writable_shared_mmap_count overflow");
-        } else {
-            debug_assert!(
-                meta.writable_shared_mmap_count > 0,
-                "memtreefs writable mmap count underflow"
-            );
-            meta.writable_shared_mmap_count = meta.writable_shared_mmap_count.saturating_sub(1);
-        }
-    }
-
-    fn end_shared_mmap(&self, writable: bool) {
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return;
-        }
-
-        debug_assert!(meta.shared_mmap_count > 0, "memtreefs shared mmap count underflow");
-        meta.shared_mmap_count = meta.shared_mmap_count.saturating_sub(1);
-
-        if writable {
-            debug_assert!(
-                meta.writable_shared_mmap_count > 0,
-                "memtreefs writable mmap count underflow"
-            );
-            meta.writable_shared_mmap_count = meta.writable_shared_mmap_count.saturating_sub(1);
-        }
-    }
-
     fn mode(&self) -> SysResult<Mode> {
         Ok(self.meta.lock().mode)
     }
@@ -834,40 +874,6 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         } else {
             Err(Errno::EINVAL)
         }
-    }
-
-    fn init_seals(&self, seals: FileSealFlags) -> SysResult<()> {
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return Err(Errno::EINVAL);
-        }
-        if meta.seals.is_some() {
-            return Err(Errno::EINVAL);
-        }
-        meta.seals = Some(seals);
-        Ok(())
-    }
-
-    fn seals(&self) -> SysResult<FileSealFlags> {
-        self.meta.lock().seals.ok_or(Errno::EINVAL)
-    }
-
-    fn add_seals(&self, seals: FileSealFlags) -> SysResult<()> {
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return Err(Errno::EINVAL);
-        }
-
-        let current = meta.seals.ok_or(Errno::EINVAL)?;
-        if current.contains(FileSealFlags::F_SEAL_SEAL) {
-            return Err(Errno::EPERM);
-        }
-        if seals.contains(FileSealFlags::F_SEAL_WRITE) && meta.writable_shared_mmap_count > 0 {
-            return Err(Errno::EBUSY);
-        }
-
-        meta.seals = Some(current | seals);
-        Ok(())
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {

@@ -5,8 +5,8 @@ use crate::arch;
 
 use crate::fs::file::FileMmapRequest;
 use crate::kernel::errno::Errno;
-use crate::kernel::mm::MapPerm;
 use crate::kernel::mm::maparea::{Area, PrivateAnonymousArea, SharedAnonymousArea};
+use crate::kernel::mm::MapPerm;
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::SyscallRet;
 
@@ -124,7 +124,6 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
             perm,
             offset,
             length,
-            page_count,
         })?
     };
 
