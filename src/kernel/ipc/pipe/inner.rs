@@ -508,10 +508,14 @@ impl PipeInner {
     }
 
     pub fn decrement_writer_count(&self) {
-        let mut writer_count = self.writer_count.lock();
-        debug_assert!(*writer_count > 0);
-        *writer_count -= 1;
-        if *writer_count == 0 {
+        let has_no_writer = {
+            let mut writer_count = self.writer_count.lock();
+            debug_assert!(*writer_count > 0);
+            *writer_count -= 1;
+            *writer_count == 0
+        };
+
+        if has_no_writer {
             let wake_event = if self.fifo.lock().len() > 0 {
                 FileEvent::READ_READY | FileEvent::HANG_UP
             } else {
