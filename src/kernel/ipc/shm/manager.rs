@@ -3,24 +3,14 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use bitflags::bitflags;
 
+use super::frame::ShmFrames;
 use crate::arch::{self, PGSIZE};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::ipc::{IPC_PRIVATE, IpcGetFlag, IpcMode};
 use crate::kernel::mm::maparea::ShmArea;
 use crate::kernel::mm::{AddrSpace, MapPerm};
 use crate::kernel::scheduler::Tid;
 use crate::klib::SpinLock;
-
-use super::frame::ShmFrames;
-
-pub const IPC_PRIVATE: usize = 0;
-
-bitflags! {
-    pub struct IpcGetFlag: usize {
-        const IPC_CREAT = 0o1000;
-        const IPC_EXCL = 0o2000;
-        const IPC_NOWAIT = 0o4000;
-    }
-}
 
 bitflags! {
     pub struct ShmFlag: usize {
@@ -72,7 +62,11 @@ fn has_shm_perm(shm: &ShmIdentifier, uid: u32, gid: u32, readonly: bool) -> bool
         return true;
     }
 
-    let required = if readonly { 0o4 } else { 0o6 };
+    let required = if readonly {
+        IpcMode::READ
+    } else {
+        IpcMode::READ | IpcMode::WRITE
+    };
     let shift = if uid == shm.ds.uid {
         6
     } else if gid == shm.ds.gid {
@@ -80,9 +74,9 @@ fn has_shm_perm(shm: &ShmIdentifier, uid: u32, gid: u32, readonly: bool) -> bool
     } else {
         0
     };
-    let allowed = (shm.ds.mode >> shift) & 0o7;
+    let allowed = IpcMode::from_bits_truncate((shm.ds.mode >> shift) & IpcMode::ALL.bits());
 
-    allowed & required == required
+    allowed.contains(required)
 }
 
 impl ShmManager {

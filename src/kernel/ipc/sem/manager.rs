@@ -4,7 +4,7 @@ use bitflags::bitflags;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, WaitQueue};
-use crate::kernel::ipc::shm::{IPC_PRIVATE, IpcGetFlag};
+use crate::kernel::ipc::{IPC_PRIVATE, IpcGetFlag, IpcMode};
 use crate::kernel::scheduler::Tid;
 use crate::kernel::uapi::Uid;
 use crate::klib::SpinLock;
@@ -23,14 +23,6 @@ pub mod limit {
 
     pub fn usize_to_i32(value: usize) -> i32 {
         value.min(i32::MAX as usize) as i32
-    }
-}
-
-bitflags! {
-    struct SemMode: u32 {
-        const WRITE = 0o2;
-        const READ = 0o4;
-        const ALL = 0o777;
     }
 }
 
@@ -121,7 +113,7 @@ fn has_sem_perm(sem: &SemIdentifier, uid: Uid, gid: Uid, write: bool) -> bool {
         return true;
     }
 
-    let required = if write { SemMode::WRITE } else { SemMode::READ };
+    let required = if write { IpcMode::WRITE } else { IpcMode::READ };
     let shift = if uid == sem.ds.uid {
         6
     } else if gid == sem.ds.gid {
@@ -129,7 +121,7 @@ fn has_sem_perm(sem: &SemIdentifier, uid: Uid, gid: Uid, write: bool) -> bool {
     } else {
         0
     };
-    let allowed = SemMode::from_bits_truncate((sem.ds.mode >> shift) & 0o7);
+    let allowed = IpcMode::from_bits_truncate((sem.ds.mode >> shift) & IpcMode::ALL.bits());
 
     allowed.contains(required)
 }
@@ -139,7 +131,7 @@ fn has_sem_get_perm(sem: &SemIdentifier, mode: u32, uid: Uid, gid: Uid) -> bool 
         return true;
     }
 
-    let access_mask = SemMode::ALL.bits() >> 6;
+    let access_mask = IpcMode::ALL.bits() >> 6;
     let requested = ((mode >> 6) | (mode >> 3) | mode) & access_mask;
     let shift = if uid == sem.ds.uid {
         6
@@ -300,7 +292,7 @@ impl SemManager {
 
         sem.ds.uid = uid;
         sem.ds.gid = gid;
-        sem.ds.mode = mode & SemMode::ALL.bits();
+        sem.ds.mode = mode & IpcMode::ALL.bits();
         sem.ds.ctime = 0;
         Ok(())
     }
