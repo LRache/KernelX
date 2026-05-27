@@ -37,6 +37,7 @@ pub enum Errno {
     ENAMETOOLONG = 36,    // File name too long
     ENOTEMPTY = 39,       // Directory not empty
     ELOOP = 40,           // Too many symbolic links encountered
+    ENOMSG = 42,          // No message of desired type
     EIDRM = 43,           // Identifier removed
     ENOSYS = 38,          // Function not implemented
     ENOTSOCK = 88,        // Socket operation on non-socket

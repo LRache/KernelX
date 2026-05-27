@@ -2,16 +2,17 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::convert::TryInto;
+use core::mem::size_of;
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
 use crate::arch;
+use crate::driver::chosen::kclock;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
-use crate::kernel::ipc::shm::IpcGetFlag;
 use crate::kernel::ipc::{
-    KSiFields, PendingSignal, Pipe, SiCode, SigInfo, SignalAction, SignalNum, SignalSet, SignalStackFlags, sem, shm,
-    signum,
+    IpcCtlFlags, IpcGetFlag, IpcMode, KSiFields, PendingSignal, Pipe, SiCode, SigInfo, SignalAction, SignalNum,
+    SignalSet, SignalStackFlags, msg, sem, shm, signum,
 };
 use crate::kernel::scheduler::{Tid, current};
 use crate::kernel::syscall::UserStruct;
@@ -22,8 +23,8 @@ use crate::kernel::task::{PCB, manager};
 use crate::kernel::uapi::OpenFlags;
 use crate::kernel::{config, uapi};
 
-use super::SyscallRet;
 use super::common::Timespec;
+use super::{SyscallRet, utils};
 
 bitflags! {
     struct PipeFlags: usize {
@@ -551,15 +552,186 @@ pub fn sigtimedwait(
 
 pub fn shmget(key: usize, size: usize, shmflg: usize) -> SyscallRet {
     let flags = IpcGetFlag::from_bits_truncate(shmflg);
-    let mode = (shmflg & 0o777) as u32;
+    let mode = (shmflg & IpcMode::ALL.bits() as usize) as u32;
     let shmid = shm::get_or_create_shm(key, size, flags, mode, current::euid(), current::egid(), current::pid())?;
     Ok(shmid)
 }
 
 pub fn semget(key: usize, nsems: usize, semflg: usize) -> SyscallRet {
     let flags = IpcGetFlag::from_bits_truncate(semflg);
-    let mode = (semflg & 0o777) as u32;
+    let mode = (semflg & IpcMode::ALL.bits() as usize) as u32;
     sem::get_or_create_sem(key, nsems, flags, mode, current::euid(), current::egid())
+}
+
+pub fn msgget(key: usize, msgflg: usize) -> SyscallRet {
+    let flags = IpcGetFlag::from_bits_truncate(msgflg);
+    let mode = (msgflg & IpcMode::ALL.bits() as usize) as u32;
+    msg::get_or_create_msg(key, flags, mode, current::euid(), current::egid())
+}
+
+bitflags! {
+    struct MsgSendFlags: usize {
+        const IPC_NOWAIT = 0o4000;
+    }
+}
+
+bitflags! {
+    struct MsgReceiveFlags: usize {
+        const IPC_NOWAIT = 0o4000;
+        const MSG_NOERROR = 0o10000;
+        const MSG_EXCEPT = 0o20000;
+        const MSG_COPY = 0o40000;
+    }
+}
+
+fn msg_text_uaddr(msgp: usize) -> SysResult<usize> {
+    msgp.checked_add(size_of::<usize>()).ok_or(Errno::EFAULT)
+}
+
+fn realtime_secs() -> SysResult<usize> {
+    Ok(kclock::now()?.as_secs() as usize)
+}
+
+fn do_msgsnd(msqid: usize, mtype: isize, data: &[u8], nowait: bool) -> SyscallRet {
+    loop {
+        let time = realtime_secs()?;
+        match msg::begin_msgsnd(
+            msqid,
+            mtype,
+            data,
+            nowait,
+            current::euid(),
+            current::egid(),
+            current::pid(),
+            time,
+        )? {
+            msg::MsgStatus::Done => return Ok(0),
+            msg::MsgStatus::WouldBlock => {}
+        }
+
+        let event = current::block("msgsnd");
+        if !matches!(event, Event::Msg) {
+            msg::remove_current_waiter(msqid);
+        }
+
+        match event {
+            Event::Msg => {}
+            Event::Signal => return Err(Errno::EINTR),
+            _ => unreachable!("unexpected event while waiting on msgsnd: {:?}", event),
+        }
+    }
+}
+
+pub fn msgsnd(msqid: usize, msgp: usize, msgsz: usize, msgflg: usize) -> SyscallRet {
+    if msgp == 0 {
+        return Err(Errno::EFAULT);
+    }
+    let flags = MsgSendFlags::from_bits(msgflg).ok_or(Errno::EINVAL)?;
+    if msgsz > msg::limit::MAX_MESSAGE_SIZE {
+        return Err(Errno::EINVAL);
+    }
+
+    let mtype = UPtr::<usize>::from_uaddr(msgp).read()? as isize;
+    if mtype <= 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut data = alloc::vec![0u8; msgsz];
+    current::copy_from_user::buffer(msg_text_uaddr(msgp)?, &mut data)?;
+
+    do_msgsnd(msqid, mtype, &data, flags.contains(MsgSendFlags::IPC_NOWAIT))
+}
+
+fn msg_selector(msgtyp: isize, except: bool) -> SysResult<msg::MsgSelector> {
+    if msgtyp == 0 {
+        Ok(msg::MsgSelector::Any)
+    } else if msgtyp > 0 {
+        if except {
+            Ok(msg::MsgSelector::Except(msgtyp))
+        } else {
+            Ok(msg::MsgSelector::Exact(msgtyp))
+        }
+    } else {
+        Ok(msg::MsgSelector::LessOrEqual(
+            msgtyp.checked_neg().ok_or(Errno::EINVAL)?,
+        ))
+    }
+}
+
+fn do_msgrcv(
+    msqid: usize,
+    selector: msg::MsgSelector,
+    msgsz: usize,
+    noerror: bool,
+    nowait: bool,
+) -> SysResult<msg::MsgReceive> {
+    loop {
+        let time = realtime_secs()?;
+        match msg::begin_msgrcv(
+            msqid,
+            selector,
+            msgsz,
+            noerror,
+            nowait,
+            current::euid(),
+            current::egid(),
+            current::pid(),
+            time,
+        )? {
+            Ok(message) => return Ok(message),
+            Err(msg::MsgStatus::WouldBlock) => {}
+            Err(msg::MsgStatus::Done) => unreachable!(),
+        }
+
+        let event = current::block("msgrcv");
+        if !matches!(event, Event::Msg) {
+            msg::remove_current_waiter(msqid);
+        }
+
+        match event {
+            Event::Msg => {}
+            Event::Signal => return Err(Errno::EINTR),
+            _ => unreachable!("unexpected event while waiting on msgrcv: {:?}", event),
+        }
+    }
+}
+
+pub fn msgrcv(msqid: usize, msgp: usize, msgsz: usize, msgtyp: usize, msgflg: usize) -> SyscallRet {
+    if msgp == 0 {
+        return Err(Errno::EFAULT);
+    }
+    let flags = MsgReceiveFlags::from_bits(msgflg).ok_or(Errno::EINVAL)?;
+    let msgsz = utils::should_not_be_negative(msgsz)?;
+    if flags.contains(MsgReceiveFlags::MSG_COPY) {
+        if !flags.contains(MsgReceiveFlags::IPC_NOWAIT) || flags.contains(MsgReceiveFlags::MSG_EXCEPT) {
+            return Err(Errno::EINVAL);
+        }
+        let message = msg::copy_msgrcv(
+            msqid,
+            msgtyp,
+            msgsz,
+            flags.contains(MsgReceiveFlags::MSG_NOERROR),
+            current::euid(),
+            current::egid(),
+        )?;
+
+        UPtr::<usize>::from_uaddr(msgp).write(message.mtype as usize)?;
+        current::copy_to_user::buffer(msg_text_uaddr(msgp)?, &message.data)?;
+        return Ok(message.data.len());
+    }
+
+    let selector = msg_selector(msgtyp as isize, flags.contains(MsgReceiveFlags::MSG_EXCEPT))?;
+    let message = do_msgrcv(
+        msqid,
+        selector,
+        msgsz,
+        flags.contains(MsgReceiveFlags::MSG_NOERROR),
+        flags.contains(MsgReceiveFlags::IPC_NOWAIT),
+    )?;
+
+    UPtr::<usize>::from_uaddr(msgp).write(message.mtype as usize)?;
+    current::copy_to_user::buffer(msg_text_uaddr(msgp)?, &message.data)?;
+    Ok(message.data.len())
 }
 
 #[repr(C)]
@@ -757,6 +929,53 @@ impl From<sem::SemStat> for UserSemidDs {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct UserMsqidDs {
+    msg_perm: UserIpcPerm,
+    msg_stime: i64,
+    msg_rtime: i64,
+    msg_ctime: i64,
+    msg_cbytes: usize,
+    msg_qnum: usize,
+    msg_qbytes: usize,
+    msg_lspid: i32,
+    msg_lrpid: i32,
+    reserved4: usize,
+    reserved5: usize,
+}
+
+impl UserStruct for UserMsqidDs {}
+
+impl From<msg::MsgStat> for UserMsqidDs {
+    fn from(stat: msg::MsgStat) -> Self {
+        Self {
+            msg_perm: UserIpcPerm {
+                key: stat.ds.key as i32,
+                uid: stat.ds.uid,
+                gid: stat.ds.gid,
+                cuid: stat.ds.cuid,
+                cgid: stat.ds.cgid,
+                mode: stat.ds.mode,
+                seq: 0,
+                pad2: 0,
+                reserved1: 0,
+                reserved2: 0,
+            },
+            msg_stime: stat.ds.stime as i64,
+            msg_rtime: stat.ds.rtime as i64,
+            msg_ctime: stat.ds.ctime as i64,
+            msg_cbytes: stat.ds.cbytes,
+            msg_qnum: stat.ds.qnum,
+            msg_qbytes: stat.ds.qbytes,
+            msg_lspid: stat.ds.lspid,
+            msg_lrpid: stat.ds.lrpid,
+            reserved4: 0,
+            reserved5: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct UserSemInfo {
     semmap: i32,
     semmni: i32,
@@ -789,6 +1008,36 @@ impl From<sem::SemInfo> for UserSemInfo {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserMsgInfo {
+    msgpool: i32,
+    msgmap: i32,
+    msgmax: i32,
+    msgmnb: i32,
+    msgmni: i32,
+    msgssz: i32,
+    msgtql: i32,
+    msgseg: u16,
+}
+
+impl UserStruct for UserMsgInfo {}
+
+impl From<msg::MsgInfo> for UserMsgInfo {
+    fn from(info: msg::MsgInfo) -> Self {
+        Self {
+            msgpool: info.msgpool,
+            msgmap: info.msgmap,
+            msgmax: info.msgmax,
+            msgmnb: info.msgmnb,
+            msgmni: info.msgmni,
+            msgssz: info.msgssz,
+            msgtql: info.msgtql,
+            msgseg: info.msgseg,
+        }
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[repr(usize)]
 #[derive(Debug, TryFromPrimitive)]
@@ -806,12 +1055,6 @@ enum SemCtlCmd {
     SETALL = 17,
     SEM_STAT = 18,
     SEM_INFO = 19,
-}
-
-bitflags! {
-    struct IpcCtlFlags: usize {
-        const IPC_64 = 0x0100;
-    }
 }
 
 pub fn semctl(semid: usize, semnum: usize, cmd: usize, arg: usize) -> SyscallRet {
@@ -897,6 +1140,80 @@ pub fn semctl(semid: usize, semnum: usize, cmd: usize, arg: usize) -> SyscallRet
                 return Err(Errno::EFAULT);
             }
             let (highest_index, info) = sem::info_sem(true);
+            uptr_buf.write(info.into())?;
+            Ok(highest_index)
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[repr(usize)]
+#[derive(Debug, TryFromPrimitive)]
+enum MsgCtlCmd {
+    IPC_RMID = 0,
+    IPC_SET = 1,
+    IPC_STAT = 2,
+    IPC_INFO = 3,
+    MSG_STAT = 11,
+    MSG_INFO = 12,
+}
+
+pub fn msgctl(msqid: usize, cmd: usize, buf: usize) -> SyscallRet {
+    let cmd = MsgCtlCmd::try_from(cmd & !IpcCtlFlags::IPC_64.bits()).map_err(|_| Errno::EINVAL)?;
+
+    match cmd {
+        MsgCtlCmd::IPC_RMID => {
+            msg::remove_msg(msqid, current::euid())?;
+            Ok(0)
+        }
+        MsgCtlCmd::IPC_STAT => {
+            let uptr_buf = UPtr::<UserMsqidDs>::from_uaddr(buf);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            uptr_buf.write(msg::stat_msg(msqid, current::euid(), current::egid())?.into())?;
+            Ok(0)
+        }
+        MsgCtlCmd::IPC_SET => {
+            let uptr_buf = UPtr::<UserMsqidDs>::from_uaddr(buf);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            let ds = uptr_buf.read()?;
+            msg::set_perm_msg(
+                msqid,
+                ds.msg_perm.uid,
+                ds.msg_perm.gid,
+                ds.msg_perm.mode,
+                ds.msg_qbytes,
+                current::euid(),
+            )?;
+            Ok(0)
+        }
+        MsgCtlCmd::IPC_INFO => {
+            let uptr_buf = UPtr::<UserMsgInfo>::from_uaddr(buf);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            let (highest_index, info) = msg::info_msg(false);
+            uptr_buf.write(info.into())?;
+            Ok(highest_index)
+        }
+        MsgCtlCmd::MSG_STAT => {
+            let uptr_buf = UPtr::<UserMsqidDs>::from_uaddr(buf);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            let (id, stat) = msg::stat_index_msg(msqid, current::euid(), current::egid())?;
+            uptr_buf.write(stat.into())?;
+            Ok(id)
+        }
+        MsgCtlCmd::MSG_INFO => {
+            let uptr_buf = UPtr::<UserMsgInfo>::from_uaddr(buf);
+            if uptr_buf.is_null() {
+                return Err(Errno::EFAULT);
+            }
+            let (highest_index, info) = msg::info_msg(true);
             uptr_buf.write(info.into())?;
             Ok(highest_index)
         }

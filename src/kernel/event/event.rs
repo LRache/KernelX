@@ -13,6 +13,7 @@ pub enum Event {
     Futex,
     FutexWaitv { index: usize },
     Sem,
+    Msg,
     Process { child: Tid },
     WaitSignal { signum: SignalNum },
     Signal,
