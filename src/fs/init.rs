@@ -102,23 +102,6 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
     vfs::load_dentry("/dev/null").unwrap();
     vfs::load_dentry("/dev/zero").unwrap();
 
-    // Mount tmpfs at /tmp
-    let _ =
-        vfs::load_dentry("/")
-            .unwrap()
-            .create("tmp", Mode::S_IFDIR | Mode::from_bits_truncate(0o755), Owner::root());
-    mount("/tmp", "tmpfs").unwrap();
-
-    let _ =
-        vfs::load_dentry("/")
-            .unwrap()
-            .create("var", Mode::S_IFDIR | Mode::from_bits_truncate(0o755), Owner::root());
-    let _ =
-        vfs::load_dentry("/var")
-            .unwrap()
-            .create("tmp", Mode::S_IFDIR | Mode::from_bits_truncate(0o755), Owner::root());
-    mount("/var/tmp", "tmpfs").unwrap();
-
     mount_second_device_if_enabled();
 
     kinfo!("Init filesystem mounted successfully!");

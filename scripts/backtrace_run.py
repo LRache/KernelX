@@ -190,7 +190,7 @@ def main():
         add_help=True,
     )
     parser.add_argument("--elf",           required=True, help="Kernel ELF file (for addr2line)")
-    parser.add_argument("--cross-compile", default="",   help="Toolchain prefix, e.g. riscv64-unknown-elf-")
+    # parser.add_argument("--cross-compile", default="",   help="Toolchain prefix, e.g. riscv64-unknown-elf-")
     parser.add_argument("cmd", nargs=argparse.REMAINDER, help="QEMU command and arguments")
 
     args = parser.parse_args()

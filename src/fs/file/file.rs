@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -8,13 +9,14 @@ use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
-use crate::kernel::mm::AddrSpace;
+use crate::kernel::mm::maparea::{Area, PrivateFileMapArea, SharedFileMapArea};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
+use crate::kernel::mm::{AddrSpace, MapPerm};
 use crate::kernel::scheduler::current;
-use crate::kernel::uapi::FileStat;
+use crate::kernel::uapi::{FileSealFlags, FileStat};
 use crate::klib::SleepLock;
 
-use super::{FileOps, SeekWhence};
+use super::{FileMmapRequest, FileOps, SeekWhence};
 
 #[derive(Clone, Copy)]
 pub struct FileFlags {
@@ -231,6 +233,47 @@ impl FileOps for RandomAccessFile {
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {
         Some(&self.dentry)
+    }
+
+    fn mmap_area(self: Arc<Self>, request: FileMmapRequest) -> SysResult<Box<dyn Area>> {
+        if !self.flags.readable {
+            return Err(Errno::EACCES);
+        }
+
+        if request.shared {
+            if request.perm.contains(MapPerm::W) {
+                if !self.flags.writable {
+                    return Err(Errno::EACCES);
+                }
+
+                if let Some(seal_ops) = self.inode.as_seal_ops() {
+                    if let Ok(seals) = seal_ops.seals() {
+                        if seals.intersects(FileSealFlags::F_SEAL_WRITE | FileSealFlags::F_SEAL_FUTURE_WRITE) {
+                            return Err(Errno::EPERM);
+                        }
+                    }
+                }
+            }
+
+            Ok(Box::new(SharedFileMapArea::new(
+                0,
+                request.perm,
+                self.inode.clone(),
+                self.dentry.get_inode_index(),
+                request.offset,
+                request.length,
+                self.flags.writable,
+                self.dentry.get_path(),
+            )))
+        } else {
+            Ok(Box::new(PrivateFileMapArea::new(
+                0,
+                request.perm,
+                self,
+                request.offset,
+                request.length,
+            )))
+        }
     }
 
     fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {

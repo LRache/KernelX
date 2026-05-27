@@ -3,6 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::arch::PageTable;
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -80,6 +81,10 @@ pub trait Area: Send {
 
     fn split(self: Box<Self>, _uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
         unimplemented!("split not implemented for the area type: {}", self.type_name());
+    }
+
+    fn check_set_perm(&self, _perm: MapPerm) -> SysResult<()> {
+        Ok(())
     }
 
     fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>) {

@@ -306,8 +306,13 @@ impl Manager {
         }
 
         let uaddr_end = uaddr + page_count * arch::PGSIZE;
+        let overlapped_areas = self.find_overlapped_areas(uaddr, uaddr_end);
 
-        for overlapped_base in self.find_overlapped_areas(uaddr, uaddr_end) {
+        for overlapped_base in overlapped_areas.iter() {
+            self.areas.get(overlapped_base).unwrap().check_set_perm(perm)?;
+        }
+
+        for overlapped_base in overlapped_areas {
             let mut middle = self.areas.remove(&overlapped_base).unwrap();
             let overlapped_end = overlapped_base + middle.size();
 
@@ -499,7 +504,10 @@ impl Manager {
         false
     }
 
-    pub fn cleanup(&mut self) {
-        self.areas.clear();
+    pub fn cleanup(&mut self, pagetable: &SpinLock<PageTable>) {
+        let areas = core::mem::take(&mut self.areas);
+        for (_, mut area) in areas {
+            area.unmap(pagetable);
+        }
     }
 }

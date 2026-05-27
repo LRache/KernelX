@@ -1,4 +1,5 @@
 pub mod pipe;
+pub mod sem;
 pub mod shm;
 pub mod signal;
 pub mod unixsocket;

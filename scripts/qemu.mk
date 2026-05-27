@@ -110,7 +110,6 @@ ifeq ($(SECOND_DISK_IMAGE),)
 endif
 	python3 scripts/backtrace_run.py \
 		--elf $(VMKERNELX) \
-		--cross-compile $(CROSS_COMPILE) \
 		-- $(QEMU) $(QEMU_FLAGS)
 ifeq ($(SECOND_DISK_IMAGE),)
 	@ rm -f $(TMPDISK)

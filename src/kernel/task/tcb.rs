@@ -827,14 +827,14 @@ impl TCB {
 
         if self.parent.pid() == self.tid {
             self.parent.exit(status);
-        }
+        } else {
+            self.parent.remove_task(self);
+            manager::remove(self.tid);
 
-        self.parent.remove_task(self);
-        manager::remove(self.tid);
-
-        // cleanup addrspace before scheduler
-        if Arc::strong_count(&self.addrspace) == 1 {
-            self.addrspace.cleanup();
+            // cleanup addrspace before scheduler
+            if Arc::strong_count(&self.addrspace) == 1 {
+                self.addrspace.cleanup();
+            }
         }
     }
 

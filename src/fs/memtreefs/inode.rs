@@ -6,19 +6,19 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, Mode, Owner};
+use crate::fs::inode::{InodeLockState, InodeSealOps, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::uapi::{FileStat, Uid};
+use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
 use crate::klib::{LazyInitedCell, SpinLock};
 
 use super::superblock::{StaticFsInfo, SuperBlockInner};
 
 struct FileMeta {
-    pages: BTreeMap<usize, PhysPageFrame>,
+    pages: BTreeMap<usize, Arc<PhysPageFrame>>,
     filesize: usize,
 }
 
@@ -45,6 +45,9 @@ pub struct InodeMeta {
     atime: Duration,
     ctime: Duration,
     links: u32,
+    seals: Option<FileSealFlags>,
+    shared_mmap_count: usize,
+    writable_shared_mmap_count: usize,
 }
 
 impl InodeMeta {
@@ -67,6 +70,9 @@ impl InodeMeta {
             atime: Duration::ZERO,
             ctime: Duration::ZERO,
             links: 0,
+            seals: None,
+            shared_mmap_count: 0,
+            writable_shared_mmap_count: 0,
         }
     }
 }
@@ -113,11 +119,137 @@ impl<T: StaticFsInfo> Inode<T> {
     fn pages_for_size(size: usize) -> usize {
         size.div_ceil(arch::PGSIZE)
     }
+
+    fn check_write_seals(
+        file_meta: &FileMeta,
+        seals: Option<FileSealFlags>,
+        offset: usize,
+        len: usize,
+    ) -> SysResult<()> {
+        if len == 0 {
+            return Ok(());
+        }
+
+        let Some(seals) = seals else {
+            return Ok(());
+        };
+
+        if seals.intersects(FileSealFlags::F_SEAL_WRITE | FileSealFlags::F_SEAL_FUTURE_WRITE) {
+            return Err(Errno::EPERM);
+        }
+
+        let end = offset.checked_add(len).ok_or(Errno::EFBIG)?;
+        if end > file_meta.filesize && seals.contains(FileSealFlags::F_SEAL_GROW) {
+            return Err(Errno::EPERM);
+        }
+
+        Ok(())
+    }
+}
+
+impl<T: StaticFsInfo> InodeSealOps for Inode<T> {
+    fn init_seals(&self, seals: FileSealFlags) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return Err(Errno::EINVAL);
+        }
+        if meta.seals.is_some() {
+            return Err(Errno::EINVAL);
+        }
+        meta.seals = Some(seals);
+        Ok(())
+    }
+
+    fn seals(&self) -> SysResult<FileSealFlags> {
+        self.meta.lock().seals.ok_or(Errno::EINVAL)
+    }
+
+    fn add_seals(&self, seals: FileSealFlags) -> SysResult<()> {
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return Err(Errno::EINVAL);
+        }
+
+        let current = meta.seals.ok_or(Errno::EINVAL)?;
+        if current.contains(FileSealFlags::F_SEAL_SEAL) {
+            return Err(Errno::EPERM);
+        }
+        if seals.contains(FileSealFlags::F_SEAL_WRITE) && meta.writable_shared_mmap_count > 0 {
+            return Err(Errno::EBUSY);
+        }
+
+        meta.seals = Some(current | seals);
+        Ok(())
+    }
+
+    fn begin_shared_mmap(&self, writable: bool) {
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return;
+        }
+
+        meta.shared_mmap_count = meta
+            .shared_mmap_count
+            .checked_add(1)
+            .expect("memtreefs shared_mmap_count overflow");
+        if writable {
+            meta.writable_shared_mmap_count = meta
+                .writable_shared_mmap_count
+                .checked_add(1)
+                .expect("memtreefs writable_shared_mmap_count overflow");
+        }
+    }
+
+    fn update_shared_mmap_writable(&self, old_writable: bool, new_writable: bool) {
+        if old_writable == new_writable {
+            return;
+        }
+
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return;
+        }
+
+        if new_writable {
+            meta.writable_shared_mmap_count = meta
+                .writable_shared_mmap_count
+                .checked_add(1)
+                .expect("memtreefs writable_shared_mmap_count overflow");
+        } else {
+            debug_assert!(
+                meta.writable_shared_mmap_count > 0,
+                "memtreefs writable mmap count underflow"
+            );
+            meta.writable_shared_mmap_count = meta.writable_shared_mmap_count.saturating_sub(1);
+        }
+    }
+
+    fn end_shared_mmap(&self, writable: bool) {
+        let mut meta = self.meta.lock();
+        if !matches!(meta.meta, Meta::File(_)) {
+            return;
+        }
+
+        debug_assert!(meta.shared_mmap_count > 0, "memtreefs shared mmap count underflow");
+        meta.shared_mmap_count = meta.shared_mmap_count.saturating_sub(1);
+
+        if writable {
+            debug_assert!(
+                meta.writable_shared_mmap_count > 0,
+                "memtreefs writable mmap count underflow"
+            );
+            meta.writable_shared_mmap_count = meta.writable_shared_mmap_count.saturating_sub(1);
+        }
+    }
 }
 
 impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn filesystem_refcount_bias(&self) -> usize {
         1
+    }
+
+    fn as_seal_ops(&self) -> Option<&dyn InodeSealOps> {
+        Some(self)
     }
 
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
@@ -247,66 +379,41 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     }
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, direct: bool) -> SysResult<usize> {
-        if let Meta::File(ref file_meta) = self.meta.lock().meta {
-            if direct {
-                if offset % arch::PGSIZE != 0 {
-                    return Err(Errno::EINVAL);
-                }
-                if ubuf.length() % arch::PGSIZE != 0 {
-                    return Err(Errno::EINVAL);
-                }
-                if ubuf.uaddr() % arch::PGSIZE != 0 {
-                    return Err(Errno::EINVAL);
-                }
+        if direct {
+            if offset % arch::PGSIZE != 0 {
+                return Err(Errno::EINVAL);
             }
-
-            if offset >= file_meta.filesize {
-                return Ok(0);
+            if ubuf.length() % arch::PGSIZE != 0 {
+                return Err(Errno::EINVAL);
             }
-
-            let mut total_read = 0;
-            let mut current_offset = offset;
-            let mut remaining = file_meta.filesize - offset;
-
-            for kbuf in ubuf.iter_mut() {
-                let kbuf = kbuf?;
-                if remaining == 0 {
-                    break;
-                }
-
-                let mut copied = 0;
-                let target_len = core::cmp::min(kbuf.len(), remaining);
-                while copied < target_len {
-                    let page_index = current_offset / arch::PGSIZE;
-                    let page_offset = current_offset % arch::PGSIZE;
-                    let to_read = core::cmp::min(target_len - copied, arch::PGSIZE - page_offset);
-                    let dst = &mut kbuf[copied..copied + to_read];
-
-                    if let Some(page) = file_meta.pages.get(&page_index) {
-                        page.copy_to_slice(page_offset, dst);
-                    } else {
-                        dst.fill(0);
-                    }
-
-                    copied += to_read;
-                    current_offset += to_read;
-                }
-
-                remaining -= copied;
-                total_read += copied;
-                if copied < kbuf.len() {
-                    return Ok(total_read);
-                }
+            if ubuf.uaddr() % arch::PGSIZE != 0 {
+                return Err(Errno::EINVAL);
             }
-
-            Ok(total_read)
-        } else {
-            Err(Errno::EISDIR)
         }
+
+        let mut total_read = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter_mut() {
+            let kbuf = kbuf?;
+            let n = self.readat(kbuf, current_offset, direct)?;
+            total_read += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_read);
+            }
+        }
+        Ok(total_read)
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
-        if let Meta::File(ref mut meta) = self.meta.lock().meta {
+        let mut inode_meta = self.meta.lock();
+        let seals = inode_meta.seals;
+        if let Meta::File(ref mut meta) = inode_meta.meta {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            Self::check_write_seals(meta, seals, offset, buf.len())?;
+
             let mut written_bytes = 0;
             let mut current_offset = offset;
 
@@ -315,7 +422,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 let page_offset = current_offset % arch::PGSIZE;
 
                 let to_write = core::cmp::min(buf.len() - written_bytes, arch::PGSIZE - page_offset);
-                let page = meta.pages.entry(page_index).or_insert_with(PhysPageFrame::alloc_zeroed);
+                let page = meta
+                    .pages
+                    .entry(page_index)
+                    .or_insert_with(|| Arc::new(PhysPageFrame::alloc_zeroed()));
 
                 page.copy_from_slice(page_offset, &buf[written_bytes..written_bytes + to_write]);
 
@@ -332,32 +442,30 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, _direct: bool) -> SysResult<usize> {
-        if let Meta::File(ref mut meta) = self.meta.lock().meta {
-            let mut written_bytes = 0;
-            let mut current_offset = offset;
-
-            for kbuf in ubuf.iter() {
-                let kbuf = kbuf?;
-                let mut copied = 0;
-                while copied < kbuf.len() {
-                    let page_index = current_offset / arch::PGSIZE;
-                    let page_offset = current_offset % arch::PGSIZE;
-
-                    let to_write = core::cmp::min(kbuf.len() - copied, arch::PGSIZE - page_offset);
-                    let page = meta.pages.entry(page_index).or_insert_with(PhysPageFrame::alloc_zeroed);
-                    page.copy_from_slice(page_offset, &kbuf[copied..copied + to_write]);
-
-                    copied += to_write;
-                    current_offset += to_write;
-                    written_bytes += to_write;
-                }
+        {
+            let inode_meta = self.meta.lock();
+            let seals = inode_meta.seals;
+            let Meta::File(ref meta) = inode_meta.meta else {
+                return Err(Errno::EINVAL);
+            };
+            if ubuf.length() == 0 {
+                return Ok(0);
             }
-
-            meta.filesize = core::cmp::max(meta.filesize, offset + written_bytes);
-            Ok(written_bytes)
-        } else {
-            Err(Errno::EINVAL)
+            Self::check_write_seals(meta, seals, offset, ubuf.length())?;
         }
+
+        let mut written_bytes = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter() {
+            let kbuf = kbuf?;
+            let n = self.writeat(kbuf, current_offset)?;
+            written_bytes += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(written_bytes);
+            }
+        }
+        Ok(written_bytes)
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {
@@ -370,7 +478,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             let now = kclock::now().unwrap_or_default();
 
             let remove_inode = if let Some(child_inode) = child.downcast_ref::<Self>() {
-                let mut child_meta = child_inode.meta.lock();
+                // SAFETY: parent and child are distinct inode instances here; the
+                // current lockdep model keys only by class name and reports this
+                // parent->child meta nesting as same-lock recursion.
+                let mut child_meta = unsafe { child_inode.meta.lock_unchecked() };
                 if let Meta::Directory(grandchildren) = &child_meta.meta
                     && grandchildren.len() > 2
                 {
@@ -541,12 +652,44 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         Ok(size as u64)
     }
 
+    fn mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<Arc<PhysPageFrame>>> {
+        let offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+        let mut inode_meta = self.meta.lock();
+        if let Meta::File(ref mut meta) = inode_meta.meta {
+            if offset >= meta.filesize {
+                return Ok(None);
+            }
+
+            let frame = meta
+                .pages
+                .entry(file_page_index)
+                .or_insert_with(|| Arc::new(PhysPageFrame::alloc_zeroed()))
+                .clone();
+            Ok(Some(frame))
+        } else {
+            Err(Errno::EINVAL)
+        }
+    }
+
+    fn writeback_mmap_shared_page(&self, _file_page_index: usize, _frame: &PhysPageFrame) -> SysResult<()> {
+        Ok(())
+    }
+
     fn mode(&self) -> SysResult<Mode> {
         Ok(self.meta.lock().mode)
     }
 
     fn chmod(&self, mode: Mode) -> SysResult<()> {
         let mut meta = self.meta.lock();
+        if meta
+            .seals
+            .is_some_and(|seals| seals.contains(FileSealFlags::F_SEAL_EXEC))
+        {
+            let exec_bits = Mode::S_IXUSR | Mode::S_IXGRP | Mode::S_IXOTH;
+            if (meta.mode & exec_bits) != (mode & exec_bits) {
+                return Err(Errno::EPERM);
+            }
+        }
         let file_type = meta.mode & Mode::S_IFMT;
         meta.mode = file_type | (mode & !Mode::S_IFMT);
         Ok(())
@@ -629,8 +772,18 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
         let mut meta = self.meta.lock();
+        let seals = meta.seals;
         if let Meta::File(ref mut file_meta) = meta.meta {
-            let new_size = new_size as usize;
+            let new_size = usize::try_from(new_size).map_err(|_| Errno::EFBIG)?;
+            if let Some(seals) = seals {
+                if new_size < file_meta.filesize && seals.contains(FileSealFlags::F_SEAL_SHRINK) {
+                    return Err(Errno::EPERM);
+                }
+                if new_size > file_meta.filesize && seals.contains(FileSealFlags::F_SEAL_GROW) {
+                    return Err(Errno::EPERM);
+                }
+            }
+
             if new_size < file_meta.filesize {
                 let new_pages = Self::pages_for_size(new_size);
                 let _ = file_meta.pages.split_off(&new_pages);
@@ -643,6 +796,80 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             }
 
             file_meta.filesize = new_size;
+            Ok(())
+        } else {
+            Err(Errno::EINVAL)
+        }
+    }
+
+    fn fallocate(&self, flags: FileFallocateFlags, offset: u64, len: u64) -> SysResult<()> {
+        if flags.is_empty() {
+            let new_size = offset.checked_add(len).ok_or(Errno::EFBIG)?;
+            if new_size <= self.size()? {
+                return Ok(());
+            }
+
+            return self.truncate(new_size);
+        }
+
+        if flags != (FileFallocateFlags::FALLOC_FL_KEEP_SIZE | FileFallocateFlags::FALLOC_FL_PUNCH_HOLE) {
+            return Err(Errno::EINVAL);
+        }
+
+        let mut meta = self.meta.lock();
+        let seals = meta.seals;
+        if let Meta::File(ref mut file_meta) = meta.meta {
+            if let Some(seals) = seals
+                && seals.intersects(FileSealFlags::F_SEAL_WRITE | FileSealFlags::F_SEAL_FUTURE_WRITE)
+            {
+                return Err(Errno::EPERM);
+            }
+
+            let offset = usize::try_from(offset).map_err(|_| Errno::EFBIG)?;
+            let len = usize::try_from(len).map_err(|_| Errno::EFBIG)?;
+            if len == 0 || offset >= file_meta.filesize {
+                return Ok(());
+            }
+
+            let end = offset.checked_add(len).ok_or(Errno::EFBIG)?.min(file_meta.filesize);
+            if offset >= end {
+                return Ok(());
+            }
+
+            let start_page = offset / arch::PGSIZE;
+            let end_page = (end - 1) / arch::PGSIZE;
+            let start_offset = offset % arch::PGSIZE;
+            let end_offset = end % arch::PGSIZE;
+
+            if start_page == end_page {
+                if let Some(page) = file_meta.pages.get(&start_page) {
+                    page.slice()[start_offset..end - start_page * arch::PGSIZE].fill(0);
+                }
+                return Ok(());
+            }
+
+            let first_full_page = if start_offset == 0 {
+                start_page
+            } else {
+                if let Some(page) = file_meta.pages.get(&start_page) {
+                    page.slice()[start_offset..].fill(0);
+                }
+                start_page + 1
+            };
+
+            let last_full_page = if end_offset == 0 {
+                end_page
+            } else {
+                if let Some(page) = file_meta.pages.get(&end_page) {
+                    page.slice()[..end_offset].fill(0);
+                }
+                end_page.saturating_sub(1)
+            };
+
+            for page_index in first_full_page..=last_full_page {
+                file_meta.pages.remove(&page_index);
+            }
+
             Ok(())
         } else {
             Err(Errno::EINVAL)
