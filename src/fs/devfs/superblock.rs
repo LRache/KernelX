@@ -6,7 +6,7 @@ use crate::driver::{DeviceType, DriverOps};
 use crate::fs::devfs::devnode::CharDevInode;
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::memtreefs::inode::Inode as MemInode;
-use crate::fs::{memtreefs, InodeOps, Mode, Owner};
+use crate::fs::{InodeOps, Mode, Owner, memtreefs};
 use crate::kernel::errno::SysResult;
 use crate::klib::InitedCell;
 

@@ -4,7 +4,7 @@ use crate::arch::UserContextTrait;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
-use crate::kernel::ipc::{signum, KSiFields, SiCode, SignalSet};
+use crate::kernel::ipc::{KSiFields, SiCode, SignalSet, signum};
 use crate::kernel::mm::vdso;
 use crate::kernel::scheduler::{Tid, WakeupFailure};
 use crate::kernel::task::{ExitStatus, PCB, TCB};

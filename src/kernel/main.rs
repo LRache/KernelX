@@ -5,7 +5,7 @@ use alloc::collections::BTreeMap;
 use crate::kernel::event::timer;
 use crate::kernel::scheduler::{Processor, Task};
 use crate::kernel::{config, kthread, mm, scheduler, task};
-use crate::klib::{kalloc, InitedCell};
+use crate::klib::{InitedCell, kalloc};
 use crate::{arch, driver, fs, kinfo, net, print};
 
 #[allow(dead_code)]

@@ -5,15 +5,15 @@ use alloc::vec::Vec;
 use fixedstr::tstr;
 use spin::Lazy;
 
-use crate::arch::{PageTable, PageTableTrait, UserContext, TRAMPOLINE_BASE};
+use crate::arch::{PageTable, PageTableTrait, TRAMPOLINE_BASE, UserContext};
 use crate::kernel::config::{MAX_PATH_LEN, USER_BRK_BASE, USER_RANDOM_ADDR_BASE};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::Auxv;
-use crate::kernel::mm::{maparea, PhysPageFrame};
+use crate::kernel::mm::{PhysPageFrame, maparea};
 use crate::klib::{SleepLock, SpinLock};
 use crate::{arch, safe_page_write};
 
-use super::{vdso, MapPerm, MemAccessType};
+use super::{MapPerm, MemAccessType, vdso};
 
 cfg_if::cfg_if! {
     if #[cfg(feature="swap-memory")] {

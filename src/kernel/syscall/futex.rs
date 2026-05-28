@@ -6,10 +6,10 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver::chosen::kclock;
 use crate::kernel::errno::Errno;
-use crate::kernel::event::{timer, Event};
+use crate::kernel::event::{Event, timer};
 use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
 use crate::kernel::syscall::SyscallRet;
+use crate::kernel::syscall::uptr::{UArray, UPtr, UserPointer, UserStruct};
 use crate::kernel::usync::futex::{self, RobustListHead};
 
 use super::common::Timespec;

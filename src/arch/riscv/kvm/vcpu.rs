@@ -1,14 +1,14 @@
+use crate::arch::riscv::KvmPageTable;
 use crate::arch::riscv::csr::scause::{Cause, Interrupt, Trap};
-use crate::arch::riscv::csr::{scause, sepc, sscratch, stval, stvec, Sstatus, SstatusSPP};
+use crate::arch::riscv::csr::{Sstatus, SstatusSPP, scause, sepc, sscratch, stval, stvec};
 use crate::arch::riscv::kvm::context::{KvmRegs, KvmSRegs, VCpuContext};
 use crate::arch::riscv::kvm::csr::hcounteren::Hcounteren;
 use crate::arch::riscv::kvm::csr::henvcfg::{Henvcfg, HenvcfgFlag};
 use crate::arch::riscv::kvm::csr::hie::Hie;
 use crate::arch::riscv::kvm::csr::hstatus::{Hstatus, HstatusSpv};
 use crate::arch::riscv::kvm::csr::hvip::Hvip;
-use crate::arch::riscv::kvm::csr::{hedeleg, hgatp, hideleg, htinst, htval, vsatp, vstimecmp, VirtualInterrupt};
+use crate::arch::riscv::kvm::csr::{VirtualInterrupt, hedeleg, hgatp, hideleg, htinst, htval, vsatp, vstimecmp};
 use crate::arch::riscv::task::traphandle;
-use crate::arch::riscv::KvmPageTable;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;

@@ -2,7 +2,7 @@ use crate::arch::PageTableTrait;
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
 
-use super::pte::{Addr, PTEFlags, PTETable, PTE};
+use super::pte::{Addr, PTE, PTEFlags, PTETable};
 
 const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
