@@ -1,14 +1,202 @@
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use bitflags::bitflags;
 
 use crate::arch;
 
 use crate::fs::file::FileMmapRequest;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Area, PrivateAnonymousArea, SharedAnonymousArea};
-use crate::kernel::mm::MapPerm;
+use crate::kernel::mm::{AddrSpace, MapPerm};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::SyscallRet;
+use crate::kernel::task;
+
+use super::common::{IOVec, IOVecCursor};
+use super::def::BUFFER_SIZE;
+use super::uptr::{UPtr, UserPointer};
+
+const PROCESS_VM_IOV_MAX: usize = 1024;
+
+fn can_process_vm_target(target: &task::PCB) -> bool {
+    let caller = current::pcb();
+    if caller.euid() == 0 {
+        return true;
+    }
+
+    let caller_uid = caller.uid();
+    let caller_euid = caller.euid();
+    caller_uid == target.uid()
+        || caller_uid == target.suid()
+        || caller_euid == target.uid()
+        || caller_euid == target.suid()
+}
+
+fn process_vm_target_addrspace(pid: usize) -> SysResult<Arc<AddrSpace>> {
+    let tid = Tid::try_from(pid).map_err(|_| Errno::ESRCH)?;
+    if tid <= 0 {
+        return Err(Errno::ESRCH);
+    }
+
+    let target = task::manager::get(tid).ok_or(Errno::ESRCH)?;
+    if target.state().lock().is_dead() || target.parent().is_exited() {
+        return Err(Errno::ESRCH);
+    }
+    if !can_process_vm_target(target.parent()) {
+        return Err(Errno::EPERM);
+    }
+
+    Ok(Arc::clone(target.get_addrspace()))
+}
+
+fn transfer_process_vm_iovecs(
+    src_addrspace: &AddrSpace,
+    src_iov: UPtr<IOVec>,
+    src_iovcnt: usize,
+    dst_addrspace: &AddrSpace,
+    dst_iov: UPtr<IOVec>,
+    dst_iovcnt: usize,
+) -> SyscallRet {
+    let mut src_cursor = IOVecCursor::new(src_iov, src_iovcnt);
+    let mut dst_cursor = IOVecCursor::new(dst_iov, dst_iovcnt);
+    let mut copied = 0usize;
+    let mut buffer = [0u8; BUFFER_SIZE];
+
+    loop {
+        let src_remaining = match src_cursor.remaining() {
+            Ok(Some(remaining)) => remaining,
+            Ok(None) => break,
+            Err(errno) => {
+                if copied == 0 {
+                    return Err(errno);
+                }
+                return Ok(copied);
+            }
+        };
+        let dst_remaining = match dst_cursor.remaining() {
+            Ok(Some(remaining)) => remaining,
+            Ok(None) => break,
+            Err(errno) => {
+                if copied == 0 {
+                    return Err(errno);
+                }
+                return Ok(copied);
+            }
+        };
+
+        let to_copy = core::cmp::min(core::cmp::min(src_remaining, dst_remaining), BUFFER_SIZE);
+        let Some(src_addr) = src_cursor.current_addr() else {
+            if copied == 0 {
+                return Err(Errno::EFAULT);
+            }
+            return Ok(copied);
+        };
+        let Some(dst_addr) = dst_cursor.current_addr() else {
+            if copied == 0 {
+                return Err(Errno::EFAULT);
+            }
+            return Ok(copied);
+        };
+
+        if src_addrspace
+            .copy_from_user_buffer(src_addr, &mut buffer[..to_copy])
+            .is_err()
+        {
+            if copied == 0 {
+                return Err(Errno::EFAULT);
+            }
+            return Ok(copied);
+        }
+        if dst_addrspace.copy_to_user_buffer(dst_addr, &buffer[..to_copy]).is_err() {
+            if copied == 0 {
+                return Err(Errno::EFAULT);
+            }
+            return Ok(copied);
+        }
+
+        src_cursor.advance(to_copy);
+        dst_cursor.advance(to_copy);
+        copied += to_copy;
+    }
+
+    Ok(copied)
+}
+
+fn validate_process_vm_iovcnt(iovcnt: usize) -> SysResult<()> {
+    if (iovcnt as isize) < 0 || iovcnt > PROCESS_VM_IOV_MAX {
+        Err(Errno::EINVAL)
+    } else {
+        Ok(())
+    }
+}
+
+fn process_vm(
+    pid: usize,
+    local_iov: UPtr<IOVec>,
+    liovcnt: usize,
+    remote_iov: UPtr<IOVec>,
+    riovcnt: usize,
+    flags: usize,
+    write_remote: bool,
+) -> SyscallRet {
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+    validate_process_vm_iovcnt(liovcnt)?;
+    validate_process_vm_iovcnt(riovcnt)?;
+    if liovcnt == 0 || riovcnt == 0 {
+        return Ok(0);
+    }
+
+    if local_iov.is_null() || remote_iov.is_null() {
+        return Err(Errno::EFAULT);
+    }
+
+    let local_addrspace = Arc::clone(current::addrspace());
+    let remote_addrspace = process_vm_target_addrspace(pid)?;
+
+    if write_remote {
+        transfer_process_vm_iovecs(
+            &local_addrspace,
+            local_iov,
+            liovcnt,
+            &remote_addrspace,
+            remote_iov,
+            riovcnt,
+        )
+    } else {
+        transfer_process_vm_iovecs(
+            &remote_addrspace,
+            remote_iov,
+            riovcnt,
+            &local_addrspace,
+            local_iov,
+            liovcnt,
+        )
+    }
+}
+
+pub fn process_vm_readv(
+    pid: usize,
+    local_iov: UPtr<IOVec>,
+    liovcnt: usize,
+    remote_iov: UPtr<IOVec>,
+    riovcnt: usize,
+    flags: usize,
+) -> SyscallRet {
+    process_vm(pid, local_iov, liovcnt, remote_iov, riovcnt, flags, false)
+}
+
+pub fn process_vm_writev(
+    pid: usize,
+    local_iov: UPtr<IOVec>,
+    liovcnt: usize,
+    remote_iov: UPtr<IOVec>,
+    riovcnt: usize,
+    flags: usize,
+) -> SyscallRet {
+    process_vm(pid, local_iov, liovcnt, remote_iov, riovcnt, flags, true)
+}
 
 pub fn brk(brk: usize) -> SyscallRet {
     let r = current::addrspace().increase_userbrk(brk);

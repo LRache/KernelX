@@ -29,7 +29,7 @@ use crate::kernel::uapi::{
     Dirent, DirentType, FileFallocateFlags, FileSealFlags, FileStat, MemFdCreateFlags, OpenFlags, Statfs, Statx, Uid,
 };
 
-use super::common::Timespec;
+use super::common::{IOVec, Timespec};
 use super::def::*;
 
 pub fn dup(oldfd: usize) -> SyscallRet {
@@ -961,15 +961,6 @@ pub fn write(fd: usize, ubuf: UBuffer, count: usize) -> SyscallRet {
 
     finish_file_io(file.as_ref(), written, true)
 }
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct IOVec {
-    pub base: usize,
-    pub len: usize,
-}
-
-impl UserStruct for IOVec {}
 
 fn check_positional_io(file: &Arc<dyn FileOps>) -> SysResult<()> {
     random_access_file(file).map(|_| ())

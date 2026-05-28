@@ -18,7 +18,7 @@ use crate::net::socket::{
 };
 
 use super::SyscallRet;
-use super::fs::IOVec;
+use super::common::IOVec;
 use super::uptr::{UBuffer, UPtr, UserPointer, UserStruct};
 
 const MSG_IOV_MAX: usize = 1024;

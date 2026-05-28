@@ -103,6 +103,8 @@ macro_rules! syscall_entries {
             227 => mm::msync(3),
             228 => mm::mlock(2),
             233 => mm::madvise(0),
+            270 => mm::process_vm_readv(6),
+            271 => mm::process_vm_writev(6),
 
             // Futex
             98  => futex::futex(6),
