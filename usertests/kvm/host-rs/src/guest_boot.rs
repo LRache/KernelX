@@ -1,6 +1,6 @@
+use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{env, fs};
 
 use tokio::{task, time};
 
@@ -109,7 +109,7 @@ pub fn parse_args() -> Result<GuestBootOptions, String> {
     }
 
     let kernel_path = kernel_path.unwrap_or_else(|| DEFAULT_GUEST_IMAGE.to_string());
-    let initrd_path = initrd_path.and_then(|path| if path.is_empty() { None } else { Some(path) });
+    let initrd_path = initrd_path.filter(|path| !path.is_empty());
     Ok(GuestBootOptions {
         kernel_path,
         dtb_path,
@@ -121,16 +121,10 @@ pub fn parse_args() -> Result<GuestBootOptions, String> {
 }
 
 pub fn prepare_guest(kvm: &Kvm, mapping: GuestMapping, options: &GuestBootOptions) -> Result<GuestEntry, String> {
-    load_file_to_guest(
-        kvm,
-        &options.kernel_path,
-        mapping,
-        GUEST_KERNEL_LOAD_ADDR,
-        &options.kernel_path,
-    )?;
+    kvm.map_file_private(GUEST_KERNEL_LOAD_ADDR, &options.kernel_path, &options.kernel_path)?;
 
     let initrd = if let Some(path) = &options.initrd_path {
-        let size = load_file_to_guest(kvm, path, mapping, GUEST_INITRD_LOAD_ADDR, path)?;
+        let size = kvm.map_file_private(GUEST_INITRD_LOAD_ADDR, path, path)?;
         Some(DtbRange {
             start: GUEST_INITRD_LOAD_ADDR,
             end: GUEST_INITRD_LOAD_ADDR + size,
@@ -139,8 +133,8 @@ pub fn prepare_guest(kvm: &Kvm, mapping: GuestMapping, options: &GuestBootOption
         None
     };
 
-    let dtb_blob = if let Some(path) = &options.dtb_path {
-        fs::read(path).map_err(|err| format!("read {path}: {err}"))?
+    if let Some(path) = &options.dtb_path {
+        kvm.map_file_private(GUEST_DTB_LOAD_ADDR, path, path)?;
     } else {
         let config = DtbConfig {
             memory_base: GUEST_MEMORY_BASE,
@@ -154,18 +148,14 @@ pub fn prepare_guest(kvm: &Kvm, mapping: GuestMapping, options: &GuestBootOption
             riscv_isa: "rv64imafdch".to_string(),
             mmu_type: "riscv,sv39".to_string(),
         };
-        kvm.bus()
+        let dtb_blob = kvm
+            .bus()
             .lock()
             .map_err(|_| "kvm bus lock poisoned".to_string())?
-            .build_dtb(&config)
-    };
+            .build_dtb(&config);
 
-    kvm.copy_to_guest(
-        mapping,
-        GUEST_DTB_LOAD_ADDR,
-        &dtb_blob,
-        options.dtb_path.as_deref().unwrap_or("built-in dtb"),
-    )?;
+        kvm.copy_to_guest(mapping, GUEST_DTB_LOAD_ADDR, &dtb_blob, "built-in dtb")?;
+    }
 
     Ok(GuestEntry {
         pc: GUEST_KERNEL_LOAD_ADDR,
@@ -189,8 +179,7 @@ pub async fn boot_guest(kvm: &Kvm, mapping: GuestMapping, entry: GuestEntry) -> 
     cpu.init(entry.pc, entry.a1, 0)?;
 
     let interrupt_task = tokio::spawn(sync_external_interrupt_task(cpu.clone()));
-    let run_cpu = cpu.clone();
-    let result = task::spawn_blocking(move || run_cpu.run())
+    let result = task::spawn_blocking(move || cpu.run())
         .await
         .map_err(|err| format!("kvm vcpu task failed: {err}"))?;
     interrupt_task.abort();
@@ -223,20 +212,4 @@ fn print_usage(argv0: &str) {
     eprintln!(
         "Usage:\n  {argv0} [kernel.bin]\n  {argv0} [-kernel PATH] [-initrd PATH] [-dtb PATH] [-disk PATH] [-append STRING] [--memory-size BYTES]"
     );
-}
-
-fn load_file_to_guest(
-    kvm: &Kvm,
-    path: &str,
-    mapping: GuestMapping,
-    guest_addr: usize,
-    label: &str,
-) -> Result<usize, String> {
-    let data = fs::read(path).map_err(|err| format!("read {path}: {err}"))?;
-    if data.is_empty() {
-        return Err(format!("guest image {path} is empty"));
-    }
-    let size = data.len();
-    kvm.copy_to_guest(mapping, guest_addr, &data, label)?;
-    Ok(size)
 }

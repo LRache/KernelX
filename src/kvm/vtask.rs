@@ -125,9 +125,10 @@ impl VTask {
     }
 
     fn run(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<VTaskExitReason> {
+        let run_guard = self.vcpu.enter_run()?;
         loop {
             let interrupt_state = *self.interrupts.lock();
-            match self.vcpu.run(self.addrspace.pagetable(), interrupt_state) {
+            match self.vcpu.run(&run_guard, self.addrspace.pagetable(), interrupt_state) {
                 VCpuExitReason::Timer => {
                     trap::timer_interrupt();
                     if trap::handle_signal() {
@@ -181,7 +182,7 @@ impl VTask {
 
     fn set_regs(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         let regs = addrspace.copy_from_user::<KvmRegs>(arg)?;
-        self.vcpu.set_regs(regs);
+        self.vcpu.set_regs(regs)?;
         Ok(0)
     }
 
@@ -194,7 +195,7 @@ impl VTask {
 
     fn set_gpr(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         let gpr = addrspace.copy_from_user::<KvmGpr>(arg)?;
-        self.vcpu.set_gpr(gpr.index, gpr.value).ok_or(Errno::EINVAL)?;
+        self.vcpu.set_gpr(gpr.index, gpr.value)?;
         Ok(0)
     }
 

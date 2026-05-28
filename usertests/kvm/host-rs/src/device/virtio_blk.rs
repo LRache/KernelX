@@ -1,8 +1,7 @@
-use std::io::SeekFrom;
-use std::io;
-use std::mem;
-use std::sync::{Arc, Mutex};
 use num_enum::TryFromPrimitive;
+use std::io::SeekFrom;
+use std::sync::{Arc, Mutex};
+use std::{io, mem};
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -11,7 +10,7 @@ use tokio::task::JoinHandle;
 use crate::device::bus::{Bus, BusRef};
 use crate::device::virtio::{
     BackendOps, RequestBuffer, VirtioBackend, VirtioCompletion, VirtioDeviceId, VirtioRequest, VirtioRequestHandling,
-    read_guest_u32, read_guest_u64, translate_guest_slice, translate_guest_slice_mut, write_guest_u8,
+    read_guest_u32, read_guest_u64, translate_guest_slice, write_guest_slice, write_guest_u8,
 };
 
 const SECTOR_SIZE: u64 = 512;
@@ -187,7 +186,7 @@ impl VirtioBlkBackend {
     ) -> Option<PreparedBlkRequest> {
         let data_len = match validate_data_buffers(buffers, true).and_then(|len| {
             self.validate_range(sector, len)?;
-            validate_guest_buffers(bus, buffers, true)?;
+            validate_guest_buffers(bus, buffers)?;
             Ok(len)
         }) {
             Ok(data_len) => data_len,
@@ -381,14 +380,9 @@ fn validate_data_buffers(buffers: &[RequestBuffer], expected_write: bool) -> Res
     }
 }
 
-fn validate_guest_buffers(bus: &Bus, buffers: &[RequestBuffer], mutable: bool) -> Result<(), VirtioBlkStatus> {
+fn validate_guest_buffers(bus: &Bus, buffers: &[RequestBuffer]) -> Result<(), VirtioBlkStatus> {
     for buffer in buffers {
-        let valid = if mutable {
-            translate_guest_slice_mut(bus, buffer.addr, buffer.len).is_some()
-        } else {
-            translate_guest_slice(bus, buffer.addr, buffer.len).is_some()
-        };
-        if !valid {
+        if translate_guest_slice(bus, buffer.addr, buffer.len).is_none() {
             return Err(VirtioBlkStatus::IoErr);
         }
     }
@@ -400,8 +394,8 @@ fn write_read_data(bus: &Bus, buffers: &[RequestBuffer], data: &[u8]) -> Result<
     for buffer in buffers {
         let len = usize::try_from(buffer.len).map_err(|_| VirtioBlkStatus::IoErr)?;
         let end = offset.checked_add(len).ok_or(VirtioBlkStatus::IoErr)?;
-        let slice = translate_guest_slice_mut(bus, buffer.addr, buffer.len).ok_or(VirtioBlkStatus::IoErr)?;
-        slice.copy_from_slice(data.get(offset..end).ok_or(VirtioBlkStatus::IoErr)?);
+        write_guest_slice(bus, buffer.addr, data.get(offset..end).ok_or(VirtioBlkStatus::IoErr)?)
+            .ok_or(VirtioBlkStatus::IoErr)?;
         offset = end;
     }
     if offset == data.len() {

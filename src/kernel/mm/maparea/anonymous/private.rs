@@ -45,11 +45,10 @@ impl PrivateAnonymousArea {
         debug_assert!(self.frames[page_index].is_cow());
 
         let kpage = self.frames[page_index].cow_to_allocated(addrspace);
+        let uaddr = self.ubase + page_index * arch::PGSIZE;
 
-        addrspace
-            .pagetable()
-            .lock()
-            .mmap_replace(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
+        addrspace.pagetable().lock().mmap_replace(uaddr, kpage, self.perm);
+        addrspace.notify_addrspace_remap(uaddr, 1);
 
         kpage
     }

@@ -108,12 +108,13 @@ impl UserStack {
         );
 
         let kpage = self.frames[page_index].cow_to_allocated(addrspace);
+        let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
 
-        addrspace.pagetable().lock().mmap_replace(
-            config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE,
-            kpage,
-            MapPerm::R | MapPerm::W | MapPerm::U,
-        );
+        addrspace
+            .pagetable()
+            .lock()
+            .mmap_replace(uaddr, kpage, MapPerm::R | MapPerm::W | MapPerm::U);
+        addrspace.notify_addrspace_remap(uaddr, 1);
 
         kpage
     }

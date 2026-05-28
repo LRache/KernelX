@@ -111,6 +111,10 @@ impl AddrSpace {
             self.family_chain.lock().push_back(weak);
         }
 
+        // Fork turns writable private pages in the parent into read-only COW
+        // mappings. Watchers cache user-VA backing, so invalidate broadly.
+        self.notify_addrspace_unmap(0, arch::page_count(arch::USEREND));
+
         addrspace
     }
 
@@ -202,6 +206,10 @@ impl AddrSpace {
             .lock()
             .translate_write(uaddr, self)
             .ok_or(Errno::EFAULT)
+    }
+
+    pub fn translate_read(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
+        self.map_manager.lock().translate_read(uaddr, self).ok_or(Errno::EFAULT)
     }
 
     pub fn copy_to_user_buffer(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
@@ -404,7 +412,7 @@ impl AddrSpace {
         }
     }
 
-    fn notify_addrspace_remap(&self, uaddr: usize, page_count: usize) {
+    pub(crate) fn notify_addrspace_remap(&self, uaddr: usize, page_count: usize) {
         if page_count == 0 {
             return;
         }

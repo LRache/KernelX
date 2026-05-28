@@ -216,8 +216,7 @@ pub fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: usize, _
     if new_pages < old_pages {
         let tail_addr = old_addr + new_pages * arch::PGSIZE;
         let tail_pages = old_pages - new_pages;
-        current::addrspace()
-            .with_map_manager_mut(|mgr| mgr.unmap_area(tail_addr, tail_pages, current::addrspace().pagetable()))?;
+        current::addrspace().unmap_area(tail_addr, tail_pages)?;
         return Ok(old_addr);
     }
 
@@ -246,7 +245,7 @@ pub fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: usize, _
         }
     }
 
-    addrspace.with_map_manager_mut(|mgr| mgr.unmap_area(old_addr, old_pages, addrspace.pagetable()))?;
+    addrspace.unmap_area(old_addr, old_pages)?;
 
     Ok(new_addr)
 }

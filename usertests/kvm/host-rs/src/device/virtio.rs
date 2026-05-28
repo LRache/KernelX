@@ -1,5 +1,5 @@
-use std::{mem, ptr};
 use num_enum::TryFromPrimitive;
+use std::{mem, ptr};
 use tokio::task::JoinHandle;
 
 use crate::device::bus::{Bus, BusRef, MmioDevice};
@@ -604,12 +604,6 @@ pub fn translate_guest_slice(bus: &Bus, addr: u64, len: u32) -> Option<&[u8]> {
     Some(unsafe { std::slice::from_raw_parts(ptr.cast_const(), len) })
 }
 
-pub fn translate_guest_slice_mut(bus: &Bus, addr: u64, len: u32) -> Option<&mut [u8]> {
-    let len = usize::try_from(len).ok()?;
-    let ptr = bus.translate(usize::try_from(addr).ok()?, len)?;
-    Some(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
-}
-
 pub fn read_guest_u32(bus: &Bus, addr: u64) -> Option<u32> {
     let ptr = bus.translate(usize::try_from(addr).ok()?, mem::size_of::<u32>())?;
     Some(u32::from_le(unsafe { ptr::read_unaligned(ptr.cast::<u32>()) }))
@@ -623,6 +617,14 @@ pub fn read_guest_u64(bus: &Bus, addr: u64) -> Option<u64> {
 pub fn write_guest_u8(bus: &Bus, addr: u64, value: u8) -> Option<()> {
     let ptr = bus.translate(usize::try_from(addr).ok()?, mem::size_of::<u8>())?;
     unsafe { ptr::write_unaligned(ptr, value) };
+    Some(())
+}
+
+pub fn write_guest_slice(bus: &Bus, addr: u64, data: &[u8]) -> Option<()> {
+    let ptr = bus.translate(usize::try_from(addr).ok()?, data.len())?;
+    unsafe {
+        ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+    }
     Some(())
 }
 

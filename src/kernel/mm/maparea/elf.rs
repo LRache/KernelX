@@ -76,7 +76,7 @@ impl ELFArea {
         page
     }
 
-    fn copy_on_write_page(&mut self, page_index: usize, pagetable: &SpinLock<PageTable>) -> usize {
+    fn copy_on_write_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
         assert!(page_index < self.frames.len());
         assert!(self.frames[page_index].is_cow());
 
@@ -91,10 +91,10 @@ impl ELFArea {
         };
 
         let page = new_frame.get_page();
+        let uaddr = self.ubase + page_index * arch::PGSIZE;
 
-        pagetable
-            .lock()
-            .mmap_replace(self.ubase + page_index * arch::PGSIZE, page, self.perm);
+        addrspace.pagetable().lock().mmap_replace(uaddr, page, self.perm);
+        addrspace.notify_addrspace_remap(uaddr, 1);
         self.frames[page_index] = Frame::Allocated(Arc::new(new_frame));
 
         page
@@ -131,7 +131,7 @@ impl Area for ELFArea {
             let page = match page_frame {
                 Frame::Unallocated => self.load_page(page_index, addrspace.pagetable()),
                 Frame::Allocated(frame) => frame.get_page(),
-                Frame::Cow(_) => self.copy_on_write_page(page_index, addrspace.pagetable()),
+                Frame::Cow(_) => self.copy_on_write_page(page_index, addrspace),
             };
 
             Some(page + page_offset)
@@ -209,7 +209,7 @@ impl Area for ELFArea {
                 }
                 Frame::Cow(_) => {
                     if access_type == MemAccessType::Write {
-                        self.copy_on_write_page(page_index, addrspace.pagetable());
+                        self.copy_on_write_page(page_index, addrspace);
                     } else {
                         panic!("Page is already allocated for read and execute access.");
                     }

@@ -97,11 +97,10 @@ impl PrivateFileMapArea {
             FrameState::Cow(frame) => frame.copy(addrspace),
             _ => panic!("Invalid type for copy-on-write"),
         };
+        let uaddr = self.ubase + area_offset;
 
-        addrspace
-            .pagetable()
-            .lock()
-            .mmap_replace(self.ubase + area_offset, kpage, self.perm);
+        addrspace.pagetable().lock().mmap_replace(uaddr, kpage, self.perm);
+        addrspace.notify_addrspace_remap(uaddr, 1);
         self.frames[page_index] = FrameState::Allocated(Arc::new(frame));
 
         kpage

@@ -1,14 +1,15 @@
-use crate::arch::riscv::KvmPageTable;
 use crate::arch::riscv::csr::scause::{Cause, Interrupt, Trap};
-use crate::arch::riscv::csr::{Sstatus, SstatusSPP, scause, sepc, sscratch, stval, stvec};
+use crate::arch::riscv::csr::{scause, sepc, sscratch, stval, stvec, Sstatus, SstatusSPP};
 use crate::arch::riscv::kvm::context::{KvmRegs, KvmSRegs, VCpuContext};
 use crate::arch::riscv::kvm::csr::hcounteren::Hcounteren;
 use crate::arch::riscv::kvm::csr::henvcfg::{Henvcfg, HenvcfgFlag};
 use crate::arch::riscv::kvm::csr::hie::Hie;
 use crate::arch::riscv::kvm::csr::hstatus::{Hstatus, HstatusSpv};
 use crate::arch::riscv::kvm::csr::hvip::Hvip;
-use crate::arch::riscv::kvm::csr::{VirtualInterrupt, hedeleg, hgatp, hideleg, htinst, htval, vsatp, vstimecmp};
+use crate::arch::riscv::kvm::csr::{hedeleg, hgatp, hideleg, htinst, htval, vsatp, vstimecmp, VirtualInterrupt};
 use crate::arch::riscv::task::traphandle;
+use crate::arch::riscv::KvmPageTable;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::klib::{SleepLock, SpinLock};
@@ -34,10 +35,21 @@ pub struct VCpuState {
     pub(super) hie: Hie,
     pub(super) hvip: Hvip,
     pub(super) vstimecmp: usize,
+    running: bool,
 }
 
 pub struct VCpu {
     pub(super) state: SleepLock<VCpuState>,
+}
+
+pub struct VCpuRunGuard<'a> {
+    state: &'a SleepLock<VCpuState>,
+}
+
+impl Drop for VCpuRunGuard<'_> {
+    fn drop(&mut self) {
+        self.state.lock().running = false;
+    }
 }
 
 impl VCpuState {
@@ -50,6 +62,7 @@ impl VCpuState {
             hie: Hie::clear(),
             hvip: Hvip::clear(),
             vstimecmp: usize::MAX,
+            running: false,
         }
     }
 
@@ -182,7 +195,22 @@ impl VCpu {
         }
     }
 
-    pub fn run(&self, pagetable: &SpinLock<KvmPageTable>, interrupt_state: KvmInterruptState) -> VCpuExitReason {
+    pub fn enter_run(&self) -> SysResult<VCpuRunGuard<'_>> {
+        let mut state = self.state.lock();
+        if state.running {
+            return Err(Errno::EBUSY);
+        }
+        state.running = true;
+        Ok(VCpuRunGuard { state: &self.state })
+    }
+
+    // The guard keeps context setters from racing with an active KVM_RUN ioctl.
+    pub fn run(
+        &self,
+        _run_guard: &VCpuRunGuard<'_>,
+        pagetable: &SpinLock<KvmPageTable>,
+        interrupt_state: KvmInterruptState,
+    ) -> VCpuExitReason {
         loop {
             let mut state = *self.state.lock();
             state.set_interrupt_state(interrupt_state);
@@ -258,8 +286,13 @@ impl VCpu {
         self.state.lock().sregs()
     }
 
-    pub fn set_regs(&self, regs: KvmRegs) {
-        self.state.lock().set_regs(regs);
+    pub fn set_regs(&self, regs: KvmRegs) -> SysResult<()> {
+        let mut state = self.state.lock();
+        if state.running {
+            return Err(Errno::EBUSY);
+        }
+        state.set_regs(regs);
+        Ok(())
     }
 
     pub fn gpr(&self, index: usize) -> Option<usize> {
@@ -271,14 +304,17 @@ impl VCpu {
         }
     }
 
-    pub fn set_gpr(&self, index: usize, value: usize) -> Option<()> {
+    pub fn set_gpr(&self, index: usize, value: usize) -> SysResult<()> {
         let mut state = self.state.lock();
+        if state.running {
+            return Err(Errno::EBUSY);
+        }
         if index == 0 {
             state.pc = value;
-            return Some(());
+            return Ok(());
         }
-        *state.gpr_mut().get_mut(index)? = value;
-        Some(())
+        *state.gpr_mut().get_mut(index).ok_or(Errno::EINVAL)? = value;
+        Ok(())
     }
 
     pub fn set_interrupt_pending(&self, kind: KvmInterruptKind) {

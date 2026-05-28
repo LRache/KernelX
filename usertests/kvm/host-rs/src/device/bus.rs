@@ -110,6 +110,32 @@ impl Bus {
         &self.mmio_regions
     }
 
+    pub fn check_host_area(&self, guest_addr: usize, length: usize) -> Result<(), String> {
+        let Some(_end) = checked_range_end(guest_addr, length) else {
+            return Err(format!(
+                "bus host area has invalid range: addr=0x{guest_addr:x} length=0x{length:x}"
+            ));
+        };
+        if self
+            .mmio_regions
+            .iter()
+            .any(|region| ranges_overlap(guest_addr, length, region.guest_addr, region.length))
+        {
+            return Err(format!(
+                "bus host area overlaps mmio device: addr=0x{guest_addr:x} length=0x{length:x}"
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn add_host_area(&mut self, guest_addr: usize, length: usize, host_addr: *mut u8) {
+        self.areas.push(Area {
+            guest_addr,
+            length,
+            host_addr,
+        });
+    }
+
     pub fn map_area(&mut self, kvm: &Kvm, guest_addr: usize, length: usize) -> Result<*mut u8, String> {
         let Some(end) = checked_range_end(guest_addr, length) else {
             return Err(format!(
@@ -145,7 +171,7 @@ impl Bus {
 
     pub fn translate(&self, guest_addr: usize, length: usize) -> Option<*mut u8> {
         let end = checked_range_end(guest_addr, length)?;
-        self.areas.iter().find_map(|area| {
+        self.areas.iter().rev().find_map(|area| {
             let area_end = area.guest_addr.checked_add(area.length)?;
             if area.guest_addr <= guest_addr && end <= area_end {
                 Some(unsafe { area.host_addr.add(guest_addr - area.guest_addr) })

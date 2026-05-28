@@ -1,18 +1,16 @@
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 
 use crate::arch::{self, KvmPageTable, PageTableTrait};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::{AddrSpace, AddrSpaceWatcher, MapPerm, MemAccessType};
 use crate::klib::{SleepLock, SpinLock};
 
-use super::vmm::VMMapArea;
-
 struct KvmUserMemorySlot {
+    owner: Weak<AddrSpace>,
     ubase: usize,
     gbase: usize,
     page_count: usize,
-    mapped_pages: BTreeMap<usize, usize>,
 }
 
 impl KvmUserMemorySlot {
@@ -35,49 +33,49 @@ impl KvmUserMemorySlot {
         start < slot_end && self.ubase < end
     }
 
-    fn guest_range_overlaps(&self, start: usize, end: usize) -> bool {
+    fn contains_guest_addr(&self, gaddr: usize) -> bool {
         let Some(slot_end) = self.guest_end() else {
-            return true;
+            return gaddr >= self.gbase;
         };
-        start < slot_end && self.gbase < end
+        self.gbase <= gaddr && gaddr < slot_end
+    }
+}
+
+struct KvmUserMemoryFault {
+    owner: Arc<AddrSpace>,
+    uaddr: usize,
+    gpage: usize,
+    page_offset: usize,
+}
+
+impl KvmUserMemoryFault {
+    fn stage2_perm(access_type: MemAccessType) -> MapPerm {
+        match access_type {
+            MemAccessType::Read => MapPerm::R,
+            MemAccessType::Write => MapPerm::R | MapPerm::W,
+            MemAccessType::Execute => MapPerm::X,
+        }
+    }
+
+    fn translate(&self, access_type: MemAccessType) -> Option<(usize, MapPerm)> {
+        let kaddr = match access_type {
+            MemAccessType::Read | MemAccessType::Execute => self.owner.translate_read(self.uaddr).ok()?,
+            MemAccessType::Write => self.owner.translate_write(self.uaddr).ok()?,
+        };
+
+        Some((kaddr & !arch::PGMASK, Self::stage2_perm(access_type)))
     }
 }
 
 struct KvmMapManager {
-    areas: BTreeMap<usize, VMMapArea>,
     user_slots: BTreeMap<usize, KvmUserMemorySlot>,
 }
 
 impl KvmMapManager {
     fn new() -> Self {
         Self {
-            areas: BTreeMap::new(),
             user_slots: BTreeMap::new(),
         }
-    }
-
-    fn is_map_range_overlapped(&self, start: usize, page_count: usize) -> bool {
-        let Some(size) = page_count.checked_mul(arch::PGSIZE) else {
-            return true;
-        };
-        let Some(end) = start.checked_add(size) else {
-            return true;
-        };
-
-        for (&area_base, area) in &self.areas {
-            let area_end = area_base + area.size();
-            if start < area_end && area_base < end {
-                return true;
-            }
-        }
-
-        for slot in self.user_slots.values() {
-            if slot.guest_range_overlaps(start, end) {
-                return true;
-            }
-        }
-
-        false
     }
 
     fn is_user_range_overlapped(&self, start: usize, page_count: usize) -> bool {
@@ -93,48 +91,30 @@ impl KvmMapManager {
             .any(|slot| slot.user_range_overlaps(start, end))
     }
 
-    fn map_area(&mut self, gaddr: usize, area: VMMapArea) -> SysResult<()> {
-        if gaddr != area.gbase() || gaddr % arch::PGSIZE != 0 {
-            return Err(Errno::EINVAL);
-        }
-        if self.is_map_range_overlapped(gaddr, area.page_count()) {
-            return Err(Errno::EINVAL);
-        }
-
-        self.areas.insert(gaddr, area);
-        Ok(())
-    }
-
-    fn watch_user_memory(&mut self, ubase: usize, gbase: usize, page_count: usize) -> SysResult<()> {
+    fn watch_user_memory(
+        &mut self,
+        owner: Weak<AddrSpace>,
+        ubase: usize,
+        gbase: usize,
+        page_count: usize,
+    ) -> SysResult<()> {
         if ubase % arch::PGSIZE != 0 || gbase % arch::PGSIZE != 0 || page_count == 0 {
             return Err(Errno::EINVAL);
         }
-        if self.is_map_range_overlapped(gbase, page_count) || self.is_user_range_overlapped(ubase, page_count) {
+        if self.is_user_range_overlapped(ubase, page_count) {
             return Err(Errno::EINVAL);
         }
 
         self.user_slots.insert(
             ubase,
             KvmUserMemorySlot {
+                owner,
                 ubase,
                 gbase,
                 page_count,
-                mapped_pages: BTreeMap::new(),
             },
         );
         Ok(())
-    }
-
-    fn record_user_page_mapping(&mut self, uaddr: usize, kpage: usize) -> Option<usize> {
-        let (_ubase, slot) = self.user_slots.range_mut(..=uaddr).next_back()?;
-        let slot_end = slot.end()?;
-        if uaddr >= slot_end {
-            return None;
-        }
-
-        let page_index = (uaddr - slot.ubase) / arch::PGSIZE;
-        slot.mapped_pages.insert(page_index, kpage);
-        Some(slot.gbase + page_index * arch::PGSIZE)
     }
 
     fn invalidate_user_range(&mut self, uaddr: usize, page_count: usize, pagetable: &SpinLock<KvmPageTable>) {
@@ -159,36 +139,27 @@ impl KvmMapManager {
             let first_page = (overlap_start - slot.ubase) / arch::PGSIZE;
             let last_page = (overlap_end - slot.ubase + arch::PGSIZE - 1) / arch::PGSIZE;
             for page_index in first_page..last_page {
-                let Some(kpage) = slot.mapped_pages.remove(&page_index) else {
-                    continue;
-                };
                 let gpage = slot.gbase + page_index * arch::PGSIZE;
-                let _ = pagetable.munmap_with_check(gpage, kpage);
+                let _ = pagetable.munmap_if_mapped(gpage);
             }
         }
     }
 
-    fn try_to_fix_memory_fault(
-        &mut self,
-        gaddr: usize,
-        access_type: MemAccessType,
-        pagetable: &SpinLock<KvmPageTable>,
-    ) -> Option<usize> {
-        let Some((_gbase, area)) = self.areas.range_mut(..=gaddr).next_back() else {
-            return None;
-        };
+    fn find_user_memory_fault(&self, gaddr: usize) -> Option<KvmUserMemoryFault> {
+        let slot = self
+            .user_slots
+            .values()
+            .filter(|slot| slot.contains_guest_addr(gaddr))
+            .max_by_key(|slot| slot.gbase)?;
+        let owner = slot.owner.upgrade()?;
+        let page_index = (gaddr - slot.gbase) / arch::PGSIZE;
 
-        if let Some(kaddr) = area.try_to_fix_memory_fault(gaddr, access_type, pagetable) {
-            Some(kaddr)
-        } else {
-            crate::kinfo!(
-                "KVM area at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
-                area.gbase(),
-                gaddr,
-                access_type
-            );
-            None
-        }
+        Some(KvmUserMemoryFault {
+            owner,
+            uaddr: slot.ubase + page_index * arch::PGSIZE,
+            gpage: slot.gbase + page_index * arch::PGSIZE,
+            page_offset: gaddr & arch::PGMASK,
+        })
     }
 }
 
@@ -212,30 +183,20 @@ impl KvmAddrSpace {
         &self.pagetable
     }
 
-    pub fn is_map_range_overlapped(&self, start: usize, page_count: usize) -> bool {
-        self.map_manager.lock().is_map_range_overlapped(start, page_count)
-    }
-
-    pub fn map_area(&self, gaddr: usize, area: VMMapArea) -> SysResult<()> {
-        self.map_manager.lock().map_area(gaddr, area)
-    }
-
     pub fn watch_user_memory(
         self: &Arc<Self>,
-        owner: &AddrSpace,
+        owner: &Arc<AddrSpace>,
         ubase: usize,
         gbase: usize,
         page_count: usize,
     ) -> SysResult<()> {
-        self.map_manager.lock().watch_user_memory(ubase, gbase, page_count)?;
+        self.map_manager
+            .lock()
+            .watch_user_memory(Arc::downgrade(owner), ubase, gbase, page_count)?;
 
         let watcher: Arc<dyn AddrSpaceWatcher> = self.clone();
         owner.add_watcher(Arc::downgrade(&watcher));
         Ok(())
-    }
-
-    pub fn record_user_page_mapping(&self, uaddr: usize, kpage: usize) -> Option<usize> {
-        self.map_manager.lock().record_user_page_mapping(uaddr, kpage)
     }
 
     pub fn invalidate_user_range(&self, uaddr: usize, page_count: usize) {
@@ -245,9 +206,28 @@ impl KvmAddrSpace {
     }
 
     pub fn try_to_fix_memory_fault(&self, gaddr: usize, access_type: MemAccessType) -> Option<usize> {
-        self.map_manager
-            .lock()
-            .try_to_fix_memory_fault(gaddr, access_type, &self.pagetable)
+        let user_fault = {
+            let map_manager = self.map_manager.lock();
+            map_manager.find_user_memory_fault(gaddr)
+        }?;
+
+        let (kpage, requested_perm) = user_fault.translate(access_type)?;
+        // TODO: Pin the owner page or validate a mapping generation before
+        // installing this bare kpage into G-stage. The owner may unmap or COW
+        // the page after translate() returns.
+        let mut pagetable = self.pagetable.lock();
+        let perm = pagetable
+            .mapped_perm(user_fault.gpage)
+            .map(|current_perm| current_perm | requested_perm)
+            .unwrap_or(requested_perm);
+
+        if pagetable.is_mapped(user_fault.gpage) {
+            pagetable.mmap_replace(user_fault.gpage, kpage, perm);
+        } else {
+            pagetable.mmap(user_fault.gpage, kpage, perm);
+        }
+
+        Some(kpage + user_fault.page_offset)
     }
 }
 

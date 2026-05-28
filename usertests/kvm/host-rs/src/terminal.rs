@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 
+#[derive(Default)]
 pub struct StdinTermiosGuard {
     saved: KernelxTermios,
     enabled: bool,
@@ -67,17 +68,6 @@ enum TtyIoctl {
 impl TtyIoctl {
     fn request(self) -> libc::c_ulong {
         self as libc::c_ulong
-    }
-}
-
-impl Default for StdinTermiosGuard {
-    fn default() -> Self {
-        Self {
-            saved: KernelxTermios::default(),
-            enabled: false,
-            saved_status_flags: 0,
-            status_flags_enabled: false,
-        }
     }
 }
 

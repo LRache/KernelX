@@ -1,5 +1,4 @@
 mod addrspace;
-mod vmm;
 mod vtask;
 mod vtaskset;
 

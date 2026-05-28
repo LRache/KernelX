@@ -120,20 +120,18 @@ impl Sv39x4PageTable {
         }
     }
 
-    pub fn mmap_paddr(&mut self, gaddr: usize, paddr: usize, perm: MapPerm) {
-        let mut flags: PTEFlags = perm.into();
-        flags |= PTEFlags::A | PTEFlags::D;
-
-        let mut pte = self.find_pte_or_create(gaddr);
-        pte.set_flags(flags);
-        pte.set_ppn(Addr::from_paddr(paddr).ppn());
-        pte.write_back().expect("Failed to write back Sv39x4 PTE");
+    pub fn munmap_if_mapped(&mut self, gaddr: usize) -> Option<usize> {
+        self.find_pte(gaddr).map(|mut pte| {
+            let kaddr = pte.ppn().to_addr().kaddr();
+            pte.set_flags(PTEFlags::empty())
+                .write_back()
+                .expect("Failed to write back Sv39x4 PTE for munmap_if_mapped");
+            kaddr
+        })
     }
 
-    pub fn mmap_replace_kaddr(&mut self, gaddr: usize, kaddr: usize) {
-        let mut pte = self.find_pte_or_create(gaddr);
-        pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
-        pte.write_back().expect("Failed to write back Sv39x4 PTE");
+    pub fn mapped_perm(&self, gaddr: usize) -> Option<MapPerm> {
+        self.find_pte(gaddr).map(|pte| pte.flags().into())
     }
 }
 

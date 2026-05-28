@@ -48,6 +48,9 @@ fn main() {
 
 fn track_kernelx_env_vars() {
     const ENV_VARS: &[&str] = &[
+        "CONFIG_SECOND_DEVICE",
+        "CONFIG_SECOND_FSTYPE",
+        "CONFIG_SECOND_MOUNTPOINT",
         "KERNELX_SECOND_DEVICE",
         "KERNELX_SECOND_FSTYPE",
         "KERNELX_SECOND_MOUNTPOINT",

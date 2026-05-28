@@ -12,6 +12,9 @@ KERNEL_IMAGE = $(BUILD)/Image
 CLIB = clib/build/$(ARCH)$(ARCH_BITS)/libkernelx_clib.a
 VDSO = vdso/build/$(ARCH)$(ARCH_BITS)/vdso.o
 
+CONFIG_SECOND_FSTYPE := $(or $(CONFIG_SECOND_FSTYPE),ext4)
+CONFIG_SECOND_MOUNTPOINT := $(or $(CONFIG_SECOND_MOUNTPOINT),/mnt)
+
 BUILD_ENV = \
 	ARCH=$(ARCH) \
 	ARCH_BITS=$(ARCH_BITS) \

@@ -274,6 +274,30 @@ config SECOND_DISK_IMAGE
 	  Path to the optional second disk image file used as storage.
 	  If empty, QEMU uses a temporary raw disk as the second disk.
 
+config SECOND_DEVICE
+	string "Second disk device name to mount"
+	default ""
+	help
+	  Kernel block device name for the second disk. Leave empty to attach
+	  the second disk without mounting it automatically.
+
+	  Typical values:
+	  - RISC-V virtio-mmio: virtio_mmio@10002000
+	  - LoongArch virtio-pci: virtio_block1
+
+config SECOND_FSTYPE
+	string "Second disk filesystem type"
+	default "ext4"
+	help
+	  Filesystem type used when mounting SECOND_DEVICE.
+
+config SECOND_MOUNTPOINT
+	string "Second disk mount point"
+	default "/mnt"
+	help
+	  Absolute path where SECOND_DEVICE is mounted. The kernel creates this
+	  single-level directory during boot when it does not already exist.
+
 config INITPATH
 	string "Init process path"
 	default "/init"

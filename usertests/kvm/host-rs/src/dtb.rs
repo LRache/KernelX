@@ -112,7 +112,7 @@ impl DtbBuilder {
     }
 
     pub fn prop_cells(&mut self, name: &str, cells: &[u32]) {
-        let mut data = Vec::with_capacity(cells.len() * mem::size_of::<u32>());
+        let mut data = Vec::with_capacity(mem::size_of_val(cells));
         for cell in cells {
             data.extend_from_slice(&cell.to_be_bytes());
         }
