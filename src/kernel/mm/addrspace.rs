@@ -469,7 +469,7 @@ impl Drop for AddrSpace {
         let mut pagetable = self.pagetable.lock();
         for i in 0..frames.len() {
             let uaddr = TRAMPOLINE_BASE - (i + 1) * arch::PGSIZE;
-            pagetable.munmap(uaddr);
+            pagetable.munmap(uaddr).expect("trampoline map must exist in drop");
         }
     }
 }

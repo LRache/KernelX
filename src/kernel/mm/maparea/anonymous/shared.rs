@@ -211,13 +211,15 @@ impl Area for SharedAnonymousArea {
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let mut pt = pagetable.lock();
+        let mut pagetable = pagetable.lock();
         let frames = self.frames.lock();
         for (i, p) in frames.iter().enumerate() {
             // Only unmap from this process's page table; don't touch the shared frames
             let p = p.lock();
             if !p.is_unallocated() {
-                pt.munmap(self.ubase + i * arch::PGSIZE);
+                // The page may not be mapped to the page table if it was loaded by 
+                // `translate_read` or `translate_write` but never accessed afterwards.
+                let _ = pagetable.munmap(self.ubase + i * arch::PGSIZE);
             }
         }
     }

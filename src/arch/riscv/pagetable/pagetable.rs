@@ -229,10 +229,14 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.write_back().expect("Failed to write back PTE");
     }
 
-    fn munmap(&mut self, vaddr: usize) {
-        let mut pte = self.find_pte(vaddr).expect("PTE not found for munmap");
-        pte.set_flags(PTEFlags::empty());
-        pte.write_back().expect("Failed to write back PTE for munmap");
+    fn munmap(&mut self, vaddr: usize) -> Result<(), ()> {
+        if let Some(pte) = self.find_pte(vaddr) {
+            let mut pte = pte;
+            pte.set_flags(PTEFlags::empty());
+            pte.write_back().expect("Failed to write back PTE for munmap");
+            return Ok(());
+        }
+        Err(())
     }
 
     fn munmap_with_check(&mut self, uaddr: usize, kaddr: usize) -> bool {

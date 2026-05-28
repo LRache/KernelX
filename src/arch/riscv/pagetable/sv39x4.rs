@@ -172,10 +172,14 @@ impl PageTableTrait for Sv39x4PageTable {
         pte.write_back().expect("Failed to write back Sv39x4 PTE");
     }
 
-    fn munmap(&mut self, gaddr: usize) {
-        let mut pte = self.find_pte(gaddr).expect("PTE not found for Sv39x4 munmap");
-        pte.set_flags(PTEFlags::empty());
-        pte.write_back().expect("Failed to write back Sv39x4 PTE for munmap");
+    fn munmap(&mut self, gaddr: usize) -> Result<(), ()> {
+        if let Some(mut pte) = self.find_pte(gaddr) {
+            pte.set_flags(PTEFlags::empty());
+            pte.write_back().expect("Failed to write back Sv39x4 PTE for munmap");
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 
     fn munmap_with_check(&mut self, gaddr: usize, expected_kaddr: usize) -> bool {

@@ -283,7 +283,8 @@ impl Area for PrivateAnonymousArea {
             }
             #[cfg(not(feature = "swap-memory"))]
             if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
-                pagetable.munmap(frame.uaddr());
+                // The page may not be mapped to the page table if it was loaded by `translate_read` or `translate_write` but never accessed afterwards.
+                let _ = pagetable.munmap(frame.uaddr());
             }
             *frame = FrameState::Unallocated;
         }

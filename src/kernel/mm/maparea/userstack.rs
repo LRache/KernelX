@@ -468,7 +468,9 @@ impl Area for UserStack {
                 #[cfg(not(feature = "swap-memory"))]
                 let is_mapped = true;
                 if is_mapped {
-                    pagetable.munmap(uaddr);
+                    // The page may not be mapped to the page table if it was loaded by 
+                    // `translate_read` or `translate_write` but never accessed afterwards.
+                    let _ = pagetable.munmap(uaddr);
                 }
 
                 *frame = FrameState::Unallocated;

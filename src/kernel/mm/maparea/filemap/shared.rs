@@ -264,7 +264,9 @@ impl Area for SharedFileMapArea {
             if mapped {
                 let mut pagetable = pagetable.lock();
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
-                pagetable.munmap(uaddr);
+                // The page may not be mapped to the page table if it was loaded by 
+                // `translate_read` or `translate_write` but never accessed afterwards.
+                let _ = pagetable.munmap(uaddr);
             }
 
             // Write back the page if it was loaded, regardless of whether it was mapped or not.
