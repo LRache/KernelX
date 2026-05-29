@@ -14,7 +14,7 @@ use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::{AddrSpace, MapPerm};
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi::{FileSealFlags, FileStat};
-use crate::klib::SleepLock;
+use crate::klib::{SleepLock, SpinLock};
 
 use super::{FileMmapRequest, FileOps, SeekWhence};
 
@@ -45,7 +45,7 @@ pub struct RandomAccessFile {
     pos: SleepLock<usize>,
     fd_refs: AtomicUsize,
 
-    pub flags: FileFlags,
+    flags: SpinLock<FileFlags>,
 }
 
 impl RandomAccessFile {
@@ -55,7 +55,7 @@ impl RandomAccessFile {
             dentry,
             pos: SleepLock::new(0, "RandomAccessFile::pos"),
             fd_refs: AtomicUsize::new(0),
-            flags,
+            flags: SpinLock::new(flags, "RandomAccessFile::flags"),
         }
     }
 
@@ -64,11 +64,12 @@ impl RandomAccessFile {
     }
 
     pub fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        self.inode.readat(buf, offset, self.flags.direct)
+        self.inode.readat(buf, offset, self.flags().direct)
     }
 
     pub fn pwrite(&self, buf: &[u8], mut offset: usize) -> SysResult<usize> {
-        if self.flags.append {
+        let flags = self.flags();
+        if flags.append {
             offset = self.inode.size()? as usize;
         }
         let len = self.limit_write_len(offset, buf.len())?;
@@ -172,7 +173,7 @@ impl RandomAccessFile {
 impl FileOps for RandomAccessFile {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
         let mut pos = self.pos.lock();
-        let len = self.inode.readat(buf, *pos, self.flags.direct)?;
+        let len = self.inode.readat(buf, *pos, self.flags().direct)?;
         *pos += len;
 
         Ok(len)
@@ -180,14 +181,14 @@ impl FileOps for RandomAccessFile {
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let mut pos = self.pos.lock();
-        let len = self.inode.read_to_user(ubuf, *pos, self.flags.direct)?;
+        let len = self.inode.read_to_user(ubuf, *pos, self.flags().direct)?;
         *pos += len;
         Ok(len)
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         let mut pos = self.pos.lock();
-        if self.flags.append {
+        if self.flags().append {
             let size = self.inode.size()?;
 
             *pos = size as usize;
@@ -201,18 +202,23 @@ impl FileOps for RandomAccessFile {
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let mut pos = self.pos.lock();
-        if self.flags.append {
+        let flags = self.flags();
+        if flags.append {
             *pos = self.inode.size()? as usize;
         }
         let limit_len = self.limit_write_len(*pos, ubuf.length())?;
         let ubuf = ubuf.with_length(limit_len);
-        let len = self.inode.write_from_user(&ubuf, *pos, self.flags.direct)?;
+        let len = self.inode.write_from_user(&ubuf, *pos, flags.direct)?;
         *pos += len;
         Ok(len)
     }
 
     fn flags(&self) -> FileFlags {
-        self.flags
+        *self.flags.lock()
+    }
+
+    fn set_flags(&self, flags: FileFlags) {
+        *self.flags.lock() = flags;
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
@@ -236,13 +242,14 @@ impl FileOps for RandomAccessFile {
     }
 
     fn mmap_area(self: Arc<Self>, request: FileMmapRequest) -> SysResult<Box<dyn Area>> {
-        if !self.flags.readable {
+        let flags = self.flags();
+        if !flags.readable {
             return Err(Errno::EACCES);
         }
 
         if request.shared {
             if request.perm.contains(MapPerm::W) {
-                if !self.flags.writable {
+                if !flags.writable {
                     return Err(Errno::EACCES);
                 }
 
@@ -262,7 +269,7 @@ impl FileOps for RandomAccessFile {
                 self.dentry.get_inode_index(),
                 request.offset,
                 request.length,
-                self.flags.writable,
+                flags.writable,
                 self.dentry.get_path(),
             )))
         } else {
@@ -278,11 +285,12 @@ impl FileOps for RandomAccessFile {
 
     fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
         let mut ready = FileEvent::empty();
+        let flags = self.flags();
 
-        if event.contains(FileEvent::READ_READY) && self.flags.readable {
+        if event.contains(FileEvent::READ_READY) && flags.readable {
             ready |= FileEvent::READ_READY;
         }
-        if event.contains(FileEvent::WRITE_READY) && self.flags.writable {
+        if event.contains(FileEvent::WRITE_READY) && flags.writable {
             ready |= FileEvent::WRITE_READY;
         }
 
@@ -294,7 +302,7 @@ impl FileOps for RandomAccessFile {
     }
 
     fn on_fd_install(&self) -> SysResult<()> {
-        if self.flags.writable {
+        if self.flags().writable {
             self.inode.begin_write_open()?;
         }
         self.fd_refs.fetch_add(1, Ordering::Relaxed);
@@ -302,7 +310,7 @@ impl FileOps for RandomAccessFile {
     }
 
     fn on_fd_remove(&self) {
-        if self.flags.writable {
+        if self.flags().writable {
             self.inode.end_write_open();
         }
         self.release_bsd_flock_if_last_fd();
@@ -314,7 +322,7 @@ impl FileOps for RandomAccessFile {
             dentry: self.dentry.clone(),
             pos: SleepLock::new(0, "RandomAccessFile::pos"),
             fd_refs: AtomicUsize::new(0),
-            flags: self.flags,
+            flags: SpinLock::new(self.flags(), "RandomAccessFile::flags"),
         })
     }
 
