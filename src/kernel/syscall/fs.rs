@@ -422,6 +422,7 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
     if open_flags.contains(OpenFlags::O_NOATIME) && current::fsuid() != 0 {
         return Err(Errno::EPERM);
     }
+
     let is_path_open = open_flags.contains(OpenFlags::O_PATH);
     let acc_mode = flags & (OpenFlags::O_WRONLY.bits() | OpenFlags::O_RDWR.bits());
     let (readable, writable) = if is_path_open {
@@ -486,7 +487,24 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
                 vfs::load_dentry_at(root, parent, &path)?
             };
             let inode = dentry.get_inode();
+            if open_flags.contains(OpenFlags::O_DIRECTORY) && inode.inode_type()? != FileType::Directory {
+                return Err(Errno::ENOTDIR);
+            }
             Ok(inode.wrap_file(Some(dentry), file_flags))
+        } else if open_flags.contains(OpenFlags::O_DIRECTORY) {
+            let dentry = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow(root, parent, &path)?
+            } else {
+                vfs::load_dentry_at(root, parent, &path)?
+            };
+            if dentry.get_inode().inode_type()? != FileType::Directory {
+                return Err(Errno::ENOTDIR);
+            }
+            if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+                vfs::openat_file_nofollow(root, parent, &path, file_flags, &perm)
+            } else {
+                vfs::openat_file(root, parent, &path, file_flags, &perm)
+            }
         } else if open_flags.contains(OpenFlags::O_NOFOLLOW) {
             vfs::openat_file_nofollow(root, parent, &path, file_flags, &perm)
         } else {
@@ -538,13 +556,6 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
         let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
         current::with_root(|root| helper(&root, dir))?
     };
-
-    if open_flags.contains(OpenFlags::O_DIRECTORY) && !open_flags.contains(OpenFlags::O_TMPFILE) {
-        let inode = file.get_inode().ok_or(Errno::ENOTDIR)?;
-        if inode.inode_type()? != FileType::Directory {
-            return Err(Errno::ENOTDIR);
-        }
-    }
 
     wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_OPEN_PERM)?;
 
@@ -660,7 +671,24 @@ fn do_openat_with_lookup_flags(
                 vfs::load_dentry_at_with_flags(root, parent, &path, lookup_flags)?
             };
             let inode = dentry.get_inode();
+            if open_flags.contains(OpenFlags::O_DIRECTORY) && inode.inode_type()? != FileType::Directory {
+                return Err(Errno::ENOTDIR);
+            }
             Ok(inode.wrap_file(Some(dentry), file_flags))
+        } else if open_flags.contains(OpenFlags::O_DIRECTORY) {
+            let dentry = if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+                vfs::load_dentry_at_nofollow_with_perm_and_flags(root, parent, &path, &perm, lookup_flags)?
+            } else {
+                vfs::load_dentry_at_with_flags(root, parent, &path, lookup_flags)?
+            };
+            if dentry.get_inode().inode_type()? != FileType::Directory {
+                return Err(Errno::ENOTDIR);
+            }
+            if open_flags.contains(OpenFlags::O_NOFOLLOW) {
+                vfs::openat_file_nofollow_with_lookup_flags(root, parent, &path, file_flags, &perm, lookup_flags)
+            } else {
+                vfs::openat_file_with_lookup_flags(root, parent, &path, file_flags, &perm, lookup_flags)
+            }
         } else if open_flags.contains(OpenFlags::O_NOFOLLOW) {
             vfs::openat_file_nofollow_with_lookup_flags(root, parent, &path, file_flags, &perm, lookup_flags)
         } else {
@@ -712,13 +740,6 @@ fn do_openat_with_lookup_flags(
         let dir = dir_file.get_dentry().ok_or(Errno::ENOTDIR)?;
         current::with_root(|root| helper(&root, dir))?
     };
-
-    if open_flags.contains(OpenFlags::O_DIRECTORY) && !open_flags.contains(OpenFlags::O_TMPFILE) {
-        let inode = file.get_inode().ok_or(Errno::ENOTDIR)?;
-        if inode.inode_type()? != FileType::Directory {
-            return Err(Errno::ENOTDIR);
-        }
-    }
 
     wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_OPEN_PERM)?;
 
@@ -2693,6 +2714,39 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
 
     parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
 
+    Ok(0)
+}
+
+pub fn mknodat(dirfd: usize, uptr_path: UString, mode: usize, _dev: usize) -> SyscallRet {
+    uptr_path.should_not_null()?;
+    let path = uptr_path.read_path()?;
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
+    let mode = Mode::from_bits(mode as u32 & !current::umask()).ok_or(Errno::EINVAL)?;
+    if (mode & Mode::S_IFMT) != Mode::S_IFIFO {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
+    let (parent, name) = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &path))?.ok_or(Errno::EEXIST)?
+    } else {
+        let dir = current::fdtable()
+            .lock()
+            .get(dirfd)?
+            .get_dentry()
+            .ok_or(Errno::ENOTDIR)?
+            .clone();
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &dir, &path))?.ok_or(Errno::EEXIST)?
+    };
+
+    let parent = parent.get_mount_to();
+    if parent.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
     Ok(0)
 }
 

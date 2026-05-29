@@ -13,27 +13,34 @@ use crate::klib::SpinLock;
 use super::PipeInner;
 
 struct Meta {
-    // inode: Arc<dyn InodeOps>,
+    inode: Arc<dyn InodeOps>,
     dentry: Arc<Dentry>,
 }
 
 pub struct Pipe {
     inner: Arc<PipeInner>,
     meta: Option<Meta>,
+    readable: bool,
     writable: bool,
     blocked: SpinLock<bool>,
 }
 
 impl Pipe {
     pub fn new(inner: Arc<PipeInner>, writable: bool, blocked: bool) -> Self {
+        Self::new_inner(inner, !writable, writable, None, blocked)
+    }
+
+    fn new_inner(inner: Arc<PipeInner>, readable: bool, writable: bool, meta: Option<Meta>, blocked: bool) -> Self {
+        if readable {
+            inner.increment_reader_count();
+        }
         if writable {
             inner.increment_writer_count();
-        } else {
-            inner.increment_reader_count();
         }
         Self {
             inner,
-            meta: None,
+            meta,
+            readable,
             writable,
             blocked: SpinLock::new(blocked, "Pipe::blocked"),
         }
@@ -44,6 +51,36 @@ impl Pipe {
         let read_end = Pipe::new(inner.clone(), false, blocked);
         let write_end = Pipe::new(inner, true, blocked);
         (read_end, write_end)
+    }
+
+    pub fn open_fifo(
+        inner: Arc<PipeInner>,
+        inode: Arc<dyn InodeOps>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> SysResult<Arc<dyn FileOps>> {
+        let dentry = dentry.ok_or(Errno::EINVAL)?;
+        if flags.writable && !flags.readable && !flags.blocked && !inner.has_readers() {
+            return Err(Errno::ENXIO);
+        }
+
+        let pipe = Arc::new(Self::new_inner(
+            inner,
+            flags.readable,
+            flags.writable,
+            Some(Meta { inode, dentry }),
+            flags.blocked,
+        ));
+
+        if flags.blocked {
+            if flags.readable && !flags.writable {
+                pipe.inner.wait_for_writer()?;
+            } else if flags.writable && !flags.readable {
+                pipe.inner.wait_for_reader()?;
+            }
+        }
+
+        Ok(pipe)
     }
 
     pub fn get_pipe_size(&self) -> usize {
@@ -81,28 +118,40 @@ impl Pipe {
 
 impl FileOps for Pipe {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
+        if !self.readable {
+            return Err(Errno::EBADF);
+        }
         let blocked = *self.blocked.lock();
         self.read_with_blocked(buf, blocked)
     }
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        if !self.readable {
+            return Err(Errno::EBADF);
+        }
         let blocked = *self.blocked.lock();
         self.read_to_user_with_blocked(ubuf, blocked)
     }
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
+        if !self.writable {
+            return Err(Errno::EBADF);
+        }
         let blocked = *self.blocked.lock();
         self.write_with_blocked(buf, blocked)
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+        if !self.writable {
+            return Err(Errno::EBADF);
+        }
         let blocked = *self.blocked.lock();
         self.write_from_user_with_blocked(ubuf, blocked)
     }
 
     fn flags(&self) -> FileFlags {
         FileFlags {
-            readable: !self.writable,
+            readable: self.readable,
             writable: self.writable,
             blocked: *self.blocked.lock(),
             append: false,
@@ -129,6 +178,10 @@ impl FileOps for Pipe {
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
+        if let Some(meta) = &self.meta {
+            return meta.inode.fstat();
+        }
+
         let mut kstat = FileStat::empty();
         kstat.st_mode = Mode::S_IFIFO.bits() as u32 | 0o666;
         kstat.st_nlink = 1;
@@ -147,8 +200,7 @@ impl FileOps for Pipe {
     }
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
-        // self.meta.as_ref().map(|m| &m.inode)
-        None
+        self.meta.as_ref().map(|m| &m.inode)
     }
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {
@@ -156,11 +208,35 @@ impl FileOps for Pipe {
     }
 
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
-        self.inner.wait_event(waker, event, self.writable)
+        let mut ready = FileEvent::empty();
+        if self.readable
+            && let Some(event) = self.inner.wait_event(waker, event & FileEvent::READ_READY, false)?
+        {
+            ready |= event;
+        }
+        if self.writable
+            && let Some(event) = self.inner.wait_event(waker, event & FileEvent::WRITE_READY, true)?
+        {
+            ready |= event;
+        }
+
+        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
     fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
-        self.inner.poll_event(event, self.writable)
+        let mut ready = FileEvent::empty();
+        if self.readable
+            && let Some(event) = self.inner.poll_event(event & FileEvent::READ_READY, false)?
+        {
+            ready |= event;
+        }
+        if self.writable
+            && let Some(event) = self.inner.poll_event(event & FileEvent::WRITE_READY, true)?
+        {
+            ready |= event;
+        }
+
+        if ready.is_empty() { Ok(None) } else { Ok(Some(ready)) }
     }
 
     fn wait_event_cancel(&self) {
@@ -168,7 +244,24 @@ impl FileOps for Pipe {
     }
 
     fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
-        Some(self.inner.epoll_notifier(self.writable))
+        if self.readable {
+            Some(self.inner.epoll_notifier(false))
+        } else if self.writable {
+            Some(self.inner.epoll_notifier(true))
+        } else {
+            None
+        }
+    }
+
+    fn epoll_notifiers(&self) -> Option<Vec<Arc<EpollNotifier>>> {
+        let mut notifiers = Vec::new();
+        if self.readable {
+            notifiers.push(self.inner.epoll_notifier(false));
+        }
+        if self.writable {
+            notifiers.push(self.inner.epoll_notifier(true));
+        }
+        if notifiers.is_empty() { None } else { Some(notifiers) }
     }
 
     fn set_flags(&self, flags: FileFlags) {
@@ -182,10 +275,11 @@ impl FileOps for Pipe {
 
 impl Drop for Pipe {
     fn drop(&mut self) {
+        if self.readable {
+            self.inner.decrement_reader_count();
+        }
         if self.writable {
             self.inner.decrement_writer_count();
-        } else {
-            self.inner.decrement_reader_count();
         }
     }
 }

@@ -77,7 +77,7 @@ fn new_file(dentry: Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Arc
         return Err(Errno::EACCES);
     }
 
-    Ok(inode.wrap_file(Some(dentry), flags))
+    inode.open_file(Some(dentry), flags)
 }
 
 pub fn load_dentry(path: &str) -> SysResult<Arc<Dentry>> {
@@ -215,7 +215,7 @@ pub fn create_file(
 ) -> SysResult<Arc<dyn FileOps>> {
     let inode = dir.create(name, mode, owner)?;
     let dentry = Arc::new(dentry::Dentry::new(name, dir, &inode, dir.sno()));
-    Ok(inode.wrap_file(Some(dentry), flags))
+    inode.open_file(Some(dentry), flags)
 }
 
 pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysResult<Arc<dyn FileOps>> {

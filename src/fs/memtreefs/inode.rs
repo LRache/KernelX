@@ -8,8 +8,11 @@ use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::{InodeLockState, InodeSealOps, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
+use crate::kernel::ipc::Pipe;
+use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
@@ -80,6 +83,7 @@ impl InodeMeta {
 pub struct Inode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
+    pipe: SpinLock<Option<Arc<PipeInner>>>,
     lock_state: SpinLock<InodeLockState>,
     fanotify: LazyInitedCell<Arc<Fanotify>>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
@@ -91,6 +95,7 @@ impl<T: StaticFsInfo> Inode<T> {
         Self {
             ino,
             meta: SpinLock::new(meta, "Inode::meta"),
+            pipe: SpinLock::new(None, "Inode::pipe"),
             lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
             fanotify: LazyInitedCell::new("Inode::fanotify"),
             superblock,
@@ -144,6 +149,17 @@ impl<T: StaticFsInfo> Inode<T> {
         }
 
         Ok(())
+    }
+
+    fn fifo_pipe_inner(&self) -> Arc<PipeInner> {
+        let mut pipe = self.pipe.lock();
+        if let Some(pipe) = &*pipe {
+            return pipe.clone();
+        }
+
+        let new_pipe = Arc::new(PipeInner::new(config::PIPE_CAPACITY));
+        *pipe = Some(new_pipe.clone());
+        new_pipe
     }
 }
 
@@ -943,11 +959,8 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
                 drop(meta);
 
-                let file_type = {
-                    let sb = self.superblock.lock();
-                    let inode = sb.get_inode(ino)?;
-                    inode.inode_type()?
-                };
+                let inode = self.superblock.lock().get_inode(ino)?;
+                let file_type = inode.inode_type()?;
 
                 let result = DirResult { ino, name, file_type };
                 Ok(Some((result, index + 1)))
@@ -957,6 +970,16 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         } else {
             Err(Errno::ENOTDIR)
         }
+    }
+
+    fn open_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> SysResult<Arc<dyn FileOps>> {
+        if (self.mode()? & Mode::S_IFMT) == Mode::S_IFIFO {
+            let inner = self.fifo_pipe_inner();
+            let inode: Arc<dyn InodeOps> = self;
+            return Pipe::open_fifo(inner, inode, dentry, flags);
+        }
+
+        Ok(self.wrap_file(dentry, flags))
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {

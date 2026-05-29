@@ -12,8 +12,11 @@ use crate::fs::ext4::util::{get_block_size, revision_tuple};
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::{InodeLockState, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
+use crate::kernel::ipc::Pipe;
+use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::{LazyInitedCell, SleepLock, SpinLock};
@@ -296,6 +299,7 @@ pub struct Ext4Inode {
     superblock: Arc<SleepLock<SuperBlockInner>>,
     lock_state: SpinLock<InodeLockState>,
     mmap_pages: SpinLock<BTreeMap<usize, Arc<PhysPageFrame>>>,
+    pipe: SpinLock<Option<Arc<PipeInner>>>,
     fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
@@ -312,6 +316,7 @@ impl Ext4Inode {
             superblock,
             lock_state: SpinLock::new(InodeLockState::new(), "Ext4Inode::lock_state"),
             mmap_pages: SpinLock::new(BTreeMap::new(), "Ext4Inode::mmap_pages"),
+            pipe: SpinLock::new(None, "Ext4Inode::pipe"),
             fanotify: LazyInitedCell::new("Ext4Inode::fanotify"),
         })
     }
@@ -387,6 +392,17 @@ impl Ext4Inode {
         {
             page.slice()[tail_offset..].fill(0);
         }
+    }
+
+    fn fifo_pipe_inner(&self) -> Arc<PipeInner> {
+        let mut pipe = self.pipe.lock();
+        if let Some(pipe) = &*pipe {
+            return pipe.clone();
+        }
+
+        let new_pipe = Arc::new(PipeInner::new(config::PIPE_CAPACITY));
+        *pipe = Some(new_pipe.clone());
+        new_pipe
     }
 }
 
@@ -969,6 +985,16 @@ impl InodeOps for Ext4Inode {
 
     fn sync(&self) -> SysResult<()> {
         self.superblock.lock().flush()
+    }
+
+    fn open_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> SysResult<Arc<dyn FileOps>> {
+        if (self.mode()? & Mode::S_IFMT) == Mode::S_IFIFO {
+            let inner = self.fifo_pipe_inner();
+            let inode: Arc<dyn InodeOps> = self;
+            return Pipe::open_fifo(inner, inode, dentry, flags);
+        }
+
+        Ok(self.wrap_file(dentry, flags))
     }
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {

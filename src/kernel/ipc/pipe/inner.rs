@@ -37,6 +37,12 @@ impl FIFO {
         self.length
     }
 
+    fn clear(&mut self) {
+        self.head = 0;
+        self.tail = 0;
+        self.length = 0;
+    }
+
     fn data_mut(&mut self) -> &mut [u8] {
         self.data.slice()
     }
@@ -489,22 +495,33 @@ impl PipeInner {
     }
 
     pub fn increment_reader_count(&self) {
+        let mut waiter = self.write_waiter.lock();
         *self.reader_count.lock() += 1;
+        waiter.wake_all(|e| e);
+        self.write_notifier.notify(FileEvent::WRITE_READY);
     }
 
     pub fn decrement_reader_count(&self) {
-        let mut reader_count = self.reader_count.lock();
-        debug_assert!(*reader_count > 0);
-        *reader_count -= 1;
-        if *reader_count == 0 {
+        let has_no_reader = {
+            let mut reader_count = self.reader_count.lock();
+            debug_assert!(*reader_count > 0);
+            *reader_count -= 1;
+            *reader_count == 0
+        };
+
+        if has_no_reader {
             // Wake blocked writers so they can return EPIPE
             self.write_waiter.lock().wake_all(|e| e);
             self.write_notifier.notify(FileEvent::HANG_UP);
         }
+        self.clear_if_unused();
     }
 
     pub fn increment_writer_count(&self) {
+        let mut waiter = self.read_waiter.lock();
         *self.writer_count.lock() += 1;
+        waiter.wake_all(|e| e);
+        self.read_notifier.notify(FileEvent::READ_READY);
     }
 
     pub fn decrement_writer_count(&self) {
@@ -529,6 +546,61 @@ impl PipeInner {
                 _ => e,
             }); // Wake up readers to notify them of EOF
             self.read_notifier.notify(wake_event);
+        }
+        self.clear_if_unused();
+    }
+
+    fn clear_if_unused(&self) {
+        let reader_count = self.reader_count.lock();
+        let writer_count = self.writer_count.lock();
+        if *reader_count == 0 && *writer_count == 0 {
+            self.fifo.lock().clear();
+        }
+    }
+
+    pub fn has_readers(&self) -> bool {
+        *self.reader_count.lock() > 0
+    }
+
+    pub fn wait_for_reader(&self) -> SysResult<()> {
+        loop {
+            let mut waiter = self.write_waiter.lock();
+            if *self.reader_count.lock() > 0 {
+                return Ok(());
+            }
+            waiter.wait_current(Event::WriteReady);
+            drop(waiter);
+
+            current::schedule();
+            match current::task().take_wakeup_event().unwrap() {
+                Event::WriteReady => {}
+                Event::Signal => {
+                    self.wait_event_cancel();
+                    return Err(Errno::EINTR);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    pub fn wait_for_writer(&self) -> SysResult<()> {
+        loop {
+            let mut waiter = self.read_waiter.lock();
+            if *self.writer_count.lock() > 0 {
+                return Ok(());
+            }
+            waiter.wait_current(Event::ReadReady);
+            drop(waiter);
+
+            current::schedule();
+            match current::task().take_wakeup_event().unwrap() {
+                Event::ReadReady => {}
+                Event::Signal => {
+                    self.wait_event_cancel();
+                    return Err(Errno::EINTR);
+                }
+                _ => unreachable!(),
+            }
         }
     }
 

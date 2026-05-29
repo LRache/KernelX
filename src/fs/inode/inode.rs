@@ -354,6 +354,10 @@ pub trait InodeOps: DowncastSync {
         Ok(())
     }
 
+    fn open_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> SysResult<Arc<dyn FileOps>> {
+        Ok(self.wrap_file(dentry, flags))
+    }
+
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps>;
 }
 

@@ -12,6 +12,7 @@ macro_rules! syscall_entries {
             25  => fs::fcntl64(3),
             29  => fs::ioctl(3),
             32  => fs::flock(2),
+            33  => fs::mknodat(4),
             34  => fs::mkdirat(3),
             39  => fs::umount2(2),
             40  => fs::mount(5),
