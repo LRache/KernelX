@@ -142,6 +142,10 @@ pub trait FileOps: DowncastSync {
     fn fdinfo(&self) -> Option<String> {
         None
     }
+
+    fn clone_file(&self) -> Arc<dyn FileOps> {
+        unimplemented!("clone_file not implemented for {}", self.type_name());
+    }
 }
 
 impl_downcast!(sync FileOps);

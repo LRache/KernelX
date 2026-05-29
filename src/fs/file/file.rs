@@ -308,6 +308,16 @@ impl FileOps for RandomAccessFile {
         self.release_bsd_flock_if_last_fd();
     }
 
+    fn clone_file(&self) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile {
+            inode: self.inode.clone(),
+            dentry: self.dentry.clone(),
+            pos: SleepLock::new(0, "RandomAccessFile::pos"),
+            fd_refs: AtomicUsize::new(0),
+            flags: self.flags,
+        })
+    }
+
     fn type_name(&self) -> &'static str {
         self.inode.type_name()
     }

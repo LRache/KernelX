@@ -24,6 +24,12 @@ pub struct FanotifyListenerMask {
     pub ignored_mask: FanotifyEventMask,
 }
 
+struct FanotifyIgnoredFdinfoMark {
+    key: FanotifyFdinfoKey,
+    flags: FanotifyMarkFlags,
+    mask: FanotifyEventMask,
+}
+
 struct FanotifyMaskSet {
     self_mask: FanotifyEventMask,
     child_mask: FanotifyEventMask,
@@ -35,6 +41,8 @@ struct FanotifyMark {
     listener: Weak<FanotifyListener>,
     watched: FanotifyMaskSet,
     ignored: FanotifyMaskSet,
+    ignored_surv_modify: FanotifyMaskSet,
+    ignored_fdinfo: Vec<FanotifyIgnoredFdinfoMark>,
 }
 
 pub struct FanotifyState {
@@ -117,7 +125,7 @@ impl FanotifyState {
             .find(|mark| mark.listener_id == listener_id && mark.generation == generation)
         {
             if ignore_mark {
-                mark.ignored.insert(mask);
+                mark.insert_ignored(flags, mask, fdinfo_key);
             } else {
                 mark.watched.insert(mask);
             }
@@ -126,19 +134,22 @@ impl FanotifyState {
         }
 
         let mut watched = FanotifyMaskSet::new();
-        let mut ignored = FanotifyMaskSet::new();
-        if ignore_mark {
-            ignored.insert(mask);
-        } else {
+        if !ignore_mark {
             watched.insert(mask);
         }
-        self.marks.push(FanotifyMark {
+        let mut mark = FanotifyMark {
             listener_id,
             generation,
             listener: Arc::downgrade(listener),
             watched,
-            ignored,
-        });
+            ignored: FanotifyMaskSet::new(),
+            ignored_surv_modify: FanotifyMaskSet::new(),
+            ignored_fdinfo: Vec::new(),
+        };
+        if ignore_mark {
+            mark.insert_ignored(flags, mask, fdinfo_key);
+        }
+        self.marks.push(mark);
         listener.add_fanotify_mark(fdinfo_key, flags, mask);
     }
 
@@ -160,13 +171,12 @@ impl FanotifyState {
                 listener.remove_fanotify_mark(fdinfo_key, flags, mask);
             }
             if ignore_mark {
-                mark.ignored.remove(mask);
+                mark.remove_ignored(mask);
             } else {
                 mark.watched.remove(mask);
             }
         }
-        self.marks
-            .retain(|mark| !mark.watched.is_empty() || !mark.ignored.is_empty());
+        self.marks.retain(|mark| !mark.is_empty());
     }
 
     fn listener_masks(
@@ -176,25 +186,81 @@ impl FanotifyState {
         child_event: bool,
     ) -> Vec<FanotifyListenerMask> {
         let mut listener_masks = Vec::new();
-        self.marks.retain(|mark| {
+        let mut index = 0;
+        while index < self.marks.len() {
+            let mark = &mut self.marks[index];
             let Some(listener) = mark.listener.upgrade() else {
-                return false;
+                self.marks.remove(index);
+                continue;
             };
             if listener.fanotify_generation() != mark.generation {
-                return false;
+                self.marks.remove(index);
+                continue;
             }
             let mark_mask = mark.watched.matching(mask, context, child_event);
-            let ignored_mask = mark.ignored.matching(mask, context, child_event);
+            let mut ignored_mask = mark.ignored.matching(mask, context, child_event);
+            ignored_mask.insert(mark.ignored_surv_modify.matching(mask, context, child_event));
             if !mark_mask.is_empty() || !ignored_mask.is_empty() {
                 listener_masks.push(FanotifyListenerMask {
-                    listener,
+                    listener: listener.clone(),
                     mark_mask,
                     ignored_mask,
                 });
             }
-            true
-        });
+            if mask.intersects(FanotifyEventMask::FAN_MODIFY) && mark.ignored.applies_to(context, child_event) {
+                mark.clear_ignored_after_modify(&listener);
+            }
+            if mark.is_empty() {
+                self.marks.remove(index);
+            } else {
+                index += 1;
+            }
+        }
         listener_masks
+    }
+}
+
+impl FanotifyMark {
+    fn insert_ignored(&mut self, flags: FanotifyMarkFlags, mask: FanotifyEventMask, fdinfo_key: FanotifyFdinfoKey) {
+        if flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY) {
+            self.ignored_surv_modify.insert(mask);
+            return;
+        }
+
+        self.ignored.insert(mask);
+        if let Some(mark) = self
+            .ignored_fdinfo
+            .iter_mut()
+            .find(|mark| mark.key == fdinfo_key && mark.flags == flags)
+        {
+            mark.mask.insert(mask);
+            return;
+        }
+        self.ignored_fdinfo.push(FanotifyIgnoredFdinfoMark {
+            key: fdinfo_key,
+            flags,
+            mask,
+        });
+    }
+
+    fn remove_ignored(&mut self, mask: FanotifyEventMask) {
+        self.ignored.remove(mask);
+        self.ignored_surv_modify.remove(mask);
+        for mark in self.ignored_fdinfo.iter_mut() {
+            mark.mask.remove(mask);
+        }
+        self.ignored_fdinfo.retain(|mark| !mark.mask.is_empty());
+    }
+
+    fn clear_ignored_after_modify(&mut self, listener: &FanotifyListener) {
+        self.ignored.clear();
+        for mark in self.ignored_fdinfo.drain(..) {
+            listener.clear_fanotify_ignored_mask_after_modify(mark.key, mark.flags, mark.mask);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.watched.is_empty() && self.ignored.is_empty() && self.ignored_surv_modify.is_empty()
     }
 }
 
@@ -208,6 +274,11 @@ impl FanotifyMaskSet {
 
     fn is_empty(&self) -> bool {
         self.self_mask.is_empty() && self.child_mask.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.self_mask = FanotifyEventMask::empty();
+        self.child_mask = FanotifyEventMask::empty();
     }
 
     fn insert(&mut self, mask: FanotifyEventMask) {
@@ -233,6 +304,17 @@ impl FanotifyMaskSet {
     fn matching(&self, mask: FanotifyEventMask, context: FanotifyEventContext, child_event: bool) -> FanotifyEventMask {
         let mark_mask = if child_event { self.child_mask } else { self.self_mask };
         Self::matching_event_mask(mark_mask, context, mask)
+    }
+
+    fn applies_to(&self, context: FanotifyEventContext, child_event: bool) -> bool {
+        let mark_mask = if child_event { self.child_mask } else { self.self_mask };
+        if mark_mask.is_empty() {
+            return false;
+        }
+        if context.is_dir && !mark_mask.contains(FanotifyEventMask::FAN_ONDIR) {
+            return false;
+        }
+        true
     }
 
     fn event_mask(mask: FanotifyEventMask) -> FanotifyEventMask {

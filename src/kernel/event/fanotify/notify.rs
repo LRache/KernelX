@@ -147,7 +147,7 @@ pub fn wait_fanotify_open_exec_permission(file: &Arc<dyn FileOps>) -> SysResult<
 #[inline(always)]
 pub fn notify_fanotify(file: &Arc<dyn FileOps>, mask: FanotifyEventMask) {
     for event in fanotify_listener_events_for_file(file, mask) {
-        event.listener.queue_fanotify_event(event.mask, Some(file.clone()));
+        event.listener.queue_fanotify_event(event.mask, Some(file.clone_file()));
     }
 }
 

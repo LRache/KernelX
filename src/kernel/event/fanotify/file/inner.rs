@@ -23,6 +23,7 @@ struct FanotifyFdinfoMark {
     flags: FanotifyMarkFlags,
     mask: FanotifyEventMask,
     ignored_mask: FanotifyEventMask,
+    ignored_surv_modify_mask: FanotifyEventMask,
 }
 
 pub struct FanotifyListener {
@@ -183,7 +184,11 @@ impl FanotifyListener {
             .find(|mark| mark.key == key && Self::fdinfo_mark_scope_flags(mark.flags) == scope_flags)
         {
             if is_ignore_mark {
-                mark.ignored_mask.insert(mask);
+                if flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY) {
+                    mark.ignored_surv_modify_mask.insert(mask);
+                } else {
+                    mark.ignored_mask.insert(mask);
+                }
             } else {
                 mark.mask.insert(mask);
             }
@@ -199,6 +204,17 @@ impl FanotifyListener {
                 mask
             },
             ignored_mask: if is_ignore_mark {
+                if flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY) {
+                    FanotifyEventMask::empty()
+                } else {
+                    mask
+                }
+            } else {
+                FanotifyEventMask::empty()
+            },
+            ignored_surv_modify_mask: if is_ignore_mark
+                && flags.contains(FanotifyMarkFlags::FAN_MARK_IGNORED_SURV_MODIFY)
+            {
                 mask
             } else {
                 FanotifyEventMask::empty()
@@ -217,17 +233,40 @@ impl FanotifyListener {
         {
             if is_ignore_mark {
                 mark.ignored_mask.remove(mask);
+                mark.ignored_surv_modify_mask.remove(mask);
             } else {
                 mark.mask.remove(mask);
             }
         }
-        marks.retain(|mark| !mark.mask.is_empty() || !mark.ignored_mask.is_empty());
+        marks.retain(|mark| {
+            !mark.mask.is_empty() || !mark.ignored_mask.is_empty() || !mark.ignored_surv_modify_mask.is_empty()
+        });
     }
 
-    pub(super) fn fdinfo(&self) -> String {
+    fn clear_ignored_mask_after_modify(
+        &self,
+        key: FanotifyFdinfoKey,
+        flags: FanotifyMarkFlags,
+        mask: FanotifyEventMask,
+    ) {
+        let scope_flags = Self::fdinfo_mark_scope_flags(flags);
+        let mut marks = self.marks.lock();
+        for mark in marks
+            .iter_mut()
+            .filter(|mark| mark.key == key && Self::fdinfo_mark_scope_flags(mark.flags) == scope_flags)
+        {
+            mark.ignored_mask.remove(mask);
+        }
+        marks.retain(|mark| {
+            !mark.mask.is_empty() || !mark.ignored_mask.is_empty() || !mark.ignored_surv_modify_mask.is_empty()
+        });
+    }
+
+    pub fn fdinfo(&self) -> String {
         let mut content = String::new();
         for mark in self.marks.lock().iter() {
             let index = mark.key.index().unwrap_or(Index { sno: 0, ino: 0 });
+            let ignored_mask = mark.ignored_mask | mark.ignored_surv_modify_mask;
             let _ = writeln!(
                 content,
                 "fanotify ino:{:x} sdev:{:x} mflags:{:x} mask:{:x} ignored_mask:{:x}",
@@ -235,34 +274,29 @@ impl FanotifyListener {
                 index.sno,
                 mark.flags.bits(),
                 mark.mask.bits(),
-                mark.ignored_mask.bits(),
+                ignored_mask.bits(),
             );
         }
         content
     }
-    pub(in crate::kernel::event::fanotify) fn add_fanotify_mark(
-        &self,
-        key: FanotifyFdinfoKey,
-        flags: FanotifyMarkFlags,
-        mask: FanotifyEventMask,
-    ) {
+    pub fn add_fanotify_mark(&self, key: FanotifyFdinfoKey, flags: FanotifyMarkFlags, mask: FanotifyEventMask) {
         self.add_mark(key, flags, mask);
     }
 
-    pub(in crate::kernel::event::fanotify) fn remove_fanotify_mark(
+    pub fn remove_fanotify_mark(&self, key: FanotifyFdinfoKey, flags: FanotifyMarkFlags, mask: FanotifyEventMask) {
+        self.remove_mark(key, flags, mask);
+    }
+
+    pub(in crate::kernel::event::fanotify) fn clear_fanotify_ignored_mask_after_modify(
         &self,
         key: FanotifyFdinfoKey,
         flags: FanotifyMarkFlags,
         mask: FanotifyEventMask,
     ) {
-        self.remove_mark(key, flags, mask);
+        self.clear_ignored_mask_after_modify(key, flags, mask);
     }
 
-    pub(in crate::kernel::event::fanotify) fn queue_fanotify_event(
-        &self,
-        mask: FanotifyEventMask,
-        file: Option<Arc<dyn FileOps>>,
-    ) {
+    pub fn queue_fanotify_event(&self, mask: FanotifyEventMask, file: Option<Arc<dyn FileOps>>) {
         self.queue_event(FanotifyEvent {
             mask,
             file,
@@ -271,11 +305,7 @@ impl FanotifyListener {
         });
     }
 
-    pub(in crate::kernel::event::fanotify) fn queue_fanotify_permission(
-        &self,
-        mask: FanotifyEventMask,
-        file: Arc<dyn FileOps>,
-    ) -> SysResult<()> {
+    pub fn queue_fanotify_permission(&self, mask: FanotifyEventMask, file: Arc<dyn FileOps>) -> SysResult<()> {
         self.queue_permission(mask, file)
     }
 }
