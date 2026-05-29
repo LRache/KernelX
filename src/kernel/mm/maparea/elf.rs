@@ -273,8 +273,8 @@ impl Area for ELFArea {
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         let mut pagetable = pagetable.lock();
         for (page_index, frame) in self.frames.iter_mut().enumerate() {
-            if !frame.is_unallocated(){
-                // The page may not be mapped to the page table if it was loaded by 
+            if !frame.is_unallocated() {
+                // The page may not be mapped to the page table if it was loaded by
                 // `translate_read` or `translate_write` but never accessed afterwards.
                 let _ = pagetable.munmap(self.ubase + page_index * arch::PGSIZE);
             }
