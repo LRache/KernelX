@@ -47,6 +47,7 @@ pub struct InodeMeta {
     mtime: Duration,
     atime: Duration,
     ctime: Duration,
+    rdev: u64,
     links: u32,
     seals: Option<FileSealFlags>,
     shared_mmap_count: usize,
@@ -72,6 +73,7 @@ impl InodeMeta {
             mtime: Duration::ZERO,
             atime: Duration::ZERO,
             ctime: Duration::ZERO,
+            rdev: 0,
             links: 0,
             seals: None,
             shared_mmap_count: 0,
@@ -160,6 +162,36 @@ impl<T: StaticFsInfo> Inode<T> {
         let new_pipe = Arc::new(PipeInner::new(config::PIPE_CAPACITY));
         *pipe = Some(new_pipe.clone());
         new_pipe
+    }
+
+    fn create_child(&self, name: &str, mode: Mode, owner: Owner, rdev: u64) -> SysResult<Arc<dyn InodeOps>> {
+        let mut meta = self.meta.lock();
+        if let Meta::Directory(ref mut children) = meta.meta {
+            T::check_filename(name)?;
+
+            if children.contains_key(name) {
+                return Err(Errno::EEXIST);
+            }
+
+            let mut sb = self.superblock.lock();
+            let ino = sb.alloc_inode_number();
+
+            let mut child_meta = InodeMeta::new(mode, ino, self.ino);
+            child_meta.owner = (owner.uid, owner.gid);
+            child_meta.rdev = rdev;
+            child_meta.links += 1;
+
+            let inode = Arc::new(Self::new(ino, child_meta, self.superblock.clone()));
+            children.insert(name.into(), ino);
+
+            meta.links += 1;
+
+            sb.insert_inode(ino, inode.clone());
+
+            Ok(inode)
+        } else {
+            Err(Errno::ENOTDIR)
+        }
     }
 }
 
@@ -269,31 +301,14 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     }
 
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
-        let mut meta = self.meta.lock();
-        if let Meta::Directory(ref mut children) = meta.meta {
-            T::check_filename(name)?;
+        self.create_child(name, mode, owner, 0)
+    }
 
-            if children.contains_key(name) {
-                return Err(Errno::EEXIST);
-            }
-
-            let mut sb = self.superblock.lock();
-            let ino = sb.alloc_inode_number();
-
-            let mut child_meta = InodeMeta::new(mode, ino, self.ino);
-            child_meta.owner = (owner.uid, owner.gid);
-            child_meta.links += 1;
-
-            let inode = Arc::new(Self::new(ino, child_meta, self.superblock.clone()));
-            children.insert(name.into(), ino);
-
-            meta.links += 1;
-
-            sb.insert_inode(ino, inode.clone());
-
-            Ok(inode)
-        } else {
-            Err(Errno::ENOTDIR)
+    fn mknod(&self, name: &str, mode: Mode, owner: Owner, dev: u64) -> SysResult<Arc<dyn InodeOps>> {
+        match mode & Mode::S_IFMT {
+            Mode::S_IFCHR | Mode::S_IFBLK => self.create_child(name, mode, owner, dev),
+            Mode::S_IFIFO => self.create_child(name, mode, owner, 0),
+            _ => Err(Errno::EOPNOTSUPP),
         }
     }
 
@@ -759,6 +774,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             Meta::Directory(_) => 1,
             _ => meta.links,
         };
+        kstat.st_rdev = meta.rdev;
         kstat.st_atime_sec = meta.atime.as_secs() as i64;
         kstat.st_atime_nsec = meta.atime.subsec_nanos() as i64;
         kstat.st_mtime_sec = meta.mtime.as_secs() as i64;

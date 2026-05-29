@@ -516,6 +516,13 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
                 if !is_path_open && open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
                     return Err(Errno::EEXIST);
                 }
+                if !is_path_open && open_flags.contains(OpenFlags::O_CREATE) {
+                    if let Some(inode) = file.get_inode()
+                        && inode.inode_type()? == FileType::Directory
+                    {
+                        return Err(Errno::EISDIR);
+                    }
+                }
                 Ok(file)
             }
             Err(e) => {
@@ -699,6 +706,13 @@ fn do_openat_with_lookup_flags(
             Ok(file) => {
                 if !is_path_open && open_flags.contains(OpenFlags::O_CREATE) && open_flags.contains(OpenFlags::O_EXCL) {
                     return Err(Errno::EEXIST);
+                }
+                if !is_path_open && open_flags.contains(OpenFlags::O_CREATE) {
+                    if let Some(inode) = file.get_inode()
+                        && inode.inode_type()? == FileType::Directory
+                    {
+                        return Err(Errno::EISDIR);
+                    }
                 }
                 Ok(file)
             }
@@ -1462,10 +1476,12 @@ pub fn pwritev2(
 pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
     let file = random_access_file(&file)?;
-    let how = match how {
-        0 => SeekWhence::BEG,
-        1 => SeekWhence::CUR,
-        2 => SeekWhence::END,
+    let (offset, how) = match how {
+        0 => (offset, SeekWhence::BEG),
+        1 => (offset, SeekWhence::CUR),
+        2 => (offset, SeekWhence::END),
+        3 => (0, SeekWhence::BEG),
+        4 => (0, SeekWhence::END),
         _ => return Err(Errno::EINVAL),
     };
 
@@ -2717,7 +2733,7 @@ pub fn mkdirat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn mknodat(dirfd: usize, uptr_path: UString, mode: usize, _dev: usize) -> SyscallRet {
+pub fn mknodat(dirfd: usize, uptr_path: UString, mode: usize, dev: usize) -> SyscallRet {
     uptr_path.should_not_null()?;
     let path = uptr_path.read_path()?;
     if path.is_empty() {
@@ -2725,7 +2741,7 @@ pub fn mknodat(dirfd: usize, uptr_path: UString, mode: usize, _dev: usize) -> Sy
     }
 
     let mode = Mode::from_bits(mode as u32 & !current::umask()).ok_or(Errno::EINVAL)?;
-    if (mode & Mode::S_IFMT) != Mode::S_IFIFO {
+    if !matches!(mode & Mode::S_IFMT, Mode::S_IFIFO | Mode::S_IFCHR | Mode::S_IFBLK) {
         return Err(Errno::EOPNOTSUPP);
     }
 
@@ -2746,7 +2762,12 @@ pub fn mknodat(dirfd: usize, uptr_path: UString, mode: usize, _dev: usize) -> Sy
         return Err(Errno::EROFS);
     }
 
-    parent.create(name.as_ref(), mode, Owner::new(current::fsuid(), current::fsgid()))?;
+    parent.mknod(
+        name.as_ref(),
+        mode,
+        Owner::new(current::fsuid(), current::fsgid()),
+        dev as u64,
+    )?;
     Ok(0)
 }
 

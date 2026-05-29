@@ -172,6 +172,14 @@ pub trait InodeOps: DowncastSync {
         Err(Errno::EOPNOTSUPP)
     }
 
+    fn mknod(&self, name: &str, mode: Mode, owner: Owner, _dev: u64) -> SysResult<Arc<dyn InodeOps>> {
+        if (mode & Mode::S_IFMT) == Mode::S_IFIFO {
+            self.create(name, mode, owner)
+        } else {
+            Err(Errno::EOPNOTSUPP)
+        }
+    }
+
     fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
         let _ = name;
         let _ = target;

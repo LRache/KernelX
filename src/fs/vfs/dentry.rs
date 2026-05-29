@@ -385,7 +385,13 @@ impl Dentry {
         }
     }
 
-    pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+    fn create_with(
+        self: &Arc<Self>,
+        name: &str,
+        mode: Mode,
+        owner: Owner,
+        create: impl FnOnce(&Arc<dyn InodeOps>, &str, Mode, Owner) -> SysResult<Arc<dyn InodeOps>>,
+    ) -> SysResult<Arc<dyn InodeOps>> {
         self.check_child_mutation_perm()?;
 
         match self.lookup(name) {
@@ -416,7 +422,7 @@ impl Dentry {
             }
         }
 
-        let inode = parent_inode.create(name, mode, owner)?;
+        let inode = create(&parent_inode, name, mode, owner)?;
         vfs().cache.insert(
             &Index {
                 sno: self.sno(),
@@ -426,6 +432,18 @@ impl Dentry {
         )?;
 
         Ok(inode)
+    }
+
+    pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+        self.create_with(name, mode, owner, |parent_inode, name, mode, owner| {
+            parent_inode.create(name, mode, owner)
+        })
+    }
+
+    pub fn mknod(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner, dev: u64) -> SysResult<Arc<dyn InodeOps>> {
+        self.create_with(name, mode, owner, |parent_inode, name, mode, owner| {
+            parent_inode.mknod(name, mode, owner, dev)
+        })
     }
 
     fn remove_child(self: &Arc<Self>, name: &str, remove_dir: bool) -> SysResult<()> {
