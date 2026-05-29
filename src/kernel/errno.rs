@@ -39,6 +39,7 @@ pub enum Errno {
     ELOOP = 40,           // Too many symbolic links encountered
     ENOMSG = 42,          // No message of desired type
     EIDRM = 43,           // Identifier removed
+    EOVERFLOW = 75,       // Value too large for defined data type
     ENOSYS = 38,          // Function not implemented
     ENOTSOCK = 88,        // Socket operation on non-socket
     EDESTADDRREQ = 89,    // Destination address required

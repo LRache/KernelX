@@ -995,16 +995,18 @@ impl InodeOps for Ext4Inode {
         enum Request {
             FS_IOC_GETFLAGS = 0x80086601,
             FS_IOC_SETFLAGS = 0x40086602,
+            FS_IOC32_GETFLAGS = 0x80046601,
+            FS_IOC32_SETFLAGS = 0x40046602,
         }
 
         let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
         match request {
-            Request::FS_IOC_GETFLAGS => {
+            Request::FS_IOC_GETFLAGS | Request::FS_IOC32_GETFLAGS => {
                 let flags = self.with_ref(|_superblock, inode_ref| Ok(inode_flags(inode_ref)))?;
                 addrspace.copy_to_user(arg, flags)?;
                 Ok(0)
             }
-            Request::FS_IOC_SETFLAGS => {
+            Request::FS_IOC_SETFLAGS | Request::FS_IOC32_SETFLAGS => {
                 let flags: u32 = addrspace.copy_from_user(arg)?;
                 self.with_ref(|_superblock, inode_ref| {
                     inode_set_flags(inode_ref, flags);

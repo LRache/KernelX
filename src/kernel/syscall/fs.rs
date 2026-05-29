@@ -1649,18 +1649,13 @@ pub fn copy_file_range(
         return Err(Errno::EINVAL);
     }
 
+    const MAX_LFS_FILESIZE: usize = isize::MAX as usize;
+
     let fdtable = current::fdtable();
     let mut fdtable = fdtable.lock();
     let in_file = fdtable.get(fd_in)?;
     let out_file = fdtable.get(fd_out)?;
     drop(fdtable);
-
-    if !in_file.readable() || !out_file.writable() {
-        return Err(Errno::EBADF);
-    }
-    if out_file.flags().append {
-        return Err(Errno::EBADF);
-    }
 
     let in_inode = in_file.get_inode().ok_or(Errno::EINVAL)?;
     let out_inode = out_file.get_inode().ok_or(Errno::EINVAL)?;
@@ -1671,6 +1666,13 @@ pub fn copy_file_range(
     }
     if in_mode != Mode::S_IFREG || out_mode != Mode::S_IFREG {
         return Err(Errno::EINVAL);
+    }
+
+    if !in_file.readable() || !out_file.writable() {
+        return Err(Errno::EBADF);
+    }
+    if out_file.flags().append {
+        return Err(Errno::EBADF);
     }
 
     let in_file_for_notify = in_file.clone();
@@ -1691,11 +1693,15 @@ pub fn copy_file_range(
     if len == 0 {
         return Ok(0);
     }
+    if len > MAX_LFS_FILESIZE {
+        return Err(Errno::EOVERFLOW);
+    }
 
-    let in_end = in_offset.checked_add(len).ok_or(Errno::EINVAL)?;
-    let out_end = out_offset.checked_add(len).ok_or(Errno::EINVAL)?;
-    utils::should_not_be_negative(in_end)?;
-    utils::should_not_be_negative(out_end)?;
+    let in_end = in_offset.checked_add(len).ok_or(Errno::EOVERFLOW)?;
+    let out_end = out_offset.checked_add(len).ok_or(Errno::EOVERFLOW)?;
+    if out_end > MAX_LFS_FILESIZE {
+        return Err(Errno::EFBIG);
+    }
 
     let same_file = match (in_file.get_dentry(), out_file.get_dentry()) {
         (Some(in_dentry), Some(out_dentry)) => {
