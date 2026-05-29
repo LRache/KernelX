@@ -3,6 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::time::Duration;
 use core::{mem, slice};
+use num_enum::TryFromPrimitive;
 
 use crate::arch;
 use crate::driver::chosen::kclock;
@@ -17,7 +18,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Fanotify;
 use crate::kernel::ipc::Pipe;
 use crate::kernel::ipc::pipe::PipeInner;
-use crate::kernel::mm::PhysPageFrame;
+use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::{LazyInitedCell, SleepLock, SpinLock};
 
@@ -72,6 +73,21 @@ fn inode_size(inode_ref: &mut ext4_inode_ref) -> u64 {
 
 fn inode_blocks(inode_ref: &mut ext4_inode_ref) -> u64 {
     unsafe { ext4_inode_get_blocks_count(&mut (*inode_ref.fs).sb, inode_ref.inode) }
+}
+
+fn inode_flags(inode_ref: &ext4_inode_ref) -> u32 {
+    unsafe { ext4_inode_get_flags(inode_ref.inode) }
+}
+
+fn inode_has_flags(inode_ref: &ext4_inode_ref, flags: u32) -> bool {
+    inode_flags(inode_ref) & flags != 0
+}
+
+fn inode_set_flags(inode_ref: &mut ext4_inode_ref, flags: u32) {
+    unsafe {
+        ext4_inode_set_flags(inode_ref.inode, flags);
+    }
+    inode_ref.dirty = true;
 }
 
 fn inode_nlink(inode_ref: &ext4_inode_ref) -> u16 {
@@ -592,6 +608,13 @@ impl InodeOps for Ext4Inode {
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
         let written_len = self.with_ref(|_superblock, inode_ref| {
+            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_IMMUTABLE) {
+                return Err(Errno::EPERM);
+            }
+            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_APPEND) && offset as u64 != inode_size(inode_ref) {
+                return Err(Errno::EPERM);
+            }
+
             let mut wcnt = 0usize;
             let rc = unsafe {
                 kernelx_ext4_inode_ref_write_at(inode_ref, buf.as_ptr().cast(), buf.len(), offset as u64, &mut wcnt)
@@ -937,6 +960,9 @@ impl InodeOps for Ext4Inode {
             if inode_type(inode_ref) == InodeType::Directory {
                 return Err(Errno::EISDIR);
             }
+            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_IMMUTABLE | EXT4_INODE_FLAG_APPEND) {
+                return Err(Errno::EPERM);
+            }
 
             let old_size = inode_size(inode_ref);
             if new_size < old_size {
@@ -960,6 +986,33 @@ impl InodeOps for Ext4Inode {
 
     fn owner(&self) -> SysResult<(Uid, Uid)> {
         self.with_ref(|_superblock, inode_ref| Ok((inode_uid(inode_ref) as Uid, inode_gid(inode_ref) as Uid)))
+    }
+
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        #[derive(TryFromPrimitive)]
+        #[allow(non_camel_case_types)]
+        #[repr(u32)]
+        enum Request {
+            FS_IOC_GETFLAGS = 0x80086601,
+            FS_IOC_SETFLAGS = 0x40086602,
+        }
+
+        let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
+        match request {
+            Request::FS_IOC_GETFLAGS => {
+                let flags = self.with_ref(|_superblock, inode_ref| Ok(inode_flags(inode_ref)))?;
+                addrspace.copy_to_user(arg, flags)?;
+                Ok(0)
+            }
+            Request::FS_IOC_SETFLAGS => {
+                let flags: u32 = addrspace.copy_from_user(arg)?;
+                self.with_ref(|_superblock, inode_ref| {
+                    inode_set_flags(inode_ref, flags);
+                    Ok(())
+                })?;
+                Ok(0)
+            }
+        }
     }
 
     fn update_atime(&self, time: &Duration) -> SysResult<()> {
