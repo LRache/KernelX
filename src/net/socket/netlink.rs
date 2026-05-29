@@ -317,7 +317,7 @@ impl FileOps for NetlinkSocket {
     }
 
     fn fsync(&self) -> SysResult<()> {
-        Ok(())
+        Err(Errno::EINVAL)
     }
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {

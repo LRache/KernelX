@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::{Dentry, InodeOps, Mode};
-use crate::kernel::errno::SysResult;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
@@ -125,7 +125,7 @@ impl FileOps for InetSocket {
     }
 
     fn fsync(&self) -> SysResult<()> {
-        Ok(())
+        Err(Errno::EINVAL)
     }
 
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
