@@ -124,7 +124,7 @@ macro_rules! syscall_entries {
             125 => misc::sched_get_priority_max(1),
             126 => misc::sched_get_priority_min(1),
             140 => task::setpriority(3),
-            141 => misc::getpriority(2),
+            141 => task::getpriority(2),
             142 => misc::reboot(0),
             160 => misc::newuname(1),
             161 => misc::sethostname(2),

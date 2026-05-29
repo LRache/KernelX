@@ -6,10 +6,10 @@ use crate::arch;
 use crate::fs::vfs;
 use crate::kernel::config;
 use crate::kernel::errno::Errno;
-use crate::kernel::scheduler::{Tid, current};
+use crate::kernel::scheduler::current;
 use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::task::{UTS_NAME_MAX, manager};
+use crate::kernel::task::UTS_NAME_MAX;
 use crate::klib::dmesg;
 use crate::klib::random::random;
 
@@ -473,35 +473,6 @@ pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UBuffer) -> 
     uptr_mask.write(0, &cpuset_buffer)?;
 
     Ok(cpusetsize)
-}
-
-#[derive(TryFromPrimitive)]
-#[repr(usize)]
-enum PriorityWhich {
-    Process = 0,
-    Pgrp = 1,
-    User = 2,
-}
-
-pub fn getpriority(which: usize, who: usize) -> SyscallRet {
-    let which = PriorityWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
-    if who > i32::MAX as usize {
-        return Err(Errno::ESRCH);
-    }
-
-    let nice = match which {
-        PriorityWhich::Process => {
-            if who == 0 {
-                current::pcb().nice()
-            } else {
-                let tcb = manager::get(who as Tid).ok_or(Errno::ESRCH)?;
-                tcb.parent().nice()
-            }
-        }
-        PriorityWhich::Pgrp | PriorityWhich::User => current::pcb().nice(),
-    };
-
-    Ok((20 - nice) as usize)
 }
 
 #[derive(TryFromPrimitive)]

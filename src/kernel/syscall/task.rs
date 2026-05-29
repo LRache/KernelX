@@ -133,33 +133,118 @@ pub fn setsid() -> SyscallRet {
     Ok(pcb.pid() as usize)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(usize)]
+enum PriorityWhich {
+    Process = 0,
+    ProcessGroup = 1,
+    User = 2,
+}
+
+fn priority_targets(which: PriorityWhich, who: usize) -> SysResult<Vec<Arc<PCB>>> {
+    let targets = match which {
+        PriorityWhich::Process => {
+            let target = if who == 0 {
+                current::pcb().clone()
+            } else {
+                let pid = who as Tid;
+                if pid < 0 {
+                    return Err(Errno::ESRCH);
+                }
+                find_process(pid).ok_or(Errno::ESRCH)?
+            };
+            let mut targets = Vec::new();
+            targets.push(target);
+            targets
+        }
+        PriorityWhich::ProcessGroup => {
+            let pgid = if who == 0 {
+                current::pcb().pgid()
+            } else {
+                let pgid = who as Tid;
+                if pgid < 0 {
+                    return Err(Errno::ESRCH);
+                }
+                pgid
+            };
+            collect_priority_targets(|pcb| pcb.pgid() == pgid)
+        }
+        PriorityWhich::User => {
+            let uid = if who == 0 {
+                current::pcb().uid()
+            } else {
+                if who > i32::MAX as usize {
+                    return Err(Errno::ESRCH);
+                }
+                who as Uid
+            };
+            collect_priority_targets(|pcb| pcb.uid() == uid)
+        }
+    };
+
+    if targets.is_empty() {
+        return Err(Errno::ESRCH);
+    }
+    Ok(targets)
+}
+
+fn collect_priority_targets<F>(mut predicate: F) -> Vec<Arc<PCB>>
+where
+    F: FnMut(&PCB) -> bool,
+{
+    let mut targets = Vec::new();
+    let tcbs = manager::tcbs().lock();
+    for tcb in tcbs.values() {
+        let pcb = tcb.parent().clone();
+        if !predicate(&pcb) {
+            continue;
+        }
+        if targets.iter().any(|target| Arc::ptr_eq(target, &pcb)) {
+            continue;
+        }
+        targets.push(pcb);
+    }
+    targets
+}
+
+pub fn getpriority(which: usize, who: usize) -> SyscallRet {
+    let which = PriorityWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
+    if who > i32::MAX as usize {
+        return Err(Errno::ESRCH);
+    }
+
+    let nice = priority_targets(which, who)?
+        .iter()
+        .map(|target| target.nice())
+        .min()
+        .ok_or(Errno::ESRCH)?;
+
+    Ok((20 - nice) as usize)
+}
+
 pub fn setpriority(which: usize, who: usize, prio: usize) -> SyscallRet {
-    const PRIO_PROCESS: usize = 0;
     const PRIO_MIN: isize = -20;
     const PRIO_MAX: isize = 19;
 
-    if which != PRIO_PROCESS {
-        return Err(Errno::EINVAL);
-    }
+    let which = PriorityWhich::try_from(which).map_err(|_| Errno::EINVAL)?;
 
     let prio = (prio as isize).clamp(PRIO_MIN, PRIO_MAX);
 
     let caller = current::pcb().clone();
-    let target = if who == 0 {
-        caller.clone()
-    } else {
-        let pid = who as Tid;
-        if pid < 0 {
-            return Err(Errno::EINVAL);
-        }
-        find_process(pid).ok_or(Errno::ESRCH)?
-    };
+    let targets = priority_targets(which, who)?;
 
-    if caller.euid() != 0 && prio < target.nice() {
-        return Err(Errno::EPERM);
+    for target in &targets {
+        if caller.euid() != 0 && caller.euid() != target.uid() && caller.euid() != target.euid() {
+            return Err(Errno::EPERM);
+        }
+        if caller.euid() != 0 && prio < target.nice() {
+            return Err(Errno::EACCES);
+        }
     }
 
-    target.set_nice(prio);
+    for target in targets {
+        target.set_nice(prio);
+    }
     Ok(0)
 }
 
