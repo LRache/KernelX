@@ -50,6 +50,7 @@ macro_rules! syscall_entries {
             82  => fs::fsync(1),
             88  => fs::utimensat(4),
             166 => fs::umask(1),
+            223 => fs::fadvise64(4),
             267 => fs::syncfs(1),
             276 => fs::renameat2(5),
             279 => fs::memfd_create(2),

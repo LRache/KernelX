@@ -3,6 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use downcast_rs::{DowncastSync, impl_downcast};
+use num_enum::TryFromPrimitive;
 
 use crate::fs::file::FileFlags;
 use crate::fs::{Dentry, InodeOps, vfs};
@@ -18,6 +19,17 @@ pub enum SeekWhence {
     BEG,
     CUR,
     END,
+}
+
+#[derive(TryFromPrimitive)]
+#[repr(usize)]
+pub enum PosixFadviseAdvice {
+    Normal = 0,
+    Random = 1,
+    Sequential = 2,
+    WillNeed = 3,
+    DontNeed = 4,
+    NoReuse = 5,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -145,6 +157,10 @@ pub trait FileOps: DowncastSync {
 
     fn clone_file(&self) -> Arc<dyn FileOps> {
         unimplemented!("clone_file not implemented for {}", self.type_name());
+    }
+
+    fn advice(&self, _offset: usize, _length: usize, _advice: PosixFadviseAdvice) -> SysResult<()> {
+        Ok(())
     }
 }
 

@@ -10,7 +10,7 @@ use num_enum::TryFromPrimitive;
 use crate::driver;
 use crate::fs::devfs::LoopInode;
 use crate::fs::devfs::devnode::BlockDevInode;
-use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence, PosixFadviseAdvice};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
@@ -3298,6 +3298,20 @@ pub fn fallocate(fd: usize, mode: usize, offset: usize, len: usize) -> SyscallRe
 
     let time = driver::chosen::kclock::now()?;
     update_file_times(file.as_ref(), &time, true)?;
+
+    Ok(0)
+}
+
+pub fn fadvise64(fd: usize, offset: usize, len: usize, advice: usize) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+
+    if (offset as isize) < 0 || (len as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    
+    let advice = PosixFadviseAdvice::try_from(advice).map_err(|_| Errno::EINVAL)?;
+
+    file.advice(offset, len, advice)?;
 
     Ok(0)
 }

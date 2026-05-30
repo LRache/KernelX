@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::fs::file::{FileFlags, FileOps};
+use crate::fs::file::{FileFlags, FileOps, PosixFadviseAdvice};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
@@ -266,6 +266,10 @@ impl FileOps for Pipe {
 
     fn set_flags(&self, flags: FileFlags) {
         *self.blocked.lock() = flags.blocked;
+    }
+
+    fn advice(&self, _offset: usize, _length: usize, _advice: PosixFadviseAdvice) -> SysResult<()> {
+        Err(Errno::ESPIPE)
     }
 
     fn type_name(&self) -> &'static str {
