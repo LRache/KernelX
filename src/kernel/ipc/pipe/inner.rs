@@ -551,10 +551,11 @@ impl PipeInner {
     }
 
     fn clear_if_unused(&self) {
+        let mut fifo = self.fifo.lock();
         let reader_count = self.reader_count.lock();
         let writer_count = self.writer_count.lock();
         if *reader_count == 0 && *writer_count == 0 {
-            self.fifo.lock().clear();
+            fifo.clear();
         }
     }
 
