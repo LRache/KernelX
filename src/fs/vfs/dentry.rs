@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
 use crate::fs::perm::{Perm, PermFlags};
@@ -17,26 +18,103 @@ use super::{LookupFlags, vfs};
 
 static NEXT_MOUNT_ID: AtomicUsize = AtomicUsize::new(1);
 
+#[derive(Clone)]
+enum MountPropagation {
+    Private,
+    Shared(Arc<MountSharedGroup>),
+}
+
+pub(super) struct MountSharedGroup {
+    peers: SpinLock<Vec<Weak<Mount>>>,
+}
+
+#[derive(Clone, Copy)]
+enum MountKind {
+    Root,
+    Filesystem,
+    Bind,
+}
+
+/// Mount information for all dentries in the same mount point.
+pub struct Mount {
+    id: usize,
+    kind: MountKind,
+
+    /// The dentry where this mount is mounted. For the root mount, it is None.
+    mountpoint: Option<Arc<Dentry>>,
+
+    /// The mount of the mount point. For the root mount, it is None.
+    mount_parent: Option<Weak<Mount>>,
+
+    /// For bind mount
+    /// The root dentry of this mount point. For bind mounts, it points to the same dentry as the mountpoint.
+    root: SpinLock<Weak<Dentry>>,
+
+    /// For bind mount
+    /// Mount propagation type. If shared, also contains the shared group information.
+    propagation: SpinLock<MountPropagation>,
+
+    /// Fanotify instance for the mount point.
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
+}
+
 pub struct Dentry {
     inode_index: Index,
     name: String,
     parent: Option<Arc<Dentry>>,
     children: SpinLock<BTreeMap<String, Weak<Dentry>>>,
     inode: SpinLock<Weak<dyn InodeOps>>,
-    mount_to: SpinLock<Option<Arc<Dentry>>>,
-    mount_to_is_bind: SpinLock<bool>,
-    mount: Arc<Mount>,
+
+    /// All mounts that are mounted on this dentry. The last one is the topmost mount. For a dentry without mounts, it is empty.
+    mount_stack: SpinLock<Vec<Arc<Dentry>>>,
+
+    /// The mount this dentry belongs to.
+    pub(super) mount: Arc<Mount>,
 }
 
-pub struct Mount {
-    id: usize,
-    fanotify: LazyInitedCell<Arc<Fanotify>>,
+impl MountSharedGroup {
+    fn new() -> Self {
+        Self {
+            peers: SpinLock::new(Vec::new(), "MountSharedGroup::peers"),
+        }
+    }
+
+    fn add_peer(&self, peer: &Arc<Mount>) {
+        let mut peers = self.peers.lock();
+        peers.retain(|existing| existing.upgrade().is_some());
+        if peers
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|existing| Arc::ptr_eq(&existing, peer))
+        {
+            return;
+        }
+        peers.push(Arc::downgrade(peer));
+    }
+
+    fn remove_peer(&self, peer: &Arc<Mount>) {
+        self.peers.lock().retain(|existing| match existing.upgrade() {
+            Some(existing) => !Arc::ptr_eq(&existing, peer),
+            None => false,
+        });
+    }
+
+    pub(super) fn peers(&self) -> Vec<Arc<Mount>> {
+        let mut peers = self.peers.lock();
+        peers.retain(|peer| peer.upgrade().is_some());
+        peers.iter().filter_map(Weak::upgrade).collect()
+    }
 }
 
 impl Mount {
-    pub fn new() -> Self {
+    fn new(kind: MountKind, mount_parent: Option<&Arc<Mount>>, mountpoint: Option<&Arc<Dentry>>) -> Self {
         Self {
             id: NEXT_MOUNT_ID.fetch_add(1, Ordering::Relaxed),
+            kind,
+            mount_parent: mount_parent.map(Arc::downgrade),
+            mountpoint: mountpoint.cloned(),
+            root: SpinLock::new(Weak::new(), "Mount::root"),
+            propagation: SpinLock::new(MountPropagation::Private, "Mount::propagation"),
             fanotify: LazyInitedCell::new("Mount::fanotify"),
         }
     }
@@ -45,10 +123,86 @@ impl Mount {
         self.id
     }
 
+    /// Whether this mount has a superblock, not a bind mount.
+    pub(super) fn owns_superblock(&self) -> bool {
+        matches!(self.kind, MountKind::Root | MountKind::Filesystem)
+    }
+
+    pub(super) fn is_descendant_of(&self, ancestor: &Arc<Mount>) -> bool {
+        let mut mount = self.mount_parent.as_ref().and_then(Weak::upgrade);
+        while let Some(current) = mount {
+            if Arc::ptr_eq(&current, ancestor) {
+                return true;
+            }
+            mount = current.mount_parent.as_ref().and_then(Weak::upgrade);
+        }
+        false
+    }
+
+    pub(super) fn parent(&self) -> Option<Arc<Mount>> {
+        self.mount_parent.as_ref().and_then(Weak::upgrade)
+    }
+
+    pub(super) fn mountpoint(&self) -> Option<Arc<Dentry>> {
+        self.mountpoint.clone()
+    }
+
+    pub(super) fn root(&self) -> Option<Arc<Dentry>> {
+        self.root.lock().upgrade()
+    }
+
+    fn set_root(&self, root: &Arc<Dentry>) {
+        *self.root.lock() = Arc::downgrade(root);
+    }
+
+    pub(super) fn shared_group(&self) -> Option<Arc<MountSharedGroup>> {
+        match &*self.propagation.lock() {
+            MountPropagation::Private => None,
+            MountPropagation::Shared(group) => Some(group.clone()),
+        }
+    }
+
+    pub(super) fn is_shared(&self) -> bool {
+        matches!(&*self.propagation.lock(), MountPropagation::Shared(_))
+    }
+
+    pub(super) fn make_shared(self: &Arc<Self>) -> Arc<MountSharedGroup> {
+        let mut propagation = self.propagation.lock();
+        let group = match &*propagation {
+            MountPropagation::Private => {
+                let group = Arc::new(MountSharedGroup::new());
+                *propagation = MountPropagation::Shared(group.clone());
+                group
+            }
+            MountPropagation::Shared(group) => group.clone(),
+        };
+        group.add_peer(self);
+        group
+    }
+
+    pub(super) fn join_shared_group(self: &Arc<Self>, group: &Arc<MountSharedGroup>) {
+        let mut propagation = self.propagation.lock();
+        if let MountPropagation::Shared(old_group) = &*propagation {
+            old_group.remove_peer(self);
+        }
+        *propagation = MountPropagation::Shared(group.clone());
+        group.add_peer(self);
+    }
+
+    pub(super) fn make_private(self: &Arc<Self>) {
+        let mut propagation = self.propagation.lock();
+        if let MountPropagation::Shared(group) = &*propagation {
+            group.remove_peer(self);
+        }
+        *propagation = MountPropagation::Private;
+    }
+
     pub fn fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify.get()
     }
 
+    /// Lazy initialize the fanotify instance for this mount point.
+    /// Returns None if the superblock does not support fanotify.
     pub fn ensure_fanotify(&self) -> Arc<Fanotify> {
         self.fanotify.get_or_init(|| Arc::new(Fanotify::new()))
     }
@@ -123,8 +277,7 @@ impl Dentry {
             parent: Some(parent.clone()),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(inode), "Dentry::inode"),
-            mount_to: SpinLock::new(None, "Dentry::mount_to"),
-            mount_to_is_bind: SpinLock::new(false, "Dentry::mount_to_is_bind"),
+            mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
             mount: parent.mount.clone(),
         }
     }
@@ -139,9 +292,8 @@ impl Dentry {
             parent: None,
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(inode), "Dentry::inode"),
-            mount_to: SpinLock::new(None, "Dentry::mount_to"),
-            mount_to_is_bind: SpinLock::new(false, "Dentry::mount_to_is_bind"),
-            mount: Arc::new(Mount::new()),
+            mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
+            mount: Arc::new(Mount::new(MountKind::Root, None, None)),
         }
     }
 
@@ -238,23 +390,14 @@ impl Dentry {
         self.lookup_with_perm(name, &Perm::current(PermFlags::X))
     }
 
-    pub fn lookup_nocached_with_perm(self: &Arc<Self>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
-        self.check_search_perm(perm)?;
-
-        let lookup_ino = self.get_inode().lookup(name)?;
-        let lookup_sno = self.sno();
-        let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
-
-        let new_child = Arc::new(Self::new(name, self, &inode, lookup_sno));
-
-        Ok(new_child)
-    }
-
     pub fn get_mount_to(self: Arc<Self>) -> Arc<Dentry> {
-        if let Some(mount_to) = &*self.mount_to.lock() {
-            mount_to.clone()
-        } else {
-            self
+        let mut current = self;
+        loop {
+            let mount_to = current.mount_stack.lock().last().cloned();
+            match mount_to {
+                Some(mount_to) => current = mount_to,
+                None => return current,
+            }
         }
     }
 
@@ -320,54 +463,79 @@ impl Dentry {
         Ok(self)
     }
 
-    pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>, mount_to_sno: u32) {
-        let mount = Arc::new(Mount::new());
-        *self.mount_to.lock() = Some(Arc::new(Dentry {
+    pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>, mount_to_sno: u32) -> Arc<Mount> {
+        let (mount_parent, mountpoint) = self.new_mount_context();
+        let mount = Arc::new(Mount::new(
+            MountKind::Filesystem,
+            Some(&mount_parent),
+            Some(&mountpoint),
+        ));
+        let mounted_root = Arc::new(Dentry {
             inode_index: Index {
                 sno: mount_to_sno,
                 ino: mount_to.get_ino(),
             },
-            name: self.name.clone(),
-            parent: self.parent.clone(),
+            name: mountpoint.name.clone(),
+            parent: mountpoint.parent.clone(),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(mount_to), "Dentry::inode"),
-            mount_to: SpinLock::new(None, "Dentry::mount_to"),
-            mount_to_is_bind: SpinLock::new(false, "Dentry::mount_to_is_bind"),
-            mount,
-        }));
-        *self.mount_to_is_bind.lock() = false;
+            mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
+            mount: mount.clone(),
+        });
+        mount.set_root(&mounted_root);
+        mountpoint.mount_stack.lock().push(mounted_root);
+        mount
     }
 
-    pub fn bind_mount(self: &Arc<Self>, source: &Arc<Dentry>) {
+    pub fn bind_mount(self: &Arc<Self>, source: &Arc<Dentry>) -> Arc<Mount> {
         let source_inode = source.get_inode();
-        let mount = Arc::new(Mount::new());
-        *self.mount_to.lock() = Some(Arc::new(Dentry {
+        let (mount_parent, mountpoint) = self.new_mount_context();
+        let mount = Arc::new(Mount::new(MountKind::Bind, Some(&mount_parent), Some(&mountpoint)));
+        let mounted_root = Arc::new(Dentry {
             inode_index: source.get_inode_index(),
-            name: self.name.clone(),
-            parent: self.parent.clone(),
+            name: mountpoint.name.clone(),
+            parent: mountpoint.parent.clone(),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(&source_inode), "Dentry::inode"),
-            mount_to: SpinLock::new(None, "Dentry::mount_to"),
-            mount_to_is_bind: SpinLock::new(false, "Dentry::mount_to_is_bind"),
-            mount,
-        }));
-        *self.mount_to_is_bind.lock() = true;
+            mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
+            mount: mount.clone(),
+        });
+        mount.set_root(&mounted_root);
+        mountpoint.mount_stack.lock().push(mounted_root);
+        mount
+    }
+
+    /// Return the parent mount of the new mount and the
+    pub(super) fn new_mount_context(self: &Arc<Self>) -> (Arc<Mount>, Arc<Dentry>) {
+        let mountpoint = self.clone().get_mount_to();
+        if Arc::ptr_eq(&mountpoint, self) {
+            (self.mount.clone(), self.clone())
+        } else {
+            (mountpoint.mount.clone(), mountpoint)
+        }
     }
 
     pub fn mounted_root(self: &Arc<Self>) -> Option<Arc<Dentry>> {
-        self.mount_to.lock().clone()
+        self.mount_stack.lock().last().cloned()
     }
 
-    pub fn is_bind_mount(&self) -> bool {
-        *self.mount_to_is_bind.lock()
+    pub(super) fn contains_mount(&self, mount: &Arc<Mount>) -> bool {
+        self.mount_stack
+            .lock()
+            .iter()
+            .any(|mounted_root| Arc::ptr_eq(&mounted_root.mount, mount))
     }
 
     pub fn unmount(self: &Arc<Self>) -> Option<Arc<Dentry>> {
-        let mounted = self.mount_to.lock().take();
-        if mounted.is_some() {
-            *self.mount_to_is_bind.lock() = false;
+        self.mount_stack.lock().pop()
+    }
+
+    pub(super) fn unmount_mount(self: &Arc<Self>, mount: &Arc<Mount>) -> Option<Arc<Dentry>> {
+        let mut mount_stack = self.mount_stack.lock();
+        match mount_stack.last() {
+            Some(mounted_root) if Arc::ptr_eq(&mounted_root.mount, mount) => mount_stack.pop(),
+            _ => None,
         }
-        mounted
     }
 
     pub fn get_path(&self) -> String {

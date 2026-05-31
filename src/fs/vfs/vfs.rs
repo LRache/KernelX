@@ -11,8 +11,8 @@ use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::{InitedCell, SleepLock, SpinLock};
 
-use super::SuperBlockTable;
-use super::dentry::Dentry;
+use super::dentry::{Dentry, Mount};
+use super::{SuperBlockTable, split_path};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,7 @@ bitflags! {
 
 pub struct VirtualFileSystem {
     pub(super) cache: inode::Cache,
-    pub(super) mountpoint: SpinLock<Vec<Arc<Dentry>>>,
+    pub(super) mounts: SpinLock<Vec<Arc<Mount>>>,
     pub superblock_table: SleepLock<SuperBlockTable>,
     pub(super) fstype_map: BTreeMap<&'static str, &'static dyn FileSystemOps>,
     pub(super) root: InitedCell<Arc<Dentry>>,
@@ -33,7 +33,7 @@ impl VirtualFileSystem {
     pub fn new() -> Self {
         VirtualFileSystem {
             cache: inode::Cache::new(),
-            mountpoint: SpinLock::new(Vec::new(), "VirtualFileSystem::mountpoint"),
+            mounts: SpinLock::new(Vec::new(), "VirtualFileSystem::mounts"),
             superblock_table: SleepLock::new(SuperBlockTable::new(), "VirtualFileSystem::superblock_table"),
             fstype_map: BTreeMap::new(),
             root: InitedCell::uninit(),
@@ -75,13 +75,13 @@ impl VirtualFileSystem {
         current = current.get_mount_to();
         current = current.walk_link_with_perm(root, symlink_depth, perm)?;
 
-        for part in path.split('/').filter(|s| !(s.is_empty() || *s == ".")) {
+        for part in split_path(path).filter(|part| *part != ".") {
             if part == ".." {
                 current = Self::lookup_parent_component(root, current, perm, LookupFlags::empty())?;
                 continue;
             }
 
-            let next = current.lookup_with_perm(part, perm)?;
+            let next = self.lookup_child_with_mount_alias(&current, part, perm)?;
             current = next.get_mount_to().walk_link_with_perm(root, symlink_depth, perm)?;
         }
 
@@ -105,13 +105,13 @@ impl VirtualFileSystem {
         current = self.follow_mount(current, flags)?;
         current = current.walk_link_with_perm_and_flags(root, symlink_depth, perm, flags)?;
 
-        for part in path.split('/').filter(|s| !(s.is_empty() || *s == ".")) {
+        for part in split_path(path).filter(|part| *part != ".") {
             if part == ".." {
                 current = Self::lookup_parent_component(root, current, perm, flags)?;
                 continue;
             }
 
-            let next = current.lookup_with_perm(part, perm)?;
+            let next = self.lookup_child_with_mount_alias(&current, part, perm)?;
             current =
                 self.follow_mount(next, flags)?
                     .walk_link_with_perm_and_flags(root, symlink_depth, perm, flags)?;
@@ -164,7 +164,7 @@ impl VirtualFileSystem {
         if let Some((parent, name)) =
             self.lookup_parent_dentry_with_depth_and_perm(root, dir, path, &mut symlink_depth, perm)?
         {
-            let dentry = parent.lookup_nocached_with_perm(name.as_ref(), perm)?;
+            let dentry = self.lookup_child_with_mount_alias(&parent, name.as_ref(), perm)?;
             Ok(dentry.get_mount_to())
         } else {
             Ok(current)
@@ -191,7 +191,7 @@ impl VirtualFileSystem {
         if let Some((parent, name)) =
             self.lookup_parent_dentry_with_depth_perm_flags(root, dir, path, &mut symlink_depth, perm, flags)?
         {
-            let dentry = parent.lookup_nocached_with_perm(name.as_ref(), perm)?;
+            let dentry = self.lookup_child_with_mount_alias(&parent, name.as_ref(), perm)?;
             self.follow_mount(dentry, flags)
         } else {
             Ok(current)
@@ -232,7 +232,7 @@ impl VirtualFileSystem {
         };
         current = current.get_mount_to().walk_link_with_perm(root, symlink_depth, perm)?;
 
-        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let parts: Vec<&str> = split_path(path).collect();
 
         if parts.is_empty() {
             if Arc::ptr_eq(&current, root) {
@@ -249,7 +249,7 @@ impl VirtualFileSystem {
                 current = Self::lookup_parent_component(root, current, perm, LookupFlags::empty())?;
                 continue;
             }
-            let next = current.lookup_with_perm(part, perm)?;
+            let next = self.lookup_child_with_mount_alias(&current, part, perm)?;
             current = next.get_mount_to().walk_link_with_perm(root, symlink_depth, perm)?;
         }
 
@@ -291,7 +291,7 @@ impl VirtualFileSystem {
             .follow_mount(current, flags)?
             .walk_link_with_perm_and_flags(root, symlink_depth, perm, flags)?;
 
-        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let parts: Vec<&str> = split_path(path).collect();
 
         if parts.is_empty() {
             if Arc::ptr_eq(&current, root) {
@@ -308,7 +308,7 @@ impl VirtualFileSystem {
                 current = Self::lookup_parent_component(root, current, perm, flags)?;
                 continue;
             }
-            let next = current.lookup_with_perm(part, perm)?;
+            let next = self.lookup_child_with_mount_alias(&current, part, perm)?;
             current =
                 self.follow_mount(next, flags)?
                     .walk_link_with_perm_and_flags(root, symlink_depth, perm, flags)?;
@@ -362,6 +362,16 @@ impl VirtualFileSystem {
             return Err(Errno::EXDEV);
         }
         Ok(dentry.get_mount_to())
+    }
+
+    fn lookup_child_with_mount_alias(&self, parent: &Arc<Dentry>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
+        parent.lookup_with_perm(name, perm).or_else(|err| {
+            if err != Errno::ENOENT {
+                return Err(err);
+            }
+            self.lookup_mountpoint_by_path(&Self::join_path(parent, name))
+                .ok_or(Errno::ENOENT)
+        })
     }
 
     fn lookup_parent_component(

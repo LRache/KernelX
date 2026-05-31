@@ -10,7 +10,7 @@ use num_enum::TryFromPrimitive;
 use crate::driver;
 use crate::fs::devfs::LoopInode;
 use crate::fs::devfs::devnode::BlockDevInode;
-use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence, PosixFadviseAdvice};
+use crate::fs::file::{FileFlags, FileOps, PosixFadviseAdvice, RandomAccessFile, SeekWhence};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
@@ -3308,7 +3308,7 @@ pub fn fadvise64(fd: usize, offset: usize, len: usize, advice: usize) -> Syscall
     if (offset as isize) < 0 || (len as isize) < 0 {
         return Err(Errno::EINVAL);
     }
-    
+
     let advice = PosixFadviseAdvice::try_from(advice).map_err(|_| Errno::EINVAL)?;
 
     file.advice(offset, len, advice)?;
@@ -3342,6 +3342,9 @@ bitflags! {
         const RDONLY = 0x1;
         const REMOUNT = 0x20;
         const BIND = 0x1000;
+        const REC = 0x4000;
+        const PRIVATE = 1 << 18;
+        const SHARED = 1 << 20;
     }
 }
 
@@ -3427,6 +3430,24 @@ pub fn mount(
 
     let target = uptr_target.read_path()?;
     let options = MountOptions::new(flags.contains(MountFlags::RDONLY));
+
+    if flags.contains(MountFlags::SHARED) {
+        let allowed = MountFlags::SHARED | MountFlags::REC;
+        if !allowed.contains(flags) {
+            return Err(Errno::EINVAL);
+        }
+        current::with_root_cwd(|root, cwd| vfs::make_shared(&root, &cwd, &target, flags.contains(MountFlags::REC)))?;
+        return Ok(0);
+    }
+
+    if flags.contains(MountFlags::PRIVATE) {
+        let allowed = MountFlags::PRIVATE | MountFlags::REC;
+        if !allowed.contains(flags) {
+            return Err(Errno::EINVAL);
+        }
+        current::with_root_cwd(|root, cwd| vfs::make_private(&root, &cwd, &target, flags.contains(MountFlags::REC)))?;
+        return Ok(0);
+    }
 
     if flags.contains(MountFlags::REMOUNT) {
         current::with_root_cwd(|root, cwd| vfs::remount(&root, &cwd, &target, options))?;
