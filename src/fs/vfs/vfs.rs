@@ -269,9 +269,7 @@ impl VirtualFileSystem {
             return Ok(None);
         }
 
-        Ok(target
-            .get_parent()
-            .map(|parent| (parent, Cow::Owned(target.name().into()))))
+        Ok(target.get_parent().map(|parent| (parent, Cow::Owned(target.name()))))
     }
 
     pub(crate) fn lookup_parent_dentry_with_depth_perm_flags<'a>(
@@ -330,9 +328,7 @@ impl VirtualFileSystem {
             return Ok(None);
         }
 
-        Ok(target
-            .get_parent()
-            .map(|parent| (parent, Cow::Owned(target.name().into()))))
+        Ok(target.get_parent().map(|parent| (parent, Cow::Owned(target.name()))))
     }
 
     pub fn lookup_parent_dentry_with_flags<'a>(

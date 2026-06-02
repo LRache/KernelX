@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::fs::file::FileOps;
@@ -49,12 +50,12 @@ impl FanotifyEventMetadata {
     }
 }
 
-struct FanotifyDfidNameInfo<'a> {
+struct FanotifyDfidNameInfo {
     parent_index: Index,
-    name: &'a str,
+    name: String,
 }
 
-impl<'a> FanotifyDfidNameInfo<'a> {
+impl FanotifyDfidNameInfo {
     const EVENT_INFO_TYPE: u8 = 2;
     const EVENT_INFO_HEADER_SIZE: usize = 4;
     const FSID_SIZE: usize = 8;
@@ -62,7 +63,7 @@ impl<'a> FanotifyDfidNameInfo<'a> {
     const FILE_HANDLE_BYTES: usize = core::mem::size_of::<u32>() * 2;
     const FILE_HANDLE_TYPE_INODE: i32 = 1;
 
-    fn from_file(file: Option<&'a Arc<dyn FileOps>>) -> Self {
+    fn from_file(file: Option<&Arc<dyn FileOps>>) -> Self {
         let dentry = file.and_then(|file| file.get_dentry());
         let parent = dentry.and_then(|dentry| dentry.get_parent());
         let parent_index = parent
@@ -70,7 +71,7 @@ impl<'a> FanotifyDfidNameInfo<'a> {
             .map(|parent| parent.get_inode_index())
             .or_else(|| dentry.map(|dentry| dentry.get_inode_index()))
             .unwrap_or(Index { sno: 0, ino: 0 });
-        let name = dentry.map(|dentry| dentry.name()).unwrap_or("");
+        let name = dentry.map(|dentry| dentry.name()).unwrap_or_default();
 
         Self { parent_index, name }
     }
