@@ -3343,7 +3343,9 @@ bitflags! {
         const REMOUNT = 0x20;
         const BIND = 0x1000;
         const REC = 0x4000;
+        const UNBINDABLE = 1 << 17;
         const PRIVATE = 1 << 18;
+        const SLAVE = 1 << 19;
         const SHARED = 1 << 20;
     }
 }
@@ -3449,6 +3451,26 @@ pub fn mount(
         return Ok(0);
     }
 
+    if flags.contains(MountFlags::SLAVE) {
+        let allowed = MountFlags::SLAVE | MountFlags::REC;
+        if !allowed.contains(flags) {
+            return Err(Errno::EINVAL);
+        }
+        current::with_root_cwd(|root, cwd| vfs::make_slave(&root, &cwd, &target, flags.contains(MountFlags::REC)))?;
+        return Ok(0);
+    }
+
+    if flags.contains(MountFlags::UNBINDABLE) {
+        let allowed = MountFlags::UNBINDABLE | MountFlags::REC;
+        if !allowed.contains(flags) {
+            return Err(Errno::EINVAL);
+        }
+        current::with_root_cwd(|root, cwd| {
+            vfs::make_unbindable(&root, &cwd, &target, flags.contains(MountFlags::REC))
+        })?;
+        return Ok(0);
+    }
+
     if flags.contains(MountFlags::REMOUNT) {
         current::with_root_cwd(|root, cwd| vfs::remount(&root, &cwd, &target, options))?;
         return Ok(0);
@@ -3457,7 +3479,15 @@ pub fn mount(
     if flags.contains(MountFlags::BIND) {
         uptr_source.should_not_null()?;
         let source = uptr_source.read_path()?;
-        current::with_root_cwd(|root, cwd| vfs::bind_mount(&root, &cwd, &source, &target))?;
+        crate::kinfo!(
+            "bind mount: source = {:?}, target = {:?}, flags={:?}",
+            source,
+            target,
+            flags
+        );
+        current::with_root_cwd(|root, cwd| {
+            vfs::bind_mount(&root, &cwd, &source, &target, flags.contains(MountFlags::REC))
+        })?;
         return Ok(0);
     }
 

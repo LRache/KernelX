@@ -21,11 +21,14 @@ static NEXT_MOUNT_ID: AtomicUsize = AtomicUsize::new(1);
 #[derive(Clone)]
 enum MountPropagation {
     Private,
+    Unbindable,
     Shared(Arc<MountSharedGroup>),
+    Slave(Arc<MountSharedGroup>),
 }
 
 pub(super) struct MountSharedGroup {
     peers: SpinLock<Vec<Weak<Mount>>>,
+    slaves: SpinLock<Vec<Weak<Mount>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -49,6 +52,23 @@ pub struct Mount {
     /// For bind mount
     /// The root dentry of this mount point. For bind mounts, it points to the same dentry as the mountpoint.
     root: SpinLock<Weak<Dentry>>,
+
+    /// Root dentry in the source tree behind this mount.
+    ///
+    /// `root` is the dentry visible from the mount target, while `source_root`
+    /// remembers where that visible tree came from. They are the same for a
+    /// regular filesystem mount, but can differ for bind mounts:
+    ///
+    /// ```text
+    /// mount --bind /real/a /dst
+    /// ```
+    ///
+    /// In this case, `root` is the new visible root under `/dst`, and
+    /// `source_root` is the original source-tree dentry `/real/a`. The
+    /// propagation code uses this to translate a visible dentry back to its
+    /// source-tree location before mapping the same event into shared peers;
+    /// see `VirtualFileSystem::propagation_targets`.
+    source_root: SpinLock<Option<Arc<Dentry>>>,
 
     /// For bind mount
     /// Mount propagation type. If shared, also contains the shared group information.
@@ -76,33 +96,56 @@ impl MountSharedGroup {
     fn new() -> Self {
         Self {
             peers: SpinLock::new(Vec::new(), "MountSharedGroup::peers"),
+            slaves: SpinLock::new(Vec::new(), "MountSharedGroup::slaves"),
         }
     }
 
-    fn add_peer(&self, peer: &Arc<Mount>) {
-        let mut peers = self.peers.lock();
-        peers.retain(|existing| existing.upgrade().is_some());
-        if peers
+    fn add_mount(list: &SpinLock<Vec<Weak<Mount>>>, mount: &Arc<Mount>) {
+        let mut mounts = list.lock();
+        mounts.retain(|existing| existing.upgrade().is_some());
+        if mounts
             .iter()
             .filter_map(Weak::upgrade)
-            .any(|existing| Arc::ptr_eq(&existing, peer))
+            .any(|existing| Arc::ptr_eq(&existing, mount))
         {
             return;
         }
-        peers.push(Arc::downgrade(peer));
+        mounts.push(Arc::downgrade(mount));
+    }
+
+    fn remove_mount(list: &SpinLock<Vec<Weak<Mount>>>, mount: &Arc<Mount>) {
+        list.lock().retain(|existing| match existing.upgrade() {
+            Some(existing) => !Arc::ptr_eq(&existing, mount),
+            None => false,
+        });
+    }
+
+    fn add_peer(&self, peer: &Arc<Mount>) {
+        Self::add_mount(&self.peers, peer);
     }
 
     fn remove_peer(&self, peer: &Arc<Mount>) {
-        self.peers.lock().retain(|existing| match existing.upgrade() {
-            Some(existing) => !Arc::ptr_eq(&existing, peer),
-            None => false,
-        });
+        Self::remove_mount(&self.peers, peer);
+    }
+
+    fn add_slave(&self, slave: &Arc<Mount>) {
+        Self::add_mount(&self.slaves, slave);
+    }
+
+    fn remove_slave(&self, slave: &Arc<Mount>) {
+        Self::remove_mount(&self.slaves, slave);
     }
 
     pub(super) fn peers(&self) -> Vec<Arc<Mount>> {
         let mut peers = self.peers.lock();
         peers.retain(|peer| peer.upgrade().is_some());
         peers.iter().filter_map(Weak::upgrade).collect()
+    }
+
+    pub(super) fn slaves(&self) -> Vec<Arc<Mount>> {
+        let mut slaves = self.slaves.lock();
+        slaves.retain(|slave| slave.upgrade().is_some());
+        slaves.iter().filter_map(Weak::upgrade).collect()
     }
 }
 
@@ -114,6 +157,7 @@ impl Mount {
             mount_parent: mount_parent.map(Arc::downgrade),
             mountpoint: mountpoint.cloned(),
             root: SpinLock::new(Weak::new(), "Mount::root"),
+            source_root: SpinLock::new(None, "Mount::source_root"),
             propagation: SpinLock::new(MountPropagation::Private, "Mount::propagation"),
             fanotify: LazyInitedCell::new("Mount::fanotify"),
         }
@@ -155,10 +199,30 @@ impl Mount {
         *self.root.lock() = Arc::downgrade(root);
     }
 
+    pub(super) fn source_root(&self) -> Option<Arc<Dentry>> {
+        self.source_root.lock().clone()
+    }
+
+    fn set_source_root(&self, root: &Arc<Dentry>) {
+        *self.source_root.lock() = Some(root.clone());
+    }
+
+    pub(super) fn clear_source_root(&self) {
+        *self.source_root.lock() = None;
+    }
+
     pub(super) fn shared_group(&self) -> Option<Arc<MountSharedGroup>> {
         match &*self.propagation.lock() {
-            MountPropagation::Private => None,
+            MountPropagation::Private | MountPropagation::Unbindable => None,
             MountPropagation::Shared(group) => Some(group.clone()),
+            MountPropagation::Slave(_) => None,
+        }
+    }
+
+    pub(super) fn master_group(&self) -> Option<Arc<MountSharedGroup>> {
+        match &*self.propagation.lock() {
+            MountPropagation::Private | MountPropagation::Unbindable | MountPropagation::Shared(_) => None,
+            MountPropagation::Slave(group) => Some(group.clone()),
         }
     }
 
@@ -166,15 +230,25 @@ impl Mount {
         matches!(&*self.propagation.lock(), MountPropagation::Shared(_))
     }
 
+    pub(super) fn is_unbindable(&self) -> bool {
+        matches!(&*self.propagation.lock(), MountPropagation::Unbindable)
+    }
+
     pub(super) fn make_shared(self: &Arc<Self>) -> Arc<MountSharedGroup> {
         let mut propagation = self.propagation.lock();
         let group = match &*propagation {
-            MountPropagation::Private => {
+            MountPropagation::Private | MountPropagation::Unbindable => {
                 let group = Arc::new(MountSharedGroup::new());
                 *propagation = MountPropagation::Shared(group.clone());
                 group
             }
             MountPropagation::Shared(group) => group.clone(),
+            MountPropagation::Slave(old_group) => {
+                old_group.remove_slave(self);
+                let group = Arc::new(MountSharedGroup::new());
+                *propagation = MountPropagation::Shared(group.clone());
+                group
+            }
         };
         group.add_peer(self);
         group
@@ -182,19 +256,54 @@ impl Mount {
 
     pub(super) fn join_shared_group(self: &Arc<Self>, group: &Arc<MountSharedGroup>) {
         let mut propagation = self.propagation.lock();
-        if let MountPropagation::Shared(old_group) = &*propagation {
-            old_group.remove_peer(self);
+        match &*propagation {
+            MountPropagation::Private | MountPropagation::Unbindable => {}
+            MountPropagation::Shared(old_group) => old_group.remove_peer(self),
+            MountPropagation::Slave(old_group) => old_group.remove_slave(self),
         }
         *propagation = MountPropagation::Shared(group.clone());
         group.add_peer(self);
     }
 
-    pub(super) fn make_private(self: &Arc<Self>) {
+    pub(super) fn make_slave(self: &Arc<Self>) {
         let mut propagation = self.propagation.lock();
         if let MountPropagation::Shared(group) = &*propagation {
+            let group = group.clone();
             group.remove_peer(self);
+            group.add_slave(self);
+            *propagation = MountPropagation::Slave(group);
+        }
+    }
+
+    pub(super) fn make_slave_of(self: &Arc<Self>, group: &Arc<MountSharedGroup>) {
+        let mut propagation = self.propagation.lock();
+        match &*propagation {
+            MountPropagation::Private | MountPropagation::Unbindable => {}
+            MountPropagation::Shared(old_group) => old_group.remove_peer(self),
+            MountPropagation::Slave(old_group) => old_group.remove_slave(self),
+        }
+        *propagation = MountPropagation::Slave(group.clone());
+        group.add_slave(self);
+    }
+
+    pub(super) fn make_private(self: &Arc<Self>) {
+        let mut propagation = self.propagation.lock();
+        match &*propagation {
+            MountPropagation::Private | MountPropagation::Unbindable => {}
+            MountPropagation::Shared(group) => group.remove_peer(self),
+            MountPropagation::Slave(group) => group.remove_slave(self),
         }
         *propagation = MountPropagation::Private;
+    }
+
+    pub(super) fn make_unbindable(self: &Arc<Self>) {
+        let mut propagation = self.propagation.lock();
+        match &*propagation {
+            MountPropagation::Private | MountPropagation::Unbindable => {}
+            MountPropagation::Shared(group) => group.remove_peer(self),
+            MountPropagation::Slave(group) => group.remove_slave(self),
+        }
+        *propagation = MountPropagation::Unbindable;
     }
 
     pub fn fanotify(&self) -> Option<Arc<Fanotify>> {
@@ -483,11 +592,12 @@ impl Dentry {
             mount: mount.clone(),
         });
         mount.set_root(&mounted_root);
+        mount.set_source_root(&mounted_root);
         mountpoint.mount_stack.lock().push(mounted_root);
         mount
     }
 
-    pub fn bind_mount(self: &Arc<Self>, source: &Arc<Dentry>) -> Arc<Mount> {
+    pub fn bind_mount(self: &Arc<Self>, source: &Arc<Dentry>, source_root: &Arc<Dentry>) -> Arc<Mount> {
         let source_inode = source.get_inode();
         let (mount_parent, mountpoint) = self.new_mount_context();
         let mount = Arc::new(Mount::new(MountKind::Bind, Some(&mount_parent), Some(&mountpoint)));
@@ -501,6 +611,7 @@ impl Dentry {
             mount: mount.clone(),
         });
         mount.set_root(&mounted_root);
+        mount.set_source_root(source_root);
         mountpoint.mount_stack.lock().push(mounted_root);
         mount
     }

@@ -1,4 +1,4 @@
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -8,10 +8,55 @@ use crate::fs::inode::FileType;
 use crate::fs::vfs::vfs::VirtualFileSystem;
 use crate::kernel::errno::{Errno, SysResult};
 
-use super::dentry::{Dentry, Mount};
-use super::{split_path, vfs};
+use super::dentry::{Dentry, Mount, MountSharedGroup};
+use super::vfs;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PropagationTargetKind {
+    Peer,
+    Slave,
+}
+
+struct PropagationTarget {
+    dentry: Arc<Dentry>,
+    kind: PropagationTargetKind,
+}
+
+struct PropagatedMount {
+    mount: Arc<Mount>,
+    kind: PropagationTargetKind,
+}
+
+struct RecursiveBindSource {
+    mount: Arc<Mount>,
+    source: Arc<Dentry>,
+    source_root: Arc<Dentry>,
+    relative_path: Vec<String>,
+    is_dir: bool,
+}
 
 impl VirtualFileSystem {
+    /// Resolve the mount point for the given path.
+    /// If the path is a mount point, return the mount point dentry. Otherwise, return the dentry for the path.
+    ///
+    /// ```bash
+    /// mount -t tmpfs none /mnt
+    /// ```
+    /// Self::resolve_mountpoint("/mnt") -> dentry for orignal "/mnt" before walking into the mounted tmpfs, which is the mount point.
+    ///
+    /// Dentry::get_mount_to("/mnt") -> dentry for the root of the mounted tmpfs, after walking into the mounted tmpfs.
+    fn resolve_mountpoint(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
+        let dentry = match self.lookup_parent_dentry(root, dir, path)? {
+            Some((parent, name)) => parent.lookup(name.as_ref()),
+            None => Ok(root.clone()),
+        }?;
+        Self::resolve_top_mountpoint(dentry)
+    }
+
+    fn resolve_source(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
+        Ok(self.resolve_mountpoint(root, dir, path)?.get_mount_to())
+    }
+
     fn mount(
         &self,
         root: &Arc<Dentry>,
@@ -21,10 +66,10 @@ impl VirtualFileSystem {
         device: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
     ) -> SysResult<()> {
-        let dentry = self.resolve_mountpoint(root, dir, path)?; // The dentry will be used as the mount point. 
-        let (parent_mount, parent_mountpoint) = dentry.new_mount_context();
+        let dentry = self.resolve_mountpoint(root, dir, path)?; // The dentry will be used as the mount point.
+        let (parent_mount, mountpoint) = dentry.new_mount_context();
         let parent_is_shared = parent_mount.is_shared();
-        let propagation_targets = self.propagation_targets(&parent_mount, &parent_mountpoint)?;
+        let propagation_targets = self.propagation_targets(&parent_mount, &mountpoint)?;
 
         // Prepare the superblock and the root inode.
         let (sno, root_ino) = {
@@ -36,46 +81,82 @@ impl VirtualFileSystem {
         let root_inode = self.load_inode(sno, root_ino)?;
 
         let mount = dentry.mount(&root_inode, sno);
-        let mounted_root = dentry.mounted_root().ok_or(Errno::EINVAL)?;
-        let propagated_mounts = self.bind_mount_targets(&mounted_root, &propagation_targets);
+        let mounted_root = mount.root().ok_or(Errno::EINVAL)?;
+        let propagated_mounts = self.bind_mount_targets(&mounted_root, &mounted_root, &propagation_targets);
         if parent_is_shared {
             Self::share_mounts(&mount, &propagated_mounts);
         }
 
+        // The new mount record should be added to the global mount list for later lookup when resolving mount points.
         let mut mounts = self.mounts.lock();
         mounts.push(mount);
-        mounts.extend(propagated_mounts);
+        mounts.extend(propagated_mounts.into_iter().map(|propagated| propagated.mount));
 
         Ok(())
     }
 
-    fn bind_mount(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, source: &str, target: &str) -> SysResult<()> {
+    fn bind_mount(
+        &self,
+        root: &Arc<Dentry>,
+        dir: &Arc<Dentry>,
+        source: &str,
+        target: &str,
+        recursive: bool,
+    ) -> SysResult<()> {
+        // The mount source dentry should is the visible dentry after following all mounts on the source path,
+        // whose `Dentry::mount` will be cloned to the target mountpoint.
         let source = self.resolve_source(root, dir, source)?;
+
+        // The mount target dentry should be the original dentry before following any mounts on the target path,
+        // the new mount will be pushed into whose `Dentry::mount_stack`.
         let target = self.resolve_mountpoint(root, dir, target)?;
-        let source_group = source.get_mount().shared_group();
-        let (parent_mount, parent_mountpoint) = target.new_mount_context();
+
+        let source_mount = &source.mount;
+        if source_mount.is_unbindable() {
+            return Err(Errno::EINVAL);
+        }
+        let source_group = source_mount.shared_group();
+        let source_master_group = source_mount.master_group();
+
+        let source_root = Self::source_dentry_from_mount(source_mount, &source)?;
+        let recursive_sources = if recursive {
+            self.collect_recursive_bind_sources(&source)?
+        } else {
+            Vec::new()
+        };
+
+        let (parent_mount, mountpoint) = target.new_mount_context();
         let parent_is_shared = parent_mount.is_shared();
-        let propagation_targets = self.propagation_targets(&parent_mount, &parent_mountpoint)?;
+        let propagation_targets = self.propagation_targets(&parent_mount, &mountpoint)?;
         let source_is_dir = source.get_inode().inode_type()? == FileType::Directory;
         Self::check_bind_target_type(source_is_dir, &target)?;
         for propagation_target in &propagation_targets {
-            Self::check_bind_target_type(source_is_dir, propagation_target)?;
+            Self::check_bind_target_type(source_is_dir, &propagation_target.dentry)?;
         }
 
-        let mount = target.bind_mount(&source);
-        let propagated_mounts = self.bind_mount_targets(&source, &propagation_targets);
+        let mount = target.bind_mount(&source, &source_root);
+        let propagated_mounts = self.bind_mount_targets(&source, &source_root, &propagation_targets);
         if let Some(group) = source_group {
-            mount.join_shared_group(&group);
+            Self::join_mounts_to_group(&mount, &propagated_mounts, &group);
+        } else if let Some(group) = source_master_group {
+            mount.make_slave_of(&group);
             for propagated_mount in &propagated_mounts {
-                propagated_mount.join_shared_group(&group);
+                propagated_mount.mount.make_slave_of(&group);
             }
         } else if parent_is_shared {
             Self::share_mounts(&mount, &propagated_mounts);
         }
 
+        // The new mount record should be added to the global mount list for later lookup when resolving mount points.
         let mut mounts = self.mounts.lock();
         mounts.push(mount);
-        mounts.extend(propagated_mounts);
+        mounts.extend(propagated_mounts.into_iter().map(|propagated| propagated.mount));
+        drop(mounts);
+
+        if recursive {
+            let recursive_mounts = self.bind_recursive_mounts(&recursive_sources, &target)?;
+            self.mounts.lock().extend(recursive_mounts);
+        }
 
         Ok(())
     }
@@ -91,58 +172,247 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    fn bind_mount_targets(&self, source: &Arc<Dentry>, targets: &[Arc<Dentry>]) -> Vec<Arc<Mount>> {
-        targets.iter().map(|target| target.bind_mount(source)).collect()
+    fn bind_mount_targets(
+        &self,
+        source: &Arc<Dentry>,
+        source_root: &Arc<Dentry>,
+        targets: &[PropagationTarget],
+    ) -> Vec<PropagatedMount> {
+        targets
+            .iter()
+            .map(|target| PropagatedMount {
+                mount: target.dentry.bind_mount(source, source_root),
+                kind: target.kind,
+            })
+            .collect()
     }
 
-    fn share_mounts(mount: &Arc<Mount>, propagated_mounts: &[Arc<Mount>]) {
+    fn share_mounts(mount: &Arc<Mount>, propagated_mounts: &[PropagatedMount]) {
         let group = mount.make_shared();
+        Self::join_mounts_to_group(mount, propagated_mounts, &group);
+    }
+
+    fn join_mounts_to_group(mount: &Arc<Mount>, propagated_mounts: &[PropagatedMount], group: &Arc<MountSharedGroup>) {
+        mount.join_shared_group(group);
         for propagated_mount in propagated_mounts {
-            propagated_mount.join_shared_group(&group);
+            match propagated_mount.kind {
+                PropagationTargetKind::Peer => propagated_mount.mount.join_shared_group(group),
+                PropagationTargetKind::Slave => propagated_mount.mount.make_slave_of(group),
+            }
         }
     }
 
-    fn propagation_targets(&self, parent_mount: &Arc<Mount>, mountpoint: &Arc<Dentry>) -> SysResult<Vec<Arc<Dentry>>> {
+    fn collect_recursive_bind_sources(&self, source: &Arc<Dentry>) -> SysResult<Vec<RecursiveBindSource>> {
+        let mounts = self.mounts.lock().clone();
+        let source_mount = source.get_mount();
+        let mut recursive_sources = Vec::new();
+        for (index, mount) in mounts.into_iter().enumerate() {
+            if !Self::is_mount_record_active(&mount) {
+                continue;
+            }
+            let Some(mountpoint) = mount.mountpoint() else {
+                continue;
+            };
+            let Some(relative_path) = Self::relative_path_from_dentry(source, &mountpoint) else {
+                continue;
+            };
+            if relative_path.is_empty() {
+                continue;
+            }
+            let mut current = Some(mount.clone());
+            let mut skip_unbindable = false;
+            while let Some(current_mount) = current {
+                if Arc::ptr_eq(&current_mount, &source_mount) {
+                    break;
+                }
+                if current_mount.is_unbindable() {
+                    skip_unbindable = true;
+                    break;
+                }
+                current = current_mount.parent();
+            }
+            if skip_unbindable {
+                continue;
+            }
+            let mounted_root = mount.root().ok_or(Errno::EINVAL)?;
+            let source_root = mount.source_root().ok_or(Errno::EINVAL)?;
+            let is_dir = mounted_root.get_inode().inode_type()? == FileType::Directory;
+            recursive_sources.push((
+                index,
+                RecursiveBindSource {
+                    mount,
+                    source: mounted_root,
+                    source_root,
+                    relative_path,
+                    is_dir,
+                },
+            ));
+        }
+        recursive_sources.sort_by(|(left_index, left), (right_index, right)| {
+            left.relative_path
+                .len()
+                .cmp(&right.relative_path.len())
+                .then_with(|| left_index.cmp(right_index))
+        });
+        Ok(recursive_sources.into_iter().map(|(_, source)| source).collect())
+    }
+
+    fn bind_recursive_mounts(
+        &self,
+        recursive_sources: &[RecursiveBindSource],
+        target: &Arc<Dentry>,
+    ) -> SysResult<Vec<Arc<Mount>>> {
+        let target_mount = target.mounted_root().ok_or(Errno::EINVAL)?.get_mount();
+        let target_root = target_mount.root().ok_or(Errno::EINVAL)?;
+        let mut created_mounts = Vec::new();
+
+        for recursive_source in recursive_sources {
+            let target = Self::lookup_relative_mountpoint_following_mounts(
+                target_root.clone(),
+                &recursive_source.relative_path,
+            )?;
+            Self::check_bind_target_type(recursive_source.is_dir, &target)?;
+
+            let (parent_mount, _) = target.new_mount_context();
+            let parent_is_shared = parent_mount.is_shared();
+            let propagation_targets = self.propagation_targets(&parent_mount, &target)?;
+            for propagation_target in &propagation_targets {
+                Self::check_bind_target_type(recursive_source.is_dir, &propagation_target.dentry)?;
+            }
+
+            let mount = target.bind_mount(&recursive_source.source, &recursive_source.source_root);
+            let propagated_mounts = self.bind_mount_targets(
+                &recursive_source.source,
+                &recursive_source.source_root,
+                &propagation_targets,
+            );
+            if let Some(group) = recursive_source.mount.shared_group() {
+                Self::join_mounts_to_group(&mount, &propagated_mounts, &group);
+            } else if let Some(group) = recursive_source.mount.master_group() {
+                mount.make_slave_of(&group);
+                for propagated_mount in &propagated_mounts {
+                    propagated_mount.mount.make_slave_of(&group);
+                }
+            } else if parent_is_shared {
+                Self::share_mounts(&mount, &propagated_mounts);
+            }
+
+            created_mounts.push(mount);
+            created_mounts.extend(propagated_mounts.into_iter().map(|propagated| propagated.mount));
+        }
+
+        Ok(created_mounts)
+    }
+
+    /// Find peer mountpoints that should receive the same mount event.
+    ///
+    /// The input `mountpoint` belongs to `parent_mount`'s visible tree. It is first mapped back to
+    /// the source tree, then mapped into each peer by using that peer's `source_root`.
+    fn propagation_targets(
+        &self,
+        parent_mount: &Arc<Mount>,
+        mountpoint: &Arc<Dentry>,
+    ) -> SysResult<Vec<PropagationTarget>> {
         let Some(group) = parent_mount.shared_group() else {
             return Ok(Vec::new());
         };
-        let relative_path = Self::relative_path_from_mount(parent_mount, mountpoint)?;
+        let parent_source_root = parent_mount.source_root().ok_or(Errno::EINVAL)?;
+
+        // Mount event broadcast step 1:
+        // translate the event location from `parent_mount`'s visible tree back
+        // to the original source tree, using `parent_mount.source_root`.
+        let source_dentry = Self::source_dentry_from_mount(parent_mount, mountpoint)?;
         let mut targets = Vec::new();
-        for peer in group.peers() {
-            if Arc::ptr_eq(&peer, parent_mount) {
-                continue;
-            }
-            if relative_path.is_empty() {
-                if let Some(mountpoint) = peer.mountpoint() {
-                    targets.push(mountpoint);
+        for (receiver_mounts, kind) in [
+            (group.peers(), PropagationTargetKind::Peer),
+            (group.slaves(), PropagationTargetKind::Slave),
+        ] {
+            for receiver in receiver_mounts {
+                if kind == PropagationTargetKind::Peer && Arc::ptr_eq(&receiver, parent_mount) {
+                    continue;
                 }
-                continue;
+                let Some(receiver_source_root) = receiver.source_root() else {
+                    continue;
+                };
+                // Peers in the same propagation group may represent different bind roots.
+                // Only peers rooted like the sender receive this mount event.
+                if !Arc::ptr_eq(&receiver_source_root, &parent_source_root) {
+                    continue;
+                }
+                // Mount event broadcast step 2:
+                // find the same source-tree location under this receiver's source root,
+                // then replay that relative path from the receiver's visible root.
+                let Some(relative_path) = Self::relative_path_from_dentry(&receiver_source_root, &source_dentry) else {
+                    continue;
+                };
+                let Some(receiver_root) = receiver.root() else {
+                    continue;
+                };
+                let target = Self::lookup_relative_mountpoint(receiver_root, &relative_path)?;
+                if Self::mount_chain_contains(&target, mountpoint) {
+                    continue;
+                }
+                if targets
+                    .iter()
+                    .any(|existing: &PropagationTarget| Arc::ptr_eq(&existing.dentry, &target))
+                {
+                    continue;
+                }
+                targets.push(PropagationTarget { dentry: target, kind });
             }
-            let Some(peer_root) = peer.root() else {
-                continue;
-            };
-            targets.push(Self::lookup_relative_mountpoint(peer_root, &relative_path)?);
         }
         Ok(targets)
     }
 
+    /// Return `dentry`'s path relative to the visible root of `mount`.
     fn relative_path_from_mount(mount: &Arc<Mount>, dentry: &Arc<Dentry>) -> SysResult<Vec<String>> {
         let root = mount.root().ok_or(Errno::EINVAL)?;
+        Self::relative_path_from_dentry(&root, dentry).ok_or(Errno::EINVAL)
+    }
+
+    /// Return `dentry`'s path relative to `root` if `dentry` is inside that tree.
+    fn relative_path_from_dentry(root: &Arc<Dentry>, dentry: &Arc<Dentry>) -> Option<Vec<String>> {
         let mut current = Some(dentry.clone());
         let mut path = Vec::new();
 
         while let Some(dentry) = current {
             if Arc::ptr_eq(&dentry, &root) {
                 path.reverse();
-                return Ok(path);
+                return Some(path);
             }
             path.push(dentry.name().into());
             current = dentry.get_parent();
         }
 
-        Err(Errno::EINVAL)
+        None
     }
 
+    /// Map `dentry` from `mount`'s visible tree back to the original source tree.
+    ///
+    /// Bind mounts create a new visible tree whose dentries mirror the source, but
+    /// the visible dentry is not always the same object as the dentry in the source
+    /// tree. For example:
+    ///
+    /// ```bash
+    /// mount --bind /real /src
+    /// mount --bind /src/a /dst
+    /// ```
+    ///
+    /// During the second command, the visible source path is `/src/a`, but the
+    /// source-tree dentry that must be remembered by the new bind mount is
+    /// `/real/a`.
+    ///
+    /// To recover the source-tree dentry, first compute `dentry`'s path relative to
+    /// `mount.root()`, then replay that relative path from `mount.source_root()`.
+    /// The result is used as the `source_root` for nested bind mounts and as the
+    /// anchor for mount propagation between shared peers.
+    fn source_dentry_from_mount(mount: &Arc<Mount>, dentry: &Arc<Dentry>) -> SysResult<Arc<Dentry>> {
+        let source_root = mount.source_root().ok_or(Errno::EINVAL)?;
+        let relative_path = Self::relative_path_from_mount(mount, dentry)?;
+        Self::lookup_relative_mountpoint(source_root, &relative_path)
+    }
+
+    /// Walk a relative path from `current` and return the target mountpoint dentry.
     fn lookup_relative_mountpoint(mut current: Arc<Dentry>, path: &[String]) -> SysResult<Arc<Dentry>> {
         for name in path {
             current = current.lookup(name)?;
@@ -150,85 +420,39 @@ impl VirtualFileSystem {
         Ok(current)
     }
 
-    /// Resolve the mount point for the given path.
-    /// If the path is a mount point, return the mount point dentry. Otherwise, return the dentry for the path.
-    fn resolve_mountpoint(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
-        if let Some(mountpoint) = self.lookup_mountpoint_by_path(&Self::absolute_path(dir, path)) {
-            return Ok(mountpoint);
-        }
-        let dentry = match self.lookup_parent_dentry(root, dir, path)? {
-            Some((parent, name)) => parent.lookup(name.as_ref()).or_else(|err| {
-                if err != Errno::ENOENT {
-                    return Err(err);
-                }
-                self.lookup_mountpoint_by_path(&Self::join_path(&parent, name.as_ref()))
-                    .ok_or(Errno::ENOENT)
-            }),
-            None => Ok(root.clone()),
-        }?;
-        Ok(self.resolve_mountpoint_alias(dentry))
-    }
-
-    fn resolve_source(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<Arc<Dentry>> {
-        Ok(self.resolve_mountpoint(root, dir, path)?.get_mount_to())
-    }
-
-    fn resolve_mountpoint_alias(&self, dentry: Arc<Dentry>) -> Arc<Dentry> {
-        if dentry.mounted_root().is_some() {
-            return dentry;
-        }
-        let path = dentry.get_path();
-        self.lookup_mountpoint_by_path(&path).unwrap_or(dentry)
-    }
-
-    pub(super) fn lookup_mountpoint_by_path(&self, path: &str) -> Option<Arc<Dentry>> {
-        self.mounts
-            .lock()
-            .iter()
-            .rev()
-            .filter(|mount| Self::is_mount_record_active(mount))
-            .filter_map(|mount| mount.mountpoint())
-            .find(|mountpoint| mountpoint.get_path() == path)
-    }
-
-    pub(super) fn join_path(parent: &Arc<Dentry>, name: &str) -> String {
-        if name == "/" {
-            return parent.get_path();
-        }
-        let mut path = parent.get_path();
-        if !path.ends_with('/') {
-            path.push('/');
-        }
-        path.push_str(name);
-        path
-    }
-
-    fn absolute_path(dir: &Arc<Dentry>, path: &str) -> String {
-        let mut parts = if path.starts_with('/') {
-            Vec::new()
-        } else {
-            split_path(&dir.get_path())
-                .filter(|part| *part != ".")
-                .map(str::to_string)
-                .collect()
-        };
-        for part in split_path(path) {
-            if part == "." {
-                continue;
+    fn lookup_relative_mountpoint_following_mounts(
+        mut current: Arc<Dentry>,
+        path: &[String],
+    ) -> SysResult<Arc<Dentry>> {
+        for (index, name) in path.iter().enumerate() {
+            current = current.lookup(name)?;
+            if index + 1 < path.len() {
+                current = current.get_mount_to();
             }
-            if part == ".." {
-                parts.pop();
-                continue;
+        }
+        Ok(current)
+    }
+
+    /// Check whether following stacked mounts from `dentry` reaches `target`.
+    fn mount_chain_contains(dentry: &Arc<Dentry>, target: &Arc<Dentry>) -> bool {
+        let mut current = dentry.clone();
+        loop {
+            if Arc::ptr_eq(&current, target) {
+                return true;
             }
-            parts.push(part.to_string());
+            let Some(mounted_root) = current.mounted_root() else {
+                return false;
+            };
+            current = mounted_root;
         }
-        if parts.is_empty() {
-            "/".into()
-        } else {
-            let mut absolute = String::from("/");
-            absolute.push_str(&parts.join("/"));
-            absolute
+    }
+
+    fn resolve_top_mountpoint(dentry: Arc<Dentry>) -> SysResult<Arc<Dentry>> {
+        let mounted_root = dentry.clone().get_mount_to();
+        if Arc::ptr_eq(&mounted_root, &dentry) {
+            return Ok(dentry);
         }
+        mounted_root.get_mount().mountpoint().ok_or(Errno::EINVAL)
     }
 
     fn remount(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str, options: MountOptions) -> SysResult<()> {
@@ -273,12 +497,47 @@ impl VirtualFileSystem {
         Ok(())
     }
 
+    fn make_slave(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str, recursive: bool) -> SysResult<()> {
+        let dentry = self.resolve_mountpoint(root, dir, path)?;
+        let mount = dentry.mounted_root().ok_or(Errno::EINVAL)?.get_mount();
+        mount.make_slave();
+
+        if recursive {
+            let mounts = self.mounts.lock().clone();
+            for slave_mount in mounts {
+                if !slave_mount.is_descendant_of(&mount) {
+                    continue;
+                }
+                slave_mount.make_slave();
+            }
+        }
+
+        Ok(())
+    }
+
+    fn make_unbindable(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str, recursive: bool) -> SysResult<()> {
+        let dentry = self.resolve_mountpoint(root, dir, path)?;
+        let mount = dentry.mounted_root().ok_or(Errno::EINVAL)?.get_mount();
+        mount.make_unbindable();
+
+        if recursive {
+            let mounts = self.mounts.lock().clone();
+            for unbindable_mount in mounts {
+                if !unbindable_mount.is_descendant_of(&mount) {
+                    continue;
+                }
+                unbindable_mount.make_unbindable();
+            }
+        }
+
+        Ok(())
+    }
+
     fn unmount(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> SysResult<()> {
         let dentry = self.resolve_mountpoint(root, dir, path)?;
         if dentry.mounted_root().is_none() {
             return Err(Errno::EINVAL);
         }
-        let mount_path = dentry.get_path();
         let mounted_root = dentry.mounted_root().ok_or(Errno::EINVAL)?;
         let mounted_mount = mounted_root.get_mount();
         let parent_mount = mounted_mount.parent().ok_or(Errno::EINVAL)?;
@@ -286,7 +545,10 @@ impl VirtualFileSystem {
         let mut mountpoints = Vec::new();
         mountpoints.push(dentry);
         let propagated_mountpoints = self.propagation_targets(&parent_mount, &mountpoint)?;
-        mountpoints.extend(propagated_mountpoints);
+        // Propagation gives us the peer location; unmount the top mount at that location.
+        for propagated_mountpoint in propagated_mountpoints {
+            mountpoints.push(Self::resolve_top_mountpoint(propagated_mountpoint.dentry)?);
+        }
 
         let mut targets = Vec::new();
         for mountpoint in mountpoints {
@@ -309,7 +571,7 @@ impl VirtualFileSystem {
         }
 
         let mounts = self.mounts.lock().clone();
-        if let Some(descendant) = mounts.iter().find(|mounted| {
+        if mounts.iter().any(|mounted| {
             if !Self::is_mount_record_active(mounted) {
                 return false;
             }
@@ -327,15 +589,6 @@ impl VirtualFileSystem {
                     .iter()
                     .any(|(_, target_mount, _, _)| mounted.is_descendant_of(target_mount))
         }) {
-            let descendant_path = descendant
-                .mountpoint()
-                .map(|mountpoint| mountpoint.get_path())
-                .unwrap_or_else(|| "<unknown>".into());
-            // crate::kinfo!(
-            //     "Unmount failed: mountpoint {} has descendant mountpoint {}",
-            //     mount_path,
-            //     descendant_path
-            // );
             return Err(Errno::EBUSY);
         }
 
@@ -359,6 +612,7 @@ impl VirtualFileSystem {
         for (mountpoint, mount, _, _) in &targets {
             mountpoint.unmount_mount(mount).ok_or(Errno::EINVAL)?;
             mount.make_private();
+            mount.clear_source_root();
         }
         self.mounts.lock().retain(|mounted| {
             Self::is_mount_record_active(mounted)
@@ -404,8 +658,14 @@ pub fn mount(
     vfs().mount(root, dir, path, fstype, device, options)
 }
 
-pub fn bind_mount(root: &Arc<Dentry>, dir: &Arc<Dentry>, source: &str, target: &str) -> Result<(), Errno> {
-    vfs().bind_mount(root, dir, source, target)
+pub fn bind_mount(
+    root: &Arc<Dentry>,
+    dir: &Arc<Dentry>,
+    source: &str,
+    target: &str,
+    recursive: bool,
+) -> Result<(), Errno> {
+    vfs().bind_mount(root, dir, source, target, recursive)
 }
 
 pub fn unmount(root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> Result<(), Errno> {
@@ -424,11 +684,21 @@ pub fn make_private(root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str, recursive
     vfs().make_private(root, dir, path, recursive)
 }
 
+pub fn make_slave(root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str, recursive: bool) -> Result<(), Errno> {
+    vfs().make_slave(root, dir, path, recursive)
+}
+
+pub fn make_unbindable(root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str, recursive: bool) -> Result<(), Errno> {
+    vfs().make_unbindable(root, dir, path, recursive)
+}
+
 pub fn unmount_all() -> SysResult<()> {
     let vfs = vfs();
     let _ = vfs.cache.sync();
     let mounts = vfs.mounts.lock().clone();
     for mount in mounts {
+        mount.make_private();
+        mount.clear_source_root();
         if let Some(mountpoint) = mount.mountpoint() {
             mountpoint.unmount();
         }

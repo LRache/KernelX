@@ -365,13 +365,7 @@ impl VirtualFileSystem {
     }
 
     fn lookup_child_with_mount_alias(&self, parent: &Arc<Dentry>, name: &str, perm: &Perm) -> SysResult<Arc<Dentry>> {
-        parent.lookup_with_perm(name, perm).or_else(|err| {
-            if err != Errno::ENOENT {
-                return Err(err);
-            }
-            self.lookup_mountpoint_by_path(&Self::join_path(parent, name))
-                .ok_or(Errno::ENOENT)
-        })
+        parent.lookup_with_perm(name, perm)
     }
 
     fn lookup_parent_component(
