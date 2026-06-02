@@ -147,16 +147,61 @@ impl VirtualFileSystem {
             Self::share_mounts(&mount, &propagated_mounts);
         }
 
-        // The new mount record should be added to the global mount list for later lookup when resolving mount points.
-        let mut mounts = self.mounts.lock();
-        mounts.push(mount);
-        mounts.extend(propagated_mounts.into_iter().map(|propagated| propagated.mount));
-        drop(mounts);
+        let mut new_mounts = Vec::new();
+        new_mounts.push(mount);
+        new_mounts.extend(propagated_mounts.into_iter().map(|propagated| propagated.mount));
+        self.mounts.lock().extend(new_mounts.iter().cloned());
 
         if recursive {
-            let recursive_mounts = self.bind_recursive_mounts(&recursive_sources, &target)?;
-            self.mounts.lock().extend(recursive_mounts);
+            match self.bind_recursive_mounts(&recursive_sources, &target) {
+                Ok(recursive_mounts) => self.mounts.lock().extend(recursive_mounts),
+                Err(err) => {
+                    Self::rollback_mounts(&new_mounts);
+                    self.remove_mount_records(&new_mounts);
+                    return Err(err);
+                }
+            }
         }
+
+        Ok(())
+    }
+
+    fn move_mount(&self, root: &Arc<Dentry>, dir: &Arc<Dentry>, source: &str, target: &str) -> SysResult<()> {
+        let source_mountpoint = self.resolve_mountpoint(root, dir, source)?;
+        let Some(mounted_root) = source_mountpoint.mounted_root() else {
+            return Err(Errno::EINVAL);
+        };
+        let mount = mounted_root.get_mount();
+        let source_parent = mount.parent().ok_or(Errno::EINVAL)?;
+        let source_mountpoint = mount.mountpoint().ok_or(Errno::EINVAL)?;
+        if source_parent.is_shared() {
+            return Err(Errno::EINVAL);
+        }
+
+        let target = self.resolve_mountpoint(root, dir, target)?;
+        if Arc::ptr_eq(&source_mountpoint, &target) {
+            return Ok(());
+        }
+
+        let source_is_dir = mounted_root.get_inode().inode_type()? == FileType::Directory;
+        Self::check_bind_target_type(source_is_dir, &target)?;
+
+        let (target_parent, target_mountpoint) = target.new_mount_context();
+        if target_parent.is_shared() {
+            return Err(Errno::EINVAL);
+        }
+        if Arc::ptr_eq(&target_parent, &mount) || target_parent.is_descendant_of(&mount) {
+            return Err(Errno::EINVAL);
+        }
+
+        if !Arc::ptr_eq(&source_mountpoint.mounted_root().ok_or(Errno::EINVAL)?, &mounted_root) {
+            return Err(Errno::EINVAL);
+        }
+
+        source_mountpoint.unmount_mount(&mount).ok_or(Errno::EINVAL)?;
+        mount.set_mount_context(&target_parent, &target_mountpoint);
+        mounted_root.set_mount_location(&target_mountpoint);
+        target_mountpoint.push_mount_root(mounted_root);
 
         Ok(())
     }
@@ -202,6 +247,21 @@ impl VirtualFileSystem {
         }
     }
 
+    fn rollback_mounts(mounts: &[Arc<Mount>]) {
+        for mount in mounts.iter().rev() {
+            mount.make_private();
+            mount.clear_source_root();
+            if let Some(mountpoint) = mount.mountpoint() {
+                let _ = mountpoint.unmount_mount(mount);
+            }
+        }
+    }
+
+    fn remove_mount_records(&self, mounts_to_remove: &[Arc<Mount>]) {
+        self.mounts
+            .lock()
+            .retain(|mount| mounts_to_remove.iter().all(|target| !Arc::ptr_eq(mount, target)));
+    }
     fn collect_recursive_bind_sources(&self, source: &Arc<Dentry>) -> SysResult<Vec<RecursiveBindSource>> {
         let mounts = self.mounts.lock().clone();
         let source_mount = source.get_mount();
@@ -266,44 +326,53 @@ impl VirtualFileSystem {
         let target_root = target_mount.root().ok_or(Errno::EINVAL)?;
         let mut created_mounts = Vec::new();
 
-        for recursive_source in recursive_sources {
-            let target = Self::lookup_relative_mountpoint_following_mounts(
-                target_root.clone(),
-                &recursive_source.relative_path,
-            )?;
-            Self::check_bind_target_type(recursive_source.is_dir, &target)?;
+        let result = (|| -> SysResult<()> {
+            for recursive_source in recursive_sources {
+                let target = Self::lookup_relative_mountpoint_following_mounts(
+                    target_root.clone(),
+                    &recursive_source.relative_path,
+                )?;
+                Self::check_bind_target_type(recursive_source.is_dir, &target)?;
 
-            let (parent_mount, _) = target.new_mount_context();
-            let parent_is_shared = parent_mount.is_shared();
-            let propagation_targets = self.propagation_targets(&parent_mount, &target)?;
-            for propagation_target in &propagation_targets {
-                Self::check_bind_target_type(recursive_source.is_dir, &propagation_target.dentry)?;
-            }
-
-            let mount = target.bind_mount(&recursive_source.source, &recursive_source.source_root);
-            let propagated_mounts = self.bind_mount_targets(
-                &recursive_source.source,
-                &recursive_source.source_root,
-                &propagation_targets,
-            );
-            if let Some(group) = recursive_source.mount.shared_group() {
-                Self::join_mounts_to_group(&mount, &propagated_mounts, &group);
-            } else if let Some(group) = recursive_source.mount.master_group() {
-                mount.make_slave_of(&group);
-                for propagated_mount in &propagated_mounts {
-                    propagated_mount.mount.make_slave_of(&group);
+                let (parent_mount, _) = target.new_mount_context();
+                let parent_is_shared = parent_mount.is_shared();
+                let propagation_targets = self.propagation_targets(&parent_mount, &target)?;
+                for propagation_target in &propagation_targets {
+                    Self::check_bind_target_type(recursive_source.is_dir, &propagation_target.dentry)?;
                 }
-            } else if parent_is_shared {
-                Self::share_mounts(&mount, &propagated_mounts);
+
+                let mount = target.bind_mount(&recursive_source.source, &recursive_source.source_root);
+                let propagated_mounts = self.bind_mount_targets(
+                    &recursive_source.source,
+                    &recursive_source.source_root,
+                    &propagation_targets,
+                );
+                if let Some(group) = recursive_source.mount.shared_group() {
+                    Self::join_mounts_to_group(&mount, &propagated_mounts, &group);
+                } else if let Some(group) = recursive_source.mount.master_group() {
+                    mount.make_slave_of(&group);
+                    for propagated_mount in &propagated_mounts {
+                        propagated_mount.mount.make_slave_of(&group);
+                    }
+                } else if parent_is_shared {
+                    Self::share_mounts(&mount, &propagated_mounts);
+                }
+
+                created_mounts.push(mount);
+                created_mounts.extend(propagated_mounts.into_iter().map(|propagated| propagated.mount));
             }
 
-            created_mounts.push(mount);
-            created_mounts.extend(propagated_mounts.into_iter().map(|propagated| propagated.mount));
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => Ok(created_mounts),
+            Err(err) => {
+                Self::rollback_mounts(&created_mounts);
+                Err(err)
+            }
         }
-
-        Ok(created_mounts)
     }
-
     /// Find peer mountpoints that should receive the same mount event.
     ///
     /// The input `mountpoint` belongs to `parent_mount`'s visible tree. It is first mapped back to
@@ -380,7 +449,7 @@ impl VirtualFileSystem {
                 path.reverse();
                 return Some(path);
             }
-            path.push(dentry.name().into());
+            path.push(dentry.name());
             current = dentry.get_parent();
         }
 
@@ -666,6 +735,10 @@ pub fn bind_mount(
     recursive: bool,
 ) -> Result<(), Errno> {
     vfs().bind_mount(root, dir, source, target, recursive)
+}
+
+pub fn move_mount(root: &Arc<Dentry>, dir: &Arc<Dentry>, source: &str, target: &str) -> Result<(), Errno> {
+    vfs().move_mount(root, dir, source, target)
 }
 
 pub fn unmount(root: &Arc<Dentry>, dir: &Arc<Dentry>, path: &str) -> Result<(), Errno> {

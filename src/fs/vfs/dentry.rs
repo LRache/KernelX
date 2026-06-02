@@ -44,10 +44,10 @@ pub struct Mount {
     kind: MountKind,
 
     /// The dentry where this mount is mounted. For the root mount, it is None.
-    mountpoint: Option<Arc<Dentry>>,
+    mountpoint: SpinLock<Option<Arc<Dentry>>>,
 
     /// The mount of the mount point. For the root mount, it is None.
-    mount_parent: Option<Weak<Mount>>,
+    mount_parent: SpinLock<Option<Weak<Mount>>>,
 
     /// For bind mount
     /// The root dentry of this mount point. For bind mounts, it points to the same dentry as the mountpoint.
@@ -82,6 +82,7 @@ pub struct Dentry {
     inode_index: Index,
     name: String,
     parent: Option<Arc<Dentry>>,
+    mount_location: SpinLock<Option<DentryLocation>>,
     children: SpinLock<BTreeMap<String, Weak<Dentry>>>,
     inode: SpinLock<Weak<dyn InodeOps>>,
 
@@ -90,6 +91,11 @@ pub struct Dentry {
 
     /// The mount this dentry belongs to.
     pub(super) mount: Arc<Mount>,
+}
+
+struct DentryLocation {
+    name: String,
+    parent: Option<Arc<Dentry>>,
 }
 
 impl MountSharedGroup {
@@ -147,6 +153,17 @@ impl MountSharedGroup {
         slaves.retain(|slave| slave.upgrade().is_some());
         slaves.iter().filter_map(Weak::upgrade).collect()
     }
+
+    fn has_peers(&self) -> bool {
+        !self.peers().is_empty()
+    }
+
+    fn take_slaves(&self) -> Vec<Arc<Mount>> {
+        let mut slaves = self.slaves.lock();
+        let live_slaves = slaves.iter().filter_map(Weak::upgrade).collect();
+        slaves.clear();
+        live_slaves
+    }
 }
 
 impl Mount {
@@ -154,8 +171,8 @@ impl Mount {
         Self {
             id: NEXT_MOUNT_ID.fetch_add(1, Ordering::Relaxed),
             kind,
-            mount_parent: mount_parent.map(Arc::downgrade),
-            mountpoint: mountpoint.cloned(),
+            mount_parent: SpinLock::new(mount_parent.map(Arc::downgrade), "Mount::mount_parent"),
+            mountpoint: SpinLock::new(mountpoint.cloned(), "Mount::mountpoint"),
             root: SpinLock::new(Weak::new(), "Mount::root"),
             source_root: SpinLock::new(None, "Mount::source_root"),
             propagation: SpinLock::new(MountPropagation::Private, "Mount::propagation"),
@@ -173,22 +190,27 @@ impl Mount {
     }
 
     pub(super) fn is_descendant_of(&self, ancestor: &Arc<Mount>) -> bool {
-        let mut mount = self.mount_parent.as_ref().and_then(Weak::upgrade);
+        let mut mount = self.parent();
         while let Some(current) = mount {
             if Arc::ptr_eq(&current, ancestor) {
                 return true;
             }
-            mount = current.mount_parent.as_ref().and_then(Weak::upgrade);
+            mount = current.parent();
         }
         false
     }
 
     pub(super) fn parent(&self) -> Option<Arc<Mount>> {
-        self.mount_parent.as_ref().and_then(Weak::upgrade)
+        self.mount_parent.lock().as_ref().and_then(Weak::upgrade)
     }
 
     pub(super) fn mountpoint(&self) -> Option<Arc<Dentry>> {
-        self.mountpoint.clone()
+        self.mountpoint.lock().clone()
+    }
+
+    pub(super) fn set_mount_context(&self, mount_parent: &Arc<Mount>, mountpoint: &Arc<Dentry>) {
+        *self.mount_parent.lock() = Some(Arc::downgrade(mount_parent));
+        *self.mountpoint.lock() = Some(mountpoint.clone());
     }
 
     pub(super) fn root(&self) -> Option<Arc<Dentry>> {
@@ -255,55 +277,126 @@ impl Mount {
     }
 
     pub(super) fn join_shared_group(self: &Arc<Self>, group: &Arc<MountSharedGroup>) {
+        let mut orphaned_slaves = None;
         let mut propagation = self.propagation.lock();
         match &*propagation {
             MountPropagation::Private | MountPropagation::Unbindable => {}
-            MountPropagation::Shared(old_group) => old_group.remove_peer(self),
+            MountPropagation::Shared(old_group) if Arc::ptr_eq(old_group, group) => return,
+            MountPropagation::Shared(old_group) => {
+                let old_group = old_group.clone();
+                old_group.remove_peer(self);
+                if !old_group.has_peers() {
+                    orphaned_slaves = Some((old_group.clone(), old_group.take_slaves()));
+                }
+            }
             MountPropagation::Slave(old_group) => old_group.remove_slave(self),
         }
         *propagation = MountPropagation::Shared(group.clone());
         group.add_peer(self);
+        drop(propagation);
+
+        Self::make_orphaned_slaves_private(orphaned_slaves);
     }
 
     pub(super) fn make_slave(self: &Arc<Self>) {
+        let mut orphaned_slaves = None;
         let mut propagation = self.propagation.lock();
         if let MountPropagation::Shared(group) = &*propagation {
             let group = group.clone();
             group.remove_peer(self);
-            group.add_slave(self);
-            *propagation = MountPropagation::Slave(group);
+            if group.has_peers() {
+                group.add_slave(self);
+                *propagation = MountPropagation::Slave(group);
+            } else {
+                orphaned_slaves = Some((group.clone(), group.take_slaves()));
+                *propagation = MountPropagation::Private;
+            }
         }
+        drop(propagation);
+
+        Self::make_orphaned_slaves_private(orphaned_slaves);
     }
 
     pub(super) fn make_slave_of(self: &Arc<Self>, group: &Arc<MountSharedGroup>) {
+        let mut orphaned_slaves = None;
         let mut propagation = self.propagation.lock();
         match &*propagation {
             MountPropagation::Private | MountPropagation::Unbindable => {}
-            MountPropagation::Shared(old_group) => old_group.remove_peer(self),
+            MountPropagation::Shared(old_group) => {
+                let old_group = old_group.clone();
+                old_group.remove_peer(self);
+                if !old_group.has_peers() {
+                    orphaned_slaves = Some((old_group.clone(), old_group.take_slaves()));
+                }
+            }
             MountPropagation::Slave(old_group) => old_group.remove_slave(self),
         }
-        *propagation = MountPropagation::Slave(group.clone());
-        group.add_slave(self);
+        if group.has_peers() {
+            *propagation = MountPropagation::Slave(group.clone());
+            group.add_slave(self);
+        } else {
+            *propagation = MountPropagation::Private;
+        }
+        drop(propagation);
+
+        Self::make_orphaned_slaves_private(orphaned_slaves);
     }
 
     pub(super) fn make_private(self: &Arc<Self>) {
+        let mut orphaned_slaves = None;
         let mut propagation = self.propagation.lock();
         match &*propagation {
             MountPropagation::Private | MountPropagation::Unbindable => {}
-            MountPropagation::Shared(group) => group.remove_peer(self),
+            MountPropagation::Shared(group) => {
+                let group = group.clone();
+                group.remove_peer(self);
+                if !group.has_peers() {
+                    orphaned_slaves = Some((group.clone(), group.take_slaves()));
+                }
+            }
             MountPropagation::Slave(group) => group.remove_slave(self),
         }
         *propagation = MountPropagation::Private;
+        drop(propagation);
+
+        Self::make_orphaned_slaves_private(orphaned_slaves);
     }
 
     pub(super) fn make_unbindable(self: &Arc<Self>) {
+        let mut orphaned_slaves = None;
         let mut propagation = self.propagation.lock();
         match &*propagation {
             MountPropagation::Private | MountPropagation::Unbindable => {}
-            MountPropagation::Shared(group) => group.remove_peer(self),
+            MountPropagation::Shared(group) => {
+                let group = group.clone();
+                group.remove_peer(self);
+                if !group.has_peers() {
+                    orphaned_slaves = Some((group.clone(), group.take_slaves()));
+                }
+            }
             MountPropagation::Slave(group) => group.remove_slave(self),
         }
         *propagation = MountPropagation::Unbindable;
+        drop(propagation);
+
+        Self::make_orphaned_slaves_private(orphaned_slaves);
+    }
+
+    fn make_private_if_slave_of(self: &Arc<Self>, group: &Arc<MountSharedGroup>) {
+        let mut propagation = self.propagation.lock();
+        if let MountPropagation::Slave(master_group) = &*propagation
+            && Arc::ptr_eq(master_group, group)
+        {
+            *propagation = MountPropagation::Private;
+        }
+    }
+
+    fn make_orphaned_slaves_private(orphaned_slaves: Option<(Arc<MountSharedGroup>, Vec<Arc<Mount>>)>) {
+        if let Some((group, slaves)) = orphaned_slaves {
+            for slave in slaves {
+                slave.make_private_if_slave_of(&group);
+            }
+        }
     }
 
     pub fn fanotify(&self) -> Option<Arc<Fanotify>> {
@@ -384,6 +477,7 @@ impl Dentry {
             },
             name: name.into(),
             parent: Some(parent.clone()),
+            mount_location: SpinLock::new(None, "Dentry::mount_location"),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(inode), "Dentry::inode"),
             mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
@@ -399,6 +493,7 @@ impl Dentry {
             },
             name: "/".into(),
             parent: None,
+            mount_location: SpinLock::new(None, "Dentry::mount_location"),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(inode), "Dentry::inode"),
             mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
@@ -453,12 +548,20 @@ impl Dentry {
         }
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> String {
+        self.mount_location
+            .lock()
+            .as_ref()
+            .map(|location| location.name.clone())
+            .unwrap_or_else(|| self.name.clone())
     }
 
     pub fn get_parent(&self) -> Option<Arc<Dentry>> {
-        self.parent.clone()
+        self.mount_location
+            .lock()
+            .as_ref()
+            .map(|location| location.parent.clone())
+            .unwrap_or_else(|| self.parent.clone())
     }
 
     pub fn get_mount(&self) -> Arc<Mount> {
@@ -516,7 +619,7 @@ impl Dentry {
         symlink_depth: &mut usize,
         perm: &Perm,
     ) -> SysResult<Arc<Dentry>> {
-        if let Some(p) = self.parent.as_ref() {
+        if let Some(p) = self.get_parent() {
             let inode = self.get_inode();
             if let Some(target) = inode.follow_magic_link()? {
                 if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
@@ -533,7 +636,7 @@ impl Dentry {
                 }
                 *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
-                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(root, p, link_name, symlink_depth, perm)?;
+                let link_dentry = vfs().lookup_dentry_with_depth_and_perm(root, &p, link_name, symlink_depth, perm)?;
                 return Ok(link_dentry);
             }
         }
@@ -547,7 +650,7 @@ impl Dentry {
         perm: &Perm,
         flags: LookupFlags,
     ) -> SysResult<Arc<Dentry>> {
-        if let Some(p) = self.parent.as_ref() {
+        if let Some(p) = self.get_parent() {
             let inode = self.get_inode();
             if let Some(target) = inode.follow_magic_link()? {
                 if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
@@ -565,7 +668,7 @@ impl Dentry {
                 *symlink_depth += 1;
                 let link_name = core::str::from_utf8(&buffer[..length]).unwrap();
                 let link_dentry =
-                    vfs().lookup_dentry_with_depth_perm_flags(root, p, link_name, symlink_depth, perm, flags)?;
+                    vfs().lookup_dentry_with_depth_perm_flags(root, &p, link_name, symlink_depth, perm, flags)?;
                 return Ok(link_dentry);
             }
         }
@@ -584,8 +687,9 @@ impl Dentry {
                 sno: mount_to_sno,
                 ino: mount_to.get_ino(),
             },
-            name: mountpoint.name.clone(),
-            parent: mountpoint.parent.clone(),
+            name: mountpoint.name(),
+            parent: mountpoint.get_parent(),
+            mount_location: SpinLock::new(None, "Dentry::mount_location"),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(mount_to), "Dentry::inode"),
             mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
@@ -603,8 +707,9 @@ impl Dentry {
         let mount = Arc::new(Mount::new(MountKind::Bind, Some(&mount_parent), Some(&mountpoint)));
         let mounted_root = Arc::new(Dentry {
             inode_index: source.get_inode_index(),
-            name: mountpoint.name.clone(),
-            parent: mountpoint.parent.clone(),
+            name: mountpoint.name(),
+            parent: mountpoint.get_parent(),
+            mount_location: SpinLock::new(None, "Dentry::mount_location"),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
             inode: SpinLock::new(Arc::downgrade(&source_inode), "Dentry::inode"),
             mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
@@ -614,6 +719,17 @@ impl Dentry {
         mount.set_source_root(source_root);
         mountpoint.mount_stack.lock().push(mounted_root);
         mount
+    }
+
+    pub(super) fn set_mount_location(&self, mountpoint: &Arc<Dentry>) {
+        let location = DentryLocation {
+            name: mountpoint.name(),
+            parent: mountpoint.get_parent(),
+        };
+        *self.mount_location.lock() = Some(location);
+    }
+    pub(super) fn push_mount_root(&self, mounted_root: Arc<Dentry>) {
+        self.mount_stack.lock().push(mounted_root);
     }
 
     /// Return the parent mount of the new mount and the
@@ -650,20 +766,20 @@ impl Dentry {
     }
 
     pub fn get_path(&self) -> String {
-        if let Some(parent) = self.parent.as_ref() {
+        let name = self.name();
+        if let Some(parent) = self.get_parent() {
             let mut path = parent.get_path();
             if !path.ends_with('/') {
                 path.push('/');
             }
-            if self.name != "/" {
-                path.push_str(&self.name);
+            if name != "/" {
+                path.push_str(&name);
             }
             path
         } else {
-            self.name.clone()
+            name
         }
     }
-
     fn create_with(
         self: &Arc<Self>,
         name: &str,
@@ -855,7 +971,7 @@ impl Debug for Dentry {
             "Dentry {{ sno: {}, ino: {}, name: {} }}",
             self.sno(),
             self.ino(),
-            self.name
+            self.name()
         )
     }
 }
