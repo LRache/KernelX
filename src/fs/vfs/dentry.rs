@@ -191,15 +191,19 @@ impl Mount {
 
     pub(super) fn is_descendant_of(&self, ancestor: &Arc<Mount>) -> bool {
         let mut mount = self.parent();
+        let mut visited = Vec::new();
         while let Some(current) = mount {
             if Arc::ptr_eq(&current, ancestor) {
                 return true;
             }
+            if visited.iter().any(|visited| Arc::ptr_eq(visited, &current)) {
+                return false;
+            }
+            visited.push(current.clone());
             mount = current.parent();
         }
         false
     }
-
     pub(super) fn parent(&self) -> Option<Arc<Mount>> {
         self.mount_parent.lock().as_ref().and_then(Weak::upgrade)
     }
@@ -604,7 +608,12 @@ impl Dentry {
 
     pub fn get_mount_to(self: Arc<Self>) -> Arc<Dentry> {
         let mut current = self;
+        let mut visited = Vec::new();
         loop {
+            if visited.iter().any(|visited| Arc::ptr_eq(visited, &current)) {
+                return current;
+            }
+            visited.push(current.clone());
             let mount_to = current.mount_stack.lock().last().cloned();
             match mount_to {
                 Some(mount_to) => current = mount_to,
@@ -612,7 +621,6 @@ impl Dentry {
             }
         }
     }
-
     pub fn walk_link_with_perm(
         self: Arc<Self>,
         root: &Arc<Dentry>,
@@ -730,6 +738,19 @@ impl Dentry {
     }
     pub(super) fn push_mount_root(&self, mounted_root: Arc<Dentry>) {
         self.mount_stack.lock().push(mounted_root);
+    }
+
+    pub(super) fn push_mount_root_if_top(&self, mounted_root: Arc<Dentry>, expected_top: Option<&Arc<Dentry>>) -> bool {
+        let mut mount_stack = self.mount_stack.lock();
+        let top_matches = match (mount_stack.last(), expected_top) {
+            (Some(current), Some(expected)) => Arc::ptr_eq(current, expected),
+            (None, None) => true,
+            _ => false,
+        };
+        if top_matches {
+            mount_stack.push(mounted_root);
+        }
+        top_matches
     }
 
     /// Return the parent mount of the new mount and the
