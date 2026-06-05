@@ -1,32 +1,44 @@
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
+#[repr(u8)]
+enum InitState {
+    Uninit = 0,
+    Initializing = 1,
+    Inited = 2,
+}
 
 pub struct InitedCell<T> {
     value: UnsafeCell<MaybeUninit<T>>,
-    is_inited: AtomicBool,
+    state: AtomicU8,
 }
 
 impl<T> InitedCell<T> {
     pub const fn uninit() -> Self {
         Self {
             value: UnsafeCell::new(MaybeUninit::uninit()),
-            is_inited: AtomicBool::new(false),
+            state: AtomicU8::new(InitState::Uninit as u8),
         }
     }
 
     pub fn init(&self, value: T) {
-        debug_assert!(
-            self.is_inited
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        assert!(
+            self.state
+                .compare_exchange(
+                    InitState::Uninit as u8,
+                    InitState::Initializing as u8,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
                 .is_ok(),
             "InitedCell has already been initialized."
         );
 
         unsafe {
-            *self.value.get() = MaybeUninit::new(value);
+            (*self.value.get()).write(value);
         }
+        self.state.store(InitState::Inited as u8, Ordering::Release);
     }
 }
 
@@ -35,12 +47,12 @@ impl<T> Deref for InitedCell<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        debug_assert!(
-            self.is_inited.load(Ordering::Relaxed),
+        assert!(
+            self.state.load(Ordering::Acquire) == InitState::Inited as u8,
             "Cannot access uninitialized InitedCell."
         );
         unsafe { (*self.value.get()).assume_init_ref() }
     }
 }
 
-unsafe impl<T> Sync for InitedCell<T> {}
+unsafe impl<T: Sync> Sync for InitedCell<T> {}

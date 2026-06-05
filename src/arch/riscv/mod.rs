@@ -27,5 +27,5 @@ use cpu::{core_count, time_frequency};
 pub const PGBITS: usize = 12; // 4KB page size
 pub const PGSIZE: usize = 1 << PGBITS; // 4096 bytes
 pub const PGMASK: usize = PGSIZE - 1; // 0xfff
-pub const TRAMPOLINE_BASE: usize = 0xffff_ffff_ffff_f000;
+pub const KERNEL_MMIO_END: usize = 0xffff_ffff_ffff_f000;
 pub const USEREND: usize = 0x7fff_ffff_ffff; // 128TB user space limit

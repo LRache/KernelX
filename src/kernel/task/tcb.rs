@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -172,8 +173,7 @@ pub struct TCB {
     tid_address: SpinLock<Option<usize>>,
     pub robust_list: SpinLock<Option<usize>>,
 
-    user_context_ptr: *mut UserContext,
-    user_context_uaddr: usize,
+    user_context: TaskLocal<Box<UserContext>>,
     kernel_context: UnsafeCell<KernelContext>,
     pub kernel_stack: KernelStack,
 
@@ -206,12 +206,7 @@ impl TCB {
         let kernel_stack = KernelStack::new(UTASK_KSTACK_PAGE_COUNT);
         user_context.set_kernel_stack_top(kernel_stack.get_top());
 
-        let (user_context_uaddr, user_context_ptr) = addrspace.alloc_usercontext_page();
         user_context.set_addrspace(&addrspace);
-
-        unsafe {
-            user_context_ptr.write(user_context);
-        }
 
         let tcb = Arc::new(Self {
             tid,
@@ -222,8 +217,7 @@ impl TCB {
             tid_address: SpinLock::new(None, "TCB::tid_address"),
             robust_list: SpinLock::new(None, "TCB::robust_list"),
 
-            user_context_ptr,
-            user_context_uaddr,
+            user_context: TaskLocal::new(tid, Box::new(user_context)),
             kernel_context: UnsafeCell::new(KernelContext::new(&kernel_stack)),
             kernel_stack,
 
@@ -493,8 +487,8 @@ impl TCB {
         self.tid
     }
 
-    pub fn get_user_context_uaddr(&self) -> usize {
-        self.user_context_uaddr
+    pub fn get_user_context_ptr(&self) -> usize {
+        self.user_context.get_mut().as_mut() as *mut UserContext as usize
     }
 
     pub fn parent(&self) -> &Arc<PCB> {
@@ -502,7 +496,7 @@ impl TCB {
     }
 
     pub fn user_context(&self) -> &mut UserContext {
-        unsafe { self.user_context_ptr.as_mut().unwrap() }
+        self.user_context.get_mut().as_mut()
     }
 
     pub fn get_addrspace(&self) -> &Arc<AddrSpace> {

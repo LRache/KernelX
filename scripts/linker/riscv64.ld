@@ -21,10 +21,6 @@ SECTIONS {
         *(.text*)
         . = ALIGN(4K);
         __text_end = .;
-        __trampoline_start = .;
-        KEEP(*(.trampoline.text))
-        . = ALIGN(4K);
-        __trampoline_end = .;
     }
 
     .rodata : {

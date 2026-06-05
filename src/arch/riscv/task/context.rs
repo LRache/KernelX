@@ -1,5 +1,4 @@
 use crate::arch::arch::UserContextTrait;
-use crate::arch::riscv::pagetable::get_kernel_satp;
 use crate::arch::riscv::task::traphandle::{return_to_user, usertrap_handler};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::KernelStack;
@@ -11,9 +10,8 @@ pub struct UserContext {
     /* 32 */ pub kernel_tp: usize,
     /* 33 */ pub kernel_sp: usize,
     /* 34 */ pub user_satp: usize,
-    /* 35 */ pub kernel_satp: usize,
-    /* 36 */ pub usertrap_handler: usize,
-    /* 37 */ pub fpregs: [u64; 33], // Floating point registers and fcsr
+    /* 35 */ pub usertrap_handler: usize,
+    /* 36 */ pub fpregs: [u64; 33], // Floating point registers and fcsr
     pub user_entry: usize, // User program entry point
 
     /* SHOULD NOT be accessed at ASM */
@@ -22,14 +20,11 @@ pub struct UserContext {
 
 impl UserContextTrait for UserContext {
     fn new() -> Self {
-        let kernel_satp = get_kernel_satp();
-
         UserContext {
             gpr: [0; 32],
             kernel_tp: 0,
             kernel_sp: 0,
             user_satp: 0,
-            kernel_satp,
             usertrap_handler: usertrap_handler as *const () as usize,
             fpregs: [0; 33],
             user_entry: 0,

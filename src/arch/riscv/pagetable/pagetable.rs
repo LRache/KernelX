@@ -2,10 +2,12 @@ use crate::arch::PageTableTrait;
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
 
+use super::kernelpagetable::{install_shared_kernel_mappings, is_shared_kernel_root};
 use super::pte::{Addr, PTE, PTEFlags, PTETable};
 
 const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
+pub(super) const ENTRIES_PER_TABLE: usize = 512;
 
 pub trait PageAllocator {
     fn alloc_zero() -> usize;
@@ -13,6 +15,7 @@ pub trait PageAllocator {
 
 pub struct PageTableImpls<T: PageAllocator> {
     pub root: usize,
+    has_shared_kernel_mappings: bool,
     _marker: core::marker::PhantomData<T>,
 }
 
@@ -30,6 +33,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
         debug_assert!(root != 0, "PageTable root cannot be zero");
         Self {
             root,
+            has_shared_kernel_mappings: false,
             _marker: core::marker::PhantomData,
         }
     }
@@ -89,9 +93,32 @@ impl<T: PageAllocator> PageTableImpls<T> {
         unreachable!("Page table traversal should always return before this point")
     }
 
+    pub(super) fn ensure_root_entry(&mut self, index: usize) {
+        debug_assert!(self.root != 0);
+        let mut ptetable = PTETable::new(self.root as *mut usize);
+        let mut pte = ptetable.get(index);
+
+        if pte.is_valid() {
+            debug_assert!(
+                !pte.flags().intersects(PTEFlags::R | PTEFlags::W | PTEFlags::X),
+                "shared kernel root entry should be a non-leaf PTE"
+            );
+            return;
+        }
+
+        let page = T::alloc_zero();
+        pte.set_ppn(Addr::from_kaddr(page).ppn());
+        pte.set_flags(PTEFlags::V);
+        ptetable.set(index, pte);
+    }
+
     fn free_pagetable(&mut self, ptetable: &PTETable, level: usize) {
         if level != LEAF_LEVEL {
-            for i in 0..512 {
+            for i in 0..ENTRIES_PER_TABLE {
+                if level == 0 && self.has_shared_kernel_mappings && is_shared_kernel_root(i) {
+                    continue;
+                }
+
                 let pte = ptetable.get(i);
                 if pte.is_valid() {
                     self.free_pagetable(&pte.next_level(), level + 1);
@@ -119,7 +146,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
 
     pub fn mmap_kernel(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
         let mut flags = perm.into();
-        flags = flags | PTEFlags::A | PTEFlags::D;
+        flags = flags | PTEFlags::G | PTEFlags::A | PTEFlags::D;
 
         let mut pte = self.find_pte_or_create(kaddr);
 
@@ -170,6 +197,10 @@ impl<T: PageAllocator> PageTableImpls<T> {
 
 impl<T: PageAllocator> Drop for PageTableImpls<T> {
     fn drop(&mut self) {
+        if self.root == 0 {
+            return;
+        }
+
         self.free_pagetable(&PTETable::new(self.root as *mut usize), 0);
         self.root = 0; // Clear the root pointer to avoid double free
     }
@@ -293,7 +324,16 @@ impl PageTable {
     pub const fn new() -> Self {
         Self {
             root: 0,
+            has_shared_kernel_mappings: false,
             _marker: core::marker::PhantomData,
         }
+    }
+
+    pub fn new_user() -> Self {
+        let mut pagetable = Self::new();
+        pagetable.create();
+        install_shared_kernel_mappings(&mut pagetable);
+        pagetable.has_shared_kernel_mappings = true;
+        pagetable
     }
 }

@@ -2,7 +2,7 @@ use crate::arch::UserContextTrait;
 use crate::arch::riscv::cpu::get_cpu_info;
 use crate::arch::riscv::csr::scause::Interrupt;
 use crate::arch::riscv::csr::*;
-use crate::arch::riscv::{TRAMPOLINE_BASE, UserContext, plic};
+use crate::arch::riscv::{UserContext, plic};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -84,7 +84,7 @@ pub fn set_stvec_to_kerneltrap_handler() {
     unsafe extern "C" {
         fn asm_kerneltrap_entry() -> !;
     }
-    stvec::write(asm_kerneltrap_entry as usize);
+    stvec::write(asm_kerneltrap_entry as *const () as usize);
 }
 
 fn svadu_mark_page_accessed(uaddr: usize) -> bool {
@@ -181,18 +181,7 @@ unsafe extern "C" {
 }
 
 fn usertrap_return(user_context: &UserContext) -> ! {
-    let trampoline_usertrap_return = (TRAMPOLINE_BASE
-        + (asm_usertrap_return as *const () as usize - asm_usertrap_entry as *const () as usize))
-        as usize;
-
-    unsafe {
-        core::arch::asm!(
-            "jr {target}",
-            target = in(reg) trampoline_usertrap_return,
-            in("a0") user_context as *const UserContext as usize,
-            options(noreturn)
-        );
-    }
+    unsafe { asm_usertrap_return(user_context as *const UserContext) }
 }
 
 pub fn return_to_user() -> ! {
@@ -201,8 +190,8 @@ pub fn return_to_user() -> ! {
     let tcb = current::tcb();
 
     sepc::write(tcb.user_context().get_user_entry());
-    stvec::write(TRAMPOLINE_BASE);
-    sscratch::write(tcb.get_user_context_uaddr());
+    stvec::write(asm_usertrap_entry as *const () as usize);
+    sscratch::write(tcb.get_user_context_ptr());
 
     let user_context = tcb.user_context();
     if user_context.fpregs_dirty {

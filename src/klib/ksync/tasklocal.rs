@@ -16,13 +16,17 @@ impl<T> TaskLocal<T> {
         }
     }
 
+    fn assert_current(&self) {
+        assert!(self.tid == current::tid(), "TaskLocal accessed from non-owner task");
+    }
+
     pub fn get_mut(&self) -> &mut T {
-        debug_assert!(self.tid == current::tid());
+        self.assert_current();
         unsafe { &mut *self.value.get() }
     }
 
     pub fn set(&self, value: T) {
-        debug_assert!(self.tid == current::tid());
+        self.assert_current();
         unsafe { *self.value.get() = value };
     }
 }
@@ -31,14 +35,14 @@ impl<T> Deref for TaskLocal<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        debug_assert!(self.tid == current::tid());
+        self.assert_current();
         unsafe { &*self.value.get() }
     }
 }
 
 impl<T> DerefMut for TaskLocal<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        debug_assert!(self.tid == current::tid());
+        self.assert_current();
         unsafe { &mut *self.value.get() }
     }
 }

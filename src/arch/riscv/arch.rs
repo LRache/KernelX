@@ -34,7 +34,7 @@ fn alloc_mmio_kaddr(size: usize) -> usize {
     let mut next = NEXT_MMIO_KADDR.lock();
     let kaddr = *next;
     let new_next = kaddr.checked_add(size).expect("RISC-V MMIO virtual address overflow");
-    if new_next > super::TRAMPOLINE_BASE {
+    if new_next > super::KERNEL_MMIO_END {
         panic!("RISC-V MMIO virtual address space exhausted");
     }
     *next = new_next;

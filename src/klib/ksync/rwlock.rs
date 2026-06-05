@@ -82,7 +82,7 @@ impl<T> RWLock<T> {
 }
 
 unsafe impl<T: Send> Send for RWLock<T> {}
-unsafe impl<T: Send> Sync for RWLock<T> {}
+unsafe impl<T: Send + Sync> Sync for RWLock<T> {}
 
 struct State {
     #[cfg(feature = "no-smp")]

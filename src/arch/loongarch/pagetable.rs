@@ -264,6 +264,12 @@ impl PageTable {
         Self { root: 0 }
     }
 
+    pub fn new_user() -> Self {
+        let mut pagetable = Self::new();
+        pagetable.create();
+        pagetable
+    }
+
     #[allow(dead_code)]
     pub fn from_root(root: usize) -> Self {
         debug_assert!(root != 0, "PageTable root cannot be zero");
