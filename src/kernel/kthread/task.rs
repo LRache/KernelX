@@ -97,8 +97,8 @@ impl Task for KThread {
         &self.kstack
     }
 
-    fn kcontext(&self) -> &mut KernelContext {
-        unsafe { self.kcontext.get().as_mut() }.unwrap()
+    fn kcontext_ptr(&self) -> *mut KernelContext {
+        self.kcontext.get()
     }
 
     fn run_if_ready(&self) -> bool {

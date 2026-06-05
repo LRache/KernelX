@@ -30,7 +30,11 @@ pub fn kwatchdog() {
                     );
 
                     #[cfg(feature = "backtrace")]
-                    crate::klib::backtrace::print_backtrace_from_fp(task.kcontext().frame_pointer());
+                    {
+                        // The watchdog table only tracks blocked tasks, so their saved context is not running.
+                        let frame_pointer = unsafe { (*task.kcontext_ptr()).frame_pointer() };
+                        crate::klib::backtrace::print_backtrace_from_fp(frame_pointer);
+                    }
 
                     #[cfg(feature = "deadlock-detect")]
                     if let Some((name, bt)) = task.lockstate().waiting() {

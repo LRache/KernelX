@@ -881,8 +881,8 @@ impl Task for TCB {
         self.parent.supplementary_gids()
     }
 
-    fn kcontext(&self) -> &mut KernelContext {
-        unsafe { (self.kernel_context.get() as *mut KernelContext).as_mut() }.unwrap()
+    fn kcontext_ptr(&self) -> *mut KernelContext {
+        self.kernel_context.get()
     }
 
     fn kstack(&self) -> &KernelStack {

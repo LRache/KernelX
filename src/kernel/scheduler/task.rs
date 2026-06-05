@@ -62,7 +62,10 @@ pub trait Task: Send + Sync {
         Vec::new()
     }
 
-    fn kcontext(&self) -> &mut arch::KernelContext;
+    /// Raw saved kernel context pointer used by context switching.
+    ///
+    /// Callers must not dereference it unless they own this task's saved context.
+    fn kcontext_ptr(&self) -> *mut arch::KernelContext;
     fn kstack(&self) -> &KernelStack;
 
     fn run_if_ready(&self) -> bool;

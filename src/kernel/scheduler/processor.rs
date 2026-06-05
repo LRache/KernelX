@@ -53,7 +53,7 @@ impl<'a> Processor {
     pub fn switch_to_task(&mut self, task: &'a Arc<dyn Task>) {
         task.resume_system_time();
         self.task = Some(NonNull::from(task));
-        arch::kernel_switch(&mut self.idle_kernel_context, task.kcontext());
+        arch::kernel_switch(&mut self.idle_kernel_context, task.kcontext_ptr());
         self.task = None;
     }
 
@@ -75,7 +75,7 @@ impl<'a> Processor {
         }
         arch::disable_interrupt();
         self.task().pause_system_time();
-        arch::kernel_switch(self.task().kcontext(), &mut self.idle_kernel_context);
+        arch::kernel_switch(self.task().kcontext_ptr(), &mut self.idle_kernel_context);
         self.task().resume_system_time();
     }
 
