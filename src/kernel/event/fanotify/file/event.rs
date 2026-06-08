@@ -155,7 +155,7 @@ impl FanotifyEvent {
         self.mask.insert(other.mask);
     }
 
-    pub(super) fn write_to(mut self, inner: &FanotifyListener, buf: &mut [u8]) -> SysResult<usize> {
+    pub(super) fn write_to(&self, inner: &FanotifyListener, buf: &mut [u8]) -> SysResult<usize> {
         let event_len = self.encoded_len(inner);
         if buf.len() < event_len {
             return Err(Errno::EINVAL);
@@ -172,10 +172,10 @@ impl FanotifyEvent {
         };
         let fd = if inner.unprivileged || (inner.report_dfid_name && self.permission.is_none()) {
             Self::NOFD
-        } else if let Some(file) = self.file.take() {
-            let fd = current::fdtable().lock().push(file, FDFlags::empty())? as i32;
-            if let Some(permission) = self.permission {
-                inner.responses.lock().push((fd, permission));
+        } else if let Some(file) = self.file.as_ref() {
+            let fd = current::fdtable().lock().push(file.clone(), FDFlags::empty())? as i32;
+            if let Some(permission) = self.permission.as_ref() {
+                inner.responses.lock().push((fd, permission.clone()));
             }
             fd
         } else {

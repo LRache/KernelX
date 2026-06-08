@@ -90,7 +90,13 @@ impl FileOps for FanotifyFile {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
         Self::validate_io_len(buf.len())?;
         let event = self.inner.pop_event(self.blocked())?;
-        let mut written = event.write_to(&self.inner, buf)?;
+        let mut written = match event.write_to(&self.inner, buf) {
+            Ok(written) => written,
+            Err(err) => {
+                self.inner.pending.lock().insert(0, event);
+                return Err(err);
+            }
+        };
 
         loop {
             let next_len = {
@@ -105,7 +111,13 @@ impl FileOps for FanotifyFile {
             }
 
             let event = self.inner.pending.lock().remove(0);
-            written += event.write_to(&self.inner, &mut buf[written..written + next_len])?;
+            match event.write_to(&self.inner, &mut buf[written..written + next_len]) {
+                Ok(event_len) => written += event_len,
+                Err(_) => {
+                    self.inner.pending.lock().insert(0, event);
+                    break;
+                }
+            }
         }
 
         Ok(written)
