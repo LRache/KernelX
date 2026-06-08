@@ -351,18 +351,33 @@ pub fn rt_sigaction(
         return Err(Errno::EINVAL);
     }
 
-    let mut signal_actions = current::signal_actions().lock();
-    if !uptr_oldact.is_null() {
-        let old_action = signal_actions.get(signum);
-        uptr_oldact.write(old_action.into())?;
-    }
-
-    if !uptr_act.is_null() {
+    let new_action = if !uptr_act.is_null() {
         let new_action = uptr_act.read()?;
         let mut new_action: SignalAction = new_action.try_into()?;
         new_action.mask = new_action.mask.without_unblockable();
 
-        signal_actions.set(signum, &new_action)?;
+        Some(new_action)
+    } else {
+        None
+    };
+
+    let old_action = {
+        let mut signal_actions = current::signal_actions().lock();
+        let old_action = if !uptr_oldact.is_null() {
+            Some(signal_actions.get(signum))
+        } else {
+            None
+        };
+
+        if let Some(new_action) = new_action {
+            signal_actions.set(signum, &new_action)?;
+        }
+
+        old_action
+    };
+
+    if let Some(old_action) = old_action {
+        uptr_oldact.write(old_action.into())?;
     }
 
     Ok(0)
