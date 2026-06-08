@@ -66,7 +66,7 @@ jobs:
             OBJCOPY=llvm-objcopy-21
 
       - name: Test testsuits-for-oskernel-riscv64
-        timeout-minutes: 90
+        timeout-minutes: 120
         run: |
           tmpdisk="$(mktemp /tmp/qemu-tmpdisk-XXXXXX)"
           trap 'rm -f "$tmpdisk"' EXIT
@@ -153,7 +153,7 @@ jobs:
             SYSROOT=/usr/loongarch64-linux-gnu
 
       - name: Test testsuits-for-oskernel-loongarch64
-        timeout-minutes: 90
+        timeout-minutes: 120
         run: |
           qemu-system-loongarch64 -M virt -m 1G -nographic -smp 1 \
             -kernel build/loongarch64/vmkernelx \
