@@ -1,4 +1,5 @@
 use crate::arch::arch::UserContextTrait;
+use crate::arch::riscv::pagetable::kernelpagetable::get_kernel_satp;
 use crate::arch::riscv::task::traphandle::{return_to_user, usertrap_handler};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::KernelStack;
@@ -112,6 +113,7 @@ pub struct KernelContext {
     sp: usize,
     s: [usize; 12],
     a0: usize,
+    satp: usize,
 }
 
 impl KernelContext {
@@ -121,7 +123,14 @@ impl KernelContext {
             sp: kernel_stack.get_top(),
             s: [0; 12],
             a0: 0,
+            satp: get_kernel_satp(),
         }
+    }
+
+    pub fn new_user(kernel_stack: &KernelStack, addrspace: &AddrSpace) -> Self {
+        let mut context = Self::new(kernel_stack);
+        context.set_addrspace(addrspace);
+        context
     }
 
     pub fn new_idle() -> Self {
@@ -130,6 +139,8 @@ impl KernelContext {
             sp: 0,
             s: [0; 12],
             a0: 0,
+            // Filled by the first context switch before this idle context is resumed.
+            satp: 0,
         }
     }
 
@@ -140,6 +151,11 @@ impl KernelContext {
 
     pub fn set_arg0(&mut self, arg: usize) -> &mut Self {
         self.a0 = arg;
+        self
+    }
+
+    pub fn set_addrspace(&mut self, addrspace: &AddrSpace) -> &mut Self {
+        self.satp = addrspace.with_pagetable(|pagetable| pagetable.get_satp());
         self
     }
 

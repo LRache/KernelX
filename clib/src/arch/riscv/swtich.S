@@ -17,6 +17,14 @@ asm_kernel_switch:
     sd s9, 88(a0)
     sd s10, 96(a0)
     sd s11, 104(a0)
+
+    csrr t0, satp
+    sd t0, 120(a0)
+
+    ld t0, 120(a1)
+    sfence.vma
+    csrw satp, t0
+    sfence.vma
     
     # load context
     ld ra, 0(a1)

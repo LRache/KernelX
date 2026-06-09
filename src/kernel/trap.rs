@@ -28,6 +28,23 @@ pub fn trap_enter() {
     tcb.check_cpu_timers();
 }
 
+#[cfg(target_arch = "riscv64")]
+fn assert_user_satp_matches_addrspace() {
+    let tcb = current::tcb();
+    let user_satp = tcb.user_context().user_satp;
+    let addrspace_satp = tcb.get_addrspace().with_pagetable(|pagetable| pagetable.get_satp());
+
+    // TODO: Remove this diagnostic assert after the RISC-V satp lifetime fix is validated.
+    debug_assert_eq!(
+        user_satp,
+        addrspace_satp,
+        "task {} returning to user with stale satp: user_context={:#x}, addrspace={:#x}",
+        tcb.tid(),
+        user_satp,
+        addrspace_satp
+    );
+}
+
 pub fn trap_return() {
     handle_signal();
 
@@ -57,6 +74,9 @@ pub fn trap_return() {
     }
 
     tcb.pop_ucontext_syscall_retreg();
+
+    #[cfg(target_arch = "riscv64")]
+    assert_user_satp_matches_addrspace();
 
     if tcb.apply_pending_state_change() {
         current::schedule();

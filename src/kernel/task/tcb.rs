@@ -218,7 +218,7 @@ impl TCB {
             robust_list: SpinLock::new(None, "TCB::robust_list"),
 
             user_context: TaskLocal::new(tid, Box::new(user_context)),
-            kernel_context: UnsafeCell::new(KernelContext::new(&kernel_stack)),
+            kernel_context: UnsafeCell::new(KernelContext::new_user(&kernel_stack, &addrspace)),
             kernel_stack,
 
             addrspace,

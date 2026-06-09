@@ -134,6 +134,10 @@ impl KernelContext {
         }
     }
 
+    pub fn new_user(kernel_stack: &KernelStack, _addrspace: &AddrSpace) -> Self {
+        Self::new(kernel_stack)
+    }
+
     pub fn new_idle() -> Self {
         KernelContext {
             ra: 0,

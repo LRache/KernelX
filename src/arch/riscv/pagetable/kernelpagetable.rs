@@ -69,6 +69,10 @@ pub fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm)
     unsafe { core::arch::asm!("sfence.vma zero, zero") }
 }
 
+pub fn get_kernel_satp() -> usize {
+    KERNEL_PAGETABLE.lock().get_satp()
+}
+
 pub unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
     let mut kaddr = kstart;
     let kend = kstart + size;
