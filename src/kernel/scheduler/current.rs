@@ -28,8 +28,12 @@ pub fn set(p: &Processor) {
     arch::set_percpu_data(p as *const Processor as usize);
 }
 
+pub fn has_processor() -> bool {
+    arch::get_percpu_data() != 0
+}
+
 pub fn has_task() -> bool {
-    arch::get_percpu_data() != 0 && processor().has_task()
+    has_processor() && processor().has_task()
 }
 
 pub fn hart_id() -> usize {

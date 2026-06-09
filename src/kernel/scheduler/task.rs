@@ -86,6 +86,6 @@ pub trait Task: Send + Sync {
 
     fn set_exited(&self) {}
 
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     fn lockstate(&self) -> &crate::klib::ksync::LockState;
 }

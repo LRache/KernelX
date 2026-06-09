@@ -1,20 +1,26 @@
 use alloc::sync::Arc;
 use core::ptr::NonNull;
 
-#[cfg(feature = "deadlock-detect")]
+#[cfg(feature = "spinlock-check")]
 use alloc::collections::vec_deque::VecDeque;
 
 use crate::arch;
 use crate::kernel::scheduler::task::Task;
 use crate::kernel::task::TCB;
 
+#[cfg(feature = "spinlock-check")]
+struct HeldSpinLock {
+    ptr: usize,
+    name: &'static str,
+}
+
 pub struct Processor {
     hart_id: usize,
     task: Option<NonNull<Arc<dyn Task>>>,
     idle_kernel_context: arch::KernelContext,
 
-    #[cfg(feature = "deadlock-detect")]
-    locked_spin: VecDeque<&'static str>,
+    #[cfg(feature = "spinlock-check")]
+    locked_spin: VecDeque<HeldSpinLock>,
 }
 
 impl<'a> Processor {
@@ -23,7 +29,7 @@ impl<'a> Processor {
             hart_id,
             task: None,
             idle_kernel_context: arch::KernelContext::new_idle(),
-            #[cfg(feature = "deadlock-detect")]
+            #[cfg(feature = "spinlock-check")]
             locked_spin: VecDeque::new(),
             // irq_spinlock_count: 0,
         }
@@ -58,14 +64,14 @@ impl<'a> Processor {
     }
 
     pub fn schedule(&mut self) {
-        #[cfg(feature = "deadlock-detect")]
+        #[cfg(feature = "spinlock-check")]
         if !self.locked_spin.is_empty() {
             use crate::println;
 
             println!("Spinlocks held by processor {} when trying to schedule:", self.hart_id);
             let mut i = 0;
-            while let Some(name) = self.locked_spin.pop_back() {
-                println!("[{}] {}", i, name);
+            while let Some(lock) = self.locked_spin.pop_back() {
+                println!("[{}] {} ({:#x})", i, lock.name, lock.ptr);
                 i += 1;
             }
             panic!(
@@ -79,19 +85,30 @@ impl<'a> Processor {
         self.task().resume_system_time();
     }
 
-    #[cfg(feature = "deadlock-detect")]
-    pub fn acquire_spinlock(&mut self, name: &'static str) {
-        self.locked_spin.push_back(name);
+    #[cfg(feature = "spinlock-check")]
+    pub fn assert_not_holding_spinlock(&self, ptr: usize, name: &'static str) {
+        if self.locked_spin.iter().any(|lock| lock.ptr == ptr) {
+            panic!(
+                "Processor {} is trying to recursively acquire spinlock '{}' ({:#x}).",
+                self.hart_id, name, ptr
+            );
+        }
     }
 
-    #[cfg(feature = "deadlock-detect")]
-    pub fn release_spinlock(&mut self, name: &'static str) {
-        if let Some(pos) = self.locked_spin.iter().rposition(|&n| n == name) {
+    #[cfg(feature = "spinlock-check")]
+    pub fn acquire_spinlock(&mut self, ptr: usize, name: &'static str) {
+        self.assert_not_holding_spinlock(ptr, name);
+        self.locked_spin.push_back(HeldSpinLock { ptr, name });
+    }
+
+    #[cfg(feature = "spinlock-check")]
+    pub fn release_spinlock(&mut self, ptr: usize, name: &'static str) {
+        if let Some(pos) = self.locked_spin.iter().rposition(|lock| lock.ptr == ptr) {
             self.locked_spin.remove(pos);
         } else {
             panic!(
-                "Processor {} is releasing spinlock '{}' which it does not hold!",
-                self.hart_id, name
+                "Processor {} is releasing spinlock '{}' ({:#x}) which it does not hold!",
+                self.hart_id, name, ptr
             );
         }
     }

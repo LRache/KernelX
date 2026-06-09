@@ -56,6 +56,7 @@ fn kinit() {
     );
     fs::vfs::spawn_inode_cache_reaper();
 
+    #[cfg(feature = "watchdog")]
     kthread::spawn(scheduler::watchdog::kwatchdog);
 
     kinfo!("KernelX initialized successfully!");

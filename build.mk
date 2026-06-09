@@ -77,8 +77,16 @@ ifeq ($(CONFIG_NO_SMP),y)
 RUST_FEATURES += no-smp
 endif
 
-ifeq ($(CONFIG_DEADLOCK_DETECT),y)
-RUST_FEATURES += deadlock-detect
+ifeq ($(CONFIG_LOCKDEP),y)
+RUST_FEATURES += lockdep
+endif
+
+ifeq ($(CONFIG_SPINLOCK_CHECK),y)
+RUST_FEATURES += spinlock-check
+endif
+
+ifeq ($(CONFIG_ENABLE_WATCHDOG),y)
+RUST_FEATURES += watchdog
 endif
 
 ifeq ($(CONFIG_NOLOCK),y)

@@ -5,7 +5,9 @@ use spin::Mutex;
 use crate::arch;
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::task::Task;
-use crate::kernel::scheduler::{WakeupFailure, current, watchdog};
+#[cfg(feature = "watchdog")]
+use crate::kernel::scheduler::watchdog;
+use crate::kernel::scheduler::{WakeupFailure, current};
 
 use super::processor::Processor;
 
@@ -42,6 +44,7 @@ pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
 
 pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &'static str) {
     task.block_uninterruptible(reason);
+    #[cfg(feature = "watchdog")]
     watchdog::add_blocked_task(task, reason);
 }
 
@@ -53,6 +56,7 @@ pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> Result<(), WakeupFailur
 
 pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) -> bool {
     if task.wakeup_uninterruptible(event) {
+        #[cfg(feature = "watchdog")]
         watchdog::remove_blocked_task(task.tid());
         push_task(task);
         true

@@ -4,6 +4,7 @@ mod task;
 
 pub mod current;
 pub mod tid;
+#[cfg(feature = "watchdog")]
 pub mod watchdog;
 
 pub use processor::*;

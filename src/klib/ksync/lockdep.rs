@@ -82,6 +82,7 @@ fn can_reach(graph: &BTreeMap<usize, Vec<Edge>>, from_id: usize, target_id: usiz
 
 /// Find the backtrace of the first edge on the path from `from_id` to `target_id`.
 /// Called only after `can_reach` confirmed a path exists.
+#[cfg(feature = "backtrace")]
 fn find_path_backtrace<'a>(
     graph: &'a BTreeMap<usize, Vec<Edge>>,
     from_id: usize,
@@ -102,7 +103,7 @@ fn find_path_backtrace<'a>(
 ///
 /// For each held lock H, records the dependency H → new_name in the graph.
 /// Panics if doing so would introduce a cycle (i.e. new_name can already reach H).
-#[cfg(feature = "deadlock-detect")]
+#[cfg(feature = "lockdep")]
 pub fn on_acquire(helds: &[&'static str], new_name: &'static str) {
     let new_id = new_name.as_ptr() as usize;
 

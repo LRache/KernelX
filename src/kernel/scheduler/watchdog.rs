@@ -36,7 +36,7 @@ pub fn kwatchdog() {
                         crate::klib::backtrace::print_backtrace_from_fp(frame_pointer);
                     }
 
-                    #[cfg(feature = "deadlock-detect")]
+                    #[cfg(all(feature = "lockdep", feature = "backtrace"))]
                     if let Some((name, bt)) = task.lockstate().waiting() {
                         crate::kwarn!("Task is waiting on lock: {}", name);
                         crate::kwarn!("Lock was last acquired at:");

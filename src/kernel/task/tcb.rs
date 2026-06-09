@@ -189,7 +189,7 @@ pub struct TCB {
     parent_waiting_vfork: SpinLock<Option<Arc<dyn Task>>>,
     pub time_counter: SpinLock<TimeCounter>,
 
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     lockstate: crate::klib::ksync::LockState,
 }
 
@@ -232,7 +232,7 @@ impl TCB {
             wakeup_event: SpinLock::new(None, "TCB::wakeup_event"),
             parent_waiting_vfork: SpinLock::new(None, "TCB::parent_waiting_vfork"),
             time_counter: SpinLock::new(TimeCounter::new(), "TCB::time_counter"),
-            #[cfg(feature = "deadlock-detect")]
+            #[cfg(feature = "lockdep")]
             lockstate: crate::klib::ksync::LockState::new(),
         });
 
@@ -986,7 +986,7 @@ impl Task for TCB {
         self.wakeup_event.lock().take()
     }
 
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     fn lockstate(&self) -> &crate::klib::ksync::LockState {
         &self.lockstate
     }

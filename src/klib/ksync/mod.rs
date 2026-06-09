@@ -11,9 +11,9 @@ cfg_if::cfg_if! {
         mod spinlock;
         mod sleeplock;
 
-        #[cfg(feature = "deadlock-detect")]
+        #[cfg(feature = "lockdep")]
         mod lockdep;
-        #[cfg(feature = "deadlock-detect")]
+        #[cfg(feature = "lockdep")]
         pub use lockdep::LockState;
 
         pub use rwlock::RWLock;

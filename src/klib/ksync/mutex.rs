@@ -1,14 +1,14 @@
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 
-#[cfg(feature = "deadlock-detect")]
+#[cfg(feature = "lockdep")]
 use core::sync::atomic::{AtomicI32, Ordering};
-#[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
+#[cfg(all(feature = "lockdep", feature = "backtrace"))]
 use spin::mutex::SpinMutex;
 
-#[cfg(feature = "deadlock-detect")]
+#[cfg(feature = "lockdep")]
 use crate::kernel::scheduler::current;
-#[cfg(feature = "deadlock-detect")]
+#[cfg(all(feature = "lockdep", feature = "backtrace"))]
 use crate::klib::backtrace;
 
 use super::locker::LockerTrait;
@@ -41,15 +41,15 @@ pub struct Mutex<T, R: LockerTrait> {
     data: UnsafeCell<T>,
     locker: R,
 
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(any(feature = "lockdep", feature = "spinlock-check"))]
     name: &'static str,
 
     /// TID of the task currently holding this lock (-1 = unlocked).
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     holder_tid: AtomicI32,
 
     /// Backtrace captured at the moment this lock was last acquired.
-    #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
+    #[cfg(all(feature = "lockdep", feature = "backtrace"))]
     acquire_bt: SpinMutex<Option<alloc::collections::LinkedList<usize>>>,
 }
 
@@ -60,23 +60,23 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             data: UnsafeCell::new(data),
             locker,
 
-            #[cfg(feature = "deadlock-detect")]
+            #[cfg(any(feature = "lockdep", feature = "spinlock-check"))]
             name,
 
-            #[cfg(feature = "deadlock-detect")]
+            #[cfg(feature = "lockdep")]
             holder_tid: AtomicI32::new(-1),
 
-            #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
+            #[cfg(all(feature = "lockdep", feature = "backtrace"))]
             acquire_bt: SpinMutex::new(None),
         }
     }
 
     fn name(&self) -> &'static str {
-        #[cfg(feature = "deadlock-detect")]
+        #[cfg(any(feature = "lockdep", feature = "spinlock-check"))]
         {
             self.name
         }
-        #[cfg(not(feature = "deadlock-detect"))]
+        #[cfg(not(any(feature = "lockdep", feature = "spinlock-check")))]
         {
             ""
         }
@@ -97,7 +97,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
     }
 
     fn lock_inner(&self, check_lockdep: bool) -> LockGuard<'_, T, R> {
-        #[cfg(feature = "deadlock-detect")]
+        #[cfg(feature = "lockdep")]
         if check_lockdep && current::has_task() {
             use crate::klib::ksync::lockdep;
 
@@ -106,7 +106,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
         }
 
         if !self.locker.try_lock(&self.name()) {
-            #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
+            #[cfg(all(feature = "lockdep", feature = "backtrace"))]
             if current::has_task() {
                 current::task()
                     .lockstate()
@@ -119,7 +119,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
 
         // self.locker.lock(self.name);
 
-        #[cfg(feature = "deadlock-detect")]
+        #[cfg(feature = "lockdep")]
         if current::has_task() {
             self.holder_tid.store(current::tid(), Ordering::Relaxed);
             let lockstate = current::task().lockstate();
@@ -127,7 +127,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             lockstate.set_waiting(None);
         }
 
-        #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
+        #[cfg(all(feature = "lockdep", feature = "backtrace"))]
         {
             *self.acquire_bt.lock() = Some(backtrace::backtrace_chain());
         }
@@ -139,13 +139,13 @@ impl<T, R: LockerTrait> Mutex<T, R> {
     }
 
     fn unlock(&self) {
-        #[cfg(feature = "deadlock-detect")]
+        #[cfg(feature = "lockdep")]
         if current::has_task() {
             current::task().lockstate().release(self.name);
             self.holder_tid.store(-1, Ordering::Relaxed);
         }
 
-        #[cfg(all(feature = "deadlock-detect", feature = "backtrace"))]
+        #[cfg(all(feature = "lockdep", feature = "backtrace"))]
         {
             *self.acquire_bt.lock() = None;
         }
@@ -158,7 +158,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
     }
 
     /// Returns the TID of the task currently holding this lock, or -1 if free.
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     pub fn holder_tid(&self) -> i32 {
         self.holder_tid.load(Ordering::Relaxed)
     }

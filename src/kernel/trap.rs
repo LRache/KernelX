@@ -43,7 +43,7 @@ pub fn trap_return() {
     tcb.parent().add_task_time(core::time::Duration::ZERO, system_delta);
     tcb.check_cpu_timers();
 
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     {
         use crate::kernel::scheduler::Task;
 

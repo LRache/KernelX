@@ -20,6 +20,10 @@ TMPDISK_SIZE ?= 1G
 TMPDISK      := $(shell mktemp /tmp/qemu-tmpdisk-XXXXXX)
 SECOND_DISK_IMAGE := $(subst ",,$(CONFIG_SECOND_DISK_IMAGE))
 SECOND_DISK := $(if $(SECOND_DISK_IMAGE),$(SECOND_DISK_IMAGE),$(TMPDISK))
+QEMU_DISK_OPTIONS :=
+ifeq ($(CONFIG_QEMU_SNAPSHOT),y)
+QEMU_DISK_OPTIONS += ,snapshot=on
+endif
 
 # ---------------------------------------------------------------
 # Per-arch QEMU binary / transport choice.
@@ -46,8 +50,8 @@ endif
 
 QEMU_FLAGS += -M $(CONFIG_QEMU_MACHINE) -m $(CONFIG_QEMU_MEMORY) -nographic
 QEMU_FLAGS += -kernel $(QEMU_KERNEL)
-QEMU_FLAGS += -drive file=$(CONFIG_DISK_IMAGE),if=none,id=x0,format=raw
-QEMU_FLAGS += -drive file=$(SECOND_DISK),if=none,id=x1,format=raw
+QEMU_FLAGS += -drive file=$(CONFIG_DISK_IMAGE),if=none,id=x0,format=raw$(QEMU_DISK_OPTIONS)
+QEMU_FLAGS += -drive file=$(SECOND_DISK),if=none,id=x1,format=raw$(QEMU_DISK_OPTIONS)
 QEMU_FLAGS += $(QEMU_DEVICES)
 QEMU_FLAGS += -netdev user,id=net0
 QEMU_FLAGS += -smp $(CONFIG_QEMU_CPUS)

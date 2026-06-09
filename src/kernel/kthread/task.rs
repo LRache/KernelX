@@ -35,7 +35,7 @@ pub struct KThread {
     kstack: KernelStack,
     state: SpinLock<KThreadState>,
     wakeup_event: SpinLock<Option<Event>>,
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     lockstate: crate::klib::ksync::LockState,
 }
 
@@ -55,7 +55,7 @@ impl KThread {
             kstack,
             state: SpinLock::new(KThreadState::Ready, "KThread::state"),
             wakeup_event: SpinLock::new(None, "KThread::wakeup_event"),
-            #[cfg(feature = "deadlock-detect")]
+            #[cfg(feature = "lockdep")]
             lockstate: crate::klib::ksync::LockState::new(),
         }
     }
@@ -182,7 +182,7 @@ impl Task for KThread {
         *self.state.lock() = KThreadState::Exited;
     }
 
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     fn lockstate(&self) -> &crate::klib::ksync::LockState {
         &self.lockstate
     }
