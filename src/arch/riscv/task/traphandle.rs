@@ -115,7 +115,7 @@ pub fn usertrap_handler() -> ! {
     let cpu_info = get_cpu_info(current::hart_id());
     let sstatus = Sstatus::read();
 
-    if sstatus.fs() == SstatusFs::Dirty {
+    if sstatus.fs() != SstatusFs::Off {
         save_float_registers(&mut user_context.fpregs);
         user_context.fpregs_dirty = true;
     }

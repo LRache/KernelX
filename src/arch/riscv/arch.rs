@@ -186,7 +186,8 @@ impl ArchTrait for Arch {
     }
 
     fn set_next_time_event_us(interval: u64) {
-        sbi_driver::set_timer(csr::time::read() + interval);
+        let ticks = interval.saturating_mul(time_frequency() as u64).saturating_add(999_999) / 1_000_000;
+        sbi_driver::set_timer(csr::time::read().saturating_add(ticks.max(1)));
     }
 
     fn read_volatile<T>(src: *const T) -> T {
