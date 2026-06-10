@@ -199,6 +199,7 @@ macro_rules! syscall_entries {
             211 => socket::sendmsg(3),
             212 => socket::recvmsg(3),
             242 => socket::accept4(4),
+            269 => socket::sendmmsg(4),
 
             // Time
             101 => time::nanosleep(2) [no_restart],

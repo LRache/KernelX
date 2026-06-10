@@ -573,6 +573,15 @@ impl UMsgHdr {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UMMsgHdr {
+    msg_hdr: UMsgHdr,
+    msg_len: u32,
+}
+
+impl UserStruct for UMMsgHdr {}
+
 fn total_iov_len(iov_base: usize, iovcnt: usize) -> Result<usize, Errno> {
     if iovcnt == 0 {
         return Ok(0);
@@ -619,14 +628,61 @@ fn read_msg_name_sockaddr(msg: &UMsgHdr) -> SysResult<Option<SocketAddr>> {
     read_inet_sockaddr(UPtr::<SockAddrIn>::from_uaddr(msg.msg_name), msg.msg_namelen as usize).map(Some)
 }
 
-pub fn sendmsg(fd: usize, uptr_msg: UPtr<UMsgHdr>, flags: usize) -> SyscallRet {
-    let msg = uptr_msg.read()?;
+fn send_msg(file: &Arc<dyn FileOps>, msg: &UMsgHdr, flags: usize) -> SyscallRet {
     msg.validate()?;
 
-    let file = current::fdtable().lock().get(fd)?;
     let kbuf = gather_iov_data(msg.msg_iov, msg.msg_iovlen)?;
-    let dst = read_msg_name_sockaddr(&msg)?;
-    send_socket(&file, &kbuf, dst, flags)
+    let dst = read_msg_name_sockaddr(msg)?;
+    send_socket(file, &kbuf, dst, flags)
+}
+
+pub fn sendmsg(fd: usize, uptr_msg: UPtr<UMsgHdr>, flags: usize) -> SyscallRet {
+    let msg = uptr_msg.read()?;
+    let file = current::fdtable().lock().get(fd)?;
+    send_msg(&file, &msg, flags)
+}
+
+pub fn sendmmsg(fd: usize, uptr_msgvec: UPtr<UMMsgHdr>, vlen: usize, flags: usize) -> SyscallRet {
+    if vlen == 0 {
+        return Ok(0);
+    }
+
+    let file = current::fdtable().lock().get(fd)?;
+    let mut sent_count = 0usize;
+    for i in 0..vlen.min(MSG_IOV_MAX) {
+        let uptr_mmsg = uptr_msgvec.add(i);
+        let mmsg = match uptr_mmsg.read() {
+            Ok(mmsg) => mmsg,
+            Err(err) => {
+                if sent_count > 0 {
+                    return Ok(sent_count);
+                }
+                return Err(err);
+            }
+        };
+
+        let sent = match send_msg(&file, &mmsg.msg_hdr, flags) {
+            Ok(sent) => sent,
+            Err(err) => {
+                if sent_count > 0 {
+                    return Ok(sent_count);
+                }
+                return Err(err);
+            }
+        };
+
+        let uptr_msg_len = UPtr::<u32>::from_uaddr(uptr_mmsg.uaddr() + size_of::<UMsgHdr>());
+        if let Err(err) = uptr_msg_len.write(sent.min(u32::MAX as usize) as u32) {
+            if sent_count > 0 {
+                return Ok(sent_count);
+            }
+            return Err(err);
+        }
+
+        sent_count += 1;
+    }
+
+    Ok(sent_count)
 }
 
 fn scatter_iov_data(iov_base: usize, iovcnt: usize, data: &[u8]) -> Result<usize, Errno> {
