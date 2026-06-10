@@ -1,9 +1,11 @@
 use core::net::Ipv4Addr;
+use core::time::Duration;
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::Event;
+use crate::kernel::event::{EpollNotifier, Event};
 use crate::kernel::scheduler::current;
 use crate::net::interface::Interface;
 use crate::net::manager;
@@ -27,25 +29,20 @@ impl RawInner {
         }
     }
 
-    fn resolve_iface(&mut self, ip: core::net::Ipv4Addr) -> SysResult<Arc<Interface>> {
+    fn resolve_iface_for_dst(&mut self, ip: core::net::Ipv4Addr) -> SysResult<Arc<Interface>> {
         if let Some(ref iface) = self.iface {
             return Ok(iface.clone());
         }
-        let iface = if ip.is_unspecified() {
-            manager::default_interface()
-        } else {
-            manager::find_interface_for(ip)
-        }
-        .ok_or(Errno::ENETUNREACH)?;
+        let iface = manager::route_interface_for_dst(ip).ok_or(Errno::ENETUNREACH)?;
         self.iface = Some(iface.clone());
         Ok(iface)
     }
 
-    fn ensure_bound(&mut self) -> SysResult<()> {
+    fn ensure_bound(&mut self, dst_ip: core::net::Ipv4Addr) -> SysResult<()> {
         if self.local.is_some() && self.iface.is_some() {
             return Ok(());
         }
-        let iface = self.resolve_iface(core::net::Ipv4Addr::UNSPECIFIED)?;
+        let iface = self.resolve_iface_for_dst(dst_ip)?;
         iface.bind_raw(self.protocol);
         self.local = Some(SocketAddr::new(iface.ipv4().unwrap_or(Ipv4Addr::UNSPECIFIED), 0));
         Ok(())
@@ -64,7 +61,7 @@ impl SocketInner for RawInner {
         let iface = if addr.ip.is_unspecified() {
             manager::default_interface().ok_or(Errno::EADDRNOTAVAIL)?
         } else {
-            manager::find_interface_for(addr.ip).ok_or(Errno::EADDRNOTAVAIL)?
+            manager::find_interface_for_local_addr(addr.ip).ok_or(Errno::EADDRNOTAVAIL)?
         };
         iface.bind_raw(self.protocol);
         self.local = Some(SocketAddr::new(addr.ip, 0));
@@ -74,12 +71,12 @@ impl SocketInner for RawInner {
 
     fn connect(&mut self, addr: SocketAddr, _blocked: bool) -> SysResult<()> {
         self.remote = Some(SocketAddr::new(addr.ip, 0));
-        self.ensure_bound()
+        self.ensure_bound(addr.ip)
     }
 
     fn sendto(&mut self, buf: &[u8], dst: Option<SocketAddr>, _blocked: bool) -> SysResult<usize> {
         let dst = dst.or(self.remote).ok_or(Errno::EDESTADDRREQ)?;
-        self.ensure_bound()?;
+        self.ensure_bound(dst.ip)?;
 
         let iface = self.iface.as_ref().ok_or(Errno::ENETUNREACH)?;
         let src_ip = self.local.map(|a| a.ip).unwrap_or(core::net::Ipv4Addr::UNSPECIFIED);
@@ -87,8 +84,13 @@ impl SocketInner for RawInner {
         Ok(buf.len())
     }
 
-    fn recvfrom(&mut self, buf: &mut [u8], blocked: bool) -> SysResult<(usize, Option<SocketAddr>)> {
-        self.ensure_bound()?;
+    fn recvfrom(
+        &mut self,
+        buf: &mut [u8],
+        blocked: bool,
+        _timeout: Option<Duration>,
+    ) -> SysResult<(usize, Option<SocketAddr>)> {
+        self.ensure_bound(core::net::Ipv4Addr::UNSPECIFIED)?;
         let iface = self.iface.as_ref().ok_or(Errno::ENETUNREACH)?;
 
         loop {
@@ -117,12 +119,34 @@ impl SocketInner for RawInner {
         }
     }
 
-    fn poll_read(&self) -> bool {
+    fn poll_read(&mut self) -> bool {
         if let Some(iface) = &self.iface {
             iface.has_raw_data(self.protocol)
         } else {
             false
         }
+    }
+
+    fn wait_read(&self, waker: usize) -> bool {
+        if let Some(iface) = &self.iface {
+            iface.wait_raw_poll(self.protocol, waker)
+        } else {
+            false
+        }
+    }
+
+    fn cancel_wait_read(&self) {
+        if let Some(iface) = &self.iface {
+            iface.cancel_wait_raw(self.protocol);
+        }
+    }
+
+    fn epoll_notifiers(&self) -> Vec<Arc<EpollNotifier>> {
+        let mut notifiers = Vec::new();
+        if let Some(iface) = &self.iface {
+            notifiers.push(iface.raw_epoll_notifier(self.protocol));
+        }
+        notifiers
     }
 
     fn type_name(&self) -> &'static str {
@@ -131,6 +155,10 @@ impl SocketInner for RawInner {
 
     fn local_addr(&self) -> Option<SocketAddr> {
         self.local
+    }
+
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        self.remote
     }
 }
 

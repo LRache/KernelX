@@ -190,6 +190,7 @@ macro_rules! syscall_entries {
             202 => socket::accept(3),
             203 => socket::connect(3),
             204 => socket::getsockname(3),
+            205 => socket::getpeername(3),
             206 => socket::sendto(6),
             207 => socket::recvfrom(6),
             208 => socket::setsockopt(5),
@@ -197,6 +198,7 @@ macro_rules! syscall_entries {
             210 => socket::shutdown(2),
             211 => socket::sendmsg(3),
             212 => socket::recvmsg(3),
+            242 => socket::accept4(4),
 
             // Time
             101 => time::nanosleep(2) [no_restart],
@@ -217,8 +219,8 @@ macro_rules! syscall_entries {
             20  => event::epoll_create1(1),
             21  => event::epoll_ctl(4),
             22  => event::epoll_pwait(6) [no_restart],
-            72  => event::pselect6_time32(6) [no_restart],
-            73  => event::ppoll_time32(5) [no_restart],
+            72  => event::pselect6_time64(6) [no_restart],
+            73  => event::ppoll_time64(5) [no_restart],
             413 => event::pselect6_time64(6) [no_restart],
             441 => event::epoll_pwait2(6) [no_restart],
             85  => event::timerfd_create(2),

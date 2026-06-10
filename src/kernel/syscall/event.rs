@@ -402,6 +402,27 @@ fn select(
     }
     drop(fdtable);
 
+    if timeout.is_some_and(|duration| duration.is_zero()) {
+        let mut ready_count = 0;
+        for (fd, file, wait_set) in &files_to_select {
+            let event = file.poll_event(*wait_set)?;
+            if let Some(event) = event {
+                set_select_fd_by_event(event, *fd, &mut readfds, &mut writefds, &mut exceptfds);
+                ready_count += 1;
+            }
+        }
+
+        write_back_fdsets(
+            &uptr_readfds,
+            &uptr_writefds,
+            &uptr_exceptfds,
+            &readfds,
+            &writefds,
+            &exceptfds,
+        )?;
+        return Ok(ready_count);
+    }
+
     let tcb = current::tcb();
 
     // Blocked before waiting files to avoid losing wakeup events.
@@ -456,20 +477,7 @@ fn select(
         if !duration.is_zero() {
             Some(timer::add_timer(current::task().clone(), duration))
         } else {
-            // timeout is zero, return immediately
-            for file in files_to_select.iter().map(|(_, f, _)| f) {
-                file.wait_event_cancel();
-            }
-            write_back_fdsets(
-                &uptr_readfds,
-                &uptr_writefds,
-                &uptr_exceptfds,
-                &readfds,
-                &writefds,
-                &exceptfds,
-            )?;
-
-            return Ok(0);
+            unreachable!("zero select timeout is handled before registering waiters");
         }
     } else {
         None
@@ -662,6 +670,32 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
         pfd.revents = PollEventSet::empty();
     });
 
+    if timeout.is_some_and(|duration| duration.is_zero()) {
+        let mut count = 0;
+        for pfd in pollfds.iter_mut() {
+            if pfd.fd < 0 {
+                continue;
+            }
+
+            let file = match fdtable.get(pfd.fd as usize) {
+                Ok(file) => file,
+                Err(_) => {
+                    pfd.revents = PollEventSet::POLLNVAL;
+                    count += 1;
+                    continue;
+                }
+            };
+
+            let wait_set = pfd.events.into();
+            if let Some(event) = file.poll_event(wait_set)? {
+                pfd.revents = event.into();
+                count += 1;
+            }
+        }
+
+        return Ok(count);
+    }
+
     let mut count = 0u32;
     let mut i = 0;
 
@@ -675,7 +709,6 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
         .iter_mut()
         .filter_map(|pfd| {
             if pfd.fd < 0 {
-                count += 1;
                 return None;
             }
 
@@ -710,10 +743,7 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
 
     let timer_id = match timeout {
         Some(timeout) if timeout.is_zero() => {
-            poll_files.iter_mut().for_each(|(file, _)| {
-                file.wait_event_cancel();
-            });
-            return Ok(0);
+            unreachable!("zero poll timeout is handled before registering waiters");
         }
         Some(timeout) => Some(timer::add_timer(current::task().clone(), timeout)),
         None => None,
@@ -780,6 +810,47 @@ pub fn ppoll_time32(
     uptr_ufds: UArray<Pollfd>,
     nfds: usize,
     uptr_timeout: UPtr<Timespec32>,
+    uptr_sigmask: UPtr<SignalSet>,
+    sigmask_size: usize,
+) -> SysResult<usize> {
+    if nfds > 0 {
+        uptr_ufds.should_not_null()?;
+    }
+
+    if nfds > current::fdtable().lock().get_max_fd() {
+        return Err(Errno::EINVAL);
+    }
+
+    let mut pollfds = vec![Pollfd::default(); nfds];
+    if nfds > 0 {
+        uptr_ufds.read(0, &mut pollfds)?;
+    }
+
+    let timeout = if !uptr_timeout.is_null() {
+        Some(uptr_timeout.read()?.try_into()?)
+    } else {
+        None
+    };
+
+    if !uptr_sigmask.is_null() && sigmask_size != core::mem::size_of::<SignalSet>() {
+        return Err(Errno::EINVAL);
+    }
+
+    let sigmask = uptr_sigmask.read_optional()?;
+
+    let r = do_poll(&mut pollfds, timeout, sigmask)?;
+
+    if nfds > 0 {
+        uptr_ufds.write(0, &pollfds)?;
+    }
+
+    Ok(r)
+}
+
+pub fn ppoll_time64(
+    uptr_ufds: UArray<Pollfd>,
+    nfds: usize,
+    uptr_timeout: UPtr<Timespec>,
     uptr_sigmask: UPtr<SignalSet>,
     sigmask_size: usize,
 ) -> SysResult<usize> {

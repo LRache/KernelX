@@ -3,9 +3,10 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use core::time::Duration;
 
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::Event;
+use crate::kernel::event::{EpollNotifier, Event};
 use crate::kernel::scheduler::current;
 use crate::klib::SpinLock;
 use crate::net::interface::Interface;
@@ -19,6 +20,8 @@ const DEFAULT_WINDOW: u16 = 65535;
 const MSS: usize = 1460;
 const DUP_ACK_THRESHOLD: u32 = 3;
 const MAX_RETRANSMITS: u32 = 8;
+const SYN_RETRANSMIT_TIMEOUT: Duration = Duration::from_millis(200);
+const SYN_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpState {
@@ -49,6 +52,7 @@ pub struct TcpInner {
     local: Option<SocketAddr>,
     remote: Option<SocketAddr>,
     iface: Option<Arc<Interface>>,
+    owns_port: bool,
 
     // === Send sequence space ===
     //   snd_una: oldest unacknowledged byte
@@ -94,6 +98,7 @@ impl TcpInner {
             local: None,
             remote: None,
             iface: None,
+            owns_port: false,
             snd_una: isn,
             snd_nxt: isn,
             tx_buf: VecDeque::new(),
@@ -112,11 +117,13 @@ impl TcpInner {
     /// Create an established socket from an accepted connection.
     fn from_accepted(conn: PendingConn) -> Self {
         let isn = conn.snd_nxt;
+        conn.iface.bind_tcp_flow(conn.local.port, conn.remote);
         Self {
             state: TcpState::Established,
             local: Some(conn.local),
             remote: Some(conn.remote),
             iface: Some(conn.iface),
+            owns_port: false,
             snd_una: isn,
             snd_nxt: isn,
             tx_buf: VecDeque::new(),
@@ -132,13 +139,109 @@ impl TcpInner {
         }
     }
 
-    fn resolve_iface(&mut self) -> SysResult<Arc<Interface>> {
+    fn resolve_iface(&mut self, addr: SocketAddr) -> SysResult<Arc<Interface>> {
         if let Some(ref iface) = self.iface {
             return Ok(iface.clone());
         }
-        let iface = manager::default_interface().ok_or(Errno::ENETUNREACH)?;
+        let iface = manager::route_interface_for_dst(addr.ip).ok_or(Errno::ENETUNREACH)?;
         self.iface = Some(iface.clone());
         Ok(iface)
+    }
+
+    fn flow_queue(&self) -> Option<(Arc<Interface>, SocketAddr, SocketAddr)> {
+        if matches!(self.state, TcpState::Listen | TcpState::SynSent) {
+            return None;
+        }
+        let iface = self.iface.as_ref()?.clone();
+        Some((iface, self.local?, self.remote?))
+    }
+
+    fn bind_flow_queue(&self) {
+        if let Some((iface, local, remote)) = self.flow_queue() {
+            iface.bind_tcp_flow(local.port, remote);
+        }
+    }
+
+    fn unbind_flow_queue(&self) {
+        if let Some(iface) = self.iface.as_ref() {
+            if let (Some(local), Some(remote)) = (self.local, self.remote) {
+                iface.unbind_tcp_flow(local.port, remote);
+            }
+        }
+    }
+
+    fn try_recv_segment(&self, local: SocketAddr) -> Option<(Arc<Interface>, SocketAddr, Vec<u8>)> {
+        if let Some((iface, local, remote)) = self.flow_queue() {
+            return iface
+                .try_recv_tcp_flow(local.port, remote)
+                .map(|(src, data)| (iface.clone(), src, data));
+        }
+        if let Some(ref iface) = self.iface {
+            return iface
+                .try_recv_tcp(local.port)
+                .map(|(src, data)| (iface.clone(), src, data));
+        }
+        for iface in manager::list() {
+            if let Some((src, data)) = iface.try_recv_tcp(local.port) {
+                return Some((iface, src, data));
+            }
+        }
+        None
+    }
+
+    fn wait_segment(&self, local: SocketAddr) -> bool {
+        if let Some((iface, local, remote)) = self.flow_queue() {
+            return iface.wait_tcp_flow(local.port, remote);
+        }
+        if let Some(ref iface) = self.iface {
+            return iface.wait_tcp(local.port);
+        }
+        let mut ready = false;
+        for iface in manager::list() {
+            ready |= iface.wait_tcp(local.port);
+        }
+        ready
+    }
+
+    fn cancel_wait_segment(&self, local: SocketAddr) {
+        if let Some((iface, local, remote)) = self.flow_queue() {
+            iface.cancel_wait_tcp_flow(local.port, remote);
+            return;
+        }
+        if let Some(ref iface) = self.iface {
+            iface.cancel_wait_tcp(local.port);
+            return;
+        }
+        for iface in manager::list() {
+            iface.cancel_wait_tcp(local.port);
+        }
+    }
+
+    fn bind_local(&mut self, addr: SocketAddr) -> SysResult<()> {
+        if addr.ip.is_unspecified() {
+            for iface in manager::list() {
+                iface.bind_tcp(addr.port);
+            }
+            self.iface = None;
+        } else {
+            let iface = manager::find_interface_for_local_addr(addr.ip).ok_or(Errno::EADDRNOTAVAIL)?;
+            iface.bind_tcp(addr.port);
+            self.iface = Some(iface);
+        }
+        self.local = Some(addr);
+        self.owns_port = true;
+        Ok(())
+    }
+
+    fn unbind_local(&mut self, local: SocketAddr) {
+        if local.ip.is_unspecified() {
+            for iface in manager::list() {
+                iface.unbind_tcp(local.port);
+            }
+            self.iface = None;
+        } else if let Some(iface) = self.iface.take() {
+            iface.unbind_tcp(local.port);
+        }
     }
 
     /// Advertised receive window: how much space left in rx_buf.
@@ -197,26 +300,46 @@ impl TcpInner {
     }
 
     /// Wait for a TCP segment on our local port, blocking or non-blocking.
-    fn recv_segment(&self, blocked: bool) -> SysResult<(SocketAddr, Vec<u8>)> {
+    fn recv_segment(&self, blocked: bool) -> SysResult<(Arc<Interface>, SocketAddr, Vec<u8>)> {
         let local = self.local.ok_or(Errno::EINVAL)?;
-        let iface = self.iface.as_ref().ok_or(Errno::EINVAL)?;
 
         loop {
-            if let Some(entry) = iface.try_recv_tcp(local.port) {
-                return Ok(entry);
+            if let Some((iface, src, data)) = self.try_recv_segment(local) {
+                return Ok((iface, src, data));
             }
             if !blocked {
                 return Err(Errno::EAGAIN);
             }
-            iface.wait_tcp(local.port);
+            if self.wait_segment(local) {
+                self.cancel_wait_segment(local);
+                continue;
+            }
             current::schedule();
+            self.cancel_wait_segment(local);
             match current::task().take_wakeup_event() {
-                Some(Event::Signal) => {
-                    iface.cancel_wait_tcp(local.port);
-                    return Err(Errno::EINTR);
-                }
+                Some(Event::Signal) => return Err(Errno::EINTR),
                 _ => continue,
             }
+        }
+    }
+
+    fn recv_segment_timeout(&self, timeout: Duration) -> SysResult<Option<(Arc<Interface>, SocketAddr, Vec<u8>)>> {
+        let local = self.local.ok_or(Errno::EINVAL)?;
+        let mut remaining = timeout;
+
+        loop {
+            if let Some((iface, src, data)) = self.try_recv_segment(local) {
+                return Ok(Some((iface, src, data)));
+            }
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+
+            let sleep_for = remaining.min(SYN_WAIT_POLL_INTERVAL);
+            if matches!(current::sleep(sleep_for), Event::Signal) {
+                return Err(Errno::EINTR);
+            }
+            remaining = remaining.checked_sub(sleep_for).unwrap_or(Duration::ZERO);
         }
     }
 
@@ -246,7 +369,16 @@ impl TcpInner {
     fn process_segment(&mut self, src: SocketAddr, data: &[u8]) -> bool {
         let pkt = match TCPPacket::parse(data) {
             Some(p) => p,
-            None => return false,
+            None => {
+                crate::kwarn!(
+                    "tcp process_segment drop: parse failed state={:?} src={}:{} len={}",
+                    self.state,
+                    src.ip,
+                    src.port,
+                    data.len()
+                );
+                return false;
+            }
         };
 
         let flags = pkt.flags();
@@ -260,6 +392,13 @@ impl TcpInner {
                 if flags.contains(TcpFlags::SYN | TcpFlags::ACK) {
                     // Validate: ACK must acknowledge our SYN
                     if ack != self.snd_nxt {
+                        crate::kwarn!(
+                            "tcp syn-sent drop: bad ack expected={} got={} src={}:{}",
+                            self.snd_nxt,
+                            ack,
+                            src.ip,
+                            src.port
+                        );
                         return false;
                     }
                     self.snd_una = ack;
@@ -267,10 +406,12 @@ impl TcpInner {
                     self.snd_wnd = wnd;
                     self.remote = Some(src);
                     self.state = TcpState::Established;
+                    self.bind_flow_queue();
                     let _ = self.send_segment(TcpFlags::ACK, &[]);
                     return true;
                 }
                 if flags.contains(TcpFlags::RST) {
+                    crate::kwarn!("tcp syn-sent got RST from {}:{}", src.ip, src.port);
                     self.state = TcpState::Closed;
                     return true;
                 }
@@ -278,6 +419,12 @@ impl TcpInner {
 
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
                 if flags.contains(TcpFlags::RST) {
+                    crate::kwarn!(
+                        "tcp established got RST from {}:{} state={:?}",
+                        src.ip,
+                        src.port,
+                        self.state
+                    );
                     self.state = TcpState::Closed;
                     self.rx_closed = true;
                     return true;
@@ -351,6 +498,12 @@ impl TcpInner {
 
         if seq_after(ack, self.snd_nxt) {
             // ACK for data we haven't sent — ignore
+            crate::kwarn!(
+                "tcp ack ignored: ack beyond snd_nxt ack={} snd_nxt={} state={:?}",
+                ack,
+                self.snd_nxt,
+                self.state
+            );
             return;
         }
 
@@ -442,12 +595,8 @@ impl TcpInner {
             Some(l) => l,
             None => return,
         };
-        let iface = match &self.iface {
-            Some(i) => i.clone(),
-            None => return,
-        };
 
-        while let Some((src, data)) = iface.try_recv_tcp(local.port) {
+        while let Some((_iface, src, data)) = self.try_recv_segment(local) {
             self.process_segment(src, &data);
         }
     }
@@ -460,9 +609,25 @@ impl TcpInner {
         data: &[u8],
         accept_queue: &Arc<SpinLock<AcceptQueue>>,
     ) {
+        let local = if local.ip.is_unspecified() {
+            SocketAddr::new(iface.ipv4().unwrap_or(core::net::Ipv4Addr::UNSPECIFIED), local.port)
+        } else {
+            local
+        };
+
         let pkt = match TCPPacket::parse(data) {
             Some(p) => p,
-            None => return,
+            None => {
+                crate::kwarn!(
+                    "tcp listen drop: parse failed local={}:{} src={}:{} len={}",
+                    local.ip,
+                    local.port,
+                    src.ip,
+                    src.port,
+                    data.len()
+                );
+                return;
+            }
         };
 
         let flags = pkt.flags();
@@ -470,6 +635,14 @@ impl TcpInner {
         if flags.contains(TcpFlags::SYN) && !flags.contains(TcpFlags::ACK) {
             let mut q = accept_queue.lock();
             if q.queue.len() >= q.capacity {
+                crate::kwarn!(
+                    "tcp listen drop: backlog full local={}:{} src={}:{} capacity={}",
+                    local.ip,
+                    local.port,
+                    src.ip,
+                    src.port,
+                    q.capacity
+                );
                 return; // backlog full, drop
             }
 
@@ -513,15 +686,7 @@ impl SocketInner for TcpInner {
             return Err(Errno::EACCES);
         }
 
-        let iface = if addr.ip.is_unspecified() {
-            manager::default_interface().ok_or(Errno::EADDRNOTAVAIL)?
-        } else {
-            manager::find_interface_for(addr.ip).ok_or(Errno::EADDRNOTAVAIL)?
-        };
-
-        iface.bind_tcp(addr.port);
-        self.local = Some(addr);
-        self.iface = Some(iface);
+        self.bind_local(addr)?;
         Ok(())
     }
 
@@ -532,10 +697,16 @@ impl SocketInner for TcpInner {
 
         // Auto-bind if needed
         if self.local.is_none() {
-            let iface = self.resolve_iface()?;
+            let iface = self.resolve_iface(addr)?;
             let port = iface.alloc_ephemeral_tcp_port();
             iface.bind_tcp(port);
-            self.local = Some(SocketAddr::any(port));
+            self.owns_port = true;
+            self.local = Some(SocketAddr::new(
+                iface.ipv4().unwrap_or(core::net::Ipv4Addr::UNSPECIFIED),
+                port,
+            ));
+        } else if self.iface.is_none() {
+            self.resolve_iface(addr)?;
         }
 
         self.remote = Some(addr);
@@ -553,13 +724,40 @@ impl SocketInner for TcpInner {
         }
 
         // Wait for SYN-ACK
+        let mut syn_retransmits = 0;
         loop {
-            let (src, data) = self.recv_segment(true)?;
-            self.process_segment(src, &data);
+            if let Some((_iface, src, data)) = self.recv_segment_timeout(SYN_RETRANSMIT_TIMEOUT)? {
+                self.process_segment(src, &data);
+            } else if self.state == TcpState::SynSent {
+                if syn_retransmits >= MAX_RETRANSMITS {
+                    crate::kwarn!(
+                        "tcp connect timed out local={}:{} remote={}:{} retransmits={}",
+                        self.local.unwrap().ip,
+                        self.local.unwrap().port,
+                        addr.ip,
+                        addr.port,
+                        syn_retransmits
+                    );
+                    self.state = TcpState::Closed;
+                    return Err(Errno::ETIMEDOUT);
+                }
+
+                syn_retransmits += 1;
+                self.send_segment_at(isn, TcpFlags::SYN, &[])?;
+            }
 
             match self.state {
                 TcpState::Established => return Ok(()),
-                TcpState::Closed => return Err(Errno::ECONNREFUSED),
+                TcpState::Closed => {
+                    crate::kwarn!(
+                        "tcp connect refused local={}:{} remote={}:{}",
+                        self.local.unwrap().ip,
+                        self.local.unwrap().port,
+                        addr.ip,
+                        addr.port
+                    );
+                    return Err(Errno::ECONNREFUSED);
+                }
                 _ => continue,
             }
         }
@@ -591,7 +789,6 @@ impl SocketInner for TcpInner {
         }
 
         let local = self.local.ok_or(Errno::EINVAL)?;
-        let iface = self.iface.as_ref().ok_or(Errno::EINVAL)?.clone();
         let accept_queue = self.backlog.as_ref().ok_or(Errno::EINVAL)?.clone();
 
         loop {
@@ -608,7 +805,7 @@ impl SocketInner for TcpInner {
                 return Err(Errno::EAGAIN);
             }
 
-            let (src, data) = self.recv_segment(true)?;
+            let (iface, src, data) = self.recv_segment(true)?;
             TcpInner::process_listen_segment(&iface, local, src, &data, &accept_queue);
         }
     }
@@ -623,7 +820,15 @@ impl SocketInner for TcpInner {
 
         match self.state {
             TcpState::Established | TcpState::CloseWait => {}
-            _ => return Err(Errno::ENOTCONN),
+            _ => {
+                crate::kwarn!(
+                    "tcp sendto rejected: state={:?} len={} remote={:?}",
+                    self.state,
+                    buf.len(),
+                    self.remote
+                );
+                return Err(Errno::ENOTCONN);
+            }
         }
 
         // Drain incoming ACKs first to open up send window
@@ -638,7 +843,7 @@ impl SocketInner for TcpInner {
                 let window = self.send_window_available();
                 if window == 0 {
                     // Still full; wait for an ACK
-                    if let Ok((src, data)) = self.recv_segment(true) {
+                    if let Ok((_iface, src, data)) = self.recv_segment(true) {
                         self.process_segment(src, &data);
                     }
                     continue;
@@ -671,7 +876,12 @@ impl SocketInner for TcpInner {
         Ok(sent)
     }
 
-    fn recvfrom(&mut self, buf: &mut [u8], blocked: bool) -> SysResult<(usize, Option<SocketAddr>)> {
+    fn recvfrom(
+        &mut self,
+        buf: &mut [u8],
+        blocked: bool,
+        _timeout: Option<Duration>,
+    ) -> SysResult<(usize, Option<SocketAddr>)> {
         let remote = self.remote;
 
         loop {
@@ -682,6 +892,7 @@ impl SocketInner for TcpInner {
                 for i in 0..n {
                     buf[i] = self.rx_buf.pop_front().unwrap();
                 }
+                let _ = self.send_segment(TcpFlags::ACK, &[]);
                 return Ok((n, remote));
             }
 
@@ -691,14 +902,16 @@ impl SocketInner for TcpInner {
 
             match self.state {
                 TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {}
-                _ => return Ok((0, remote)),
+                _ => {
+                    return Ok((0, remote));
+                }
             }
 
             if !blocked {
                 return Err(Errno::EAGAIN);
             }
 
-            let (src, data) = self.recv_segment(true)?;
+            let (_iface, src, data) = self.recv_segment(true)?;
             self.process_segment(src, &data);
         }
     }
@@ -728,19 +941,29 @@ impl SocketInner for TcpInner {
         Ok(())
     }
 
-    fn poll_read(&self) -> bool {
-        if !self.rx_buf.is_empty() || self.rx_closed {
-            return true;
-        }
+    fn poll_read(&mut self) -> bool {
         if self.state == TcpState::Listen {
             if let Some(ref q) = self.backlog {
-                return !q.lock().queue.is_empty();
+                if !q.lock().queue.is_empty() {
+                    return true;
+                }
             }
+
+            let Some(local) = self.local else {
+                return false;
+            };
+            let Some(accept_queue) = self.backlog.as_ref().cloned() else {
+                return false;
+            };
+            while let Some((iface, src, data)) = self.try_recv_segment(local) {
+                TcpInner::process_listen_segment(&iface, local, src, &data, &accept_queue);
+            }
+            return !accept_queue.lock().queue.is_empty();
         }
-        if let Some(ref iface) = self.iface {
-            if let Some(local) = self.local {
-                return iface.has_tcp_data(local.port);
-            }
+
+        self.drain_segments();
+        if !self.rx_buf.is_empty() || self.rx_closed {
+            return true;
         }
         false
     }
@@ -751,12 +974,60 @@ impl SocketInner for TcpInner {
             && self.send_window_available() > 0
     }
 
+    fn wait_read(&self, waker: usize) -> bool {
+        let Some(local) = self.local else {
+            return false;
+        };
+        if let Some((iface, local, remote)) = self.flow_queue() {
+            return iface.wait_tcp_flow_poll(local.port, remote, waker);
+        }
+        if let Some(ref iface) = self.iface {
+            return iface.wait_tcp_poll(local.port, waker);
+        }
+
+        let mut ready = false;
+        for iface in manager::list() {
+            ready |= iface.wait_tcp_poll(local.port, waker);
+        }
+        ready
+    }
+
+    fn cancel_wait_read(&self) {
+        if let Some(local) = self.local {
+            self.cancel_wait_segment(local);
+        }
+    }
+
+    fn epoll_notifiers(&self) -> Vec<Arc<EpollNotifier>> {
+        let Some(local) = self.local else {
+            return Vec::new();
+        };
+        if let Some((iface, local, remote)) = self.flow_queue() {
+            let mut notifiers = Vec::new();
+            notifiers.push(iface.tcp_flow_epoll_notifier(local.port, remote));
+            return notifiers;
+        }
+        if let Some(ref iface) = self.iface {
+            let mut notifiers = Vec::new();
+            notifiers.push(iface.tcp_epoll_notifier(local.port));
+            return notifiers;
+        }
+        manager::list()
+            .into_iter()
+            .map(|iface| iface.tcp_epoll_notifier(local.port))
+            .collect()
+    }
+
     fn type_name(&self) -> &'static str {
         "inet-tcp"
     }
 
     fn local_addr(&self) -> Option<SocketAddr> {
         self.local
+    }
+
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        self.remote
     }
 }
 
@@ -771,9 +1042,10 @@ impl Drop for TcpInner {
             }
             _ => {}
         }
-        if let (Some(local), Some(iface)) = (self.local.take(), self.iface.take()) {
-            if self.backlog.is_none() || self.state == TcpState::Listen {
-                iface.unbind_tcp(local.port);
+        self.unbind_flow_queue();
+        if let Some(local) = self.local.take() {
+            if self.owns_port {
+                self.unbind_local(local);
             }
         }
     }

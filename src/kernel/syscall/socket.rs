@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
 use crate::fs::file::FileOps;
@@ -22,7 +23,34 @@ use super::common::IOVec;
 use super::uptr::{UBuffer, UPtr, UserPointer, UserStruct};
 
 const MSG_IOV_MAX: usize = 1024;
+const MSG_DONTWAIT: usize = 0x40;
+const SOL_SOCKET: usize = 1;
+const SO_RCVTIMEO: usize = 20;
+const SO_RCVTIMEO_NEW: usize = 66;
 const UNIX_PATH_MAX: usize = 108;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SockTimeval {
+    tv_sec: i64,
+    tv_usec: i64,
+}
+
+impl UserStruct for SockTimeval {}
+
+impl TryFrom<SockTimeval> for Option<Duration> {
+    type Error = Errno;
+
+    fn try_from(value: SockTimeval) -> SysResult<Self> {
+        if value.tv_sec < 0 || value.tv_usec < 0 || value.tv_usec >= 1_000_000 {
+            return Err(Errno::EINVAL);
+        }
+        if value.tv_sec == 0 && value.tv_usec == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Duration::new(value.tv_sec as u64, (value.tv_usec * 1000) as u32)))
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -289,19 +317,56 @@ pub fn listen(fd: usize, backlog: usize) -> SyscallRet {
     Ok(0)
 }
 
-pub fn accept(fd: usize, addr_ptr: UPtr<SockAddrIn>, _addrlen_ptr: UPtr<u32>) -> SyscallRet {
+fn write_inet_sockaddr(addr_ptr: UPtr<SockAddrIn>, addrlen_ptr: UPtr<u32>, addr: SocketAddr) -> SysResult<()> {
+    if addr_ptr.is_null() || addrlen_ptr.is_null() {
+        return Err(Errno::EFAULT);
+    }
+
+    let user_len = addrlen_ptr.read()? as usize;
+    let sockaddr_len = core::mem::size_of::<SockAddrIn>();
+    if user_len < sockaddr_len {
+        return Err(Errno::EINVAL);
+    }
+
+    addr_ptr.write(addr.to_raw())?;
+    addrlen_ptr.write(sockaddr_len as u32)?;
+    Ok(())
+}
+
+fn accept_with_flags(fd: usize, addr_ptr: UPtr<SockAddrIn>, addrlen_ptr: UPtr<u32>, flags: usize) -> SyscallRet {
+    if flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+        return Err(Errno::EINVAL);
+    }
+
     let file = current::fdtable().lock().get(fd)?;
     let new_sock = inet_socket(&file)?.accept()?;
+    if flags & SOCK_NONBLOCK != 0 {
+        let mut file_flags = new_sock.flags();
+        file_flags.blocked = false;
+        new_sock.set_flags(file_flags);
+    }
 
     // Write peer address to user if requested
     if !addr_ptr.is_null() {
-        // TODO: fill in peer address
+        let peer = new_sock.peer_addr().ok_or(Errno::ENOTCONN)?;
+        write_inet_sockaddr(addr_ptr, addrlen_ptr, peer)?;
     }
 
-    let new_fd = current::fdtable()
-        .lock()
-        .push(new_sock as Arc<dyn FileOps>, FDFlags { cloexec: false })?;
+    let new_fd = current::fdtable().lock().push(
+        new_sock as Arc<dyn FileOps>,
+        FDFlags {
+            cloexec: flags & SOCK_CLOEXEC != 0,
+        },
+    )?;
     Ok(new_fd)
+}
+
+pub fn accept(fd: usize, addr_ptr: UPtr<SockAddrIn>, addrlen_ptr: UPtr<u32>) -> SyscallRet {
+    accept_with_flags(fd, addr_ptr, addrlen_ptr, 0)
+}
+
+pub fn accept4(fd: usize, addr_ptr: UPtr<SockAddrIn>, addrlen_ptr: UPtr<u32>, flags: usize) -> SyscallRet {
+    accept_with_flags(fd, addr_ptr, addrlen_ptr, flags)
 }
 
 pub fn connect(fd: usize, addr_ptr: UPtr<SockAddrIn>, addrlen: usize) -> SyscallRet {
@@ -312,25 +377,24 @@ pub fn connect(fd: usize, addr_ptr: UPtr<SockAddrIn>, addrlen: usize) -> Syscall
 }
 
 pub fn getsockname(fd: usize, addr_ptr: UPtr<SockAddrIn>, addrlen_ptr: UPtr<u32>) -> SyscallRet {
-    if addr_ptr.is_null() || addrlen_ptr.is_null() {
-        return Err(Errno::EFAULT);
-    }
-
     let file = current::fdtable().lock().get(fd)?;
     if is_netlink_socket(&file) {
         return Err(Errno::EOPNOTSUPP);
     }
 
-    let addr = inet_socket(&file)?.local_addr().unwrap_or(SocketAddr::any(0)).to_raw();
+    let addr = inet_socket(&file)?.local_addr().unwrap_or(SocketAddr::any(0));
+    write_inet_sockaddr(addr_ptr, addrlen_ptr, addr)?;
+    Ok(0)
+}
 
-    let user_len = addrlen_ptr.read()? as usize;
-    let sockaddr_len = core::mem::size_of::<SockAddrIn>();
-    if user_len < sockaddr_len {
-        return Err(Errno::EINVAL);
+pub fn getpeername(fd: usize, addr_ptr: UPtr<SockAddrIn>, addrlen_ptr: UPtr<u32>) -> SyscallRet {
+    let file = current::fdtable().lock().get(fd)?;
+    if is_netlink_socket(&file) {
+        return Err(Errno::EOPNOTSUPP);
     }
 
-    addr_ptr.write(addr)?;
-    addrlen_ptr.write(sockaddr_len as u32)?;
+    let addr = inet_socket(&file)?.peer_addr().ok_or(Errno::ENOTCONN)?;
+    write_inet_sockaddr(addr_ptr, addrlen_ptr, addr)?;
     Ok(0)
 }
 
@@ -341,19 +405,23 @@ fn read_optional_inet_sockaddr(addr_ptr: UPtr<SockAddrIn>, addrlen: usize) -> Sy
     read_inet_sockaddr(addr_ptr, addrlen).map(Some)
 }
 
-fn send_socket(file: &Arc<dyn FileOps>, buf: &[u8], dst: Option<SocketAddr>) -> SyscallRet {
+fn allow_block(flags: usize) -> bool {
+    flags & MSG_DONTWAIT == 0
+}
+
+fn send_socket(file: &Arc<dyn FileOps>, buf: &[u8], dst: Option<SocketAddr>, flags: usize) -> SyscallRet {
     if is_netlink_socket(file) {
         return file.write(buf);
     }
 
-    inet_socket(file)?.sendto(buf, dst)
+    inet_socket(file)?.sendto_with_blocking(buf, dst, allow_block(flags))
 }
 
 pub fn sendto(
     fd: usize,
     buf_ptr: UBuffer,
     len: usize,
-    _flags: usize,
+    flags: usize,
     addr_ptr: UPtr<SockAddrIn>,
     addrlen: usize,
 ) -> SyscallRet {
@@ -363,29 +431,29 @@ pub fn sendto(
     buf_ptr.read(0, &mut kbuf)?;
 
     let dst = read_optional_inet_sockaddr(addr_ptr, addrlen)?;
-    send_socket(&file, &kbuf, dst)
+    send_socket(&file, &kbuf, dst, flags)
 }
 
-fn recv_socket(file: &Arc<dyn FileOps>, buf: &mut [u8]) -> SysResult<(usize, Option<SocketAddr>)> {
+fn recv_socket(file: &Arc<dyn FileOps>, buf: &mut [u8], flags: usize) -> SysResult<(usize, Option<SocketAddr>)> {
     if is_netlink_socket(file) {
         return Ok((file.read(buf)?, None));
     }
 
-    inet_socket(file)?.recvfrom(buf)
+    inet_socket(file)?.recvfrom_with_blocking(buf, allow_block(flags))
 }
 
 pub fn recvfrom(
     fd: usize,
     buf_ptr: UBuffer,
     len: usize,
-    _flags: usize,
+    flags: usize,
     addr_ptr: UPtr<SockAddrIn>,
     addrlen_ptr: UPtr<u32>,
 ) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
 
     let mut kbuf = alloc::vec![0u8; len];
-    let (n, src) = recv_socket(&file, &mut kbuf)?;
+    let (n, src) = recv_socket(&file, &mut kbuf, flags)?;
 
     // Write data back to user
     buf_ptr.write(0, &kbuf[..n])?;
@@ -404,12 +472,45 @@ pub fn recvfrom(
     Ok(n)
 }
 
+fn read_sockopt_int(optval: usize, optlen: usize) -> SysResult<usize> {
+    if optval == 0 {
+        return Err(Errno::EFAULT);
+    }
+    if optlen < size_of::<i32>() {
+        return Err(Errno::EINVAL);
+    }
+
+    let value = UPtr::<i32>::from_uaddr(optval).read()?;
+    if value < 0 {
+        return Err(Errno::EINVAL);
+    }
+    Ok(value as usize)
+}
+
+fn read_sockopt_timeval(optval: usize, optlen: usize) -> SysResult<Option<Duration>> {
+    if optval == 0 {
+        return Err(Errno::EFAULT);
+    }
+    if optlen < size_of::<SockTimeval>() {
+        return Err(Errno::EINVAL);
+    }
+
+    UPtr::<SockTimeval>::from_uaddr(optval).read()?.try_into()
+}
+
 pub fn setsockopt(fd: usize, level: usize, optname: usize, optval: usize, optlen: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
     if is_netlink_socket(&file) {
         return Ok(0);
     }
-    inet_socket(&file)?.setsockopt(level, optname, optval, optlen)?;
+    if level == SOL_SOCKET && matches!(optname, SO_RCVTIMEO | SO_RCVTIMEO_NEW) {
+        let timeout = read_sockopt_timeval(optval, optlen)?;
+        inet_socket(&file)?.set_recv_timeout(timeout);
+        return Ok(0);
+    }
+
+    let value = read_sockopt_int(optval, optlen)?;
+    inet_socket(&file)?.setsockopt(level, optname, value)?;
     Ok(0)
 }
 
@@ -418,7 +519,19 @@ pub fn getsockopt(fd: usize, level: usize, optname: usize, optval: usize, optlen
     if is_netlink_socket(&file) {
         return Ok(0);
     }
-    inet_socket(&file)?.getsockopt(level, optname, optval, optlen)?;
+
+    if optval == 0 || optlen == 0 {
+        return Err(Errno::EFAULT);
+    }
+    let optlen_ptr = UPtr::<u32>::from_uaddr(optlen);
+    let user_len = optlen_ptr.read()? as usize;
+    if user_len < size_of::<i32>() {
+        return Err(Errno::EINVAL);
+    }
+
+    let value = inet_socket(&file)?.getsockopt(level, optname)?.min(i32::MAX as usize) as i32;
+    UPtr::<i32>::from_uaddr(optval).write(value)?;
+    optlen_ptr.write(size_of::<i32>() as u32)?;
     Ok(0)
 }
 
@@ -506,14 +619,14 @@ fn read_msg_name_sockaddr(msg: &UMsgHdr) -> SysResult<Option<SocketAddr>> {
     read_inet_sockaddr(UPtr::<SockAddrIn>::from_uaddr(msg.msg_name), msg.msg_namelen as usize).map(Some)
 }
 
-pub fn sendmsg(fd: usize, uptr_msg: UPtr<UMsgHdr>, _flags: usize) -> SyscallRet {
+pub fn sendmsg(fd: usize, uptr_msg: UPtr<UMsgHdr>, flags: usize) -> SyscallRet {
     let msg = uptr_msg.read()?;
     msg.validate()?;
 
     let file = current::fdtable().lock().get(fd)?;
     let kbuf = gather_iov_data(msg.msg_iov, msg.msg_iovlen)?;
     let dst = read_msg_name_sockaddr(&msg)?;
-    send_socket(&file, &kbuf, dst)
+    send_socket(&file, &kbuf, dst, flags)
 }
 
 fn scatter_iov_data(iov_base: usize, iovcnt: usize, data: &[u8]) -> Result<usize, Errno> {
@@ -538,7 +651,7 @@ fn scatter_iov_data(iov_base: usize, iovcnt: usize, data: &[u8]) -> Result<usize
     Ok(copied)
 }
 
-pub fn recvmsg(fd: usize, uptr_msg: UPtr<UMsgHdr>, _flags: usize) -> SyscallRet {
+pub fn recvmsg(fd: usize, uptr_msg: UPtr<UMsgHdr>, flags: usize) -> SyscallRet {
     let mut msg = uptr_msg.read()?;
     msg.validate()?;
     msg.msg_flags = 0;
@@ -547,7 +660,7 @@ pub fn recvmsg(fd: usize, uptr_msg: UPtr<UMsgHdr>, _flags: usize) -> SyscallRet 
     let total_len = total_iov_len(msg.msg_iov, msg.msg_iovlen)?;
     let file = current::fdtable().lock().get(fd)?;
     let mut kbuf = vec![0u8; total_len];
-    let (n, src) = recv_socket(&file, &mut kbuf)?;
+    let (n, src) = recv_socket(&file, &mut kbuf, flags)?;
 
     scatter_iov_data(msg.msg_iov, msg.msg_iovlen, &kbuf[..n])?;
 

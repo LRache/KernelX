@@ -229,8 +229,7 @@ pub fn clock_gettime(clockid: usize, uptr_timespec: UPtr<Timespec>) -> SysResult
     uptr_timespec.should_not_null()?;
 
     let clockid = ClockId::try_from(clockid).map_err(|_| Errno::EINVAL)?;
-    let timespec = clockid.now()?.into();
-
+    let timespec: Timespec = clockid.now()?.into();
     uptr_timespec.write(timespec)?;
 
     Ok(0)

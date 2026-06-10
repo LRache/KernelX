@@ -5,12 +5,14 @@ pub mod tcp;
 pub mod udp;
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::net::Ipv4Addr;
+use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
 use crate::fs::file::FileFlags;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::FileEvent;
+use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::syscall::UserStruct;
 
 pub use inet::InetSocket;
@@ -41,7 +43,7 @@ pub const SHUT_WR: usize = ShutdownHow::Write as usize;
 pub const SHUT_RDWR: usize = ShutdownHow::ReadWrite as usize;
 
 /// Kernel-internal socket address.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SocketAddr {
     pub ip: Ipv4Addr,
     pub port: u16,
@@ -106,7 +108,12 @@ pub trait SocketInner: Send + Sync {
 
     fn sendto(&mut self, buf: &[u8], dst: Option<SocketAddr>, blocked: bool) -> SysResult<usize>;
 
-    fn recvfrom(&mut self, buf: &mut [u8], blocked: bool) -> SysResult<(usize, Option<SocketAddr>)>;
+    fn recvfrom(
+        &mut self,
+        buf: &mut [u8],
+        blocked: bool,
+        timeout: Option<Duration>,
+    ) -> SysResult<(usize, Option<SocketAddr>)>;
 
     fn shutdown(&mut self, _how: usize) -> SysResult<()> {
         Ok(())
@@ -116,13 +123,17 @@ pub trait SocketInner: Send + Sync {
         None
     }
 
-    fn poll_read(&self) -> bool;
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        None
+    }
+
+    fn poll_read(&mut self) -> bool;
 
     fn poll_write(&self) -> bool {
         true
     }
 
-    fn wait_event(&self, event: FileEvent) -> Option<FileEvent> {
+    fn wait_event(&mut self, event: FileEvent) -> Option<FileEvent> {
         let mut ready = FileEvent::empty();
 
         if event.contains(FileEvent::READ_READY) && self.poll_read() {
@@ -133,6 +144,16 @@ pub trait SocketInner: Send + Sync {
         }
 
         if ready.is_empty() { None } else { Some(ready) }
+    }
+
+    fn wait_read(&self, _waker: usize) -> bool {
+        false
+    }
+
+    fn cancel_wait_read(&self) {}
+
+    fn epoll_notifiers(&self) -> Vec<Arc<EpollNotifier>> {
+        Vec::new()
     }
 
     fn set_flags(&mut self, _flags: &FileFlags) {}

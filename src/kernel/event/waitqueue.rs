@@ -44,6 +44,19 @@ impl<T> WaitQueue<T> {
         });
     }
 
+    pub fn wake_all_by(&mut self, mut predicate: impl FnMut(&T) -> bool, map_arg_to_event: impl Fn(T) -> Event) {
+        let mut i = 0;
+        while i < self.waiters.len() {
+            if predicate(&self.waiters[i].arg) {
+                if let Some(item) = self.waiters.remove(i) {
+                    let _ = scheduler::wakeup_task(item.task, map_arg_to_event(item.arg));
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     pub fn count_by(&self, mut predicate: impl FnMut(&T) -> bool) -> usize {
         let mut count = 0;
         for item in &self.waiters {

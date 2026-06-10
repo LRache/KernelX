@@ -37,12 +37,48 @@ pub fn default_interface() -> Option<Arc<Interface>> {
         .cloned()
 }
 
-/// Find the interface bound to a specific local IPv4 address.
-/// `0.0.0.0` still resolves to the default interface.
-pub fn find_interface_for(ip: Ipv4Addr) -> Option<Arc<Interface>> {
+/// Find the interface that owns a specific local IPv4 address.
+/// This is for bind()-style local address validation, so subnet matches are
+/// intentionally not accepted.
+pub fn find_interface_for_local_addr(ip: Ipv4Addr) -> Option<Arc<Interface>> {
     if ip.is_unspecified() {
-        return default_interface();
+        return None;
     }
     let ifaces = INTERFACES.read();
-    ifaces.values().find(|i| i.ipv4() == Some(ip)).cloned()
+    ifaces.values().find(|iface| iface.ipv4() == Some(ip)).cloned()
+}
+
+/// Route a packet to the interface that should reach `dst`.
+pub fn route_interface_for_dst(dst: Ipv4Addr) -> Option<Arc<Interface>> {
+    let ifaces = INTERFACES.read();
+
+    if dst.is_loopback() {
+        return ifaces.values().find(|iface| iface.is_loopback()).cloned();
+    }
+
+    let mut best_match: Option<(u32, Arc<Interface>)> = None;
+    for iface in ifaces.values() {
+        if iface.is_loopback() {
+            continue;
+        }
+        let (Some(ip), Some(mask)) = (iface.ipv4(), iface.netmask()) else {
+            continue;
+        };
+        let ip = u32::from(ip);
+        let mask = u32::from(mask);
+        let dst = u32::from(dst);
+        if (ip & mask) != (dst & mask) {
+            continue;
+        }
+
+        let prefix_len = mask.count_ones();
+        if best_match.as_ref().map_or(true, |(best, _)| prefix_len > *best) {
+            best_match = Some((prefix_len, iface.clone()));
+        }
+    }
+
+    best_match
+        .map(|(_, iface)| iface)
+        .or_else(|| ifaces.values().find(|iface| !iface.is_loopback()).cloned())
+        .or_else(|| ifaces.values().next().cloned())
 }
