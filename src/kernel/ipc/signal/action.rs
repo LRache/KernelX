@@ -17,6 +17,7 @@ bitflags! {
         const SA_RESTORER  = 0x04000000;
         const SA_ONSTACK   = 0x08000000;
         const SA_RESTART   = 0x10000000;
+        const SA_INTERRUPT = 0x20000000;
         const SA_NODEFER   = 0x40000000;
         const SA_RESETHAND = 0x80000000;
     }
