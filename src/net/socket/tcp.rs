@@ -218,6 +218,18 @@ impl TcpInner {
     }
 
     fn bind_local(&mut self, addr: SocketAddr) -> SysResult<()> {
+        let port = if addr.port == 0 {
+            let iface = if addr.ip.is_unspecified() {
+                manager::default_interface().ok_or(Errno::ENETUNREACH)?
+            } else {
+                manager::find_interface_for_local_addr(addr.ip).ok_or(Errno::EADDRNOTAVAIL)?
+            };
+            iface.alloc_ephemeral_tcp_port()
+        } else {
+            addr.port
+        };
+        let addr = SocketAddr::new(addr.ip, port);
+
         if addr.ip.is_unspecified() {
             for iface in manager::list() {
                 iface.bind_tcp(addr.port);
