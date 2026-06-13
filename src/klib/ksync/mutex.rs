@@ -97,6 +97,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
     }
 
     fn lock_inner(&self, check_lockdep: bool) -> LockGuard<'_, T, R> {
+        let _ = check_lockdep;
         #[cfg(feature = "lockdep")]
         if check_lockdep && current::has_task() {
             use crate::klib::ksync::lockdep;

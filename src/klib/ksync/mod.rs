@@ -1,27 +1,25 @@
-cfg_if::cfg_if! {
-    if #[cfg(feature = "nolock")] {
-        mod nolock;
-        pub use nolock::NoLockMutex as SpinLock;
-        pub use nolock::NoLockRWLock as RWLock;
-        pub use nolock::NoLockMutex as SleepLock;
-    } else {
-        mod locker;
-        mod mutex;
-        mod rwlock;
-        mod spinlock;
-        mod sleeplock;
-
-        #[cfg(feature = "lockdep")]
-        mod lockdep;
-        #[cfg(feature = "lockdep")]
-        pub use lockdep::LockState;
-
-        pub use rwlock::RWLock;
-        pub use spinlock::SpinLock;
-        pub use sleeplock::SleepLock;
-    }
-}
-
+mod locker;
+mod mutex;
+#[cfg(feature = "nolock")]
+mod nolock;
+#[cfg(not(feature = "nolock"))]
+mod rwlock;
+mod sleeplock;
+#[cfg(not(feature = "nolock"))]
+mod spinlock;
 mod tasklocal;
 
+#[cfg(feature = "lockdep")]
+mod lockdep;
+#[cfg(feature = "lockdep")]
+pub use lockdep::LockState;
+#[cfg(feature = "nolock")]
+pub use nolock::NoLockMutex as SpinLock;
+#[cfg(feature = "nolock")]
+pub use nolock::NoLockRWLock as RWLock;
+#[cfg(not(feature = "nolock"))]
+pub use rwlock::RWLock;
+pub use sleeplock::SleepLock;
+#[cfg(not(feature = "nolock"))]
+pub use spinlock::SpinLock;
 pub use tasklocal::TaskLocal;

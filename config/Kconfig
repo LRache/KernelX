@@ -115,8 +115,9 @@ config NOLOCK
 	depends on NO_SMP=y
 	default n
 	help
-	  Disable all locking in SpinLock and SleepLock. Both types become
-	  thin wrappers over UnsafeCell with zero synchronization overhead.
+	  Disable locking in SpinLock and RWLock. Both types become thin
+	  wrappers over UnsafeCell with zero synchronization overhead. SleepLock
+	  keeps its waiting and wakeup semantics.
 	  Only safe on single-CPU (no-smp) systems. Enabling this implicitly
 	  activates the no-smp Cargo feature.
 
