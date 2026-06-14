@@ -106,7 +106,6 @@ pub fn from_fdt(fdt: &Fdt, fdt_node: &FdtNode) {
             let mut i = 0;
             while cursor < length {
                 let slice = &interrupts_extended_prop.value[cursor..cursor + 8];
-                kinfo!("PLIC: interrupts-extended slice: {:x?}\n", slice);
                 let phandle = u32::from_be_bytes(slice[0..4].try_into().unwrap());
                 let hwirq = u32::from_be_bytes(slice[4..8].try_into().unwrap());
 
