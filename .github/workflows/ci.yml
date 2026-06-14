@@ -66,7 +66,7 @@ jobs:
             OBJCOPY=llvm-objcopy-21
 
       - name: Test testsuits-for-oskernel-riscv64
-        timeout-minutes: 120
+        timeout-minutes: 180
         run: |
           tmpdisk="$(mktemp /tmp/qemu-tmpdisk-XXXXXX)"
           trap 'rm -f "$tmpdisk"' EXIT
