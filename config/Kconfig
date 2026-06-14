@@ -239,6 +239,12 @@ config KVM
 	  Enable experimental KVM support.
 	  This option is only available when targeting the RISC-V architecture.
 
+config FANOTIFY
+	bool "Enable fanotify"
+	default y
+	help
+	  Enable fanotify syscalls and filesystem event notifications.
+
 endmenu
 
 menu "Boot Configuration"

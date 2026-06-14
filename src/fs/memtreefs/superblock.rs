@@ -5,10 +5,13 @@ use crate::arch;
 use crate::fs::filesystem::SuperBlockOps;
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi::Statfs;
-use crate::klib::{LazyInitedCell, SpinLock};
+#[cfg(feature = "fanotify")]
+use crate::klib::LazyInitedCell;
+use crate::klib::SpinLock;
 
 use super::inode::{Inode as MemInode, InodeMeta};
 
@@ -71,6 +74,7 @@ impl SuperBlockInner {
 }
 pub struct SuperBlock<T: StaticFsInfo> {
     inner: Arc<SpinLock<SuperBlockInner>>,
+    #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
     read_only: bool,
     _marker: core::marker::PhantomData<T>,
@@ -92,6 +96,7 @@ impl<T: StaticFsInfo> SuperBlock<T> {
 
         Self {
             inner,
+            #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("SuperBlock::fanotify"),
             read_only,
             _marker: core::marker::PhantomData,
@@ -122,10 +127,12 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
         Ok(inode)
     }
 
+    #[cfg(feature = "fanotify")]
     fn fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify.get()
     }
 
+    #[cfg(feature = "fanotify")]
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }

@@ -93,6 +93,10 @@ ifeq ($(CONFIG_ENABLE_WATCHDOG),y)
 RUST_FEATURES += watchdog
 endif
 
+ifeq ($(CONFIG_FANOTIFY),y)
+RUST_FEATURES += fanotify
+endif
+
 ifeq ($(CONFIG_NOLOCK),y)
 RUST_FEATURES += nolock
 endif

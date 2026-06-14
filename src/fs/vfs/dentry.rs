@@ -1,4 +1,5 @@
 use core::fmt::Debug;
+#[cfg(feature = "fanotify")]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::collections::BTreeMap;
@@ -10,12 +11,16 @@ use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
 use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::scheduler::current;
-use crate::klib::{LazyInitedCell, SpinLock};
+#[cfg(feature = "fanotify")]
+use crate::klib::LazyInitedCell;
+use crate::klib::SpinLock;
 
 use super::{LookupFlags, vfs};
 
+#[cfg(feature = "fanotify")]
 static NEXT_MOUNT_ID: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone)]
@@ -40,6 +45,7 @@ enum MountKind {
 
 /// Mount information for all dentries in the same mount point.
 pub struct Mount {
+    #[cfg(feature = "fanotify")]
     id: usize,
     kind: MountKind,
 
@@ -75,6 +81,7 @@ pub struct Mount {
     propagation: SpinLock<MountPropagation>,
 
     /// Fanotify instance for the mount point.
+    #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
@@ -169,6 +176,7 @@ impl MountSharedGroup {
 impl Mount {
     fn new(kind: MountKind, mount_parent: Option<&Arc<Mount>>, mountpoint: Option<&Arc<Dentry>>) -> Self {
         Self {
+            #[cfg(feature = "fanotify")]
             id: NEXT_MOUNT_ID.fetch_add(1, Ordering::Relaxed),
             kind,
             mount_parent: SpinLock::new(mount_parent.map(Arc::downgrade), "Mount::mount_parent"),
@@ -176,10 +184,12 @@ impl Mount {
             root: SpinLock::new(Weak::new(), "Mount::root"),
             source_root: SpinLock::new(None, "Mount::source_root"),
             propagation: SpinLock::new(MountPropagation::Private, "Mount::propagation"),
+            #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("Mount::fanotify"),
         }
     }
 
+    #[cfg(feature = "fanotify")]
     pub fn id(&self) -> usize {
         self.id
     }
@@ -403,12 +413,14 @@ impl Mount {
         }
     }
 
+    #[cfg(feature = "fanotify")]
     pub fn fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify.get()
     }
 
     /// Lazy initialize the fanotify instance for this mount point.
     /// Returns None if the superblock does not support fanotify.
+    #[cfg(feature = "fanotify")]
     pub fn ensure_fanotify(&self) -> Arc<Fanotify> {
         self.fanotify.get_or_init(|| Arc::new(Fanotify::new()))
     }
@@ -521,6 +533,7 @@ impl Dentry {
         vfs().is_superblock_readonly(self.sno())
     }
 
+    #[cfg(feature = "fanotify")]
     pub fn superblock_fanotify(&self) -> Option<Arc<Fanotify>> {
         vfs()
             .superblock_table
@@ -529,6 +542,7 @@ impl Dentry {
             .and_then(|superblock| superblock.fanotify())
     }
 
+    #[cfg(feature = "fanotify")]
     pub fn ensure_superblock_fanotify(&self) -> SysResult<Arc<Fanotify>> {
         vfs()
             .superblock_table
@@ -572,6 +586,7 @@ impl Dentry {
         self.mount.clone()
     }
 
+    #[cfg(feature = "fanotify")]
     pub fn get_mount_id(&self) -> usize {
         self.mount.id()
     }

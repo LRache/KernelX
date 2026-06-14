@@ -10,9 +10,12 @@ use crate::fs::ext4::inode::Ext4Inode;
 use crate::fs::ext4::util::get_block_size;
 use crate::fs::filesystem::SuperBlockOps;
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::uapi::{Statfs, StatfsFlags};
-use crate::klib::{LazyInitedCell, SleepLock};
+#[cfg(feature = "fanotify")]
+use crate::klib::LazyInitedCell;
+use crate::klib::SleepLock;
 use crate::kwarn;
 
 pub(super) fn map_error_to_kernel(code: i32) -> Errno {
@@ -140,6 +143,7 @@ unsafe impl Sync for SuperBlockInner {}
 
 pub struct Ext4SuperBlock {
     superblock: Arc<SleepLock<SuperBlockInner>>,
+    #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
@@ -150,6 +154,7 @@ impl Ext4SuperBlock {
                 SuperBlockInner::new(driver, read_only)?,
                 "Ext4SuperBlock::superblock",
             )),
+            #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("Ext4SuperBlock::fanotify"),
         }))
     }
@@ -168,10 +173,12 @@ impl SuperBlockOps for Ext4SuperBlock {
         2
     }
 
+    #[cfg(feature = "fanotify")]
     fn fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify.get()
     }
 
+    #[cfg(feature = "fanotify")]
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }

@@ -15,9 +15,11 @@ use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
 use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{
-    Event, FanotifyEventMask, FanotifyFdinfoKey, FanotifyFile, FanotifyMarkFlags, notify_fanotify,
-    notify_fanotify_dentry, wait_fanotify_permission as wait_fanotify_permission_for_file,
+    Event, FanotifyEventMask, notify_fanotify, notify_fanotify_dentry,
+    wait_fanotify_permission as wait_fanotify_permission_for_file,
 };
+#[cfg(feature = "fanotify")]
+use crate::kernel::event::{FanotifyFdinfoKey, FanotifyFile, FanotifyMarkFlags};
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
@@ -2167,6 +2169,7 @@ pub struct AtFlags: usize {
     }
 }
 
+#[cfg(feature = "fanotify")]
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct FanotifyInitFlags: usize {
@@ -2186,12 +2189,14 @@ bitflags! {
     }
 }
 
+#[cfg(feature = "fanotify")]
 enum FanotifyMarkOp {
     Add,
     Remove,
     Flush,
 }
 
+#[cfg(feature = "fanotify")]
 fn fanotify_mark_op(flags: FanotifyMarkFlags) -> SysResult<FanotifyMarkOp> {
     let mut op_count = 0;
     if flags.contains(FanotifyMarkFlags::FAN_MARK_ADD) {
@@ -2217,6 +2222,7 @@ fn fanotify_mark_op(flags: FanotifyMarkFlags) -> SysResult<FanotifyMarkOp> {
     }
 }
 
+#[cfg(feature = "fanotify")]
 fn validate_fanotify_mark_flags(flags: FanotifyMarkFlags) -> SysResult<()> {
     if flags.has_conflicting_scope_flags() {
         crate::kwarn!("fanotify_mark: mutually exclusive scope flags={:#x}", flags.bits());
@@ -2231,6 +2237,7 @@ fn validate_fanotify_mark_flags(flags: FanotifyMarkFlags) -> SysResult<()> {
     Ok(())
 }
 
+#[cfg(feature = "fanotify")]
 pub fn fanotify_init(flags: usize, event_f_flags: usize) -> SyscallRet {
     let Some(flags) = FanotifyInitFlags::from_bits(flags) else {
         crate::kwarn!("fanotify_init: unsupported flags={:#x}", flags);
@@ -2282,6 +2289,12 @@ pub fn fanotify_init(flags: usize, event_f_flags: usize) -> SyscallRet {
     )
 }
 
+#[cfg(not(feature = "fanotify"))]
+pub fn fanotify_init(_flags: usize, _event_f_flags: usize) -> SyscallRet {
+    Err(Errno::ENOSYS)
+}
+
+#[cfg(feature = "fanotify")]
 pub fn fanotify_mark(
     fanotify_fd: usize,
     flags: usize,
@@ -2457,6 +2470,17 @@ pub fn fanotify_mark(
     }
 
     Ok(0)
+}
+
+#[cfg(not(feature = "fanotify"))]
+pub fn fanotify_mark(
+    _fanotify_fd: usize,
+    _flags: usize,
+    _mask: usize,
+    _dirfd: usize,
+    _uptr_pathname: UString,
+) -> SyscallRet {
+    Err(Errno::ENOSYS)
 }
 
 pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flags: usize) -> SyscallRet {

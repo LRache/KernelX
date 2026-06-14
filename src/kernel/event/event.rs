@@ -5,19 +5,29 @@ use super::FileEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    Poll { event: FileEvent, waker: usize },
+    Poll {
+        event: FileEvent,
+        waker: usize,
+    },
     Epoll,
     ReadReady,
     WriteReady,
     Timeout,
     Futex,
-    FutexWaitv { index: usize },
+    FutexWaitv {
+        index: usize,
+    },
     Sem,
     Msg,
-    Process { child: Tid },
-    WaitSignal { signum: SignalNum },
+    Process {
+        child: Tid,
+    },
+    WaitSignal {
+        signum: SignalNum,
+    },
     Signal,
     Ptrace,
+    #[cfg(feature = "fanotify")]
     FanotifyPermission,
     VFork,
     IOComplete,

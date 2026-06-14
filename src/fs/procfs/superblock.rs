@@ -5,8 +5,10 @@ use crate::driver::BlockDriverOps;
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::uapi::Statfs;
+#[cfg(feature = "fanotify")]
 use crate::klib::LazyInitedCell;
 
 use super::inode;
@@ -25,12 +27,14 @@ impl FileSystemOps for FileSystem {
 }
 
 pub struct SuperBlock {
+    #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
 impl SuperBlock {
     fn new() -> Self {
         Self {
+            #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("ProcfsSuperBlock::fanotify"),
         }
     }
@@ -96,10 +100,12 @@ impl SuperBlockOps for SuperBlock {
         }
     }
 
+    #[cfg(feature = "fanotify")]
     fn fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify.get()
     }
 
+    #[cfg(feature = "fanotify")]
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }

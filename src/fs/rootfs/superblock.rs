@@ -5,7 +5,9 @@ use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
 use crate::fs::{Dentry, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
+#[cfg(feature = "fanotify")]
 use crate::klib::LazyInitedCell;
 
 #[derive(Debug, Clone)]
@@ -53,12 +55,14 @@ impl InodeOps for RootInode {
 pub struct RootFileSystem;
 
 pub struct RootFileSystemSuperBlock {
+    #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
 impl RootFileSystemSuperBlock {
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("RootFileSystemSuperBlock::fanotify"),
         }
     }
@@ -73,10 +77,12 @@ impl SuperBlockOps for RootFileSystemSuperBlock {
         Ok(Arc::new(RootInode::new()))
     }
 
+    #[cfg(feature = "fanotify")]
     fn fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify.get()
     }
 
+    #[cfg(feature = "fanotify")]
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }

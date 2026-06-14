@@ -5,6 +5,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::{Dentry, Perm};
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
@@ -106,10 +107,12 @@ pub trait InodeOps: DowncastSync {
         None
     }
 
+    #[cfg(feature = "fanotify")]
     fn fanotify(&self) -> Option<Arc<Fanotify>> {
         None
     }
 
+    #[cfg(feature = "fanotify")]
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify()
     }

@@ -1,5 +1,6 @@
 use bitflags::bitflags;
 
+#[cfg(feature = "fanotify")]
 use crate::fs::inode::Index;
 
 bitflags! {
@@ -22,6 +23,7 @@ bitflags! {
 }
 
 impl FanotifyEventMask {
+    #[cfg(feature = "fanotify")]
     pub(super) fn event_bits(self) -> Self {
         self & (Self::FAN_ACCESS
             | Self::FAN_MODIFY
@@ -36,6 +38,7 @@ impl FanotifyEventMask {
     }
 }
 
+#[cfg(feature = "fanotify")]
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct FanotifyMarkFlags: usize {
@@ -53,6 +56,7 @@ bitflags! {
     }
 }
 
+#[cfg(feature = "fanotify")]
 impl FanotifyMarkFlags {
     pub fn has_conflicting_scope_flags(self) -> bool {
         self.contains(Self::FAN_MARK_MOUNT) && self.contains(Self::FAN_MARK_FILESYSTEM)
@@ -71,12 +75,14 @@ impl FanotifyMarkFlags {
     }
 }
 
+#[cfg(feature = "fanotify")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FanotifyFdinfoKey {
     index: Option<Index>,
     mount_id: Option<usize>,
 }
 
+#[cfg(feature = "fanotify")]
 impl FanotifyFdinfoKey {
     pub(crate) fn new(index: Option<Index>, mount_id: Option<usize>) -> Self {
         Self { index, mount_id }

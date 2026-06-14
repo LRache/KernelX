@@ -10,13 +10,16 @@ use crate::fs::inode::{InodeLockState, InodeSealOps, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::ipc::Pipe;
 use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
-use crate::klib::{LazyInitedCell, SpinLock};
+#[cfg(feature = "fanotify")]
+use crate::klib::LazyInitedCell;
+use crate::klib::SpinLock;
 
 use super::superblock::{StaticFsInfo, SuperBlockInner};
 
@@ -87,6 +90,7 @@ pub struct Inode<T: StaticFsInfo> {
     meta: SpinLock<InodeMeta>,
     pipe: SpinLock<Option<Arc<PipeInner>>>,
     lock_state: SpinLock<InodeLockState>,
+    #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
@@ -99,6 +103,7 @@ impl<T: StaticFsInfo> Inode<T> {
             meta: SpinLock::new(meta, "Inode::meta"),
             pipe: SpinLock::new(None, "Inode::pipe"),
             lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
+            #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("Inode::fanotify"),
             superblock,
             _marker: core::marker::PhantomData,
@@ -320,10 +325,12 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         Some(&self.lock_state)
     }
 
+    #[cfg(feature = "fanotify")]
     fn fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify.get()
     }
 
+    #[cfg(feature = "fanotify")]
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }

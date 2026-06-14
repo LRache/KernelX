@@ -22,6 +22,7 @@ nolock = ["no-smp"]
 swap-memory = []
 backtrace = []
 watchdog = []
+fanotify = []
 
 kvm=[]
 

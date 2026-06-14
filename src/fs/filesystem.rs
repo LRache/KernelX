@@ -4,6 +4,7 @@ use core::option::Option;
 use crate::driver::BlockDriverOps;
 use crate::fs::Mode;
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::uapi::{Statfs, StatfsFlags};
 
@@ -34,10 +35,12 @@ pub trait SuperBlockOps: Send + Sync {
 
     fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>>;
 
+    #[cfg(feature = "fanotify")]
     fn fanotify(&self) -> Option<Arc<Fanotify>> {
         None
     }
 
+    #[cfg(feature = "fanotify")]
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify()
     }

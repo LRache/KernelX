@@ -15,12 +15,15 @@ use crate::fs::inode::{InodeLockState, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+#[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::ipc::Pipe;
 use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::klib::{LazyInitedCell, SleepLock, SpinLock};
+#[cfg(feature = "fanotify")]
+use crate::klib::LazyInitedCell;
+use crate::klib::{SleepLock, SpinLock};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum InodeType {
@@ -316,6 +319,7 @@ pub struct Ext4Inode {
     lock_state: SpinLock<InodeLockState>,
     mmap_pages: SpinLock<BTreeMap<usize, Arc<PhysPageFrame>>>,
     pipe: SpinLock<Option<Arc<PipeInner>>>,
+    #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
@@ -333,6 +337,7 @@ impl Ext4Inode {
             lock_state: SpinLock::new(InodeLockState::new(), "Ext4Inode::lock_state"),
             mmap_pages: SpinLock::new(BTreeMap::new(), "Ext4Inode::mmap_pages"),
             pipe: SpinLock::new(None, "Ext4Inode::pipe"),
+            #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("Ext4Inode::fanotify"),
         })
     }
@@ -435,10 +440,12 @@ impl InodeOps for Ext4Inode {
         Some(&self.lock_state)
     }
 
+    #[cfg(feature = "fanotify")]
     fn fanotify(&self) -> Option<Arc<Fanotify>> {
         self.fanotify.get()
     }
 
+    #[cfg(feature = "fanotify")]
     fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
         Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
