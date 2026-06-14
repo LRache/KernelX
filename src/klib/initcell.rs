@@ -40,6 +40,14 @@ impl<T> InitedCell<T> {
         }
         self.state.store(InitState::Inited as u8, Ordering::Release);
     }
+
+    pub fn try_get(&self) -> Option<&T> {
+        if self.state.load(Ordering::Acquire) == InitState::Inited as u8 {
+            Some(unsafe { (*self.value.get()).assume_init_ref() })
+        } else {
+            None
+        }
+    }
 }
 
 impl<T> Deref for InitedCell<T> {

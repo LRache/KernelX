@@ -17,6 +17,16 @@ const PA_MASK: usize = (1 << 48) - 1;
 
 static STABLE_COUNTER_FREQ_HZ: InitedCell<u64> = InitedCell::uninit();
 
+impl Arch {
+    pub fn try_uptime() -> Option<Duration> {
+        let freq = *STABLE_COUNTER_FREQ_HZ.try_get()?;
+        if freq == 0 {
+            return None;
+        }
+        Some(Duration::from_micros(csr::rdtime().saturating_mul(1_000_000) / freq))
+    }
+}
+
 impl ArchTrait for Arch {
     fn init(_memory_top: usize) {
         chosen::kconsole::register(Box::new(EarlyUart));

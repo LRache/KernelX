@@ -12,6 +12,7 @@ log-info  = ["log-warn"]
 log-debug = ["log-info"]
 log-trace = ["log-debug"]
 log-trace-syscall = []
+log-syscall-cpu-time = []
 warn-unimplemented-syscall = []
 
 lockdep = []

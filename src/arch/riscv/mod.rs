@@ -22,7 +22,7 @@ cfg_if::cfg_if! {
     }
 }
 
-use cpu::{core_count, time_frequency};
+use cpu::{core_count, time_frequency, try_time_frequency};
 
 pub const PGBITS: usize = 12; // 4KB page size
 pub const PGSIZE: usize = 1 << PGBITS; // 4096 bytes

@@ -60,6 +60,10 @@ pub fn time_frequency() -> u32 {
     *TIME_FREQ
 }
 
+pub fn try_time_frequency() -> Option<u32> {
+    TIME_FREQ.try_get().copied()
+}
+
 pub fn core_count() -> usize {
     CPU_INFO.len()
 }

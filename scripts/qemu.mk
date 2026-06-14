@@ -20,6 +20,12 @@ TMPDISK_SIZE ?= 1G
 TMPDISK      := $(shell mktemp /tmp/qemu-tmpdisk-XXXXXX)
 SECOND_DISK_IMAGE := $(subst ",,$(CONFIG_SECOND_DISK_IMAGE))
 SECOND_DISK := $(if $(SECOND_DISK_IMAGE),$(SECOND_DISK_IMAGE),$(TMPDISK))
+CONFIG_QEMU_DEBUG_CONSOLE_DEVICE := $(call qemu_unquote,$(CONFIG_QEMU_DEBUG_CONSOLE_DEVICE))
+CONFIG_QEMU_DEBUG_CONSOLE_LOG := $(call qemu_unquote,$(CONFIG_QEMU_DEBUG_CONSOLE_LOG))
+QEMU_DEBUG_CONSOLE_DEVICE ?= $(or $(CONFIG_QEMU_DEBUG_CONSOLE_DEVICE),/dev/hvc0)
+QEMU_DEBUG_CONSOLE_LOG ?= $(or $(CONFIG_QEMU_DEBUG_CONSOLE_LOG),build/$(ARCH)$(ARCH_BITS)/debug-console.log)
+QEMU_DEBUG_CONSOLE_CHARDEV := kdebug0
+QEMU_DEBUG_CONSOLE_LOG_DIR := $(dir $(QEMU_DEBUG_CONSOLE_LOG))
 QEMU_DISK_OPTIONS :=
 ifeq ($(CONFIG_QEMU_SNAPSHOT),y)
 QEMU_DISK_OPTIONS += ,snapshot=on
@@ -38,12 +44,16 @@ QEMU_KERNEL = $(IMAGE)
 QEMU_DEVICES += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 QEMU_DEVICES += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
 QEMU_DEVICES += -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.2
+QEMU_DEVICES += -device virtio-serial-device,bus=virtio-mmio-bus.3
+QEMU_DEVICES += -device virtconsole,chardev=$(QEMU_DEBUG_CONSOLE_CHARDEV)
 else ifeq ($(ARCH),loongarch)
 QEMU = qemu-system-loongarch64
 QEMU_KERNEL = $(VMKERNELX)
 QEMU_DEVICES += -device virtio-blk-pci,drive=x0
 QEMU_DEVICES += -device virtio-blk-pci,drive=x1
 QEMU_DEVICES += -device virtio-net-pci,netdev=net0
+QEMU_DEVICES += -device virtio-serial-pci
+QEMU_DEVICES += -device virtconsole,chardev=$(QEMU_DEBUG_CONSOLE_CHARDEV)
 else
 $(error Unsupported ARCH=$(ARCH) for QEMU target)
 endif
@@ -52,6 +62,7 @@ QEMU_FLAGS += -M $(CONFIG_QEMU_MACHINE) -m $(CONFIG_QEMU_MEMORY) -nographic
 QEMU_FLAGS += -kernel $(QEMU_KERNEL)
 QEMU_FLAGS += -drive file=$(CONFIG_DISK_IMAGE),if=none,id=x0,format=raw$(QEMU_DISK_OPTIONS)
 QEMU_FLAGS += -drive file=$(SECOND_DISK),if=none,id=x1,format=raw$(QEMU_DISK_OPTIONS)
+QEMU_FLAGS += -chardev file,id=$(QEMU_DEBUG_CONSOLE_CHARDEV),path=$(QEMU_DEBUG_CONSOLE_LOG),append=off
 QEMU_FLAGS += $(QEMU_DEVICES)
 QEMU_FLAGS += -netdev user,id=net0
 QEMU_FLAGS += -smp $(CONFIG_QEMU_CPUS)
@@ -74,6 +85,9 @@ CONFIG_INITCWD_UNQUOTED     := $(call qemu_unquote,$(CONFIG_INITCWD))
 CONFIG_ROOT_DEVICE_UNQUOTED := $(call qemu_unquote,$(CONFIG_ROOT_DEVICE))
 CONFIG_ROOT_FSTYPE_UNQUOTED := $(call qemu_unquote,$(CONFIG_ROOT_FSTYPE))
 
+ifneq ($(QEMU_DEBUG_CONSOLE_DEVICE),)
+BOOTARGS += kdebug_console="$(QEMU_DEBUG_CONSOLE_DEVICE)"
+endif
 BOOTARGS += $(CONFIG_BOOTARGS_UNQUOTED)
 
 # Set bootargs
@@ -103,6 +117,7 @@ qemu-run:
 ifeq ($(SECOND_DISK_IMAGE),)
 	truncate -s $(TMPDISK_SIZE) $(TMPDISK)
 endif
+	@ mkdir -p $(QEMU_DEBUG_CONSOLE_LOG_DIR)
 	$(QEMU) $(QEMU_FLAGS)
 ifeq ($(SECOND_DISK_IMAGE),)
 	@ rm -f $(TMPDISK)
@@ -112,6 +127,7 @@ qemu-run-bt:
 ifeq ($(SECOND_DISK_IMAGE),)
 	truncate -s $(TMPDISK_SIZE) $(TMPDISK)
 endif
+	@ mkdir -p $(QEMU_DEBUG_CONSOLE_LOG_DIR)
 	python3 scripts/backtrace_run.py \
 		--elf $(VMKERNELX) \
 		-- $(QEMU) $(QEMU_FLAGS)
@@ -123,12 +139,14 @@ qemu-gdb:
 ifeq ($(SECOND_DISK_IMAGE),)
 	@ truncate -s $(TMPDISK_SIZE) $(TMPDISK)
 endif
+	@ mkdir -p $(QEMU_DEBUG_CONSOLE_LOG_DIR)
 	$(QEMU) $(QEMU_FLAGS) -s -S
 ifeq ($(SECOND_DISK_IMAGE),)
 	@ rm -f $(TMPDISK)
 endif
 
 qemu-dts:
+	@ mkdir -p $(QEMU_DEBUG_CONSOLE_LOG_DIR)
 	$(QEMU) $(QEMU_FLAGS) -machine dumpdtb=qemu-virt-$(ARCH)$(ARCH_BITS).dtb
 	@ dtc -I dtb -O dts qemu-virt-$(ARCH)$(ARCH_BITS).dtb -o qemu-virt-$(ARCH)$(ARCH_BITS).dts
 

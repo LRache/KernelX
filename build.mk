@@ -61,6 +61,10 @@ ifeq ($(CONFIG_LOG_SYSCALL),y)
 RUST_FEATURES += log-trace-syscall
 endif
 
+ifeq ($(CONFIG_LOG_SYSCALL_CPU_TIME),y)
+RUST_FEATURES += log-syscall-cpu-time
+endif
+
 ifeq ($(CONFIG_ENABLE_SWAP_MEMORY),y)
 RUST_FEATURES += swap-memory
 endif

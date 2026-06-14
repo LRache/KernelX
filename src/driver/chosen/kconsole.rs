@@ -24,6 +24,10 @@ impl KConsole for CharDriverKConsole {
     }
 }
 
+pub(super) fn new_char_driver_console(driver: Arc<dyn CharDriverOps>) -> Box<dyn KConsole> {
+    Box::new(CharDriverKConsole::new(driver))
+}
+
 static KCONSOLE: RWLock<Option<Box<dyn KConsole>>> = RWLock::new(None, "static::KCONSOLE");
 
 pub fn register(console: Box<dyn KConsole>) {
@@ -31,7 +35,7 @@ pub fn register(console: Box<dyn KConsole>) {
 }
 
 pub fn register_driver(driver: Arc<dyn CharDriverOps>) {
-    register(Box::new(CharDriverKConsole::new(driver)));
+    register(new_char_driver_console(driver));
 }
 
 pub fn kputs(s: &str) {

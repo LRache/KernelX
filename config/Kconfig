@@ -173,6 +173,15 @@ config LOG_SYSCALL
 	help
 	  Enable detailed tracing of all system calls.
 
+config LOG_SYSCALL_CPU_TIME
+	bool "Enable Syscall CPU Time Tracing"
+	default n
+	help
+	  Emit one compact debug-console record after each syscall completes:
+	  syscall number, syscall name, and CPU time in microseconds. The measured
+	  time uses per-thread CPU accounting, so time spent blocked or sleeping
+	  is not included.
+
 config WARN_UNIMPLEMENTED_SYSCALL
 	bool "Warn on Unimplemented Syscalls"
 	default y
@@ -275,6 +284,22 @@ config QEMU_CPUS
 	default 1
 	help
 	  Number of CPU cores for QEMU virtual machine.
+
+config QEMU_DEBUG_CONSOLE_DEVICE
+	string "QEMU debug console kernel device"
+	default "/dev/hvc0"
+	help
+	  Kernel /dev character device selected by the kdebug_console bootarg.
+	  QEMU attaches a virtio console for this device by default.
+
+config QEMU_DEBUG_CONSOLE_LOG
+	string "QEMU debug console output file"
+	default "build/riscv64/debug-console.log" if RISCV64
+	default "build/loongarch64/debug-console.log" if LOONGARCH64
+	help
+	  Host file used as the QEMU virtio debug console backend. Kernel debug
+	  output written through kprint_debug! is collected here instead of
+	  sharing the main -nographic serial console.
 
 config DISK_IMAGE
 	string "Disk image path"

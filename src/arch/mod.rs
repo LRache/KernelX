@@ -81,6 +81,10 @@ arch_export! {
     is_kernel_addr(addr: usize) -> bool;
 }
 
+pub fn try_uptime() -> Option<Duration> {
+    Arch::try_uptime()
+}
+
 #[allow(dead_code)]
 #[inline(always)]
 pub fn get_frame_pointer() -> usize {

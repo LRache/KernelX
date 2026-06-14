@@ -17,7 +17,7 @@ use super::csr::{SIE, Sstatus, stvec};
 use super::pagetable::kernelpagetable;
 use super::sbi_driver::SBIKConsole;
 use super::task::context::KernelContext;
-use super::{core_count, kernel_switch, time_frequency};
+use super::{core_count, kernel_switch, time_frequency, try_time_frequency};
 
 unsafe extern "C" {
     static __riscv_copied_fdt: *const u8;
@@ -25,6 +25,18 @@ unsafe extern "C" {
 }
 
 static NEXT_MMIO_KADDR: InitedCell<SpinLock<usize>> = InitedCell::uninit();
+
+impl Arch {
+    pub fn try_uptime() -> Option<Duration> {
+        let freq = try_time_frequency()? as u64;
+        if freq == 0 {
+            return None;
+        }
+        Some(Duration::from_micros(
+            csr::time::read().saturating_mul(1_000_000) / freq,
+        ))
+    }
+}
 
 fn init_mmio_kaddr(memory_top: usize) {
     NEXT_MMIO_KADDR.init(SpinLock::new(align_up(memory_top, arch::PGSIZE), "NEXT_MMIO_KADDR"));
