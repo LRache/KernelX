@@ -175,6 +175,16 @@ impl TCB {
             }
         }
 
+        if signum.is_kill() {
+            state.pending_signal = Some(pending);
+            drop(state);
+
+            return match scheduler::wakeup_task(self.clone(), Event::Signal) {
+                Ok(()) | Err(WakeupFailure::NotBlocked) => true,
+                Err(WakeupFailure::BlockedUninterruptible) => false,
+            };
+        }
+
         if state.pending_signal.is_some() {
             return false;
         }
