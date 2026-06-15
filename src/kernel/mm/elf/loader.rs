@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile, SeekWhence};
 use crate::fs::{Dentry, Perm, vfs};
@@ -31,6 +32,7 @@ pub fn read_ehdr(file: &Arc<RandomAccessFile>) -> Result<Elf64Ehdr, Errno> {
     Ok(*ehdr)
 }
 
+#[allow(dead_code)]
 pub fn read_phdr(file: &Arc<RandomAccessFile>) -> Result<Elf64Phdr, Errno> {
     let mut ph_buf = [0u8; core::mem::size_of::<Elf64Phdr>()];
     file.read(&mut ph_buf)?;
@@ -38,6 +40,26 @@ pub fn read_phdr(file: &Arc<RandomAccessFile>) -> Result<Elf64Phdr, Errno> {
     let phdr = unsafe { &*(ph_buf.as_ptr() as *const Elf64Phdr) };
 
     Ok(*phdr)
+}
+
+fn read_phdr_table(file: &Arc<RandomAccessFile>, ph_offset: usize, ph_num: usize) -> Result<Vec<Elf64Phdr>, Errno> {
+    if ph_num == 0 {
+        return Ok(Vec::new());
+    }
+
+    let phdr_size = core::mem::size_of::<Elf64Phdr>();
+    let table_size = ph_num.checked_mul(phdr_size).ok_or(Errno::ENOEXEC)?;
+    let mut table_buf = vec![0u8; table_size];
+
+    file.seek(ph_offset as isize, SeekWhence::BEG)?;
+    if file.read(&mut table_buf)? != table_size {
+        return Err(Errno::ENOEXEC);
+    }
+
+    Ok(table_buf
+        .chunks_exact(phdr_size)
+        .map(|ph_buf| unsafe { core::ptr::read_unaligned(ph_buf.as_ptr() as *const Elf64Phdr) })
+        .collect())
 }
 
 pub fn load_elf(
@@ -88,16 +110,11 @@ pub fn load_elf(
 
     let mut interpreter_path: Option<String> = None;
     let mut phdr_addr: Option<usize> = None;
+    let phdrs = read_phdr_table(file, ph_offset, ph_num)?;
 
-    for i in 0..ph_num {
-        file.seek(
-            (ph_offset + i * core::mem::size_of::<Elf64Phdr>()) as isize,
-            SeekWhence::BEG,
-        )?;
-        let phdr = read_phdr(file)?;
-
+    for phdr in &phdrs {
         if phdr.is_load() {
-            load_program_from_file(&phdr, file, addrspace, addr_base)?;
+            load_program_from_file(phdr, file, addrspace, addr_base)?;
         } else if phdr.is_phdr() {
             phdr_addr = Some(phdr.p_vaddr as usize + addr_base);
         } else if phdr.is_interp() {
@@ -143,15 +160,11 @@ pub fn load_loadable_phdr(
     addrspace: &AddrSpace,
     addr_base: usize,
 ) -> Result<(), Errno> {
-    for i in 0..ph_num {
-        file.seek(
-            (ph_offset + i * core::mem::size_of::<Elf64Phdr>()) as isize,
-            SeekWhence::BEG,
-        )?;
-        let phdr = read_phdr(file)?;
+    let phdrs = read_phdr_table(file, ph_offset, ph_num)?;
 
+    for phdr in &phdrs {
         if phdr.is_load() {
-            load_program_from_file(&phdr, file, addrspace, addr_base)?;
+            load_program_from_file(phdr, file, addrspace, addr_base)?;
         }
     }
 
