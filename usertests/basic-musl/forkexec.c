@@ -12,9 +12,9 @@ int main() {
     } 
     
     if (pid == 0) {
-        char *args[] = {"/basic-musl/forkexec-child", "argv[1]", "argv[2]", NULL};
+        char *args[] = {"/tests/basic-musl/forkexec-child", "argv[1]", "argv[2]", NULL};
         char *envp[] = {"env1=var1", "env2=var2", NULL};
-        execve("/basic-musl/forkexec-child", args, envp);
+        execve("/tests/basic-musl/forkexec-child", args, envp);
     } else {
         waitpid(pid, NULL, 0);
         printf("Parent process with PID: %d created child with PID: %d\n",

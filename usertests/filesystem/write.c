@@ -5,7 +5,7 @@
 char data[0x400 * 4];
 
 int main() {
-    int fd = open("/filesystem/a.txt", O_WRONLY);
+    int fd = open("/tests/filesystem/a.txt", O_WRONLY);
     if (fd < 0) {
         perror("open");
         return 1;

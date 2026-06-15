@@ -15,17 +15,23 @@ CFLAGS += -Wall -Wextra
 CFLAGS += -nostdlib -static
 
 TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
-TEST_TARGETS = $(addprefix $(OUTPUT_DIR)/, $(TESTS))
+TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
-	@ mkdir -p $(OUTPUT_DIR)/$(ARCH)
+	@ mkdir -p $(@D)
 	@ $(CC) $(CFLAGS) -c $< -o $@
 
-$(OUTPUT_DIR)/%: $(BUILD_DIR)/%.o $(ULIB)
-	@ mkdir -p $(OUTPUT_DIR)/$(ARCH)
-	@ $(CC) $(CFLAGS) $< -o $@ $(ULIB)
+define TEST_TARGET_RULE
+$(OUTPUT_DIR)/$(1)/$(1): $(BUILD_DIR)/$(1).o $(ULIB)
+	@ mkdir -p $$(@D)
+	@ $$(CC) $$(CFLAGS) $$< -o $$@ $$(ULIB)
+endef
+
+$(foreach test,$(TESTS),$(eval $(call TEST_TARGET_RULE,$(test))))
 
 all: ulib-all $(TEST_TARGETS)
+	@ echo "Hello from basic-ulib read test" > $(OUTPUT_DIR)/read/test.txt
+	@ : > $(OUTPUT_DIR)/write/test-write.txt
 
 ulib-all:
 	$(MAKE) -C ulib all

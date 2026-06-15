@@ -27,12 +27,16 @@ CFLAGS += -static -no-pie
 CFLAGS += -O0 -Og -g -v
 
 TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
-TEST_TARGETS = $(addprefix $(OUTPUT_DIR)/, $(TESTS))
+TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 
-$(OUTPUT_DIR)/%: $(SRC_DIR)/%.c
-	$(info + CC $<)
-	@ mkdir -p $(OUTPUT_DIR)
-	@ $(CC) $(CFLAGS) $< $(LDFLAGS) -o $@
+define TEST_TARGET_RULE
+$(OUTPUT_DIR)/$(1)/$(1): $(SRC_DIR)/$(1).c
+	$$(info + CC $$<)
+	@ mkdir -p $$(@D)
+	@ $$(CC) $$(CFLAGS) $$< $$(LDFLAGS) -o $$@
+endef
+
+$(foreach test,$(TESTS),$(eval $(call TEST_TARGET_RULE,$(test))))
 
 # $(OUTPUT_DIR)/%: $(BUILD_DIR)/%.o
 # 	$(info + LD $<)

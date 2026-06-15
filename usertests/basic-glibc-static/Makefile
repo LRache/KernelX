@@ -7,20 +7,24 @@ SRC_DIR = .
 BUILD_DIR = build/$(ARCH)
 OUTPUT_DIR = $(BUILD_DIR)/output
 
-GLIBC_DIR = /home/rache/code/glibc/build/riscv64-linux-gnu
-CRT_FILES_BEGIN = $(GLIBC_DIR)/csu/crt1.o $(GLIBC_DIR)/csu/crti.o
-CRT_FILES_END = $(GLIBC_DIR)/csu/crtn.o
+GLIBC_DIR ?= /home/rache/code/glibc/build/riscv64-linux-gnu
+CRT_FILES_BEGIN ?= $(GLIBC_DIR)/csu/crt1.o $(GLIBC_DIR)/csu/crti.o
+CRT_FILES_END ?= $(GLIBC_DIR)/csu/crtn.o
 
 CFLAGS += -Wall -Wextra -static -nostdlib -nostartfiles
 LDFLAGS += -L$(GLIBC_DIR) -lc -lgcc -lgcc_eh
 
 TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
-TEST_TARGETS = $(addprefix $(OUTPUT_DIR)/, $(TESTS))
+TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 
-$(OUTPUT_DIR)/%: $(SRC_DIR)/%.c
-	$(info + LD $<)
-	@ mkdir -p $(OUTPUT_DIR)
-	$(CC) $(CFLAGS) $(CRT_FILES_BEGIN) $< -o $@ $(LDFLAGS) $(CRT_FILES_END)
+define TEST_TARGET_RULE
+$(OUTPUT_DIR)/$(1)/$(1): $(SRC_DIR)/$(1).c
+	$$(info + LD $$<)
+	@ mkdir -p $$(@D)
+	$$(CC) $$(CFLAGS) $$(CRT_FILES_BEGIN) $$< -o $$@ $$(LDFLAGS) $$(CRT_FILES_END)
+endef
+
+$(foreach test,$(TESTS),$(eval $(call TEST_TARGET_RULE,$(test))))
 
 all: $(TEST_TARGETS)
 
