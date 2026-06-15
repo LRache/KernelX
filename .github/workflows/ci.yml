@@ -61,6 +61,7 @@ jobs:
             CONFIG_LOG_LEVEL=trace \
             CONFIG_NO_SMP=y \
             CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
+            CONFIG_FANOTIFY=y \
             COMPILE_MODE=release \
             SYSROOT=/usr/riscv64-linux-gnu \
             OBJCOPY=llvm-objcopy-21
@@ -148,6 +149,7 @@ jobs:
             CONFIG_LOG_LEVEL=trace \
             CONFIG_NO_SMP=y \
             CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
+            CONFIG_FANOTIFY=y \
             COMPILE_MODE=release \
             OBJCOPY=llvm-objcopy-21 \
             SYSROOT=/usr/loongarch64-linux-gnu
