@@ -472,9 +472,10 @@ impl PageTableTrait for PageTable {
             flags |= PTEFlags::D;
         }
 
-        let mut pte = self.find_pte_or_create(uaddr);
-        pte.set_flags(flags);
-        pte.write_back().expect("Failed to write back PTE on mmap_replace_perm");
+        if let Some(mut pte) = self.find_pte(uaddr) {
+            pte.set_flags(flags);
+            pte.write_back().expect("Failed to write back PTE on mmap_replace_perm");
+        }
     }
 
     fn munmap(&mut self, uaddr: usize) -> Result<(), ()> {

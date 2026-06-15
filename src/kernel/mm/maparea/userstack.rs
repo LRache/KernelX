@@ -9,10 +9,7 @@ use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
-use super::nofilemap::FrameState;
-
-#[cfg(feature = "swap-memory")]
-use super::nofilemap::SwappableNoFileFrame;
+use super::nofilemap::{FrameState, SwappableNoFileFrame};
 
 pub enum AuxKey {
     _NULL = 0,
@@ -119,6 +116,18 @@ impl UserStack {
         kpage
     }
 
+    fn map_cow_page(&self, page_index: usize, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) -> usize {
+        let kpage = frame.get_page_swap_in();
+        let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
+
+        addrspace
+            .pagetable()
+            .lock()
+            .mmap_replace(uaddr, kpage, MapPerm::R | MapPerm::U);
+
+        kpage
+    }
+
     #[cfg(feature = "swap-memory")]
     fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
@@ -127,16 +136,6 @@ impl UserStack {
             .pagetable()
             .write()
             .mmap(frame.uaddr(), kpage, MapPerm::R | MapPerm::W | MapPerm::U);
-    }
-
-    #[cfg(feature = "swap-memory")]
-    fn handle_cow_read_swapped_out(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
-        debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
-        let kpage = frame.get_page_swap_in();
-        addrspace
-            .pagetable()
-            .write()
-            .mmap(frame.uaddr(), kpage, MapPerm::R | MapPerm::U);
     }
 
     fn push_buffer(
@@ -349,23 +348,13 @@ impl Area for UserStack {
         MapPerm::R | MapPerm::W | MapPerm::U
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
         let new_frames = self
             .frames
             .iter()
-            .enumerate()
-            .map(|(page_index, frame)| match frame {
+            .map(|frame| match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
-                FrameState::Allocated(frame) | FrameState::Cow(frame) => {
-                    if let Some(kpage) = frame.get_page() {
-                        new_pagetable.mmap(
-                            config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE,
-                            kpage,
-                            MapPerm::R | MapPerm::U,
-                        );
-                    }
-                    FrameState::Cow(frame.clone())
-                }
+                FrameState::Allocated(frame) | FrameState::Cow(frame) => FrameState::Cow(frame.clone()),
             })
             .collect();
 
@@ -374,11 +363,9 @@ impl Area for UserStack {
             *frame = match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
                 FrameState::Allocated(frame) | FrameState::Cow(frame) => {
-                    if !frame.is_swapped_out() {
-                        self_pagetable.mmap_replace_perm(
-                            config::USER_STACK_TOP - (index + 1) * arch::PGSIZE,
-                            MapPerm::R | MapPerm::U,
-                        );
+                    let uaddr = config::USER_STACK_TOP - (index + 1) * arch::PGSIZE;
+                    if !frame.is_swapped_out() && self_pagetable.mapped_flag(uaddr).is_some() {
+                        self_pagetable.mmap_replace_perm(uaddr, MapPerm::R | MapPerm::U);
                     }
                     FrameState::Cow(frame.clone())
                 }
@@ -416,19 +403,7 @@ impl Area for UserStack {
             }
             FrameState::Cow(frame) => {
                 if access_type != MemAccessType::Write {
-                    // If it's a read fault on a COW page, it might be swapped out
-                    #[cfg(feature = "swap-memory")]
-                    self.handle_cow_read_swapped_out(frame, addrspace);
-                    #[cfg(not(feature = "swap-memory"))]
-                    {
-                        let _ = frame;
-                        panic!(
-                            "Access type is not write for COW page at index {}, addr={:#x}, flags={:?}",
-                            page_index,
-                            addr,
-                            addrspace.pagetable().lock().mapped_flag(addr)
-                        );
-                    }
+                    self.map_cow_page(page_index, frame, addrspace);
                 } else {
                     self.copy_on_write_page(page_index, addrspace);
                 }

@@ -99,6 +99,18 @@ impl ELFArea {
 
         page
     }
+
+    fn map_cow_page(&self, page_index: usize, frame: &PhysPageFrame, addrspace: &AddrSpace) -> usize {
+        let page = frame.get_page();
+        let uaddr = self.ubase + page_index * arch::PGSIZE;
+
+        addrspace
+            .pagetable()
+            .lock()
+            .mmap_replace(uaddr, page, self.perm - MapPerm::W);
+
+        page
+    }
 }
 
 impl Area for ELFArea {
@@ -144,18 +156,14 @@ impl Area for ELFArea {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
         let frames = self
             .frames
             .iter()
-            .enumerate()
-            .map(|(page_index, frame)| match frame {
+            .map(|frame| match frame {
                 Frame::Unallocated => Frame::Unallocated,
-                Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, frame.get_page(), cow_perm);
-                    Frame::Cow(frame.clone())
-                }
+                Frame::Allocated(frame) | Frame::Cow(frame) => Frame::Cow(frame.clone()),
             })
             .collect();
 
@@ -164,7 +172,10 @@ impl Area for ELFArea {
             *frame = match frame {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
-                    self_pagetable.mmap_replace_perm(self.ubase + page_index * arch::PGSIZE, cow_perm);
+                    let uaddr = self.ubase + page_index * arch::PGSIZE;
+                    if self_pagetable.mapped_flag(uaddr).is_some() {
+                        self_pagetable.mmap_replace_perm(uaddr, cow_perm);
+                    }
                     Frame::Cow(frame.clone())
                 }
             };
@@ -210,8 +221,10 @@ impl Area for ELFArea {
                 Frame::Cow(_) => {
                     if access_type == MemAccessType::Write {
                         self.copy_on_write_page(page_index, addrspace);
+                    } else if let Frame::Cow(frame) = &self.frames[page_index] {
+                        self.map_cow_page(page_index, frame, addrspace);
                     } else {
-                        panic!("Page is already allocated for read and execute access.");
+                        unreachable!();
                     }
                 }
             }
@@ -289,8 +302,11 @@ impl Area for ELFArea {
         self.frames.iter().enumerate().for_each(|(page_index, frame)| {
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match frame {
-                Frame::Allocated(_) => pagetable.mmap_replace_perm(uaddr, perm),
-                Frame::Cow(_) => pagetable.mmap_replace_perm(uaddr, cow_perm),
+                Frame::Allocated(_) if pagetable.mapped_flag(uaddr).is_some() => {
+                    pagetable.mmap_replace_perm(uaddr, perm)
+                }
+                Frame::Cow(_) if pagetable.mapped_flag(uaddr).is_some() => pagetable.mmap_replace_perm(uaddr, cow_perm),
+                Frame::Allocated(_) | Frame::Cow(_) => {}
                 Frame::Unallocated => {}
             }
         });

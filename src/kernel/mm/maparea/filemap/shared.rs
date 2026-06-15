@@ -170,7 +170,7 @@ impl Area for SharedFileMapArea {
         self.states.len() * arch::PGSIZE
     }
 
-    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, _fork_pagetable: &mut PageTable) -> Box<dyn Area> {
+    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
         let writable_accounted = self.perm.contains(MapPerm::W);
         if let Some(seal_ops) = self.inode.as_seal_ops() {
             seal_ops.begin_shared_mmap(writable_accounted);

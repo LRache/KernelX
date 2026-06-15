@@ -108,17 +108,8 @@ impl Area for SharedAnonymousArea {
         self.frames.lock().len()
     }
 
-    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
+    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
         // Shared: fork just clones the Arc, both processes see the same frames
-        let frames = self.frames.lock();
-        for (page_index, frame_lock) in frames.iter().enumerate() {
-            let frame = frame_lock.lock();
-            if let Frame::Allocated(f) = &*frame {
-                new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, f.get_page(), self.perm);
-            }
-        }
-        drop(frames);
-
         Box::new(SharedAnonymousArea {
             ubase: self.ubase,
             perm: self.perm,
@@ -204,8 +195,11 @@ impl Area for SharedAnonymousArea {
         let frames = self.frames.lock();
         for (i, frame_lock) in frames.iter().enumerate() {
             let frame = frame_lock.lock();
+            let uaddr = self.ubase + i * arch::PGSIZE;
             if let Frame::Allocated(_) = &*frame {
-                pagetable.mmap_replace_perm(self.ubase + i * arch::PGSIZE, perm);
+                if pagetable.mapped_flag(uaddr).is_some() {
+                    pagetable.mmap_replace_perm(uaddr, perm);
+                }
             }
         }
     }

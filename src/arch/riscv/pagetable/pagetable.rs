@@ -255,9 +255,10 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {
         let flags = perm.into();
 
-        let mut pte = self.find_pte_or_create(uaddr);
-        pte.set_flags(flags);
-        pte.write_back().expect("Failed to write back PTE");
+        if let Some(mut pte) = self.find_pte(uaddr) {
+            pte.set_flags(flags);
+            pte.write_back().expect("Failed to write back PTE");
+        }
     }
 
     fn munmap(&mut self, vaddr: usize) -> Result<(), ()> {

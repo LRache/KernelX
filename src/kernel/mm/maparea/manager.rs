@@ -29,11 +29,11 @@ impl Manager {
         }
     }
 
-    pub fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Manager {
+    pub fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Manager {
         let new_areas = self
             .areas
             .iter_mut()
-            .map(|(ubase, area)| (*ubase, area.fork(self_pagetable, new_pagetable)))
+            .map(|(ubase, area)| (*ubase, area.fork(self_pagetable)))
             .collect();
 
         Self {

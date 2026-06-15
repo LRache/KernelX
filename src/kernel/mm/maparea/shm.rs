@@ -64,7 +64,7 @@ impl Area for ShmArea {
         self.frames.frames.lock().len()
     }
 
-    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>, _new_pagetable: &mut PageTable) -> Box<dyn Area> {
+    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
         // Forked child gets its own ShmArea; increment ref_count to match.
         use crate::kernel::ipc::shm::on_shm_area_attach;
         on_shm_area_attach(self.shmid);

@@ -4,12 +4,9 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::maparea::area::{Area, MemoryFaultSignal};
-use crate::kernel::mm::maparea::nofilemap::FrameState;
+use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
-
-#[cfg(feature = "swap-memory")]
-use super::nofilemap::SwappableNoFileFrame;
 
 pub struct PrivateAnonymousArea {
     ubase: usize,
@@ -53,22 +50,24 @@ impl PrivateAnonymousArea {
         kpage
     }
 
+    fn map_cow_page(&self, page_index: usize, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) -> usize {
+        let kpage = frame.get_page_swap_in();
+        let uaddr = self.ubase + page_index * arch::PGSIZE;
+
+        addrspace
+            .pagetable()
+            .lock()
+            .mmap_replace(uaddr, kpage, self.perm - MapPerm::W);
+
+        kpage
+    }
+
     #[cfg(feature = "swap-memory")]
     fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         let page = frame.get_page_swap_in();
         // FIXME: if the page is swapped out again before we mmap,
         // there could be issues
         addrspace.pagetable().write().mmap(frame.uaddr(), page, self.perm);
-    }
-
-    #[cfg(feature = "swap-memory")]
-    fn handle_cow_read_swapped_out(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
-        debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
-        let kpage = frame.get_page_swap_in();
-        addrspace
-            .pagetable()
-            .write()
-            .mmap(frame.uaddr(), kpage, self.perm - MapPerm::W);
     }
 }
 
@@ -124,28 +123,15 @@ impl Area for PrivateAnonymousArea {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, new_pagetable: &mut PageTable) -> Box<dyn Area> {
+    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
         let perm = self.perm - MapPerm::W;
 
         let frames = self
             .frames
             .iter()
-            .enumerate()
-            .map(|(page_index, frame)| match frame {
+            .map(|frame| match frame {
                 FrameState::Unallocated => FrameState::Unallocated,
-                FrameState::Allocated(frame) => {
-                    if let Some(kpage) = frame.get_page() {
-                        new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, perm);
-                    }
-                    FrameState::Cow(frame.clone())
-                }
-                FrameState::Cow(frame) => {
-                    // debug_assert!(!self.shared, "Shared frames should not be CoW");
-                    if let Some(kpage) = frame.get_page() {
-                        new_pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, perm);
-                    }
-                    FrameState::Cow(frame.clone())
-                }
+                FrameState::Allocated(frame) | FrameState::Cow(frame) => FrameState::Cow(frame.clone()),
             })
             .collect();
 
@@ -156,8 +142,9 @@ impl Area for PrivateAnonymousArea {
             .for_each(|(page_index, frame)| match frame {
                 FrameState::Allocated(allocated) => {
                     if let Some(_) = allocated.get_page() {
-                        if self.perm.contains(MapPerm::W) {
-                            self_pagetable.mmap_replace_perm(self.ubase + page_index * arch::PGSIZE, perm);
+                        let uaddr = self.ubase + page_index * arch::PGSIZE;
+                        if self.perm.contains(MapPerm::W) && self_pagetable.mapped_flag(uaddr).is_some() {
+                            self_pagetable.mmap_replace_perm(uaddr, perm);
                         }
                     }
                     *frame = FrameState::Cow(allocated.clone());
@@ -195,13 +182,7 @@ impl Area for PrivateAnonymousArea {
                 }
                 FrameState::Cow(frame) => {
                     if access_type != MemAccessType::Write {
-                        #[cfg(feature = "swap-memory")]
-                        self.handle_cow_read_swapped_out(frame, addrspace);
-                        #[cfg(not(feature = "swap-memory"))]
-                        panic!(
-                            "Memory fault on CoW page without write access at address: {:#x}, access_type: {:?}, perm: {:?}",
-                            uaddr, access_type, self.perm
-                        );
+                        self.map_cow_page(page_index, frame, addrspace);
                     } else {
                         self.copy_on_write_page(page_index, addrspace);
                     }
@@ -262,13 +243,19 @@ impl Area for PrivateAnonymousArea {
 
         let mut pagetable = pagetable.lock();
         for frame in self.frames.iter() {
-            if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
-                if !frame.is_swapped_out() {
-                    pagetable.mmap_replace_perm(frame.uaddr(), perm);
+            match frame {
+                FrameState::Allocated(frame) => {
+                    if !frame.is_swapped_out() && pagetable.mapped_flag(frame.uaddr()).is_some() {
+                        pagetable.mmap_replace_perm(frame.uaddr(), perm);
+                    }
                 }
+                FrameState::Cow(frame) => {
+                    if !frame.is_swapped_out() && pagetable.mapped_flag(frame.uaddr()).is_some() {
+                        pagetable.mmap_replace_perm(frame.uaddr(), perm - MapPerm::W);
+                    }
+                }
+                FrameState::Unallocated => {}
             }
-            // Note: We don't update COW pages here as they should maintain
-            // their current permission state until the next write access
         }
     }
 
