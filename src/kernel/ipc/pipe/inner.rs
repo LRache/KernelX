@@ -171,13 +171,14 @@ impl PipeInner {
         }
 
         // Phase 1: wait until at least one byte is available
+        let notify_write_ready;
         loop {
             let mut fifo = self.fifo.lock();
             if fifo.len() > 0 {
+                let was_write_ready = fifo.len() < *self.capacity.lock();
                 buf[0] = fifo.pop_front().unwrap();
+                notify_write_ready = !was_write_ready;
                 drop(fifo);
-                self.write_waiter.lock().wake_all(|e| e);
-                self.write_notifier.notify(FileEvent::WRITE_READY);
                 break;
             }
             if *self.writer_count.lock() == 0 {
@@ -212,7 +213,10 @@ impl PipeInner {
                 total_read += 1;
             }
             drop(fifo);
-            self.write_waiter.lock().wake_all(|e| e);
+        }
+
+        self.write_waiter.lock().wake_all(|e| e);
+        if notify_write_ready {
             self.write_notifier.notify(FileEvent::WRITE_READY);
         }
 
@@ -228,10 +232,15 @@ impl PipeInner {
             let mut fifo = self.fifo.lock();
 
             if fifo.len() > 0 {
+                let was_write_ready = fifo.len() < *self.capacity.lock();
                 let r = fifo.pop_front_ubuf(ubuf);
                 drop(fifo);
-                self.write_waiter.lock().wake_all(|e| e);
-                self.write_notifier.notify(FileEvent::WRITE_READY);
+                if r.as_ref().map_or(false, |n| *n > 0) {
+                    self.write_waiter.lock().wake_all(|e| e);
+                    if !was_write_ready {
+                        self.write_notifier.notify(FileEvent::WRITE_READY);
+                    }
+                }
                 return r;
             }
 
