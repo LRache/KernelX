@@ -64,6 +64,7 @@ jobs:
             CONFIG_FANOTIFY=y \
             COMPILE_MODE=release \
             SYSROOT=/usr/riscv64-linux-gnu \
+            CONFIG_VIRTIO_BLOCK_PAGE_CACHE=y \
             OBJCOPY=llvm-objcopy-21
 
       - name: Test testsuits-for-oskernel-riscv64
@@ -152,6 +153,7 @@ jobs:
             CONFIG_FANOTIFY=y \
             COMPILE_MODE=release \
             OBJCOPY=llvm-objcopy-21 \
+            CONFIG_VIRTIO_BLOCK_PAGE_CACHE=y \
             SYSROOT=/usr/loongarch64-linux-gnu
 
       - name: Test testsuits-for-oskernel-loongarch64
