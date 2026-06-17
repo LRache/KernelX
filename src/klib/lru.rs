@@ -157,10 +157,37 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         }
     }
 
-    pub fn pop_lru(&mut self) -> Option<K>
-    where
-        V: Clone,
-    {
+    pub fn get(&mut self, key: &K) -> Option<&V> {
+        if self.access(key) {
+            self.map.get(key).map(|node| &node.value)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(feature = "virtio-block-page-cache")]
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        if self.access(key) {
+            self.map.get(key).map(|node| unsafe {
+                // SAFETY: We have `&mut self`, so the cache has exclusive logical access
+                // to the node value while this mutable reference is alive.
+                let n = &mut *(Arc::as_ptr(node) as *mut Node<K, V>);
+                &mut n.value
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn pop_lru(&mut self) -> Option<K> {
         if let Some(lru_node) = self.list.pop_back() {
             self.map.remove(&lru_node.key);
             Some(lru_node.key)
@@ -169,6 +196,23 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         }
     }
 
+    #[cfg(feature = "virtio-block-page-cache")]
+    pub fn try_for_each_mut<E, F>(&mut self, mut f: F) -> Result<(), E>
+    where
+        F: FnMut(K, &mut V) -> Result<(), E>,
+    {
+        for node in self.map.values() {
+            unsafe {
+                // SAFETY: We have `&mut self`, so no other cache operation can access
+                // these values while the callback runs.
+                let n = &mut *(Arc::as_ptr(node) as *mut Node<K, V>);
+                f(n.key, &mut n.value)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(any(feature = "swap-memory", feature = "virtio-block-page-cache"))]
     pub fn tail(&mut self) -> Option<(K, &mut V)> {
         self.list.tail.as_ref().map(|node| unsafe {
             // SAFETY: We have `&mut self`, which guarantees exclusive access to the `LRUCache`.
@@ -182,6 +226,7 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         })
     }
 
+    #[cfg(feature = "swap-memory")]
     pub fn remove(&mut self, key: &K) -> bool {
         if let Some(node) = self.map.remove(key) {
             let (prev, next) = unsafe {

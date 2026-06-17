@@ -1,5 +1,4 @@
 mod kswapd;
-mod lru;
 mod nofile;
 mod swappable;
 mod swapper;
@@ -8,7 +7,6 @@ pub use kswapd::spawn_kswapd;
 pub use nofile::SwappableNoFileFrame;
 pub use swapper::shrink;
 
-use lru::LRUCache;
 use swappable::SwappableFrame;
 
 use alloc::collections::LinkedList;

@@ -245,6 +245,13 @@ config FANOTIFY
 	help
 	  Enable fanotify syscalls and filesystem event notifications.
 
+config VIRTIO_BLOCK_PAGE_CACHE
+	bool "Enable virtio block page cache"
+	default n
+	help
+	  Enable a page-sized write-back cache for virtio block devices. Dirty pages
+	  are written back on flush or cache eviction.
+
 endmenu
 
 menu "Boot Configuration"

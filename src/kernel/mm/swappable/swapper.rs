@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
-use crate::kernel::mm::swappable::LRUCache;
+use crate::klib::lru::LRUCache;
 use crate::klib::{InitedCell, SpinLock};
 
 use super::SwappableFrame;

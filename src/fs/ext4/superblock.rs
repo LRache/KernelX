@@ -120,6 +120,7 @@ impl SuperBlockInner {
                 ext4_result(ext4_sb_write(self.bdev.inner.as_mut(), &mut self.fs.sb))?;
             }
         }
+        self.bdev.flush_driver().map_err(|_| Errno::EIO)?;
         Ok(())
     }
 }
@@ -129,6 +130,7 @@ impl Drop for SuperBlockInner {
         unsafe {
             let rc = ext4_fs_fini(self.fs.as_mut());
             let _ = rc;
+            let _ = self.bdev.flush_driver();
 
             ext4_bcache_cleanup(self.bdev.inner.as_mut().bc);
             ext4_block_fini(self.bdev.inner.as_mut());

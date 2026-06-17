@@ -76,6 +76,10 @@ impl Ext4BlockDevice {
         })
     }
 
+    pub(crate) fn flush_driver(&self) -> Result<(), ()> {
+        self._guard._driver.flush()
+    }
+
     unsafe fn dev_fields<'a>(
         bdev: *mut ext4_blockdev,
     ) -> (

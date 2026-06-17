@@ -97,6 +97,10 @@ ifeq ($(CONFIG_FANOTIFY),y)
 RUST_FEATURES += fanotify
 endif
 
+ifeq ($(CONFIG_VIRTIO_BLOCK_PAGE_CACHE),y)
+RUST_FEATURES += virtio-block-page-cache
+endif
+
 ifeq ($(CONFIG_NOLOCK),y)
 RUST_FEATURES += nolock
 endif

@@ -23,6 +23,7 @@ swap-memory = []
 backtrace = []
 watchdog = []
 fanotify = []
+virtio-block-page-cache = []
 
 kvm=[]
 
