@@ -32,6 +32,7 @@ pub fn init() {
     vfs.register_filesystem("ext3", &Ext4FileSystem);
     vfs.register_filesystem("ext4", &Ext4FileSystem);
     vfs.register_filesystem("exfat", &ExfatFileSystem);
+    vfs.register_filesystem("vfat", &ExfatFileSystem);
     vfs.register_filesystem("tmpfs", &tmpfs::FileSystem);
     vfs.register_filesystem("procfs", &procfs::FileSystem);
 
