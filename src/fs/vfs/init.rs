@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
+use crate::fs::exfat::FileSystem as ExfatFileSystem;
 use crate::fs::ext4::Ext4FileSystem;
 use crate::fs::filesystem::MountOptions;
 use crate::fs::rootfs::RootFileSystem;
@@ -30,6 +31,7 @@ pub fn init() {
     vfs.register_filesystem("ext2", &Ext4FileSystem);
     vfs.register_filesystem("ext3", &Ext4FileSystem);
     vfs.register_filesystem("ext4", &Ext4FileSystem);
+    vfs.register_filesystem("exfat", &ExfatFileSystem);
     vfs.register_filesystem("tmpfs", &tmpfs::FileSystem);
     vfs.register_filesystem("procfs", &procfs::FileSystem);
 

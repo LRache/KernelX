@@ -4,6 +4,7 @@ pub mod inode;
 pub mod vfs;
 
 pub mod devfs;
+mod exfat;
 mod ext4;
 mod filesystem;
 mod memtreefs;
