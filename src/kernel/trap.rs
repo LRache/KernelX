@@ -107,7 +107,7 @@ pub fn syscall(num: usize, args: &syscall::Args, ret_arg_value: usize) -> usize 
 
     tcb.user_context().skip_syscall_instruction();
 
-    current::schedule();
+    // current::schedule();
 
     ret
 }
