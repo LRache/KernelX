@@ -2,7 +2,6 @@ pub mod kernelpagetable;
 mod pagetable;
 mod pte;
 
-
 pub use pagetable::PageTable;
 
 #[cfg(feature = "kvm")]
