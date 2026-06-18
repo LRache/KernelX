@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use num_enum::TryFromPrimitive;
 
@@ -16,6 +17,14 @@ use crate::klib::SpinLock;
 #[derive(Default)]
 struct LoopState {
     target_inode: Option<Arc<dyn InodeOps>>,
+}
+
+bitflags! {
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    struct LoopFlags: u32 {
+        const READ_ONLY = 1;
+    }
 }
 
 /// Linux-compatible `struct loop_info`
@@ -51,6 +60,45 @@ impl Default for LoopInfo {
             lo_encrypt_key: [0; 32],
             lo_init: [0; 2],
             reserved: [0; 4],
+        }
+    }
+}
+
+/// Linux-compatible `struct loop_info64`
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct LoopInfo64 {
+    lo_device: u64,
+    lo_inode: u64,
+    lo_rdevice: u64,
+    lo_offset: u64,
+    lo_sizelimit: u64,
+    lo_number: u32,
+    lo_encrypt_type: u32,
+    lo_encrypt_key_size: u32,
+    lo_flags: LoopFlags,
+    lo_file_name: [u8; 64],
+    lo_crypt_name: [u8; 64],
+    lo_encrypt_key: [u8; 32],
+    lo_init: [u64; 2],
+}
+
+impl Default for LoopInfo64 {
+    fn default() -> Self {
+        Self {
+            lo_device: 0,
+            lo_inode: 0,
+            lo_rdevice: 0,
+            lo_offset: 0,
+            lo_sizelimit: 0,
+            lo_number: 0,
+            lo_encrypt_type: 0,
+            lo_encrypt_key_size: 0,
+            lo_flags: LoopFlags::empty(),
+            lo_file_name: [0; 64],
+            lo_crypt_name: [0; 64],
+            lo_encrypt_key: [0; 32],
+            lo_init: [0; 2],
         }
     }
 }
@@ -135,11 +183,42 @@ impl LoopInode {
         Ok(0)
     }
 
+    fn get_status64(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        if arg == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if !self.is_bound() {
+            return Err(Errno::ENXIO);
+        }
+        let target_inode = self.target_inode()?;
+        let lo_flags = if self.read_only.load(Ordering::Relaxed) {
+            LoopFlags::READ_ONLY
+        } else {
+            LoopFlags::empty()
+        };
+        let info = LoopInfo64 {
+            lo_inode: target_inode.get_ino() as u64,
+            lo_number: self.minor,
+            lo_flags,
+            ..Default::default()
+        };
+        addrspace.copy_to_user(arg, info)?;
+        Ok(0)
+    }
+
     fn set_status(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
         if arg == 0 {
             return Err(Errno::EINVAL);
         }
         let _info: LoopInfo = addrspace.copy_from_user(arg)?;
+        Ok(0)
+    }
+
+    fn set_status64(&self, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        if arg == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let _info: LoopInfo64 = addrspace.copy_from_user(arg)?;
         Ok(0)
     }
 }
@@ -200,6 +279,8 @@ impl InodeOps for LoopInode {
             LOOP_CLR_FD = 0x4C01,
             LOOP_SET_STATUS = 0x4C02,
             LOOP_GET_STATUS = 0x4C03,
+            LOOP_SET_STATUS64 = 0x4C04,
+            LOOP_GET_STATUS64 = 0x4C05,
             BLKROSET = 0x125D,
             BLKROGET = 0x125E,
             LOOP_BLKGETSIZE = 0x1260,
@@ -224,6 +305,8 @@ impl InodeOps for LoopInode {
             Request::LOOP_CLR_FD => self.clear_target_inode(),
             Request::LOOP_SET_STATUS => self.set_status(arg, addrspace),
             Request::LOOP_GET_STATUS => self.get_status(arg, addrspace),
+            Request::LOOP_SET_STATUS64 => self.set_status64(arg, addrspace),
+            Request::LOOP_GET_STATUS64 => self.get_status64(arg, addrspace),
             Request::BLKROSET => {
                 let read_only = match arg {
                     0 | 1 => arg != 0,
