@@ -12,6 +12,7 @@ mod perm;
 mod procfs;
 mod rootfs;
 mod tmpfs;
+mod vfat;
 
 pub use filesystem::MountOptions;
 pub use init::{fini, init, mount_init_fs};

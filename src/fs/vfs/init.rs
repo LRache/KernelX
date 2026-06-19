@@ -5,6 +5,7 @@ use crate::fs::exfat::FileSystem as ExfatFileSystem;
 use crate::fs::ext4::Ext4FileSystem;
 use crate::fs::filesystem::MountOptions;
 use crate::fs::rootfs::RootFileSystem;
+use crate::fs::vfat::FileSystem as VfatFileSystem;
 use crate::fs::vfs::VFS;
 use crate::fs::vfs::vfs::VirtualFileSystem;
 use crate::fs::{Dentry, devfs, procfs, tmpfs};
@@ -32,7 +33,7 @@ pub fn init() {
     vfs.register_filesystem("ext3", &Ext4FileSystem);
     vfs.register_filesystem("ext4", &Ext4FileSystem);
     vfs.register_filesystem("exfat", &ExfatFileSystem);
-    vfs.register_filesystem("vfat", &ExfatFileSystem);
+    vfs.register_filesystem("vfat", &VfatFileSystem);
     vfs.register_filesystem("tmpfs", &tmpfs::FileSystem);
     vfs.register_filesystem("procfs", &procfs::FileSystem);
 
