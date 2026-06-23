@@ -324,7 +324,7 @@ struct InodePageCache {
 }
 
 impl InodePageCache {
-    const CAPACITY: usize = 64;
+    const CAPACITY: usize = config::EXT4_INODE_PAGE_CACHE_SIZE;
 
     fn new() -> Self {
         Self { pages: BTreeMap::new() }
