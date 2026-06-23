@@ -1,6 +1,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::time::Duration;
 use core::{mem, slice};
 use num_enum::TryFromPrimitive;
@@ -313,11 +314,129 @@ fn unlink_from_parent(
     }
 }
 
+struct CachedPage {
+    frame: Arc<PhysPageFrame>,
+    dirty: bool,
+}
+
+struct InodePageCache {
+    pages: BTreeMap<usize, CachedPage>,
+}
+
+impl InodePageCache {
+    const CAPACITY: usize = 64;
+
+    fn new() -> Self {
+        Self { pages: BTreeMap::new() }
+    }
+
+    fn get_frame(&self, page_index: usize) -> Option<Arc<PhysPageFrame>> {
+        self.pages.get(&page_index).map(|page| page.frame.clone())
+    }
+
+    fn insert_frame(&mut self, page_index: usize, frame: Arc<PhysPageFrame>) -> Arc<PhysPageFrame> {
+        if let Some(page) = self.pages.get(&page_index) {
+            return page.frame.clone();
+        }
+
+        self.shrink_for_insert();
+        self.pages.insert(
+            page_index,
+            CachedPage {
+                frame: frame.clone(),
+                dirty: false,
+            },
+        );
+        frame
+    }
+
+    fn copy_to_slice(&self, buf: &mut [u8], offset: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+
+        let mut copied = 0;
+        while copied < len {
+            let current_offset = offset + copied;
+            let page_index = current_offset / arch::PGSIZE;
+            let page_offset = current_offset % arch::PGSIZE;
+            let copy_len = core::cmp::min(len - copied, arch::PGSIZE - page_offset);
+
+            if let Some(page) = self.pages.get(&page_index) {
+                page.frame
+                    .copy_to_slice(page_offset, &mut buf[copied..copied + copy_len]);
+            }
+
+            copied += copy_len;
+        }
+    }
+
+    fn mark_dirty(&mut self, page_index: usize) {
+        if let Some(page) = self.pages.get_mut(&page_index) {
+            page.dirty = true;
+        }
+    }
+
+    fn mark_clean(&mut self, page_index: usize) {
+        if let Some(page) = self.pages.get_mut(&page_index) {
+            page.dirty = false;
+        }
+    }
+
+    fn dirty_pages(&self) -> Vec<usize> {
+        self.pages
+            .iter()
+            .filter_map(|(page_index, page)| page.dirty.then_some(*page_index))
+            .collect()
+    }
+
+    fn discard_after_truncate(&mut self, new_size: usize) {
+        let new_page_count = new_size.div_ceil(arch::PGSIZE);
+        let _ = self.pages.split_off(&new_page_count);
+
+        let tail_offset = new_size % arch::PGSIZE;
+        if tail_offset != 0
+            && let Some(page) = self.pages.get(&(new_page_count - 1))
+        {
+            page.frame.slice()[tail_offset..].fill(0);
+        }
+    }
+
+    fn shrink_to_capacity(&mut self) {
+        while self.pages.len() > Self::CAPACITY {
+            if !self.remove_reclaimable_page() {
+                break;
+            }
+        }
+    }
+
+    fn shrink_for_insert(&mut self) {
+        while self.pages.len() >= Self::CAPACITY {
+            if !self.remove_reclaimable_page() {
+                break;
+            }
+        }
+    }
+
+    fn remove_reclaimable_page(&mut self) -> bool {
+        let Some(page_index) = self
+            .pages
+            .iter()
+            .find_map(|(page_index, page)| (!page.dirty && Arc::strong_count(&page.frame) == 1).then_some(*page_index))
+        else {
+            return false;
+        };
+        self.pages.remove(&page_index);
+        true
+    }
+}
+
 pub struct Ext4Inode {
     ino: u32,
     superblock: Arc<SleepLock<SuperBlockInner>>,
+    cacheable_file: bool,
     lock_state: SpinLock<InodeLockState>,
-    mmap_pages: SpinLock<BTreeMap<usize, Arc<PhysPageFrame>>>,
+    page_cache: SleepLock<InodePageCache>,
     pipe: SpinLock<Option<Arc<PipeInner>>>,
     #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
@@ -325,17 +444,20 @@ pub struct Ext4Inode {
 
 impl Ext4Inode {
     pub fn new(ino: u32, superblock: Arc<SleepLock<SuperBlockInner>>) -> SysResult<Self> {
-        {
+        let cacheable_file = {
             let mut superblock = superblock.lock();
             let mut inode_ref = superblock.read_inode_ref(ino)?;
+            let cacheable_file = inode_type(&mut inode_ref) == InodeType::RegularFile;
             superblock.put_inode_ref(&mut inode_ref)?;
-        }
+            cacheable_file
+        };
 
         Ok(Self {
             ino,
             superblock,
+            cacheable_file,
             lock_state: SpinLock::new(InodeLockState::new(), "Ext4Inode::lock_state"),
-            mmap_pages: SpinLock::new(BTreeMap::new(), "Ext4Inode::mmap_pages"),
+            page_cache: SleepLock::new(InodePageCache::new(), "Ext4Inode::page_cache"),
             pipe: SpinLock::new(None, "Ext4Inode::pipe"),
             #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("Ext4Inode::fanotify"),
@@ -360,61 +482,6 @@ impl Ext4Inode {
         }
     }
 
-    fn copy_cached_mmap_pages_to_slice(&self, buf: &mut [u8], offset: usize, len: usize) {
-        if len == 0 {
-            return;
-        }
-
-        let pages = self.mmap_pages.lock();
-        let mut copied = 0;
-        while copied < len {
-            let current_offset = offset + copied;
-            let page_index = current_offset / arch::PGSIZE;
-            let page_offset = current_offset % arch::PGSIZE;
-            let copy_len = core::cmp::min(len - copied, arch::PGSIZE - page_offset);
-
-            if let Some(page) = pages.get(&page_index) {
-                page.copy_to_slice(page_offset, &mut buf[copied..copied + copy_len]);
-            }
-
-            copied += copy_len;
-        }
-    }
-
-    fn copy_slice_to_cached_mmap_pages(&self, buf: &[u8], offset: usize, len: usize) {
-        if len == 0 {
-            return;
-        }
-
-        let pages = self.mmap_pages.lock();
-        let mut copied = 0;
-        while copied < len {
-            let current_offset = offset + copied;
-            let page_index = current_offset / arch::PGSIZE;
-            let page_offset = current_offset % arch::PGSIZE;
-            let copy_len = core::cmp::min(len - copied, arch::PGSIZE - page_offset);
-
-            if let Some(page) = pages.get(&page_index) {
-                page.copy_from_slice(page_offset, &buf[copied..copied + copy_len]);
-            }
-
-            copied += copy_len;
-        }
-    }
-
-    fn discard_cached_mmap_pages_after_truncate(&self, new_size: usize) {
-        let mut pages = self.mmap_pages.lock();
-        let new_page_count = new_size.div_ceil(arch::PGSIZE);
-        let _ = pages.split_off(&new_page_count);
-
-        let tail_offset = new_size % arch::PGSIZE;
-        if tail_offset != 0
-            && let Some(page) = pages.get(&(new_page_count - 1))
-        {
-            page.slice()[tail_offset..].fill(0);
-        }
-    }
-
     fn fifo_pipe_inner(&self) -> Arc<PipeInner> {
         let mut pipe = self.pipe.lock();
         if let Some(pipe) = &*pipe {
@@ -424,6 +491,137 @@ impl Ext4Inode {
         let new_pipe = Arc::new(PipeInner::new(config::PIPE_CAPACITY));
         *pipe = Some(new_pipe.clone());
         new_pipe
+    }
+
+    fn is_cacheable_file(&self) -> bool {
+        self.cacheable_file
+    }
+
+    fn read_raw_at(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        self.with_ref(|_superblock, inode_ref| {
+            let mut rcnt = 0usize;
+            unsafe {
+                ext4_result(kernelx_ext4_inode_ref_read_at(
+                    inode_ref,
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    offset as u64,
+                    &mut rcnt,
+                ))?;
+            }
+            Ok(rcnt)
+        })
+    }
+
+    fn write_raw_at(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        self.with_ref(|_superblock, inode_ref| {
+            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_IMMUTABLE) {
+                return Err(Errno::EPERM);
+            }
+            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_APPEND) && offset as u64 != inode_size(inode_ref) {
+                return Err(Errno::EPERM);
+            }
+
+            let mut wcnt = 0usize;
+            let rc = unsafe {
+                kernelx_ext4_inode_ref_write_at(inode_ref, buf.as_ptr().cast(), buf.len(), offset as u64, &mut wcnt)
+            };
+            ext4_result(rc)?;
+            Ok(wcnt)
+        })
+    }
+
+    fn writeback_raw_at(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        self.with_ref(|_superblock, inode_ref| {
+            let mut wcnt = 0usize;
+            let rc = unsafe {
+                kernelx_ext4_inode_ref_write_at(inode_ref, buf.as_ptr().cast(), buf.len(), offset as u64, &mut wcnt)
+            };
+            ext4_result(rc)?;
+            Ok(wcnt)
+        })
+    }
+
+    fn prepare_cached_write(&self, offset: usize, len: usize) -> SysResult<usize> {
+        let end = offset.checked_add(len).ok_or(Errno::EFBIG)?;
+        self.with_ref(|superblock, inode_ref| {
+            if superblock.fs.read_only {
+                return Err(Errno::EROFS);
+            }
+            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_IMMUTABLE) {
+                return Err(Errno::EPERM);
+            }
+            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_APPEND) && offset as u64 != inode_size(inode_ref) {
+                return Err(Errno::EPERM);
+            }
+
+            let sb = unsafe { &(*inode_ref.fs).sb };
+            let block_size = get_block_size(sb) as usize;
+            if len != 0 && ((end - 1) / block_size) > u32::MAX as usize {
+                return Err(Errno::EFBIG);
+            }
+
+            let old_size = usize::try_from(inode_size(inode_ref)).map_err(|_| Errno::EFBIG)?;
+            if end > old_size {
+                unsafe {
+                    ext4_inode_set_size(inode_ref.inode, end as u64);
+                }
+                inode_ref.dirty = true;
+            }
+            Ok(old_size)
+        })
+    }
+
+    fn load_page_to_cache(
+        &self,
+        page_cache: &mut InodePageCache,
+        file_page_index: usize,
+        file_size: usize,
+    ) -> SysResult<Arc<PhysPageFrame>> {
+        if let Some(frame) = page_cache.get_frame(file_page_index) {
+            return Ok(frame);
+        }
+
+        let page_offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+        if page_offset >= file_size {
+            return Err(Errno::EINVAL);
+        }
+
+        let len = core::cmp::min(file_size - page_offset, arch::PGSIZE);
+        let frame = Arc::new(PhysPageFrame::alloc_zeroed());
+        let read_len = self.read_raw_at(&mut frame.slice()[..len], page_offset)?;
+        if read_len < len {
+            frame.slice()[read_len..len].fill(0);
+        }
+
+        Ok(page_cache.insert_frame(file_page_index, frame))
+    }
+
+    fn flush_dirty_pages(&self) -> SysResult<()> {
+        if !self.is_cacheable_file() {
+            return Ok(());
+        }
+
+        let mut page_cache = self.page_cache.lock();
+        for page_index in page_cache.dirty_pages() {
+            let offset = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+            let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
+            if offset >= file_size {
+                page_cache.mark_clean(page_index);
+                continue;
+            }
+
+            let len = core::cmp::min(file_size - offset, arch::PGSIZE);
+            let Some(frame) = page_cache.get_frame(page_index) else {
+                continue;
+            };
+            let written = self.writeback_raw_at(&frame.slice()[..len], offset)?;
+            if written != len {
+                return Err(Errno::EIO);
+            }
+            page_cache.mark_clean(page_index);
+        }
+        Ok(())
     }
 }
 
@@ -595,41 +793,74 @@ impl InodeOps for Ext4Inode {
         })
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
-        let read_len = self.with_ref(|_superblock, inode_ref| {
-            let mut rcnt = 0usize;
-            unsafe {
-                ext4_result(kernelx_ext4_inode_ref_read_at(
-                    inode_ref,
-                    buf.as_mut_ptr().cast(),
-                    buf.len(),
-                    offset as u64,
-                    &mut rcnt,
-                ))?;
-            }
-            Ok(rcnt)
-        })?;
-        self.copy_cached_mmap_pages_to_slice(buf, offset, read_len);
+    fn readat(&self, buf: &mut [u8], offset: usize, direct: bool) -> SysResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if !self.is_cacheable_file() {
+            return self.read_raw_at(buf, offset);
+        }
+
+        let mut page_cache = self.page_cache.lock();
+        if direct {
+            let read_len = self.read_raw_at(buf, offset)?;
+            page_cache.copy_to_slice(buf, offset, read_len);
+            return Ok(read_len);
+        }
+
+        let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
+        if offset >= file_size {
+            return Ok(0);
+        }
+
+        let to_read = core::cmp::min(buf.len(), file_size - offset);
+        let mut read_len = 0;
+        while read_len < to_read {
+            let current_offset = offset + read_len;
+            let page_index = current_offset / arch::PGSIZE;
+            let page_offset = current_offset % arch::PGSIZE;
+            let copy_len = core::cmp::min(to_read - read_len, arch::PGSIZE - page_offset);
+
+            let frame = self.load_page_to_cache(&mut page_cache, page_index, file_size)?;
+            frame.copy_to_slice(page_offset, &mut buf[read_len..read_len + copy_len]);
+
+            read_len += copy_len;
+        }
+
         Ok(read_len)
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
-        let written_len = self.with_ref(|_superblock, inode_ref| {
-            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_IMMUTABLE) {
-                return Err(Errno::EPERM);
-            }
-            if inode_has_flags(inode_ref, EXT4_INODE_FLAG_APPEND) && offset as u64 != inode_size(inode_ref) {
-                return Err(Errno::EPERM);
-            }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if !self.is_cacheable_file() {
+            return self.write_raw_at(buf, offset);
+        }
 
-            let mut wcnt = 0usize;
-            let rc = unsafe {
-                kernelx_ext4_inode_ref_write_at(inode_ref, buf.as_ptr().cast(), buf.len(), offset as u64, &mut wcnt)
+        let old_size = self.prepare_cached_write(offset, buf.len())?;
+        let mut page_cache = self.page_cache.lock();
+        let mut written_len = 0;
+        while written_len < buf.len() {
+            let current_offset = offset + written_len;
+            let page_index = current_offset / arch::PGSIZE;
+            let page_offset = current_offset % arch::PGSIZE;
+            let copy_len = core::cmp::min(buf.len() - written_len, arch::PGSIZE - page_offset);
+            let page_start = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+
+            let frame = if let Some(frame) = page_cache.get_frame(page_index) {
+                frame
+            } else if page_start < old_size && copy_len != arch::PGSIZE {
+                self.load_page_to_cache(&mut page_cache, page_index, old_size)?
+            } else {
+                page_cache.insert_frame(page_index, Arc::new(PhysPageFrame::alloc_zeroed()))
             };
-            ext4_result(rc)?;
-            Ok(wcnt)
-        })?;
-        self.copy_slice_to_cached_mmap_pages(buf, offset, written_len);
+            frame.copy_from_slice(page_offset, &buf[written_len..written_len + copy_len]);
+            page_cache.mark_dirty(page_index);
+
+            written_len += copy_len;
+        }
+
         Ok(written_len)
     }
 
@@ -837,31 +1068,15 @@ impl InodeOps for Ext4Inode {
     }
 
     fn mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<Arc<PhysPageFrame>>> {
-        if let Some(frame) = self.mmap_pages.lock().get(&file_page_index).cloned() {
-            return Ok(Some(frame));
-        }
-
         let offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
         let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
         if offset >= file_size {
             return Ok(None);
         }
 
-        let len = core::cmp::min(file_size - offset, arch::PGSIZE);
-        let frame = PhysPageFrame::alloc_zeroed();
-        let read_len = self.readat(&mut frame.slice()[..len], offset, false)?;
-        if read_len < len {
-            frame.slice()[read_len..len].fill(0);
-        }
-
-        let frame = Arc::new(frame);
-        let mut pages = self.mmap_pages.lock();
-        if let Some(existing) = pages.get(&file_page_index) {
-            Ok(Some(existing.clone()))
-        } else {
-            pages.insert(file_page_index, frame.clone());
-            Ok(Some(frame))
-        }
+        let mut page_cache = self.page_cache.lock();
+        self.load_page_to_cache(&mut page_cache, file_page_index, file_size)
+            .map(Some)
     }
 
     fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
@@ -872,18 +1087,17 @@ impl InodeOps for Ext4Inode {
         }
 
         let len = core::cmp::min(file_size - offset, arch::PGSIZE);
-        self.writeat(&frame.slice()[..len], offset)?;
+        let mut page_cache = self.page_cache.lock();
+        let written = self.writeback_raw_at(&frame.slice()[..len], offset)?;
+        if written != len {
+            return Err(Errno::EIO);
+        }
+        page_cache.mark_clean(file_page_index);
         Ok(())
     }
 
-    fn release_mmap_shared_page(&self, file_page_index: usize) {
-        let mut pages = self.mmap_pages.lock();
-        if pages
-            .get(&file_page_index)
-            .is_some_and(|frame| Arc::strong_count(frame) == 1)
-        {
-            pages.remove(&file_page_index);
-        }
+    fn release_mmap_shared_page(&self, _file_page_index: usize) {
+        self.page_cache.lock().shrink_to_capacity();
     }
 
     fn mode(&self) -> SysResult<Mode> {
@@ -987,7 +1201,7 @@ impl InodeOps for Ext4Inode {
         })?;
 
         let new_size = usize::try_from(new_size).map_err(|_| Errno::EFBIG)?;
-        self.discard_cached_mmap_pages_after_truncate(new_size);
+        self.page_cache.lock().discard_after_truncate(new_size);
         Ok(())
     }
 
@@ -1046,6 +1260,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn sync(&self) -> SysResult<()> {
+        self.flush_dirty_pages()?;
         self.superblock.lock().flush()
     }
 
@@ -1061,5 +1276,13 @@ impl InodeOps for Ext4Inode {
 
     fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    }
+}
+
+impl Drop for Ext4Inode {
+    fn drop(&mut self) {
+        if self.flush_dirty_pages().is_ok() {
+            let _ = self.superblock.lock().flush();
+        }
     }
 }

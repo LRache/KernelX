@@ -901,6 +901,7 @@ impl Dentry {
 
         self.check_sticky_remove_perm(&parent_inode, &child_inode)?;
 
+        child_inode.sync()?;
         parent_inode.unlink(name)?;
 
         self.children.lock().remove(name);
@@ -970,6 +971,7 @@ impl Dentry {
                     }
                 }
 
+                overwritten_inode.sync()?;
                 Some(Index {
                     sno: new_parent.sno(),
                     ino,
