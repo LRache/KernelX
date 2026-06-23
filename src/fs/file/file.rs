@@ -67,6 +67,30 @@ impl RandomAccessFile {
         self.inode.readat(buf, offset, self.flags().direct)
     }
 
+    pub fn pread_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize) -> SysResult<usize> {
+        let direct = self.flags().direct;
+        let mut total_read = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter_mut() {
+            let kbuf = match kbuf {
+                Ok(kbuf) => kbuf,
+                Err(_) if total_read > 0 => return Ok(total_read),
+                Err(err) => return Err(err),
+            };
+            let n = match self.inode.readat(kbuf, current_offset, direct) {
+                Ok(n) => n,
+                Err(_) if total_read > 0 => return Ok(total_read),
+                Err(err) => return Err(err),
+            };
+            total_read += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_read);
+            }
+        }
+        Ok(total_read)
+    }
+
     pub fn pwrite(&self, buf: &[u8], mut offset: usize) -> SysResult<usize> {
         let flags = self.flags();
         if flags.append {
@@ -74,6 +98,35 @@ impl RandomAccessFile {
         }
         let len = self.limit_write_len(offset, buf.len())?;
         self.inode.writeat(&buf[..len], offset)
+    }
+
+    pub fn pwrite_from_user(&self, ubuf: &UAddrSpaceBuffer, mut offset: usize) -> SysResult<usize> {
+        let flags = self.flags();
+        if flags.append {
+            offset = self.inode.size()? as usize;
+        }
+        let limit_len = self.limit_write_len(offset, ubuf.length())?;
+        let ubuf = ubuf.with_length(limit_len);
+        let mut total_written = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter() {
+            let kbuf = match kbuf {
+                Ok(kbuf) => kbuf,
+                Err(_) if total_written > 0 => return Ok(total_written),
+                Err(err) => return Err(err),
+            };
+            let n = match self.inode.writeat(kbuf, current_offset) {
+                Ok(n) => n,
+                Err(_) if total_written > 0 => return Ok(total_written),
+                Err(err) => return Err(err),
+            };
+            total_written += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_written);
+            }
+        }
+        Ok(total_written)
     }
 
     pub fn ftruncate(&self, new_size: u64) -> SysResult<()> {

@@ -21,6 +21,7 @@ use crate::kernel::event::{
 #[cfg(feature = "fanotify")]
 use crate::kernel::event::{FanotifyFdinfoKey, FanotifyFile, FanotifyMarkFlags};
 use crate::kernel::ipc::{KSiFields, Pipe, SiCode, signum};
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
@@ -150,8 +151,7 @@ fn random_access_file(file: &Arc<dyn FileOps>) -> SysResult<&RandomAccessFile> {
 fn update_file_times(file: &dyn FileOps, time: &Duration, is_write: bool) -> SysResult<()> {
     if let Some(inode) = file.get_inode() {
         if is_write {
-            inode.update_mtime(time)?;
-            inode.update_ctime(time)?;
+            inode.update_mtime_ctime(time)?;
         } else {
             inode.update_atime(time)?;
         }
@@ -1003,6 +1003,48 @@ fn check_positional_io(file: &Arc<dyn FileOps>) -> SysResult<()> {
     random_access_file(file).map(|_| ())
 }
 
+fn read_file_to_user(file: &dyn FileOps, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+    let mut total_read = 0;
+    for kbuf in ubuf.iter_mut() {
+        let kbuf = match kbuf {
+            Ok(kbuf) => kbuf,
+            Err(_) if total_read > 0 => return Ok(total_read),
+            Err(err) => return Err(err),
+        };
+        let n = match file.read(kbuf) {
+            Ok(n) => n,
+            Err(_) if total_read > 0 => return Ok(total_read),
+            Err(err) => return Err(err),
+        };
+        total_read += n;
+        if n < kbuf.len() {
+            return Ok(total_read);
+        }
+    }
+    Ok(total_read)
+}
+
+fn write_file_from_user(file: &dyn FileOps, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
+    let mut total_written = 0;
+    for kbuf in ubuf.iter() {
+        let kbuf = match kbuf {
+            Ok(kbuf) => kbuf,
+            Err(_) if total_written > 0 => return Ok(total_written),
+            Err(err) => return Err(err),
+        };
+        let n = match file.write(kbuf) {
+            Ok(n) => n,
+            Err(_) if total_written > 0 => return Ok(total_written),
+            Err(err) => return Err(err),
+        };
+        total_written += n;
+        if n < kbuf.len() {
+            return Ok(total_written);
+        }
+    }
+    Ok(total_written)
+}
+
 pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
     if (iovcnt as isize) < 0 {
         return Err(Errno::EINVAL);
@@ -1044,38 +1086,21 @@ pub fn readv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
             return Err(Errno::EINVAL);
         }
 
-        let mut read = 0usize;
-        let mut remaining = iov.len;
-        let mut buffer = [0u8; BUFFER_SIZE];
-        while remaining != 0 {
-            let to_read = core::cmp::min(remaining, BUFFER_SIZE);
-            let bytes_read = match file.read(&mut buffer[..to_read]) {
-                Ok(n) => n,
-                Err(e) => {
-                    if total_read + read > 0 {
-                        notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
-                        return finish_file_io(file.as_ref(), total_read + read, false);
-                    }
-                    return Err(e);
-                }
-            };
-            if bytes_read == 0 {
-                break; // EOF
-            }
-
-            if copy_to_user::buffer(iov.base + read, &buffer[..bytes_read]).is_err() {
-                if total_read + read > 0 {
+        let ubuf = UAddrSpaceBuffer::new(iov.base, iov.len, current::addrspace());
+        let read = match read_file_to_user(file.as_ref(), &ubuf) {
+            Ok(read) => read,
+            Err(e) => {
+                if total_read > 0 {
                     notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
-                    return finish_file_io(file.as_ref(), total_read + read, false);
+                    return finish_file_io(file.as_ref(), total_read, false);
                 }
-                return Err(Errno::EFAULT);
+                return Err(e);
             }
-
-            remaining -= bytes_read;
-            read += bytes_read;
-        }
-
+        };
         total_read += read;
+        if read < iov.len {
+            break;
+        }
     }
 
     if total_read != 0 {
@@ -1123,40 +1148,23 @@ pub fn preadv(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> Sy
             return Err(Errno::EINVAL);
         }
 
-        let mut read = 0usize;
-        let mut remaining = iov.len;
-        let mut buffer = [0u8; BUFFER_SIZE];
-        while remaining != 0 {
-            let to_read = core::cmp::min(remaining, BUFFER_SIZE);
-            let read_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
-            let bytes_read = match random_file.pread(&mut buffer[..to_read], read_pos) {
-                Ok(n) => n,
-                Err(e) => {
-                    if total_read + read > 0 {
-                        notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
-                        return finish_file_io(file.as_ref(), total_read + read, false);
-                    }
-                    return Err(e);
-                }
-            };
-            if bytes_read == 0 {
-                break; // EOF
-            }
-
-            if copy_to_user::buffer(iov.base + read, &buffer[..bytes_read]).is_err() {
-                if total_read + read > 0 {
+        let read_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
+        let ubuf = UAddrSpaceBuffer::new(iov.base, iov.len, current::addrspace());
+        let read = match random_file.pread_to_user(&ubuf, read_pos) {
+            Ok(read) => read,
+            Err(e) => {
+                if total_read > 0 {
                     notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
-                    return finish_file_io(file.as_ref(), total_read + read, false);
+                    return finish_file_io(file.as_ref(), total_read, false);
                 }
-                return Err(Errno::EFAULT);
+                return Err(e);
             }
-
-            remaining -= bytes_read;
-            read += bytes_read;
-            offset = offset.checked_add(bytes_read).ok_or(Errno::EINVAL)?;
-        }
-
+        };
+        offset = offset.checked_add(read).ok_or(Errno::EINVAL)?;
         total_read += read;
+        if read < iov.len {
+            break;
+        }
     }
 
     if total_read != 0 {
@@ -1210,26 +1218,8 @@ pub fn pread64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRet
 
     wait_fanotify_permission_for_file(&file, FanotifyEventMask::FAN_ACCESS_PERM)?;
 
-    let mut written = 0;
-    let mut buffer = [0u8; BUFFER_SIZE];
-    let mut left = count;
-
-    while left != 0 {
-        let to_read = core::cmp::min(left, BUFFER_SIZE);
-        let bytes_read = random_file.pread(&mut buffer[..to_read], pos + (count - left))?;
-        if bytes_read == 0 {
-            break; // EOF
-        }
-
-        ubuf.write(count - left, &buffer[..bytes_read])?;
-
-        left -= bytes_read;
-        written += bytes_read;
-
-        if bytes_read < to_read {
-            break; // EOF
-        }
-    }
+    let ubuf = ubuf.to_uaddrspace_buffer(count);
+    let written = random_file.pread_to_user(&ubuf, pos)?;
 
     if written != 0 {
         notify_fanotify(&file, FanotifyEventMask::FAN_ACCESS);
@@ -1255,26 +1245,8 @@ pub fn pwrite64(fd: usize, ubuf: UBuffer, count: usize, pos: usize) -> SyscallRe
         return Err(Errno::EBADF);
     }
 
-    let mut written = 0;
-    let mut buffer = [0u8; BUFFER_SIZE];
-    let mut left = count;
-
-    while left != 0 {
-        let to_write = core::cmp::min(left, BUFFER_SIZE);
-        ubuf.read(count - left, &mut buffer[..to_write])?;
-
-        let bytes_written = random_file.pwrite(&buffer[..to_write], pos + (count - left))?;
-        if bytes_written == 0 {
-            break; // EOF
-        }
-
-        left -= bytes_written;
-        written += bytes_written;
-
-        if bytes_written < to_write {
-            break; // EOF
-        }
-    }
+    let ubuf = ubuf.to_uaddrspace_buffer(count);
+    let written = random_file.pwrite_from_user(&ubuf, pos)?;
 
     if written != 0 {
         notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
@@ -1324,41 +1296,23 @@ pub fn pwritev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize, pos: usize) -> S
             return Err(Errno::EINVAL);
         }
 
-        let mut written = 0usize;
-        let mut remaining = iov.len;
-        let mut buffer = [0u8; BUFFER_SIZE];
-        while remaining != 0 {
-            let to_write = core::cmp::min(remaining, BUFFER_SIZE);
-            if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
-                if total_written + written > 0 {
+        let write_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
+        let ubuf = UAddrSpaceBuffer::new(iov.base, iov.len, current::addrspace());
+        let written = match random_file.pwrite_from_user(&ubuf, write_pos) {
+            Ok(written) => written,
+            Err(e) => {
+                if total_written > 0 {
                     notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
-                    return finish_file_io(file.as_ref(), total_written + written, true);
+                    return finish_file_io(file.as_ref(), total_written, true);
                 }
-                return Err(Errno::EFAULT);
+                return Err(e);
             }
-
-            let write_pos = pos.checked_add(offset).ok_or(Errno::EINVAL)?;
-            match random_file.pwrite(&buffer[..to_write], write_pos) {
-                Ok(bytes_written) => {
-                    remaining -= bytes_written;
-                    written += bytes_written;
-                    offset = offset.checked_add(bytes_written).ok_or(Errno::EINVAL)?;
-                    if bytes_written != to_write {
-                        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
-                        return finish_file_io(file.as_ref(), total_written + written, true);
-                    }
-                }
-                Err(e) => {
-                    if total_written + written > 0 {
-                        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
-                        return finish_file_io(file.as_ref(), total_written + written, true);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
+        };
+        offset = offset.checked_add(written).ok_or(Errno::EINVAL)?;
         total_written += written;
+        if written < iov.len {
+            break;
+        }
     }
 
     if total_written != 0 {
@@ -1407,39 +1361,21 @@ pub fn writev(fd: usize, uptr_iov: UPtr<IOVec>, iovcnt: usize) -> SyscallRet {
             return Err(Errno::EINVAL);
         }
 
-        let mut written = 0usize;
-        let mut remaining = iov.len;
-        let mut buffer = [0u8; BUFFER_SIZE];
-        while remaining != 0 {
-            let to_write = core::cmp::min(remaining, BUFFER_SIZE);
-            if copy_from_user::buffer(iov.base + written, &mut buffer[..to_write]).is_err() {
-                if total_written + written > 0 {
+        let ubuf = UAddrSpaceBuffer::new(iov.base, iov.len, current::addrspace());
+        let written = match write_file_from_user(file.as_ref(), &ubuf) {
+            Ok(written) => written,
+            Err(e) => {
+                if total_written > 0 {
                     notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
-                    return finish_file_io(file.as_ref(), total_written + written, true);
+                    return finish_file_io(file.as_ref(), total_written, true);
                 }
-                return Err(Errno::EFAULT);
+                return Err(e);
             }
-
-            match file.write(&buffer[..to_write]) {
-                Ok(bytes_written) => {
-                    remaining -= bytes_written;
-                    written += bytes_written;
-                    if bytes_written != to_write {
-                        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
-                        return finish_file_io(file.as_ref(), total_written + written, true);
-                    }
-                }
-                Err(e) => {
-                    if total_written + written > 0 {
-                        notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
-                        return finish_file_io(file.as_ref(), total_written + written, true);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
+        };
         total_written += written;
+        if written < iov.len {
+            break;
+        }
     }
 
     if total_written != 0 {

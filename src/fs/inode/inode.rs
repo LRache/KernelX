@@ -365,6 +365,11 @@ pub trait InodeOps: DowncastSync {
         Ok(())
     }
 
+    fn update_mtime_ctime(&self, time: &Duration) -> SysResult<()> {
+        self.update_mtime(time)?;
+        self.update_ctime(time)
+    }
+
     fn open_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> SysResult<Arc<dyn FileOps>> {
         Ok(self.wrap_file(dentry, flags))
     }
