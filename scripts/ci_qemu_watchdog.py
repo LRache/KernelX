@@ -18,6 +18,7 @@ from pathlib import Path
 
 
 IDLE_EXIT_CODE = 124
+FAILURE_EXIT_CODE = 1
 READ_SIZE = 4096
 MONITOR_COMMANDS = [
     "info status",
@@ -45,6 +46,16 @@ def write_all(log, data: bytes) -> None:
 
 def write_line(log, message: str) -> None:
     write_all(log, f"{message}\n".encode())
+
+
+def capture_failure(args: argparse.Namespace, reason: str) -> None:
+    if args.monitor_socket and args.monitor_log:
+        capture_monitor(
+            args.monitor_socket,
+            Path(args.monitor_log),
+            Path(args.memory_dump) if args.memory_dump else None,
+            reason,
+        )
 
 
 def read_monitor_response(
@@ -155,15 +166,21 @@ def stop_qemu(proc: subprocess.Popen[bytes]) -> None:
         proc.wait()
 
 
+def remove_monitor_socket(path: str | None) -> None:
+    if path is None:
+        return
+
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 def run_qemu(args: argparse.Namespace) -> int:
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.monitor_socket:
-        try:
-            os.unlink(args.monitor_socket)
-        except FileNotFoundError:
-            pass
+    remove_monitor_socket(args.monitor_socket)
 
     with log_path.open("ab") as log:
         write_line(log, f"[ci-qemu-watchdog] idle timeout: {args.idle_timeout}s")
@@ -182,7 +199,23 @@ def run_qemu(args: argparse.Namespace) -> int:
         selector.register(proc.stdout, selectors.EVENT_READ)
         last_output = time.monotonic()
         idle_timed_out = False
+        stopped_after_success = False
         stopping = False
+        success_marker = args.success_marker.encode() if args.success_marker else None
+        success_seen = False
+        marker_tail = b""
+
+        def observe_output(data: bytes) -> None:
+            nonlocal marker_tail, success_seen
+            if success_marker is None or success_seen:
+                return
+
+            combined = marker_tail + data
+            if success_marker in combined:
+                success_seen = True
+
+            marker_tail_len = max(0, len(success_marker) - 1)
+            marker_tail = combined[-marker_tail_len:] if marker_tail_len else b""
 
         def on_signal(signum, _frame) -> None:
             nonlocal stopping
@@ -190,13 +223,7 @@ def run_qemu(args: argparse.Namespace) -> int:
                 return
             stopping = True
             write_line(log, f"[ci-qemu-watchdog] received signal {signum}, stopping QEMU")
-            if args.monitor_socket and args.monitor_log:
-                capture_monitor(
-                    args.monitor_socket,
-                    Path(args.monitor_log),
-                    Path(args.memory_dump) if args.memory_dump else None,
-                    f"signal {signum}",
-                )
+            capture_failure(args, f"signal {signum}")
             stop_qemu(proc)
 
         signal.signal(signal.SIGTERM, on_signal)
@@ -207,7 +234,14 @@ def run_qemu(args: argparse.Namespace) -> int:
                 data = key.fileobj.read(READ_SIZE)
                 if data:
                     write_all(log, data)
+                    observe_output(data)
                     last_output = time.monotonic()
+
+            if args.exit_on_success and success_seen:
+                stopped_after_success = True
+                write_line(log, "[ci-qemu-watchdog] success marker seen; stopping QEMU")
+                stop_qemu(proc)
+                break
 
             if time.monotonic() - last_output >= args.idle_timeout:
                 idle_timed_out = True
@@ -215,13 +249,7 @@ def run_qemu(args: argparse.Namespace) -> int:
                     log,
                     f"[ci-qemu-watchdog] no QEMU output for {args.idle_timeout}s; capturing monitor state",
                 )
-                if args.monitor_socket and args.monitor_log:
-                    capture_monitor(
-                        args.monitor_socket,
-                        Path(args.monitor_log),
-                        Path(args.memory_dump) if args.memory_dump else None,
-                        "idle timeout",
-                    )
+                capture_failure(args, "idle timeout")
                 stop_qemu(proc)
                 break
 
@@ -229,21 +257,35 @@ def run_qemu(args: argparse.Namespace) -> int:
             data = key.fileobj.read()
             if data:
                 write_all(log, data)
+                observe_output(data)
 
         selector.close()
         returncode = proc.wait()
 
-        if args.monitor_socket:
-            try:
-                os.unlink(args.monitor_socket)
-            except FileNotFoundError:
-                pass
-
         if idle_timed_out:
             write_line(log, f"[ci-qemu-watchdog] exiting with {IDLE_EXIT_CODE}")
+            remove_monitor_socket(args.monitor_socket)
             return IDLE_EXIT_CODE
 
+        if stopped_after_success:
+            write_line(log, "[ci-qemu-watchdog] exiting with 0")
+            remove_monitor_socket(args.monitor_socket)
+            return 0
+
         write_line(log, f"[ci-qemu-watchdog] QEMU exited with {returncode}")
+        if returncode != 0:
+            write_line(log, "[ci-qemu-watchdog] capturing monitor state after non-zero QEMU exit")
+            capture_failure(args, f"qemu exited with {returncode}")
+            remove_monitor_socket(args.monitor_socket)
+            return returncode
+
+        if success_marker is not None and not success_seen:
+            write_line(log, "[ci-qemu-watchdog] capturing monitor state after missing success marker")
+            capture_failure(args, "missing success marker")
+            remove_monitor_socket(args.monitor_socket)
+            return FAILURE_EXIT_CODE
+
+        remove_monitor_socket(args.monitor_socket)
         return returncode
 
 
@@ -254,6 +296,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--monitor-socket", help="QEMU HMP monitor UNIX socket path.")
     parser.add_argument("--monitor-log", help="File that receives QEMU monitor state on timeout.")
     parser.add_argument("--memory-dump", help="Guest physical memory dump path captured on timeout.")
+    parser.add_argument("--success-marker", help="Output marker required for a successful run.")
+    parser.add_argument(
+        "--exit-on-success",
+        action="store_true",
+        help="Stop QEMU and return success as soon as --success-marker is seen.",
+    )
     parser.add_argument("cmd", nargs=argparse.REMAINDER, help="QEMU command and arguments.")
 
     args = parser.parse_args()
@@ -265,6 +313,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--monitor-socket and --monitor-log must be used together")
     if args.memory_dump and not args.monitor_socket:
         parser.error("--memory-dump requires --monitor-socket and --monitor-log")
+    if args.exit_on_success and not args.success_marker:
+        parser.error("--exit-on-success requires --success-marker")
     return args
 
 

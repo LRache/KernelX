@@ -75,6 +75,7 @@ jobs:
           qemu_monitor_sock="$qemu_artifacts/qemu-monitor.sock"
           qemu_monitor_log="$qemu_artifacts/qemu_monitor.log"
           qemu_memory_dump="$qemu_artifacts/qemu-memory.vmcore"
+          success_marker="Init process exited with status Normal(0), system will halt."
           mkdir -p "$qemu_artifacts"
 
           tmpdisk="$(mktemp /tmp/qemu-tmpdisk-XXXXXX)"
@@ -88,11 +89,14 @@ jobs:
             --monitor-socket "$qemu_monitor_sock" \
             --monitor-log "$qemu_monitor_log" \
             --memory-dump "$qemu_memory_dump" \
+            --success-marker "$success_marker" \
+            --exit-on-success \
             -- \
           qemu-system-riscv64 \
             -M virt \
             -m 1G \
             -nographic \
+            -no-shutdown \
             -chardev socket,id=ci_monitor,path="$qemu_monitor_sock",server=on,wait=off \
             -mon chardev=ci_monitor,mode=readline \
             -kernel build/riscv64/Image \
@@ -107,14 +111,14 @@ jobs:
           qemu_status=$?
           set -e
 
-          if [ "$qemu_status" -eq 124 ]; then
+          if [ "$qemu_status" -eq 0 ]; then
+            echo "Tests passed."
+          elif [ "$qemu_status" -eq 124 ]; then
             echo "Tests failed: QEMU produced no output for 300 seconds."
             tail -50 "$qemu_log" || true
             exit 1
-          elif grep -q 'Init process exited with status Normal(0), system will halt.' "$qemu_log"; then
-            echo "Tests passed."
           else
-            echo "Tests failed: expected init process exit with code 0. QEMU status: $qemu_status"
+            echo "Tests failed: QEMU status: $qemu_status"
             tail -50 "$qemu_log" || true
             exit 1
           fi
@@ -200,6 +204,7 @@ jobs:
           qemu_monitor_sock="$qemu_artifacts/qemu-monitor.sock"
           qemu_monitor_log="$qemu_artifacts/qemu_monitor.log"
           qemu_memory_dump="$qemu_artifacts/qemu-memory.vmcore"
+          success_marker="Init process exited with status Normal(0), system will halt."
           mkdir -p "$qemu_artifacts"
 
           set +e
@@ -209,8 +214,11 @@ jobs:
             --monitor-socket "$qemu_monitor_sock" \
             --monitor-log "$qemu_monitor_log" \
             --memory-dump "$qemu_memory_dump" \
+            --success-marker "$success_marker" \
+            --exit-on-success \
             -- \
           qemu-system-loongarch64 -M virt -m 1G -nographic -smp 1 \
+            -no-shutdown \
             -chardev socket,id=ci_monitor,path="$qemu_monitor_sock",server=on,wait=off \
             -mon chardev=ci_monitor,mode=readline \
             -kernel build/loongarch64/vmkernelx \
@@ -222,14 +230,14 @@ jobs:
           qemu_status=$?
           set -e
 
-          if [ "$qemu_status" -eq 124 ]; then
+          if [ "$qemu_status" -eq 0 ]; then
+            echo "Tests passed."
+          elif [ "$qemu_status" -eq 124 ]; then
             echo "Tests failed: QEMU produced no output for 300 seconds."
             tail -50 "$qemu_log" || true
             exit 1
-          elif grep -q 'Init process exited with status Normal(0), system will halt.' "$qemu_log"; then
-            echo "Tests passed."
           else
-            echo "Tests failed: expected init process exit with code 0. QEMU status: $qemu_status"
+            echo "Tests failed: QEMU status: $qemu_status"
             tail -50 "$qemu_log" || true
             exit 1
           fi
