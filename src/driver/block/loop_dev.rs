@@ -58,6 +58,7 @@ impl BlockDriverOps for LoopDevice {
         }
 
         let offset = block * BLOCK_SIZE as usize;
+        // TODO(timestamp): update backing inode mtime/ctime for direct loop writes.
         self.inode.writeat(buf, offset).map_err(|_| ())?;
         Ok(())
     }

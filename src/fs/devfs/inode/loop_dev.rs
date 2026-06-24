@@ -245,6 +245,7 @@ impl InodeOps for LoopInode {
             return Err(Errno::EROFS);
         }
 
+        // TODO(timestamp): update backing inode mtime/ctime for direct loop writes.
         self.target_inode()?.writeat(buf, offset)
     }
 

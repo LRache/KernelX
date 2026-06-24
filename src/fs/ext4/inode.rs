@@ -634,7 +634,7 @@ impl Ext4Inode {
         })
     }
 
-    fn finish_cached_write(&self, old_size: usize, new_size: usize, time: &Duration) -> SysResult<()> {
+    fn finish_cached_write(&self, old_size: usize, new_size: usize) -> SysResult<()> {
         let may_extend_size = new_size > old_size;
 
         let cached_size = self.with_ref(|_superblock, inode_ref| {
@@ -653,8 +653,6 @@ impl Ext4Inode {
                 new_size
             };
 
-            inode_set_mtime(inode_ref, time);
-            inode_set_ctime(inode_ref, time);
             Ok(cached_size)
         })?;
 
@@ -1004,7 +1002,7 @@ impl InodeOps for Ext4Inode {
         drop(page_cache);
 
         let new_size = core::cmp::max(old_size, offset.checked_add(written_len).ok_or(Errno::EFBIG)?);
-        self.finish_cached_write(old_size, new_size, &now())?;
+        self.finish_cached_write(old_size, new_size)?;
         Ok(written_len)
     }
 
@@ -1232,6 +1230,7 @@ impl InodeOps for Ext4Inode {
 
         let len = core::cmp::min(file_size - offset, arch::PGSIZE);
         let mut page_cache = self.page_cache.lock();
+        // TODO(timestamp): update mtime/ctime for shared mmap dirty-page writeback.
         let written = self.writeback_raw_at(&frame.slice()[..len], offset)?;
         if written != len {
             return Err(Errno::EIO);
