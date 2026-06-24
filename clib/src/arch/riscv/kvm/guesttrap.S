@@ -64,6 +64,8 @@ asm_kvm_guest_trap_entry:
 
     ret
 
+    .size asm_kvm_guest_trap_entry, . - asm_kvm_guest_trap_entry
+
     .align 3
 asm_kvm_guest_trap_return:
     /* Save host registers */
@@ -122,3 +124,5 @@ asm_kvm_guest_trap_return:
     hfence.gvma
 
     sret
+
+    .size asm_kvm_guest_trap_return, . - asm_kvm_guest_trap_return

@@ -63,6 +63,7 @@ asm_usertrap_entry:
 
     # call the usertrap handler:
     jr t0
+    .size asm_usertrap_entry, . - asm_usertrap_entry
 
 asm_usertrap_return:     
     STORE(tp, 32)
@@ -111,3 +112,4 @@ asm_usertrap_return:
     LOAD(a0, 10)
 
     sret
+    .size asm_usertrap_return, . - asm_usertrap_return

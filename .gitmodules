@@ -2,3 +2,9 @@
 	path = clib/lib/lwext4/lwext4
 	url = git@github.com:HD-CSKX/lwext4.git
 	branch = kernelx-patched
+[submodule "tools/qperf"]
+	path = tools/qperf
+	url = https://github.com/Starry-OS/qperf.git
+[submodule "tools/FlameGraph"]
+	path = tools/FlameGraph
+	url = https://github.com/brendangregg/FlameGraph.git

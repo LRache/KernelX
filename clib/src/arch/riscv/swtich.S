@@ -1,5 +1,6 @@
 .section .text
 .global asm_kernel_switch
+.type asm_kernel_switch, @function
 
 asm_kernel_switch:
     # save context
@@ -47,3 +48,5 @@ asm_kernel_switch:
 
     # jump to ra
     jr ra
+
+.size asm_kernel_switch, . - asm_kernel_switch

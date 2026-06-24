@@ -197,6 +197,16 @@ config BACKTRACE
 	  Embeds a symbol table into the kernel image for function name resolution.
 	  Requires force-frame-pointers=yes (set automatically).
 
+config DWARF
+	bool "Emit DWARF Debug Info"
+	default y if COMPILE_MODE_DEBUG
+	default n if COMPILE_MODE_RELEASE
+	help
+	  Emit DWARF debug information into the kernel ELF.
+	  This passes debuginfo=2 and strip=none to rustc and -gdwarf-4 to clib so
+	  host-side tools such as addr2line and qperf-analyzer can symbolize kernel
+	  addresses.
+
 config LOCKDEP
 	bool "Enable lockdep"
 	default n

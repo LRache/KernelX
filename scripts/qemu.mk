@@ -16,6 +16,23 @@ qemu_unquote = $(subst ",,$(1))
 IMAGE = build/$(ARCH)$(ARCH_BITS)/Image
 VMKERNELX = build/$(ARCH)$(ARCH_BITS)/vmkernelx
 
+QPERF_DIR ?= tools/qperf
+QPERF_PLUGIN ?= $(QPERF_DIR)/target/release/libqperf.so
+QPERF_ANALYZER_MANIFEST ?= $(QPERF_DIR)/analyzer/Cargo.toml
+QPERF_RUN_TIMESTAMP ?= $(shell date +%Y%m%d-%H%M%S)
+QPERF_FREQ ?= 99
+QPERF_OUT ?= build/$(ARCH)$(ARCH_BITS)/qperf.bin
+QPERF_OUT_DIR := $(dir $(QPERF_OUT))
+QPERF_FOLDED_OUTPUT_DIR ?= output/qperf
+QPERF_FOLDED ?= $(QPERF_FOLDED_OUTPUT_DIR)/kernelx-qperf-$(QPERF_RUN_TIMESTAMP).folded
+QPERF_FOLDED_DIR := $(dir $(QPERF_FOLDED))
+QPERF_SVG ?= $(basename $(QPERF_FOLDED)).svg
+QPERF_SVG_DIR := $(dir $(QPERF_SVG))
+QPERF_CONSOLE_LOG ?= $(QPERF_FOLDED_OUTPUT_DIR)/kernelx-qperf-$(QPERF_RUN_TIMESTAMP).console.log
+QPERF_CONSOLE_LOG_DIR := $(dir $(QPERF_CONSOLE_LOG))
+QPERF_FLAMEGRAPH ?= tools/FlameGraph/flamegraph.pl
+QPERF_FLAGS = -plugin file=$(QPERF_PLUGIN),freq=$(QPERF_FREQ),out=$(QPERF_OUT)
+
 TMPDISK_SIZE ?= 1G
 TMPDISK      := $(shell mktemp /tmp/qemu-tmpdisk-XXXXXX)
 SECOND_DISK_IMAGE := $(subst ",,$(CONFIG_SECOND_DISK_IMAGE))
@@ -123,6 +140,42 @@ ifeq ($(SECOND_DISK_IMAGE),)
 	@ rm -f $(TMPDISK)
 endif
 
+qperf-plugin:
+	@test -f $(QPERF_DIR)/Cargo.toml || { \
+		echo "Missing $(QPERF_DIR). Run: git submodule update --init tools/qperf"; \
+		exit 1; \
+	}
+	cargo build --release --manifest-path $(QPERF_DIR)/Cargo.toml
+
+qperf-analyzer:
+	@test -f $(QPERF_ANALYZER_MANIFEST) || { \
+		echo "Missing $(QPERF_ANALYZER_MANIFEST). Run: git submodule update --init tools/qperf"; \
+		exit 1; \
+	}
+	cargo build --release --manifest-path $(QPERF_ANALYZER_MANIFEST)
+
+qperf-flamegraph:
+	@test -f $(QPERF_FLAMEGRAPH) || { \
+		echo "Missing $(QPERF_FLAMEGRAPH). Run: git submodule update --init tools/FlameGraph"; \
+		exit 1; \
+	}
+
+qemu-run-qperf: QEMU_DEBUG_CONSOLE_LOG = $(QPERF_CONSOLE_LOG)
+qemu-run-qperf: qperf-plugin qperf-analyzer qperf-flamegraph
+ifeq ($(SECOND_DISK_IMAGE),)
+	truncate -s $(TMPDISK_SIZE) $(TMPDISK)
+endif
+	@ mkdir -p $(QEMU_DEBUG_CONSOLE_LOG_DIR) $(QPERF_OUT_DIR) $(QPERF_FOLDED_DIR) $(QPERF_SVG_DIR) $(QPERF_CONSOLE_LOG_DIR)
+	$(QEMU) $(QEMU_FLAGS) $(QPERF_FLAGS)
+	@ cargo run --release --manifest-path $(QPERF_ANALYZER_MANIFEST) -- --elf $(VMKERNELX) $(QPERF_OUT) $(QPERF_FOLDED)
+	@ $(QPERF_FLAMEGRAPH) --title "KernelX qperf $(QPERF_RUN_TIMESTAMP)" $(QPERF_FOLDED) > $(QPERF_SVG)
+	@ echo "QPerf folded output: $(QPERF_FOLDED)"
+	@ echo "QPerf SVG output: $(QPERF_SVG)"
+	@ echo "QPerf console log: $(QPERF_CONSOLE_LOG)"
+ifeq ($(SECOND_DISK_IMAGE),)
+	@ rm -f $(TMPDISK)
+endif
+
 qemu-run-bt:
 ifeq ($(SECOND_DISK_IMAGE),)
 	truncate -s $(TMPDISK_SIZE) $(TMPDISK)
@@ -150,4 +203,4 @@ qemu-dts:
 	$(QEMU) $(QEMU_FLAGS) -machine dumpdtb=qemu-virt-$(ARCH)$(ARCH_BITS).dtb
 	@ dtc -I dtb -O dts qemu-virt-$(ARCH)$(ARCH_BITS).dtb -o qemu-virt-$(ARCH)$(ARCH_BITS).dts
 
-.PHONY: qemu-run qemu-gdb qemu-dts
+.PHONY: qemu-run qperf-plugin qperf-analyzer qperf-flamegraph qemu-run-qperf qemu-gdb qemu-dts

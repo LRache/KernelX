@@ -18,9 +18,11 @@ set(ARCH_COMMON_FLAGS
     -march=loongarch64
     -mabi=lp64d
     -fPIE
-    -gdwarf-4
-    -fno-limit-debug-info
 )
+
+if("${CONFIG_DWARF}" STREQUAL "y")
+    list(APPEND ARCH_COMMON_FLAGS -fno-limit-debug-info)
+endif()
 
 set(ARCH_NO_AUTOVEC_FLAGS
     -fno-vectorize
