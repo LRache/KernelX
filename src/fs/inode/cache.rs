@@ -41,15 +41,27 @@ impl Cache {
         count
     }
 
-    fn reclaim(cache: &mut BTreeMap<Index, Arc<dyn InodeOps>>) {
-        cache.retain(|_, inode| Arc::strong_count(inode) > Self::idle_refcount(inode));
+    // Return removed inodes so Drop runs after InodeCache::cache is unlocked.
+    fn reclaim(cache: &mut BTreeMap<Index, Arc<dyn InodeOps>>) -> Vec<Arc<dyn InodeOps>> {
+        let reclaimable: Vec<Index> = cache
+            .iter()
+            .filter_map(|(index, inode)| (Arc::strong_count(inode) <= Self::idle_refcount(inode)).then_some(*index))
+            .collect();
+        let mut removed = reclaimable
+            .into_iter()
+            .filter_map(|index| cache.remove(&index))
+            .collect::<Vec<_>>();
 
         while cache.len() >= config::INODE_CACHE_SIZE {
             let Some(index) = cache.keys().next().copied() else {
                 break;
             };
-            cache.remove(&index);
+            if let Some(inode) = cache.remove(&index) {
+                removed.push(inode);
+            }
         }
+
+        removed
     }
 
     pub fn find(&self, index: &Index) -> Option<Arc<dyn InodeOps>> {
@@ -57,22 +69,38 @@ impl Cache {
     }
 
     pub fn insert(&self, index: &Index, inode: Arc<dyn InodeOps>) -> SysResult<()> {
-        let mut cache = self.cache.lock();
+        let removed = {
+            let mut cache = self.cache.lock();
+            let mut removed = Vec::new();
 
-        if !cache.contains_key(index) && cache.len() >= config::INODE_CACHE_SIZE {
-            Self::reclaim(&mut cache);
-        }
+            if !cache.contains_key(index) && cache.len() >= config::INODE_CACHE_SIZE {
+                removed = Self::reclaim(&mut cache);
+            }
 
-        cache.insert(*index, inode);
+            if let Some(old) = cache.insert(*index, inode) {
+                removed.push(old);
+            }
+
+            removed
+        };
+        drop(removed);
         Ok(())
     }
 
     pub fn remove(&self, index: &Index) {
-        self.cache.lock().remove(index);
+        let removed = {
+            let mut cache = self.cache.lock();
+            cache.remove(index)
+        };
+        drop(removed);
     }
 
     pub fn clear(&self) {
-        self.cache.lock().clear();
+        let removed = {
+            let mut cache = self.cache.lock();
+            core::mem::take(&mut *cache)
+        };
+        drop(removed);
     }
 
     pub fn prune_unused(&self) -> usize {
