@@ -913,7 +913,7 @@ impl InodeOps for Ext4Inode {
             return Ok(read_len);
         }
 
-        let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
+        let file_size = self.cached_size.load(Ordering::Relaxed);
         if offset >= file_size {
             return Ok(0);
         }
@@ -1177,7 +1177,7 @@ impl InodeOps for Ext4Inode {
 
     fn mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<Arc<PhysPageFrame>>> {
         let offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
-        let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
+        let file_size = self.cached_size.load(Ordering::Relaxed);
         if offset >= file_size {
             return Ok(None);
         }
