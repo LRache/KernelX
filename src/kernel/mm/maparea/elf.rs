@@ -211,28 +211,22 @@ impl Area for ELFArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index < self.frames.len() {
-            match &self.frames[page_index] {
-                Frame::Unallocated => {
-                    self.load_page(page_index, addrspace.pagetable());
-                }
-                Frame::Allocated(_) => {
+            let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
+            let page = match &self.frames[page_index] {
+                Frame::Unallocated => self.load_page(page_index, addrspace.pagetable()),
+                Frame::Allocated(frame) => {
                     // Maybe the page is allocated and mapped by the other task.
+                    frame.get_page()
                 }
-                Frame::Cow(_) => {
+                Frame::Cow(frame) => {
                     if access_type == MemAccessType::Write {
-                        self.copy_on_write_page(page_index, addrspace);
-                    } else if let Frame::Cow(frame) = &self.frames[page_index] {
-                        self.map_cow_page(page_index, frame, addrspace);
+                        self.copy_on_write_page(page_index, addrspace)
                     } else {
-                        unreachable!();
+                        self.map_cow_page(page_index, frame, addrspace)
                     }
                 }
-            }
-            if access_type == MemAccessType::Write {
-                self.translate_write(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
-            } else {
-                self.translate_read(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
-            }
+            };
+            Ok(page + page_offset)
         } else {
             Err(MemoryFaultSignal::Segv)
         }

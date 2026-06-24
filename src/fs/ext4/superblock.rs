@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::mem;
 
 use crate::driver::BlockDriverOps;
@@ -30,12 +31,29 @@ fn ext4_result(code: i32) -> SysResult<()> {
     }
 }
 
+struct CachedInodeRef {
+    ino: u32,
+    inode_ref: ext4_inode_ref,
+    active_count: usize,
+}
+
+impl CachedInodeRef {
+    fn matches(&self, inode_ref: &ext4_inode_ref) -> bool {
+        self.ino == inode_ref.index
+            && self.inode_ref.inode == inode_ref.inode
+            && self.inode_ref.block.buf == inode_ref.block.buf
+    }
+}
+
 pub(super) struct SuperBlockInner {
     pub(super) fs: Box<ext4_fs>,
     bdev: Ext4BlockDevice,
+    inode_ref_cache: Vec<CachedInodeRef>,
 }
 
 impl SuperBlockInner {
+    const INODE_REF_CACHE_SIZE: usize = 16;
+
     fn new(driver: Arc<dyn BlockDriverOps>, read_only: bool) -> SysResult<Self> {
         let mut bdev = Ext4BlockDevice::new(driver).map_err(map_error_to_kernel)?;
         let mut fs: Box<ext4_fs> = Box::new(unsafe { mem::zeroed() });
@@ -89,10 +107,14 @@ impl SuperBlockInner {
             ext4_result(bind_rc)?;
         }
 
-        Ok(Self { fs, bdev })
+        Ok(Self {
+            fs,
+            bdev,
+            inode_ref_cache: Vec::new(),
+        })
     }
 
-    pub(crate) fn read_inode_ref(&mut self, ino: u32) -> SysResult<ext4_inode_ref> {
+    fn read_inode_ref_uncached(&mut self, ino: u32) -> SysResult<ext4_inode_ref> {
         let mut result: ext4_inode_ref = unsafe { mem::zeroed() };
         unsafe {
             ext4_result(kernelx_ext4_read_inode_ref(self.fs.as_mut(), ino, &mut result))?;
@@ -100,8 +122,91 @@ impl SuperBlockInner {
         Ok(result)
     }
 
-    pub(crate) fn put_inode_ref(&mut self, inode_ref: &mut ext4_inode_ref) -> SysResult<()> {
+    fn put_inode_ref_uncached(inode_ref: &mut ext4_inode_ref) -> SysResult<()> {
         unsafe { ext4_result(ext4_fs_put_inode_ref(inode_ref)) }
+    }
+
+    fn cached_inode_ref_position(&self, ino: u32) -> Option<usize> {
+        self.inode_ref_cache.iter().position(|cached| cached.ino == ino)
+    }
+
+    fn evict_cached_inode_ref(&mut self, position: usize) -> SysResult<()> {
+        let mut cached = self.inode_ref_cache.remove(position);
+        debug_assert_eq!(cached.active_count, 0);
+        Self::put_inode_ref_uncached(&mut cached.inode_ref)
+    }
+
+    fn cache_inode_ref(&mut self, inode_ref: ext4_inode_ref) -> SysResult<bool> {
+        if self.cached_inode_ref_position(inode_ref.index).is_some() {
+            return Ok(true);
+        }
+
+        if self.inode_ref_cache.len() >= Self::INODE_REF_CACHE_SIZE {
+            let Some(position) = self.inode_ref_cache.iter().position(|cached| cached.active_count == 0) else {
+                return Ok(false);
+            };
+            self.evict_cached_inode_ref(position)?;
+        }
+
+        self.inode_ref_cache.push(CachedInodeRef {
+            ino: inode_ref.index,
+            inode_ref,
+            active_count: 1,
+        });
+        Ok(true)
+    }
+
+    fn drop_inode_ref_cache(&mut self) -> SysResult<()> {
+        let mut first_err = None;
+        while let Some(mut cached) = self.inode_ref_cache.pop() {
+            if let Err(err) = Self::put_inode_ref_uncached(&mut cached.inode_ref) {
+                first_err.get_or_insert(err);
+            }
+        }
+
+        if let Some(err) = first_err { Err(err) } else { Ok(()) }
+    }
+
+    pub(crate) fn read_inode_ref(&mut self, ino: u32) -> SysResult<ext4_inode_ref> {
+        if let Some(position) = self.cached_inode_ref_position(ino) {
+            let mut cached = self.inode_ref_cache.remove(position);
+            cached.active_count += 1;
+            let inode_ref = cached.inode_ref;
+            self.inode_ref_cache.push(cached);
+            return Ok(inode_ref);
+        }
+
+        let mut result = self.read_inode_ref_uncached(ino)?;
+        match self.cache_inode_ref(result) {
+            Ok(true) => {}
+            Ok(false) => return Ok(result),
+            Err(err) => {
+                let _ = Self::put_inode_ref_uncached(&mut result);
+                return Err(err);
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn put_inode_ref(&mut self, inode_ref: &mut ext4_inode_ref) -> SysResult<()> {
+        if let Some(cached) = self.inode_ref_cache.iter_mut().find(|cached| cached.matches(inode_ref)) {
+            debug_assert!(cached.active_count > 0);
+            if cached.active_count > 0 {
+                cached.active_count -= 1;
+            }
+            cached.inode_ref.dirty |= inode_ref.dirty;
+            inode_ref.dirty = false;
+            return Ok(());
+        }
+
+        Self::put_inode_ref_uncached(inode_ref)
+    }
+
+    pub(crate) fn invalidate_inode_ref(&mut self, ino: u32) -> SysResult<()> {
+        if let Some(position) = self.cached_inode_ref_position(ino) {
+            self.evict_cached_inode_ref(position)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn alloc_inode(&mut self, filetype: i32) -> SysResult<ext4_inode_ref> {
@@ -114,6 +219,7 @@ impl SuperBlockInner {
     }
 
     pub(crate) fn flush(&mut self) -> SysResult<()> {
+        self.drop_inode_ref_cache()?;
         unsafe {
             ext4_result(ext4_block_cache_flush(self.bdev.inner.as_mut()))?;
             if !self.fs.read_only {
@@ -127,6 +233,7 @@ impl SuperBlockInner {
 
 impl Drop for SuperBlockInner {
     fn drop(&mut self) {
+        let _ = self.drop_inode_ref_cache();
         unsafe {
             let rc = ext4_fs_fini(self.fs.as_mut());
             let _ = rc;

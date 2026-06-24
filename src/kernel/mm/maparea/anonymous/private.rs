@@ -63,11 +63,12 @@ impl PrivateAnonymousArea {
     }
 
     #[cfg(feature = "swap-memory")]
-    fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
+    fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) -> usize {
         let page = frame.get_page_swap_in();
         // FIXME: if the page is swapped out again before we mmap,
         // there could be issues
         addrspace.pagetable().write().mmap(frame.uaddr(), page, self.perm);
+        page
     }
 }
 
@@ -172,27 +173,28 @@ impl Area for PrivateAnonymousArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index < self.frames.len() {
-            match &self.frames[page_index] {
-                FrameState::Unallocated => {
-                    self.allocate_page(page_index, addrspace);
-                }
+            let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
+            let page = match &self.frames[page_index] {
+                FrameState::Unallocated => self.allocate_page(page_index, addrspace),
                 FrameState::Allocated(frame) => {
                     #[cfg(feature = "swap-memory")]
-                    self.handle_memory_fault_on_swapped_allocated(frame, addrspace);
+                    {
+                        self.handle_memory_fault_on_swapped_allocated(frame, addrspace)
+                    }
+                    #[cfg(not(feature = "swap-memory"))]
+                    {
+                        frame.get_page_swap_in()
+                    }
                 }
                 FrameState::Cow(frame) => {
                     if access_type != MemAccessType::Write {
-                        self.map_cow_page(page_index, frame, addrspace);
+                        self.map_cow_page(page_index, frame, addrspace)
                     } else {
-                        self.copy_on_write_page(page_index, addrspace);
+                        self.copy_on_write_page(page_index, addrspace)
                     }
                 }
-            }
-            if access_type == MemAccessType::Write {
-                self.translate_write(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
-            } else {
-                self.translate_read(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
-            }
+            };
+            Ok(page + page_offset)
         } else {
             Err(MemoryFaultSignal::Segv)
         }
