@@ -2,7 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use core::{mem, slice};
 use num_enum::TryFromPrimitive;
@@ -479,7 +479,6 @@ pub struct Ext4Inode {
     cacheable_file: bool,
     cached_size: AtomicUsize,
     fast_cached_write: AtomicBool,
-    last_write_time_sec: AtomicU64,
     lock_state: SpinLock<InodeLockState>,
     page_cache: SleepLock<InodePageCache>,
     pipe: SpinLock<Option<Arc<PipeInner>>>,
@@ -488,10 +487,8 @@ pub struct Ext4Inode {
 }
 
 impl Ext4Inode {
-    const UNKNOWN_WRITE_TIME_SEC: u64 = u64::MAX;
-
     pub fn new(ino: u32, superblock: Arc<SleepLock<SuperBlockInner>>) -> SysResult<Self> {
-        let (cacheable_file, cached_size, fast_cached_write, last_write_time_sec) = {
+        let (cacheable_file, cached_size, fast_cached_write) = {
             let mut superblock = superblock.lock();
             let mut inode_ref = superblock.read_inode_ref(ino)?;
             let cacheable_file = inode_type(&mut inode_ref) == InodeType::RegularFile;
@@ -499,15 +496,8 @@ impl Ext4Inode {
             let fast_cached_write = cacheable_file
                 && !superblock.fs.read_only
                 && !inode_has_flags(&inode_ref, EXT4_INODE_FLAG_IMMUTABLE | EXT4_INODE_FLAG_APPEND);
-            let mtime_sec = unsafe { ext4_inode_get_modif_time(inode_ref.inode) };
-            let ctime_sec = unsafe { ext4_inode_get_change_inode_time(inode_ref.inode) };
-            let last_write_time_sec = if mtime_sec == ctime_sec {
-                u64::from(mtime_sec)
-            } else {
-                Self::UNKNOWN_WRITE_TIME_SEC
-            };
             superblock.put_inode_ref(&mut inode_ref)?;
-            (cacheable_file, cached_size, fast_cached_write, last_write_time_sec)
+            (cacheable_file, cached_size, fast_cached_write)
         };
 
         Ok(Self {
@@ -516,7 +506,6 @@ impl Ext4Inode {
             cacheable_file,
             cached_size: AtomicUsize::new(cached_size),
             fast_cached_write: AtomicBool::new(fast_cached_write),
-            last_write_time_sec: AtomicU64::new(last_write_time_sec),
             lock_state: SpinLock::new(InodeLockState::new(), "Ext4Inode::lock_state"),
             page_cache: SleepLock::new(InodePageCache::new(), "Ext4Inode::page_cache"),
             pipe: SpinLock::new(None, "Ext4Inode::pipe"),
@@ -647,10 +636,6 @@ impl Ext4Inode {
 
     fn finish_cached_write(&self, old_size: usize, new_size: usize, time: &Duration) -> SysResult<()> {
         let may_extend_size = new_size > old_size;
-        let time_sec = u64::from(encode_time(time));
-        if !may_extend_size && self.last_write_time_sec.load(Ordering::Relaxed) == time_sec {
-            return Ok(());
-        }
 
         let cached_size = self.with_ref(|_superblock, inode_ref| {
             let cached_size = if may_extend_size {
@@ -668,17 +653,14 @@ impl Ext4Inode {
                 new_size
             };
 
-            if self.last_write_time_sec.load(Ordering::Relaxed) != time_sec {
-                inode_set_mtime(inode_ref, time);
-                inode_set_ctime(inode_ref, time);
-            }
+            inode_set_mtime(inode_ref, time);
+            inode_set_ctime(inode_ref, time);
             Ok(cached_size)
         })?;
 
         if may_extend_size {
             self.cached_size.fetch_max(cached_size, Ordering::Relaxed);
         }
-        self.last_write_time_sec.store(time_sec, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1415,35 +1397,22 @@ impl InodeOps for Ext4Inode {
         self.with_ref(|_superblock, inode_ref| {
             inode_set_mtime(inode_ref, time);
             Ok(())
-        })?;
-        self.last_write_time_sec
-            .store(Self::UNKNOWN_WRITE_TIME_SEC, Ordering::Relaxed);
-        Ok(())
+        })
     }
 
     fn update_ctime(&self, time: &Duration) -> SysResult<()> {
         self.with_ref(|_superblock, inode_ref| {
             inode_set_ctime(inode_ref, time);
             Ok(())
-        })?;
-        self.last_write_time_sec
-            .store(Self::UNKNOWN_WRITE_TIME_SEC, Ordering::Relaxed);
-        Ok(())
+        })
     }
 
     fn update_mtime_ctime(&self, time: &Duration) -> SysResult<()> {
-        let time_sec = u64::from(encode_time(time));
-        if self.last_write_time_sec.load(Ordering::Relaxed) == time_sec {
-            return Ok(());
-        }
-
         self.with_ref(|_superblock, inode_ref| {
             inode_set_mtime(inode_ref, time);
             inode_set_ctime(inode_ref, time);
             Ok(())
-        })?;
-        self.last_write_time_sec.store(time_sec, Ordering::Relaxed);
-        Ok(())
+        })
     }
 
     fn sync(&self) -> SysResult<()> {
