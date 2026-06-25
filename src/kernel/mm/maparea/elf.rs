@@ -62,7 +62,7 @@ impl ELFArea {
             // Read up to a page, but not beyond the file length for this segment.
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
             self.file
-                .read_at(&mut frame.slice()[..length], file_offset)
+                .pread(&mut frame.slice()[..length], file_offset)
                 .expect("Failed to read file");
         }
 

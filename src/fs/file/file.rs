@@ -59,141 +59,12 @@ impl RandomAccessFile {
         }
     }
 
-    pub fn read_at(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        self.pread(buf, offset)
-    }
-
-    pub fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        self.inode.readat(buf, offset, self.flags().direct)
-    }
-
-    pub fn pread_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize) -> SysResult<usize> {
-        let direct = self.flags().direct;
-        let mut total_read = 0;
-        let mut current_offset = offset;
-        for kbuf in ubuf.iter_mut() {
-            let kbuf = match kbuf {
-                Ok(kbuf) => kbuf,
-                Err(_) if total_read > 0 => return Ok(total_read),
-                Err(err) => return Err(err),
-            };
-            let n = match self.inode.readat(kbuf, current_offset, direct) {
-                Ok(n) => n,
-                Err(_) if total_read > 0 => return Ok(total_read),
-                Err(err) => return Err(err),
-            };
-            total_read += n;
-            current_offset += n;
-            if n < kbuf.len() {
-                return Ok(total_read);
-            }
-        }
-        Ok(total_read)
-    }
-
-    pub fn pwrite(&self, buf: &[u8], mut offset: usize) -> SysResult<usize> {
-        let flags = self.flags();
-        if flags.append {
-            offset = self.inode.size()? as usize;
-        }
-        let len = self.limit_write_len(offset, buf.len())?;
-        self.inode.writeat(&buf[..len], offset)
-    }
-
-    pub fn pwrite_from_user(&self, ubuf: &UAddrSpaceBuffer, mut offset: usize) -> SysResult<usize> {
-        let flags = self.flags();
-        if flags.append {
-            offset = self.inode.size()? as usize;
-        }
-        let limit_len = self.limit_write_len(offset, ubuf.length())?;
-        let ubuf = ubuf.with_length(limit_len);
-        let mut total_written = 0;
-        let mut current_offset = offset;
-        for kbuf in ubuf.iter() {
-            let kbuf = match kbuf {
-                Ok(kbuf) => kbuf,
-                Err(_) if total_written > 0 => return Ok(total_written),
-                Err(err) => return Err(err),
-            };
-            let n = match self.inode.writeat(kbuf, current_offset) {
-                Ok(n) => n,
-                Err(_) if total_written > 0 => return Ok(total_written),
-                Err(err) => return Err(err),
-            };
-            total_written += n;
-            current_offset += n;
-            if n < kbuf.len() {
-                return Ok(total_written);
-            }
-        }
-        Ok(total_written)
-    }
-
-    pub fn ftruncate(&self, new_size: u64) -> SysResult<()> {
-        self.inode.truncate(new_size)
-    }
-
-    pub fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
-        self.inode.ioctl(request, arg, addrspace)
-    }
-
-    /// Return the dirent and the old file pos.
-    pub fn get_dent(&self) -> SysResult<Option<(DirResult, usize)>> {
-        let mut pos = self.pos.lock();
-        let old_pos = *pos;
-        let (mut dent, next_pos) = match self.inode.get_dent(*pos)? {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-        *pos = next_pos;
-
-        if dent.name == ".." {
-            if let Some(parent) = self.dentry.get_parent() {
-                dent.ino = parent.get_inode().get_ino();
-            }
-        }
-
-        Ok(Some((dent, old_pos)))
-    }
-
     pub fn mode(&self) -> SysResult<Mode> {
         self.inode.mode()
     }
 
     pub fn owner(&self) -> SysResult<(u32, u32)> {
         self.inode.owner()
-    }
-
-    pub fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
-        let mut pos = self.pos.lock();
-        let new_pos = match whence {
-            SeekWhence::BEG => {
-                if offset < 0 {
-                    return Err(Errno::EINVAL);
-                }
-                offset as isize
-            }
-            SeekWhence::CUR => {
-                if offset < 0 && (*pos as isize + offset) < 0 {
-                    return Err(Errno::EINVAL);
-                }
-                *pos as isize + offset
-            }
-            SeekWhence::END => {
-                let size = self.inode.size()?;
-                if offset > 0 && (size as isize + offset) < 0 {
-                    return Err(Errno::EINVAL);
-                }
-                size as isize + offset
-            }
-        };
-
-        if new_pos < 0 {
-            return Err(Errno::EINVAL);
-        }
-        *pos = new_pos as usize;
-
-        Ok(*pos)
     }
 
     fn release_bsd_flock_if_last_fd(&self) {
@@ -266,6 +137,104 @@ impl FileOps for RandomAccessFile {
         Ok(len)
     }
 
+    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
+        let mut pos = self.pos.lock();
+        let new_pos = match whence {
+            SeekWhence::BEG => {
+                if offset < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                offset as isize
+            }
+            SeekWhence::CUR => {
+                if offset < 0 && (*pos as isize + offset) < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                *pos as isize + offset
+            }
+            SeekWhence::END => {
+                let size = self.inode.size()?;
+                if offset > 0 && (size as isize + offset) < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                size as isize + offset
+            }
+        };
+
+        if new_pos < 0 {
+            return Err(Errno::EINVAL);
+        }
+        *pos = new_pos as usize;
+
+        Ok(*pos)
+    }
+
+    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        self.inode.readat(buf, offset, self.flags().direct)
+    }
+
+    fn pread_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize) -> SysResult<usize> {
+        let direct = self.flags().direct;
+        let mut total_read = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter_mut() {
+            let kbuf = match kbuf {
+                Ok(kbuf) => kbuf,
+                Err(_) if total_read > 0 => return Ok(total_read),
+                Err(err) => return Err(err),
+            };
+            let n = match self.inode.readat(kbuf, current_offset, direct) {
+                Ok(n) => n,
+                Err(_) if total_read > 0 => return Ok(total_read),
+                Err(err) => return Err(err),
+            };
+            total_read += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_read);
+            }
+        }
+        Ok(total_read)
+    }
+
+    fn pwrite(&self, buf: &[u8], mut offset: usize) -> SysResult<usize> {
+        let flags = self.flags();
+        if flags.append {
+            offset = self.inode.size()? as usize;
+        }
+        let len = self.limit_write_len(offset, buf.len())?;
+        self.inode.writeat(&buf[..len], offset)
+    }
+
+    fn pwrite_from_user(&self, ubuf: &UAddrSpaceBuffer, mut offset: usize) -> SysResult<usize> {
+        let flags = self.flags();
+        if flags.append {
+            offset = self.inode.size()? as usize;
+        }
+        let limit_len = self.limit_write_len(offset, ubuf.length())?;
+        let ubuf = ubuf.with_length(limit_len);
+        let mut total_written = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter() {
+            let kbuf = match kbuf {
+                Ok(kbuf) => kbuf,
+                Err(_) if total_written > 0 => return Ok(total_written),
+                Err(err) => return Err(err),
+            };
+            let n = match self.inode.writeat(kbuf, current_offset) {
+                Ok(n) => n,
+                Err(_) if total_written > 0 => return Ok(total_written),
+                Err(err) => return Err(err),
+            };
+            total_written += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_written);
+            }
+        }
+        Ok(total_written)
+    }
+
     fn flags(&self) -> FileFlags {
         *self.flags.lock()
     }
@@ -275,7 +244,7 @@ impl FileOps for RandomAccessFile {
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
-        RandomAccessFile::ioctl(self, request, arg, addrspace)
+        self.inode.ioctl(request, arg, addrspace)
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
@@ -286,12 +255,35 @@ impl FileOps for RandomAccessFile {
         self.inode.sync()
     }
 
+    fn ftruncate(&self, new_size: u64) -> SysResult<()> {
+        self.inode.truncate(new_size)
+    }
+
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
         Some(&self.inode)
     }
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {
         Some(&self.dentry)
+    }
+
+    /// Return the dirent and the old file pos.
+    fn get_dent(&self) -> SysResult<Option<(DirResult, usize)>> {
+        let mut pos = self.pos.lock();
+        let old_pos = *pos;
+        let (mut dent, next_pos) = match self.inode.get_dent(*pos)? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        *pos = next_pos;
+
+        if dent.name == ".." {
+            if let Some(parent) = self.dentry.get_parent() {
+                dent.ino = parent.get_inode().get_ino();
+            }
+        }
+
+        Ok(Some((dent, old_pos)))
     }
 
     fn mmap_area(self: Arc<Self>, request: FileMmapRequest) -> SysResult<Box<dyn Area>> {

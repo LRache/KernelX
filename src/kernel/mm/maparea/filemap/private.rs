@@ -63,7 +63,7 @@ impl PrivateFileMapArea {
             // - Don't read beyond one page
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
 
-            match self.file.read_at(&mut frame.slice()[..length], file_offset) {
+            match self.file.pread(&mut frame.slice()[..length], file_offset) {
                 Ok(_) => {}
                 Err(_) => {
                     // Keep the page zeroed if file read fails

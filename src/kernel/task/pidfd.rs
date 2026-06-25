@@ -1,9 +1,10 @@
 use alloc::sync::{Arc, Weak};
 
-use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile, SeekWhence};
 use crate::fs::{Dentry, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
+use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
@@ -44,10 +45,6 @@ impl PidFile {
     pub fn pcb(&self) -> Option<Arc<PCB>> {
         self.pcb.upgrade()
     }
-
-    pub fn random_access_file(&self) -> Option<&RandomAccessFile> {
-        self.file.as_deref()
-    }
 }
 
 impl FileOps for PidFile {
@@ -63,6 +60,26 @@ impl FileOps for PidFile {
             return file.write(buf);
         }
         Err(Errno::EINVAL)
+    }
+
+    fn seek(&self, offset: isize, whence: SeekWhence) -> SysResult<usize> {
+        self.file.as_ref().ok_or(Errno::ESPIPE)?.seek(offset, whence)
+    }
+
+    fn pread(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+        self.file.as_ref().ok_or(Errno::ESPIPE)?.pread(buf, offset)
+    }
+
+    fn pread_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize) -> SysResult<usize> {
+        self.file.as_ref().ok_or(Errno::ESPIPE)?.pread_to_user(ubuf, offset)
+    }
+
+    fn pwrite(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        self.file.as_ref().ok_or(Errno::ESPIPE)?.pwrite(buf, offset)
+    }
+
+    fn pwrite_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize) -> SysResult<usize> {
+        self.file.as_ref().ok_or(Errno::ESPIPE)?.pwrite_from_user(ubuf, offset)
     }
 
     fn flags(&self) -> FileFlags {
@@ -87,12 +104,20 @@ impl FileOps for PidFile {
         Ok(())
     }
 
+    fn ftruncate(&self, new_size: u64) -> SysResult<()> {
+        self.file.as_ref().ok_or(Errno::EINVAL)?.ftruncate(new_size)
+    }
+
     fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
         self.file.as_ref().and_then(|file| file.get_inode())
     }
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {
         self.file.as_ref().and_then(|file| file.get_dentry())
+    }
+
+    fn get_dent(&self) -> SysResult<Option<(DirResult, usize)>> {
+        self.file.as_ref().ok_or(Errno::ESPIPE)?.get_dent()
     }
 
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {

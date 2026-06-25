@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use downcast_rs::{DowncastSync, impl_downcast};
 use num_enum::TryFromPrimitive;
 
-use crate::fs::file::FileFlags;
+use crate::fs::file::{DirResult, FileFlags};
 use crate::fs::{Dentry, InodeOps, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
@@ -69,6 +69,72 @@ pub trait FileOps: DowncastSync {
         }
 
         Ok(total_written)
+    }
+
+    fn seek(&self, _offset: isize, _whence: SeekWhence) -> SysResult<usize> {
+        Err(Errno::ESPIPE)
+    }
+
+    fn pread(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::ESPIPE)
+    }
+
+    fn pread_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize) -> SysResult<usize> {
+        let mut total_read = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter_mut() {
+            let kbuf = match kbuf {
+                Ok(kbuf) => kbuf,
+                Err(_) if total_read > 0 => return Ok(total_read),
+                Err(err) => return Err(err),
+            };
+            let n = match self.pread(kbuf, current_offset) {
+                Ok(n) => n,
+                Err(_) if total_read > 0 => return Ok(total_read),
+                Err(err) => return Err(err),
+            };
+            total_read += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_read);
+            }
+        }
+        Ok(total_read)
+    }
+
+    fn pwrite(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::ESPIPE)
+    }
+
+    fn pwrite_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize) -> SysResult<usize> {
+        let mut total_written = 0;
+        let mut current_offset = offset;
+        for kbuf in ubuf.iter() {
+            let kbuf = match kbuf {
+                Ok(kbuf) => kbuf,
+                Err(_) if total_written > 0 => return Ok(total_written),
+                Err(err) => return Err(err),
+            };
+            let n = match self.pwrite(kbuf, current_offset) {
+                Ok(n) => n,
+                Err(_) if total_written > 0 => return Ok(total_written),
+                Err(err) => return Err(err),
+            };
+            total_written += n;
+            current_offset += n;
+            if n < kbuf.len() {
+                return Ok(total_written);
+            }
+        }
+        Ok(total_written)
+    }
+
+    fn get_dent(&self) -> SysResult<Option<(DirResult, usize)>> {
+        Err(Errno::ESPIPE)
+    }
+
+    fn ftruncate(&self, _new_size: u64) -> SysResult<()> {
+        Err(Errno::EINVAL)
     }
 
     fn flags(&self) -> FileFlags;

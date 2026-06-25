@@ -257,7 +257,7 @@ impl TCB {
         // Read the shebang
         let mut first_line = [0u8; 128];
         let n = file
-            .read_at(&mut first_line, 0)
+            .pread(&mut first_line, 0)
             .expect("Failed to read first line of init file");
         let first_line = core::str::from_utf8(&first_line[..n]).unwrap_or("");
         let first_line = first_line.lines().next().unwrap_or("");
@@ -400,7 +400,7 @@ impl TCB {
 
         // Read the shebang
         let mut first_line = [0u8; 128];
-        let n = file.read_at(&mut first_line, 0)?;
+        let n = file.pread(&mut first_line, 0)?;
         let first_line = core::str::from_utf8(&first_line[..n]).unwrap_or("");
         let first_line = first_line.lines().next().unwrap_or("");
         let first_line = first_line.trim_end_matches('\n');
