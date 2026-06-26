@@ -1,11 +1,11 @@
 pub mod backtrace;
+pub mod crc32c;
 pub mod defer;
 pub mod dmesg;
 pub mod initcell;
 pub mod kalloc;
 pub mod klog;
 pub mod ksync;
-#[cfg(any(feature = "swap-memory", feature = "virtio-block-page-cache"))]
 pub mod lru;
 pub mod print;
 pub mod random;

@@ -140,7 +140,10 @@ fn update_file_times(file: &dyn FileOps, time: &Duration, is_write: bool) -> Sys
         if is_write {
             inode.update_mtime_ctime(time)?;
         } else {
-            inode.update_atime(time)?;
+            match inode.update_atime(time) {
+                Ok(()) | Err(Errno::EROFS) => {}
+                Err(err) => return Err(err),
+            }
         }
     }
     Ok(())

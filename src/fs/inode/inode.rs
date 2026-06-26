@@ -10,11 +10,50 @@ use crate::kernel::event::Fanotify;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
+#[cfg(feature = "fanotify")]
+use crate::klib::LazyInitedCell;
 use crate::klib::SpinLock;
 
 use super::bsd_flock::BsdFlockState;
 use super::posix_flock::PosixFlockState;
 use super::{FileType, Mode, Owner};
+
+pub struct Inode {
+    ops: Arc<dyn InodeOps>,
+    #[cfg(feature = "fanotify")]
+    #[allow(dead_code)]
+    fanotify: LazyInitedCell<Arc<Fanotify>>,
+}
+
+impl Inode {
+    pub(in crate::fs::inode) fn new(ops: Arc<dyn InodeOps>) -> Self {
+        Self {
+            ops,
+            #[cfg(feature = "fanotify")]
+            fanotify: LazyInitedCell::new("Inode::fanotify"),
+        }
+    }
+
+    pub fn ops(&self) -> &Arc<dyn InodeOps> {
+        &self.ops
+    }
+
+    pub fn clone_ops(&self) -> Arc<dyn InodeOps> {
+        self.ops.clone()
+    }
+
+    #[cfg(feature = "fanotify")]
+    #[allow(dead_code)]
+    pub fn fanotify(&self) -> Option<Arc<Fanotify>> {
+        self.fanotify.get()
+    }
+
+    #[cfg(feature = "fanotify")]
+    #[allow(dead_code)]
+    pub fn ensure_fanotify(&self) -> Arc<Fanotify> {
+        self.fanotify.get_or_init(|| Arc::new(Fanotify::new()))
+    }
+}
 
 pub struct InodeLockState {
     pub(crate) bsd: BsdFlockState,

@@ -3,6 +3,7 @@ use core::time::Duration;
 
 use crate::fs::exfat::FileSystem as ExfatFileSystem;
 use crate::fs::ext4::Ext4FileSystem;
+use crate::fs::ext4_native::FileSystem as Ext4NativeFileSystem;
 use crate::fs::filesystem::MountOptions;
 use crate::fs::rootfs::RootFileSystem;
 use crate::fs::vfat::FileSystem as VfatFileSystem;
@@ -33,6 +34,7 @@ pub fn init() {
     vfs.register_filesystem("ext2", &Ext4FileSystem);
     vfs.register_filesystem("ext3", &Ext4FileSystem);
     vfs.register_filesystem("ext4", &Ext4FileSystem);
+    vfs.register_filesystem("ext4native", &Ext4NativeFileSystem);
     vfs.register_filesystem("exfat", &ExfatFileSystem);
     vfs.register_filesystem("vfat", &VfatFileSystem);
     vfs.register_filesystem("tmpfs", &tmpfs::FileSystem);

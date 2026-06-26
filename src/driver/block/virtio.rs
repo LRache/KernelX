@@ -247,9 +247,9 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
         let mut block = offset / BLOCK_SIZE;
         let mut buf_offset = 0;
 
-        let mut block_buf = [0u8; BLOCK_SIZE];
         let block_offset = offset % BLOCK_SIZE;
         if block_offset != 0 {
+            let mut block_buf = [0u8; BLOCK_SIZE];
             self.raw_read_block(block, &mut block_buf)?;
 
             let read_size = core::cmp::min(BLOCK_SIZE - block_offset, length);
@@ -269,6 +269,7 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
         }
 
         if length != 0 {
+            let mut block_buf = [0u8; BLOCK_SIZE];
             self.raw_read_block(block, &mut block_buf)?;
             buf[buf_offset..buf_offset + length].copy_from_slice(&block_buf[..length]);
         }

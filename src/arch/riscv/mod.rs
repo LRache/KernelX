@@ -1,5 +1,6 @@
 mod arch;
 mod cpu;
+mod crc32;
 pub mod csr;
 mod fdt;
 mod pagetable;

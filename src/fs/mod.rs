@@ -6,6 +6,7 @@ pub mod vfs;
 pub mod devfs;
 mod exfat;
 mod ext4;
+mod ext4_native;
 mod filesystem;
 mod memtreefs;
 mod perm;

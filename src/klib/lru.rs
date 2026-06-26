@@ -165,7 +165,6 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         }
     }
 
-    #[cfg(feature = "virtio-block-page-cache")]
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         if self.access(key) {
             self.map.get(key).map(|node| unsafe {
@@ -196,7 +195,18 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         }
     }
 
-    #[cfg(feature = "virtio-block-page-cache")]
+    pub fn pop_lru_entry(&mut self) -> Option<(K, V)>
+    where
+        V: Clone,
+    {
+        if let Some(lru_node) = self.list.pop_back() {
+            self.map.remove(&lru_node.key);
+            Some((lru_node.key, lru_node.value.clone()))
+        } else {
+            None
+        }
+    }
+
     pub fn try_for_each_mut<E, F>(&mut self, mut f: F) -> Result<(), E>
     where
         F: FnMut(K, &mut V) -> Result<(), E>,
@@ -226,7 +236,6 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         })
     }
 
-    #[cfg(feature = "swap-memory")]
     pub fn remove(&mut self, key: &K) -> bool {
         if let Some(node) = self.map.remove(key) {
             let (prev, next) = unsafe {
