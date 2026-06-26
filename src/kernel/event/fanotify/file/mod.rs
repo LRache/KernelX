@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, Event, FileEvent};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -169,7 +169,7 @@ impl FileOps for FanotifyFile {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         None
     }
 

@@ -1,18 +1,19 @@
 use alloc::sync::Arc;
+use core::ops::Deref;
 use core::time::Duration;
 use downcast_rs::{DowncastSync, impl_downcast};
 
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::{Dentry, Perm};
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 #[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
+use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
-#[cfg(feature = "fanotify")]
-use crate::klib::LazyInitedCell;
-use crate::klib::SpinLock;
+use crate::klib::{LazyInitedCell, SpinLock};
 
 use super::bsd_flock::BsdFlockState;
 use super::posix_flock::PosixFlockState;
@@ -20,6 +21,7 @@ use super::{FileType, Mode, Owner};
 
 pub struct Inode {
     ops: Arc<dyn InodeOps>,
+    fifo_pipe: LazyInitedCell<Arc<PipeInner>>,
     #[cfg(feature = "fanotify")]
     #[allow(dead_code)]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
@@ -29,6 +31,7 @@ impl Inode {
     pub(in crate::fs::inode) fn new(ops: Arc<dyn InodeOps>) -> Self {
         Self {
             ops,
+            fifo_pipe: LazyInitedCell::new("Inode::fifo_pipe"),
             #[cfg(feature = "fanotify")]
             fanotify: LazyInitedCell::new("Inode::fanotify"),
         }
@@ -42,6 +45,21 @@ impl Inode {
         self.ops.clone()
     }
 
+    pub fn open_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> SysResult<Arc<dyn FileOps>> {
+        let ops = self.clone_ops();
+        ops.open_file(self, dentry, flags)
+    }
+
+    pub fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        let ops = self.clone_ops();
+        ops.wrap_file(self, dentry, flags)
+    }
+
+    pub fn fifo_pipe_inner(&self) -> Arc<PipeInner> {
+        self.fifo_pipe
+            .get_or_init(|| Arc::new(PipeInner::new(config::PIPE_CAPACITY)))
+    }
+
     #[cfg(feature = "fanotify")]
     #[allow(dead_code)]
     pub fn fanotify(&self) -> Option<Arc<Fanotify>> {
@@ -52,6 +70,14 @@ impl Inode {
     #[allow(dead_code)]
     pub fn ensure_fanotify(&self) -> Arc<Fanotify> {
         self.fanotify.get_or_init(|| Arc::new(Fanotify::new()))
+    }
+}
+
+impl Deref for Inode {
+    type Target = dyn InodeOps;
+
+    fn deref(&self) -> &Self::Target {
+        self.ops.as_ref()
     }
 }
 
@@ -144,16 +170,6 @@ pub trait InodeOps: DowncastSync {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         None
-    }
-
-    #[cfg(feature = "fanotify")]
-    fn fanotify(&self) -> Option<Arc<Fanotify>> {
-        None
-    }
-
-    #[cfg(feature = "fanotify")]
-    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
-        self.fanotify()
     }
 
     fn as_seal_ops(&self) -> Option<&dyn InodeSealOps> {
@@ -409,11 +425,17 @@ pub trait InodeOps: DowncastSync {
         self.update_ctime(time)
     }
 
-    fn open_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> SysResult<Arc<dyn FileOps>> {
-        Ok(self.wrap_file(dentry, flags))
+    fn open_file(
+        self: Arc<Self>,
+        inode: Arc<Inode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> SysResult<Arc<dyn FileOps>> {
+        Ok(self.wrap_file(inode, dentry, flags))
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps>;
+    fn wrap_file(self: Arc<Self>, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags)
+    -> Arc<dyn FileOps>;
 }
 
 impl_downcast!(sync InodeOps);

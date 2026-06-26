@@ -5,7 +5,7 @@ use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::uapi::FileStat;
@@ -320,7 +320,7 @@ impl FileOps for NetlinkSocket {
         Err(Errno::EINVAL)
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         None
     }
 

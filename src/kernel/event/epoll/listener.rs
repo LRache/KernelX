@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::UserStruct;
@@ -450,7 +450,7 @@ impl FileOps for EpollFile {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         None
     }
 

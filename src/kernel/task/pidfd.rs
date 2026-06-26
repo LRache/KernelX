@@ -1,7 +1,7 @@
 use alloc::sync::{Arc, Weak};
 
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile, SeekWhence};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -108,7 +108,7 @@ impl FileOps for PidFile {
         self.file.as_ref().ok_or(Errno::EINVAL)?.ftruncate(new_size)
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         self.file.as_ref().and_then(|file| file.get_inode())
     }
 

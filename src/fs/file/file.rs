@@ -2,10 +2,10 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::fs::Mode;
 use crate::fs::file::DirResult;
-use crate::fs::inode::release_bsd_flock;
+use crate::fs::inode::{Inode, release_bsd_flock};
 use crate::fs::vfs::Dentry;
-use crate::fs::{InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
@@ -40,7 +40,7 @@ impl FileFlags {
 }
 
 pub struct RandomAccessFile {
-    inode: Arc<dyn InodeOps>,
+    inode: Arc<Inode>,
     dentry: Arc<Dentry>,
     pos: SleepLock<usize>,
     fd_refs: AtomicUsize,
@@ -49,7 +49,7 @@ pub struct RandomAccessFile {
 }
 
 impl RandomAccessFile {
-    pub fn new(inode: Arc<dyn InodeOps>, dentry: Arc<Dentry>, flags: FileFlags) -> Self {
+    pub fn new(inode: Arc<Inode>, dentry: Arc<Dentry>, flags: FileFlags) -> Self {
         Self {
             inode,
             dentry,
@@ -71,7 +71,7 @@ impl RandomAccessFile {
         let previous = self.fd_refs.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(previous > 0, "RandomAccessFile::fd_refs underflow");
         if previous == 1 {
-            release_bsd_flock(&self.inode, self.flock_owner_id());
+            release_bsd_flock(self.inode.ops(), self.flock_owner_id());
         }
     }
 
@@ -259,7 +259,7 @@ impl FileOps for RandomAccessFile {
         self.inode.truncate(new_size)
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         Some(&self.inode)
     }
 
@@ -310,7 +310,7 @@ impl FileOps for RandomAccessFile {
             Ok(Box::new(SharedFileMapArea::new(
                 0,
                 request.perm,
-                self.inode.clone(),
+                self.inode.clone_ops(),
                 self.dentry.get_inode_index(),
                 request.offset,
                 request.length,

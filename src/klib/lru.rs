@@ -1,5 +1,6 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 type Link<K, V> = Option<Arc<Node<K, V>>>;
 
@@ -195,16 +196,28 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         }
     }
 
-    pub fn pop_lru_entry(&mut self) -> Option<(K, V)>
-    where
-        V: Clone,
-    {
+    pub fn pop_lru_entry(&mut self) -> Option<(K, V)> {
         if let Some(lru_node) = self.list.pop_back() {
             self.map.remove(&lru_node.key);
-            Some((lru_node.key, lru_node.value.clone()))
+            match Arc::try_unwrap(lru_node) {
+                Ok(node) => Some((node.key, node.value)),
+                Err(_) => unreachable!("LRUCache node has unexpected strong references"),
+            }
         } else {
             None
         }
+    }
+
+    pub fn clear(&mut self) {
+        while self.pop_lru().is_some() {}
+    }
+
+    pub fn drain(&mut self) -> Vec<V> {
+        let mut drained = Vec::new();
+        while let Some((_, value)) = self.pop_lru_entry() {
+            drained.push(value);
+        }
+        drained
     }
 
     pub fn try_for_each_mut<E, F>(&mut self, mut f: F) -> Result<(), E>
@@ -222,7 +235,6 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         Ok(())
     }
 
-    #[cfg(any(feature = "swap-memory", feature = "virtio-block-page-cache"))]
     pub fn tail(&mut self) -> Option<(K, &mut V)> {
         self.list.tail.as_ref().map(|node| unsafe {
             // SAFETY: We have `&mut self`, which guarantees exclusive access to the `LRUCache`.
@@ -273,5 +285,11 @@ impl<K: Ord + Copy, V> LRUCache<K, V> {
         } else {
             false
         }
+    }
+}
+
+impl<K: Ord + Copy, V> Drop for LRUCache<K, V> {
+    fn drop(&mut self) {
+        self.clear();
     }
 }

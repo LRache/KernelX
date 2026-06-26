@@ -56,7 +56,7 @@ fn init_chosen_char_device(
     match vfs::load_dentry(name) {
         Ok(dentry) => {
             let inode = dentry.get_inode();
-            match inode.downcast_arc::<CharDevInode>() {
+            match inode.clone_ops().downcast_arc::<CharDevInode>() {
                 Ok(inode) => {
                     register(inode.driver().clone());
                     kinfo!("Chosen {} '{}' registered", description, name);

@@ -9,7 +9,7 @@ use core::time::Duration;
 use crate::arch::{KernelContext, UserContext, UserContextTrait};
 use crate::driver::chosen::kclock;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
-use crate::fs::{Perm, PermFlags, vfs};
+use crate::fs::{Inode, Perm, PermFlags, vfs};
 use crate::kernel::config::UTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FanotifyEventMask, notify_fanotify, timer, wait_fanotify_open_exec_permission};
@@ -246,7 +246,7 @@ impl TCB {
         argv: &[&str],
         envp: &[&str],
         tty: &str,
-    ) -> (Arc<Self>, String, Arc<dyn crate::fs::InodeOps>) {
+    ) -> (Arc<Self>, String, Arc<Inode>) {
         let exec_perm = Perm::new(0, 0, PermFlags::R | PermFlags::X);
         let file = vfs::open_file(initpath, FileFlags::readonly(), &exec_perm)
             .expect("Failed to open init file")
@@ -392,7 +392,7 @@ impl TCB {
         invoked_path: &str,
         argv: &[&str],
         envp: &[&str],
-    ) -> SysResult<(Arc<Self>, String, Arc<dyn crate::fs::InodeOps>)> {
+    ) -> SysResult<(Arc<Self>, String, Arc<Inode>)> {
         let fanotify_file: Arc<dyn FileOps> = file.clone();
         wait_fanotify_open_exec_permission(&fanotify_file)?;
         notify_fanotify(&fanotify_file, FanotifyEventMask::FAN_OPEN);

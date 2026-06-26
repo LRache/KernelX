@@ -91,7 +91,10 @@ pub fn interrupt() {
     let current_time = arch::get_time_us();
     TIMER.wakeup_expired(current_time);
 
-    arch::set_next_time_event_us(config::TIMER_INTERRUPT_INTERVAL_US); // Set next timer interrupt
+    // TODO: Program timer interrupts from the earliest pending timer deadline.
+    // The fixed 50ms tick can make nanosleep/usleep overshoot enough for timerfd
+    // periodic reads to report one extra expiration in timerfd01.
+    arch::set_next_time_event_us(config::TIMER_INTERRUPT_INTERVAL_US);
 }
 
 pub fn wait_until(dur: Duration, mut f: impl FnMut() -> bool) -> bool {

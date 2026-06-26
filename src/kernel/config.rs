@@ -29,9 +29,9 @@ cfg_if::cfg_if!(
     }
 );
 
-pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
-pub const INODE_CACHE_RECLAIM_THRESHOLD: usize = INODE_CACHE_SIZE / 4 * 3; // Start pruning when inode cache exceeds this size
-pub const EXT4_INODE_PAGE_CACHE_SIZE: usize = 1024; // Ext4 inode page cache size
+pub const INODE_CACHE_HIGH_WATERMARK: usize = 512; // Start reclaiming when inode cache reaches this size
+pub const INODE_CACHE_LOW_WATERMARK: usize = INODE_CACHE_HIGH_WATERMARK / 4 * 3; // Reclaim idle inodes down to this size
+pub const EXT4_INODE_PAGE_CACHE_SIZE: usize = 512; // Ext4 inode page cache size
 
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process
 
@@ -43,7 +43,7 @@ pub const MAX_SYMLINK_DEPTH: usize = 40;
 pub const PIPE_BUFFER_PAGES: usize = 16; // Number of pages allocated for pipe buffer
 pub const PIPE_CAPACITY: usize = PIPE_BUFFER_PAGES * arch::PGSIZE;
 
-pub const TIMER_INTERRUPT_INTERVAL_US: u64 = 100000; // Timer interrupt interval in microseconds
+pub const TIMER_INTERRUPT_INTERVAL_US: u64 = 10000; // Timer interrupt interval in microseconds
 
 /* ------ BOOT ARGS ------- */
 pub const DEFAULT_BOOT_ROOT_DEVICE: &str = match option_env!("CONFIG_DEFAULT_BOOT_ROOT_DEVICE") {

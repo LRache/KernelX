@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use crate::fs::file::RandomAccessFile;
-use crate::fs::{InodeOps, Mode, vfs};
+use crate::fs::{Inode, Mode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FileEvent, TimerTable, WaitQueue, timer};
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, SignalNum, signum};
@@ -375,7 +375,7 @@ impl PCB {
         });
     }
 
-    fn replace_exec_inode(&self, new_inode: Option<Arc<dyn InodeOps>>) {
+    fn replace_exec_inode(&self, new_inode: Option<Arc<Inode>>) {
         let old_inode = {
             let mut exec_inode = self.exec_inode.lock();
             core::mem::replace(&mut *exec_inode, new_inode)

@@ -6,7 +6,7 @@ use crate::fs::devfs::superblock::DevfsInfo;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::inode::InodeLockState;
 use crate::fs::memtreefs::inode::Inode as MemInode;
-use crate::fs::{Dentry, InodeOps, Mode, memtreefs};
+use crate::fs::{Dentry, Inode, InodeOps, Mode, memtreefs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
@@ -67,7 +67,12 @@ impl InodeOps for PtmxInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+    fn wrap_file(
+        self: Arc<Self>,
+        inode: Arc<Inode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> Arc<dyn FileOps> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(PtyInner::new(id, self.pts_dir.clone()));
         let slave_inode = Arc::new(PtsInode::new(self.superblock.alloc_inode_number(), inner.clone()));
@@ -75,7 +80,7 @@ impl InodeOps for PtmxInode {
             .add_child(format!("{}", id), slave_inode)
             .expect("failed to add /dev/pts entry");
 
-        Arc::new(PtmxFile::new(inner, self, dentry, flags))
+        Arc::new(PtmxFile::new(inner, inode, dentry, flags))
     }
 }
 
@@ -128,8 +133,13 @@ impl InodeOps for PtsInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(PtsFile::new(self.inner.clone(), self, dentry, flags))
+    fn wrap_file(
+        self: Arc<Self>,
+        inode: Arc<Inode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> Arc<dyn FileOps> {
+        Arc::new(PtsFile::new(self.inner.clone(), inode, dentry, flags))
     }
 }
 

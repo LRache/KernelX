@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use crate::driver::BlockDriverOps;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
-use crate::fs::{Dentry, InodeOps};
+use crate::fs::{Dentry, Inode, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 #[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
@@ -47,7 +47,7 @@ impl InodeOps for RootInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, _: Option<Arc<Dentry>>, _: FileFlags) -> Arc<dyn FileOps> {
+    fn wrap_file(self: Arc<Self>, _: Arc<Inode>, _: Option<Arc<Dentry>>, _: FileFlags) -> Arc<dyn FileOps> {
         unreachable!()
     }
 }

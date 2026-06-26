@@ -3,18 +3,18 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
-use crate::fs::InodeOps;
+use crate::fs::Inode;
 
 const BLOCK_SIZE: u32 = 512;
 
 pub struct LoopDevice {
-    inode: Arc<dyn InodeOps>,
+    inode: Arc<Inode>,
     readahead: Arc<AtomicUsize>,
     read_only: Arc<AtomicBool>,
 }
 
 impl LoopDevice {
-    pub fn new(inode: Arc<dyn InodeOps>, readahead: Arc<AtomicUsize>, read_only: Arc<AtomicBool>) -> Arc<Self> {
+    pub fn new(inode: Arc<Inode>, readahead: Arc<AtomicUsize>, read_only: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
             inode,
             readahead,

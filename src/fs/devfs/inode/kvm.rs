@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::fs::file::{DirResult, FileFlags, FileOps};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
 use crate::kvm::VTaskSet;
@@ -56,7 +56,12 @@ impl InodeOps for KvmInode {
         Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() | 0o666))
     }
 
-    fn wrap_file(self: Arc<Self>, _dentry: Option<Arc<Dentry>>, _flags: FileFlags) -> Arc<dyn FileOps> {
+    fn wrap_file(
+        self: Arc<Self>,
+        _inode: Arc<Inode>,
+        _dentry: Option<Arc<Dentry>>,
+        _flags: FileFlags,
+    ) -> Arc<dyn FileOps> {
         Arc::new(VTaskSet::new())
     }
 }

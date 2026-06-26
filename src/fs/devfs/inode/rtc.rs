@@ -4,9 +4,9 @@ use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
 use crate::driver::chosen::kclock;
-use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::inode::{InodeLockState, InodeOps, Mode};
+use crate::fs::{Dentry, Inode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
@@ -88,17 +88,18 @@ impl InodeOps for RtcInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RtcFile {
-            inode: self,
-            dentry,
-            flags,
-        })
+    fn wrap_file(
+        self: Arc<Self>,
+        inode: Arc<Inode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> Arc<dyn FileOps> {
+        Arc::new(RtcFile { inode, dentry, flags })
     }
 }
 
 struct RtcFile {
-    inode: Arc<RtcInode>,
+    inode: Arc<Inode>,
     dentry: Option<Arc<Dentry>>,
     flags: FileFlags,
 }
@@ -159,8 +160,8 @@ impl FileOps for RtcFile {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
-        None
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
+        Some(&self.inode)
     }
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {

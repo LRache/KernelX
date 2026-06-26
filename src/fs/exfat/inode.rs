@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeOps, Mode, Owner};
+use crate::fs::inode::{Inode as VfsInode, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
@@ -101,7 +101,12 @@ impl InodeOps for Inode {
         Err(Errno::EROFS)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    fn wrap_file(
+        self: Arc<Self>,
+        inode: Arc<VfsInode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

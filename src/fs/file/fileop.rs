@@ -6,7 +6,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 use num_enum::TryFromPrimitive;
 
 use crate::fs::file::{DirResult, FileFlags};
-use crate::fs::{Dentry, InodeOps, vfs};
+use crate::fs::{Dentry, Inode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::maparea::Area;
@@ -165,7 +165,7 @@ pub trait FileOps: DowncastSync {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         None
     }
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {

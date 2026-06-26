@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::fs::file::{FileFlags, FileOps, PosixFadviseAdvice};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
@@ -13,7 +13,7 @@ use crate::klib::SpinLock;
 use super::PipeInner;
 
 struct Meta {
-    inode: Arc<dyn InodeOps>,
+    inode: Arc<Inode>,
     dentry: Arc<Dentry>,
 }
 
@@ -55,7 +55,7 @@ impl Pipe {
 
     pub fn open_fifo(
         inner: Arc<PipeInner>,
-        inode: Arc<dyn InodeOps>,
+        inode: Arc<Inode>,
         dentry: Option<Arc<Dentry>>,
         flags: FileFlags,
     ) -> SysResult<Arc<dyn FileOps>> {
@@ -199,7 +199,7 @@ impl FileOps for Pipe {
         Err(Errno::EINVAL)
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         self.meta.as_ref().map(|m| &m.inode)
     }
 

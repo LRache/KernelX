@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use crate::driver::BlockDriverOps;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
-use crate::fs::inode::{FileType, Mode, Owner};
+use crate::fs::inode::{FileType, Index, Mode, Owner};
 use crate::fs::memtreefs;
 use crate::fs::perm::Perm;
 use crate::fs::vfs::dentry::{self, Dentry};
@@ -220,7 +220,14 @@ pub fn create_file(
 
 pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysResult<Arc<dyn FileOps>> {
     let superblock = vfs().superblock_table.lock().get(dentry.sno()).ok_or(Errno::ENOENT)?;
-    let inode = superblock.create_temp(mode)?;
+    let raw_inode = superblock.create_temp(mode)?;
+    let inode = vfs().cache.insert(
+        &Index {
+            sno: dentry.sno(),
+            ino: raw_inode.get_ino(),
+        },
+        raw_inode,
+    )?;
     let dentry = Arc::new(Dentry::new("", dentry, &inode, dentry.sno()));
 
     Ok(Arc::new(RandomAccessFile::new(inode, dentry, flags)))
@@ -234,7 +241,14 @@ pub fn create_memfd(
 ) -> SysResult<Arc<dyn FileOps>> {
     let sno = memfd_superblock_sno()?;
     let superblock = vfs().superblock_table.lock().get(sno).ok_or(Errno::ENOENT)?;
-    let inode = superblock.create_temp(mode)?;
+    let raw_inode = superblock.create_temp(mode)?;
+    let inode = vfs().cache.insert(
+        &Index {
+            sno,
+            ino: raw_inode.get_ino(),
+        },
+        raw_inode,
+    )?;
     inode.as_seal_ops().ok_or(Errno::EINVAL)?.init_seals(initial_seals)?;
 
     let dentry_name = format!("memfd:{} (deleted)", name);

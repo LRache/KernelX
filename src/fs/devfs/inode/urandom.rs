@@ -4,7 +4,7 @@ use num_enum::TryFromPrimitive;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::InodeLockState;
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
@@ -89,7 +89,12 @@ impl InodeOps for URandomInode {
         Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() as u32 | 0o666))
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    fn wrap_file(
+        self: Arc<Self>,
+        inode: Arc<Inode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

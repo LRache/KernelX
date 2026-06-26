@@ -6,19 +6,13 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, InodeSealOps, Mode, Owner};
+use crate::fs::inode::{Inode as VfsInode, InodeLockState, InodeSealOps, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
-use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-#[cfg(feature = "fanotify")]
-use crate::kernel::event::Fanotify;
 use crate::kernel::ipc::Pipe;
-use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
-#[cfg(feature = "fanotify")]
-use crate::klib::LazyInitedCell;
 use crate::klib::SpinLock;
 
 use super::superblock::{StaticFsInfo, SuperBlockInner};
@@ -88,10 +82,7 @@ impl InodeMeta {
 pub struct Inode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
-    pipe: SpinLock<Option<Arc<PipeInner>>>,
     lock_state: SpinLock<InodeLockState>,
-    #[cfg(feature = "fanotify")]
-    fanotify: LazyInitedCell<Arc<Fanotify>>,
     superblock: Arc<SpinLock<SuperBlockInner>>,
     _marker: core::marker::PhantomData<T>,
 }
@@ -101,10 +92,7 @@ impl<T: StaticFsInfo> Inode<T> {
         Self {
             ino,
             meta: SpinLock::new(meta, "Inode::meta"),
-            pipe: SpinLock::new(None, "Inode::pipe"),
             lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
-            #[cfg(feature = "fanotify")]
-            fanotify: LazyInitedCell::new("Inode::fanotify"),
             superblock,
             _marker: core::marker::PhantomData,
         }
@@ -156,17 +144,6 @@ impl<T: StaticFsInfo> Inode<T> {
         }
 
         Ok(())
-    }
-
-    fn fifo_pipe_inner(&self) -> Arc<PipeInner> {
-        let mut pipe = self.pipe.lock();
-        if let Some(pipe) = &*pipe {
-            return pipe.clone();
-        }
-
-        let new_pipe = Arc::new(PipeInner::new(config::PIPE_CAPACITY));
-        *pipe = Some(new_pipe.clone());
-        new_pipe
     }
 
     fn create_child(&self, name: &str, mode: Mode, owner: Owner, rdev: u64) -> SysResult<Arc<dyn InodeOps>> {
@@ -323,16 +300,6 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         Some(&self.lock_state)
-    }
-
-    #[cfg(feature = "fanotify")]
-    fn fanotify(&self) -> Option<Arc<Fanotify>> {
-        self.fanotify.get()
-    }
-
-    #[cfg(feature = "fanotify")]
-    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
-        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
@@ -995,18 +962,27 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
     }
 
-    fn open_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> SysResult<Arc<dyn FileOps>> {
+    fn open_file(
+        self: Arc<Self>,
+        inode: Arc<VfsInode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> SysResult<Arc<dyn FileOps>> {
         if (self.mode()? & Mode::S_IFMT) == Mode::S_IFIFO {
-            let inner = self.fifo_pipe_inner();
-            let inode: Arc<dyn InodeOps> = self;
+            let inner = inode.fifo_pipe_inner();
             return Pipe::open_fifo(inner, inode, dentry, flags);
         }
 
-        Ok(self.wrap_file(dentry, flags))
+        Ok(self.wrap_file(inode, dentry, flags))
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    fn wrap_file(
+        self: Arc<Self>,
+        inode: Arc<VfsInode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {
