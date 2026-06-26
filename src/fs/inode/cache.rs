@@ -68,6 +68,10 @@ impl Cache {
         self.cache.lock().get(index).cloned()
     }
 
+    pub fn len(&self) -> usize {
+        self.cache.lock().len()
+    }
+
     pub fn insert(&self, index: &Index, inode: Arc<dyn InodeOps>) -> SysResult<()> {
         let removed = {
             let mut cache = self.cache.lock();
@@ -104,6 +108,10 @@ impl Cache {
     }
 
     pub fn prune_unused(&self) -> usize {
+        if self.cache.lock().len() <= config::INODE_CACHE_RECLAIM_THRESHOLD {
+            return 0;
+        }
+
         self.remove_if(|_, inode| Arc::strong_count(inode) <= Self::idle_refcount(inode))
     }
 

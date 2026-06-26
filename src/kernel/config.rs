@@ -30,6 +30,7 @@ cfg_if::cfg_if!(
 );
 
 pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
+pub const INODE_CACHE_RECLAIM_THRESHOLD: usize = INODE_CACHE_SIZE / 4 * 3; // Start pruning when inode cache exceeds this size
 pub const EXT4_INODE_PAGE_CACHE_SIZE: usize = 512; // Ext4 inode page cache size
 
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process

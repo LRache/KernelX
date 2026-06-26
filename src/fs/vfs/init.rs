@@ -12,11 +12,12 @@ use crate::fs::{Dentry, devfs, procfs, tmpfs};
 use crate::kernel::kthread;
 use crate::kernel::scheduler::current;
 
-const INODE_CACHE_REAPER_INTERVAL: Duration = Duration::from_secs(1);
+const INODE_CACHE_REAPER_INTERVAL: Duration = Duration::from_secs(10);
 
 fn inode_cache_reaper() {
     loop {
         current::sleep(INODE_CACHE_REAPER_INTERVAL);
+        crate::kdebug!("inode_cache_reaper: inode cache len={}", super::vfs().cache.len());
         super::vfs().cache.prune_unused();
     }
 }
