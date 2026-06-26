@@ -7,8 +7,8 @@ use core::time::Duration;
 
 use crate::arch;
 use crate::kernel::event::Event;
-use crate::kernel::scheduler;
 use crate::kernel::scheduler::Task;
+use crate::kernel::{config, scheduler};
 use crate::klib::SpinLock;
 
 use super::event::TimerEvent;
@@ -91,7 +91,7 @@ pub fn interrupt() {
     let current_time = arch::get_time_us();
     TIMER.wakeup_expired(current_time);
 
-    arch::set_next_time_event_us(10000); // Set next timer interrupt in 10ms
+    arch::set_next_time_event_us(config::TIMER_INTERRUPT_INTERVAL_US); // Set next timer interrupt
 }
 
 pub fn wait_until(dur: Duration, mut f: impl FnMut() -> bool) -> bool {
