@@ -14,7 +14,7 @@ impl FileSystemOps for Ext4FileSystem {
         driver: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
     ) -> Result<Arc<dyn SuperBlockOps>, Errno> {
-        let driver = driver.unwrap();
+        let driver =  driver.ok_or(Errno::ENODEV)?;
         if driver.is_readonly() && !options.read_only {
             return Err(Errno::EACCES);
         }
