@@ -135,24 +135,36 @@ fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<&Arc<Inode>> {
     Ok(inode)
 }
 
+fn update_inode_times(inode: &Inode, time: &Duration, is_write: bool) -> SysResult<()> {
+    if is_write {
+        inode.update_mtime_ctime(time)?;
+    } else {
+        match inode.update_atime(time) {
+            Ok(()) | Err(Errno::EROFS) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
 fn update_file_times(file: &dyn FileOps, time: &Duration, is_write: bool) -> SysResult<()> {
     if let Some(inode) = file.get_inode() {
-        if is_write {
-            inode.update_mtime_ctime(time)?;
-        } else {
-            match inode.update_atime(time) {
-                Ok(()) | Err(Errno::EROFS) => {}
-                Err(err) => return Err(err),
-            }
-        }
+        update_inode_times(&inode, time, is_write)?;
+    }
+    Ok(())
+}
+
+fn update_file_times_now(file: &dyn FileOps, is_write: bool) -> SysResult<()> {
+    if let Some(inode) = file.get_inode() {
+        let time = driver::chosen::kclock::now()?;
+        update_inode_times(&inode, &time, is_write)?;
     }
     Ok(())
 }
 
 fn finish_file_io(file: &dyn FileOps, bytes: usize, is_write: bool) -> SyscallRet {
     if bytes > 0 {
-        // let time = driver::chosen::kclock::now()?;
-        // update_file_times(file, &time, is_write)?;
+        update_file_times_now(file, is_write)?;
     }
     Ok(bytes)
 }
@@ -569,8 +581,7 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
                 return Err(err);
             }
             if old_size != 0 {
-                let time = driver::chosen::kclock::now()?;
-                if let Err(err) = update_file_times(file.as_ref(), &time, true) {
+                if let Err(err) = update_file_times_now(file.as_ref(), true) {
                     let _ = current::fdtable().lock().take(fd);
                     return Err(err);
                 }
@@ -760,8 +771,7 @@ fn do_openat_with_lookup_flags(
                 return Err(err);
             }
             if old_size != 0 {
-                let time = driver::chosen::kclock::now()?;
-                if let Err(err) = update_file_times(file.as_ref(), &time, true) {
+                if let Err(err) = update_file_times_now(file.as_ref(), true) {
                     let _ = current::fdtable().lock().take(fd);
                     return Err(err);
                 }
@@ -3180,8 +3190,7 @@ pub fn ftruncate64(fd: usize, length: usize) -> SyscallRet {
     file.ftruncate(length)?;
     notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
     if old_size != length {
-        let time = driver::chosen::kclock::now()?;
-        update_file_times(file.as_ref(), &time, true)?;
+        update_file_times_now(file.as_ref(), true)?;
     }
 
     Ok(0)
@@ -3229,8 +3238,7 @@ pub fn fallocate(fd: usize, mode: usize, offset: usize, len: usize) -> SyscallRe
 
     notify_fanotify(&file, FanotifyEventMask::FAN_MODIFY);
 
-    let time = driver::chosen::kclock::now()?;
-    update_file_times(file.as_ref(), &time, true)?;
+    update_file_times_now(file.as_ref(), true)?;
 
     Ok(0)
 }
