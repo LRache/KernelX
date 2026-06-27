@@ -107,7 +107,7 @@ jobs:
             -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.2 \
             -netdev user,id=net0 \
             -smp 1 \
-            -append "rtc=rtc@101000 init=/testcode/runtest.sh initcwd=/ root=virtio_mmio@10001000"
+            -append "rtc=rtc@101000 init=/testcode/runtest.sh initcwd=/ root=virtio_mmio@10001000 rootfstype=ext4native"
           qemu_status=$?
           set -e
 
@@ -226,7 +226,7 @@ jobs:
             -device virtio-blk-pci,drive=x0 \
             -netdev user,id=net0 \
             -device virtio-net-pci,netdev=net0 \
-            -append "init=/testcode/runtest.sh initcwd=/ root=virtio_block0 rtc=rtc@100d0100 tty=/dev/serial@1fe001e0"
+            -append "init=/testcode/runtest.sh initcwd=/ root=virtio_block0 rootfstype=ext4native rtc=rtc@100d0100 tty=/dev/serial@1fe001e0"
           qemu_status=$?
           set -e
 
