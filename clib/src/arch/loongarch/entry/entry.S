@@ -67,14 +67,16 @@ _entry:
      * are VAs in the DMW1 high half — kernel arithmetic stays in the
      * 64-bit linked space.
      *
-     * memory_top = 0x9000_..._0000 | 0x1000_0000 (256 MiB). QEMU `-M virt`
-     * gives 256 MiB at PA [0, 0x1000_0000); past that is MMIO and cached
-     * loads there would raise ADE through DMW1. The frame allocator must
-     * respect this cap.
+     * memory_top = 0x9000_..._0000 | 0x4000_0000 (1 GiB). QEMU `-M virt`
+     * gives 1 GiB at PA [0, 0x4000_0000); past that is MMIO and cached loads
+     * there would raise ADE through DMW1. The frame allocator must respect
+     * this cap.
+     *
+     * TODO: Parse the FDT memory node and derive this cap from available RAM.
      */
     move    $a0, $s0
     la.pcrel $a1, __kernel_end
-    lu12i.w $a2, 0x10000                /* 0x1000_0000 */
+    lu12i.w $a2, 0x40000                /* 0x4000_0000 */
     lu52i.d $a2, $a2, -1792             /* | 0x9000_..._0000 */
 
     la.global $t0, main
