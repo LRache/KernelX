@@ -11,7 +11,7 @@ use crate::fs::{Dentry, Inode, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::uapi::FileStat;
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 use crate::net::protocol::ipv4::IpProtocol;
 
 use super::raw::RawInner;
@@ -60,7 +60,7 @@ impl SocketOptions {
 }
 
 pub struct InetSocket {
-    inner: SpinLock<Box<dyn SocketInner>>,
+    inner: SleepLock<Box<dyn SocketInner>>,
     blocked: SpinLock<bool>,
     options: SpinLock<SocketOptions>,
 }
@@ -68,7 +68,7 @@ pub struct InetSocket {
 impl InetSocket {
     pub fn new_udp(blocked: bool) -> Self {
         Self {
-            inner: SpinLock::new(Box::new(UdpInner::new()), "InetSocket::inner"),
+            inner: SleepLock::new(Box::new(UdpInner::new()), "InetSocket::inner"),
             blocked: SpinLock::new(blocked, "InetSocket::blocked"),
             options: SpinLock::new(SocketOptions::new(), "InetSocket::options"),
         }
@@ -76,7 +76,7 @@ impl InetSocket {
 
     pub fn new_tcp(blocked: bool) -> Self {
         Self {
-            inner: SpinLock::new(Box::new(TcpInner::new()), "InetSocket::inner"),
+            inner: SleepLock::new(Box::new(TcpInner::new()), "InetSocket::inner"),
             blocked: SpinLock::new(blocked, "InetSocket::blocked"),
             options: SpinLock::new(SocketOptions::new(), "InetSocket::options"),
         }
@@ -84,7 +84,7 @@ impl InetSocket {
 
     pub fn new_raw(protocol: u8, blocked: bool) -> Self {
         Self {
-            inner: SpinLock::new(Box::new(RawInner::new(protocol)), "InetSocket::inner"),
+            inner: SleepLock::new(Box::new(RawInner::new(protocol)), "InetSocket::inner"),
             blocked: SpinLock::new(blocked, "InetSocket::blocked"),
             options: SpinLock::new(SocketOptions::new(), "InetSocket::options"),
         }
@@ -93,7 +93,7 @@ impl InetSocket {
     /// Create an InetSocket from a pre-built SocketInner (used by accept).
     pub fn from_inner(inner: Box<dyn SocketInner>, blocked: bool) -> Self {
         Self {
-            inner: SpinLock::new(inner, "InetSocket::inner"),
+            inner: SleepLock::new(inner, "InetSocket::inner"),
             blocked: SpinLock::new(blocked, "InetSocket::blocked"),
             options: SpinLock::new(SocketOptions::new(), "InetSocket::options"),
         }
