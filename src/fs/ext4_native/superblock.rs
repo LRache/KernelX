@@ -142,7 +142,6 @@ struct Ext4Info {
     desc_size: u16,
     features_readonly: u32,
     features_incompatible: Ext4IncompatFeatures,
-    uuid: [u8; 16],
     hash_seed: [u32; 4],
     flags: u32,
     checksum_seed: u32,
@@ -368,6 +367,10 @@ impl InodePageCache {
             .iter()
             .filter_map(|(page_index, page)| page.dirty.then_some(*page_index))
             .collect()
+    }
+
+    pub fn has_dirty_page(&self) -> bool {
+        self.pages.values().any(|page| page.dirty)
     }
 
     pub fn discard_after_truncate(&mut self, new_size: usize) {
@@ -2886,15 +2889,7 @@ impl SuperBlockInner {
     }
 
     fn metadata_csum_seed(&self) -> u32 {
-        if self
-            .info
-            .features_incompatible
-            .contains(Ext4IncompatFeatures::CSUM_SEED)
-        {
-            self.info.checksum_seed
-        } else {
-            crc32c(EXT4_CRC32_INIT, &self.info.uuid)
-        }
+        self.info.checksum_seed
     }
 
     fn read_inode_raw(&mut self, ino: u32) -> SysResult<Ext4InodeRaw> {
@@ -3060,7 +3055,11 @@ impl Ext4Info {
             le_u32(&raw, 248),
         ];
         let flags = le_u32(&raw, 372);
-        let checksum_seed = le_u32(&raw, 0x270);
+        let checksum_seed = if features_incompatible.contains(Ext4IncompatFeatures::CSUM_SEED) {
+            le_u32(&raw, 0x270)
+        } else {
+            crc32c(EXT4_CRC32_INIT, &uuid)
+        };
         let checksum_type = raw[373];
         let inode_size = match le_u32(&raw, 76) {
             0 => EXT4_MIN_INODE_SIZE,
@@ -3115,7 +3114,6 @@ impl Ext4Info {
                 desc_size,
                 features_readonly,
                 features_incompatible,
-                uuid,
                 hash_seed,
                 flags,
                 checksum_seed,
