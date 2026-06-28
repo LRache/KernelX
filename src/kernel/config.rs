@@ -29,7 +29,7 @@ cfg_if::cfg_if!(
     }
 );
 
-pub const INODE_CACHE_HIGH_WATERMARK: usize = 512; // Start reclaiming when inode cache reaches this size
+pub const INODE_CACHE_HIGH_WATERMARK: usize = 256; // Start reclaiming when inode cache reaches this size
 pub const INODE_CACHE_LOW_WATERMARK: usize = INODE_CACHE_HIGH_WATERMARK / 4 * 3; // Reclaim idle inodes down to this size
 pub const EXT4_INODE_PAGE_CACHE_SIZE: usize = 512; // Ext4 inode page cache size
 

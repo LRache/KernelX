@@ -27,10 +27,6 @@ impl Cache {
         Arc::strong_count(inode) <= 1 && Arc::strong_count(inode.ops()) <= Self::idle_ops_refcount(inode)
     }
 
-    fn low_watermark() -> usize {
-        config::INODE_CACHE_LOW_WATERMARK.min(config::INODE_CACHE_HIGH_WATERMARK.saturating_sub(1))
-    }
-
     fn remove_entry(cache: &mut LRUCache<Index, Arc<Inode>>, index: &Index) -> Option<Arc<Inode>> {
         let inode = cache.get(index).cloned();
         if inode.is_some() {
@@ -64,9 +60,8 @@ impl Cache {
     fn reclaim(cache: &mut LRUCache<Index, Arc<Inode>>) -> Vec<Arc<Inode>> {
         let mut removed = Vec::new();
         let mut remaining_to_scan = cache.len();
-        let low_watermark = Self::low_watermark();
 
-        while cache.len() > low_watermark && remaining_to_scan > 0 {
+        while cache.len() > config::INODE_CACHE_LOW_WATERMARK && remaining_to_scan > 0 {
             remaining_to_scan -= 1;
             let Some((index, idle)) = cache.tail().map(|(index, inode)| (index, Self::is_idle(inode))) else {
                 break;
@@ -133,8 +128,8 @@ impl Cache {
     pub fn prune_unused(&self) -> usize {
         let removed = {
             let mut cache = self.cache.lock();
-            if cache.len() <= config::INODE_CACHE_LOW_WATERMARK {
-                Vec::new()
+            if cache.len() <= config::INODE_CACHE_HIGH_WATERMARK {
+                return 0;
             } else {
                 Self::reclaim(&mut cache)
             }

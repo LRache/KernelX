@@ -278,6 +278,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         1
     }
 
+    fn has_dirty_page(&self) -> bool {
+        false
+    }
+
     fn as_seal_ops(&self) -> Option<&dyn InodeSealOps> {
         Some(self)
     }

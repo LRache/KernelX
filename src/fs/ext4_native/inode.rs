@@ -197,6 +197,10 @@ impl InodeOps for Inode {
         Some(&self.lock_state)
     }
 
+    fn has_dirty_page(&self) -> bool {
+        self.cacheable_file && self.page_cache.lock().has_dirty_page()
+    }
+
     fn begin_write_open(&self) -> SysResult<()> {
         if self.superblock.lock().is_readonly() {
             return Err(Errno::EROFS);

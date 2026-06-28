@@ -427,6 +427,10 @@ impl InodePageCache {
             .collect()
     }
 
+    fn has_dirty_page(&self) -> bool {
+        self.pages.values().any(|page| page.dirty)
+    }
+
     fn discard_after_truncate(&mut self, new_size: usize) {
         let new_page_count = new_size.div_ceil(arch::PGSIZE);
         let _ = self.pages.split_off(&new_page_count);
@@ -749,6 +753,10 @@ impl InodeOps for Ext4Inode {
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         Some(&self.lock_state)
+    }
+
+    fn has_dirty_page(&self) -> bool {
+        self.cacheable_file && self.page_cache.lock().has_dirty_page()
     }
 
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {

@@ -168,6 +168,10 @@ pub trait InodeOps: DowncastSync {
         0
     }
 
+    fn has_dirty_page(&self) -> bool {
+        false
+    }
+
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
         None
     }
