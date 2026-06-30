@@ -18,7 +18,7 @@ pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 64; // Kernel stack page count for user tasks
 #[cfg(not(debug_assertions))]
 pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Kernel stack page count for user tasks
-pub const KTASK_KSTACK_PAGE_COUNT: usize = 16; // Kernel stack page count for kernel tasks
+pub const KTASK_KSTACK_PAGE_COUNT: usize = 32; // Kernel stack page count for kernel tasks
 pub const KERNEL_HEAP_SIZE: usize = 128 * 1024 * 1024; // Kernel heap size (128 MiB)
 pub const SCHEDULER_KSTACK_PAGE_COUNT: usize = 4; // Scheduler kernel stack size
 
@@ -31,6 +31,7 @@ cfg_if::cfg_if!(
 
 pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
 pub const EXT4_INODE_PAGE_CACHE_SIZE: usize = 512; // Ext4 inode page cache size
+pub const INODE_CACHE_RECLAIM_INTERVAL_MS: u64 = 500; // Background inode cache reclaim interval
 
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process
 

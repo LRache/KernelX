@@ -4,18 +4,18 @@ use alloc::vec::Vec;
 
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
-use crate::klib::SpinLock;
+use crate::klib::SleepLock;
 
 use super::{Index, InodeOps};
 
 pub struct Cache {
-    cache: SpinLock<BTreeMap<Index, Arc<dyn InodeOps>>>,
+    cache: SleepLock<BTreeMap<Index, Arc<dyn InodeOps>>>,
 }
 
 impl Cache {
     pub const fn new() -> Self {
         Self {
-            cache: SpinLock::new(BTreeMap::new(), "InodeCache::cache"),
+            cache: SleepLock::new(BTreeMap::new(), "InodeCache::cache"),
         }
     }
 
@@ -66,6 +66,25 @@ impl Cache {
 
     pub fn find(&self, index: &Index) -> Option<Arc<dyn InodeOps>> {
         self.cache.lock().get(index).cloned()
+    }
+
+    pub fn get_or_insert(&self, index: Index, inode: Arc<dyn InodeOps>) -> Arc<dyn InodeOps> {
+        let removed = {
+            let mut cache = self.cache.lock();
+            if let Some(existing) = cache.get(&index) {
+                return existing.clone();
+            }
+
+            let removed = if cache.len() >= config::INODE_CACHE_SIZE {
+                Self::reclaim(&mut cache)
+            } else {
+                Vec::new()
+            };
+            cache.insert(index, inode.clone());
+            removed
+        };
+        drop(removed);
+        inode
     }
 
     pub fn insert(&self, index: &Index, inode: Arc<dyn InodeOps>) -> SysResult<()> {

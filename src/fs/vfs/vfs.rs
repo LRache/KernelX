@@ -395,9 +395,8 @@ impl VirtualFileSystem {
             superblock_table.get(sno).ok_or(Errno::ENOENT)?
         };
         let inode = superblock.get_inode(ino)?;
-        self.cache.insert(&index, inode.clone())?;
 
-        Ok(inode)
+        Ok(self.cache.get_or_insert(index, inode))
     }
 }
 

@@ -1,11 +1,22 @@
 use alloc::sync::Arc;
+use core::time::Duration;
 
 use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::inode::Index;
 use crate::fs::vfs::vfs::VirtualFileSystem;
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::scheduler::current;
 use crate::kernel::uapi::{Statfs, StatfsFlags};
 
 use super::{Dentry, vfs};
+
+pub fn inode_cache_reclaimer() {
+    loop {
+        current::sleep(Duration::from_millis(config::INODE_CACHE_RECLAIM_INTERVAL_MS));
+        vfs().cache.prune_unused();
+    }
+}
 
 impl VirtualFileSystem {
     pub(super) fn register_filesystem(&mut self, name: &'static str, fs: &'static dyn FileSystemOps) {
@@ -53,4 +64,12 @@ pub fn statfs(sno: u32) -> SysResult<Statfs> {
 
 pub fn sync_all() -> Result<(), Errno> {
     vfs().sync_all()
+}
+
+pub fn evict_inode(sno: u32, ino: u32) {
+    vfs().cache.remove(&Index { sno, ino });
+}
+
+pub fn find_cached_inode(sno: u32, ino: u32) -> Option<Arc<dyn crate::fs::InodeOps>> {
+    vfs().cache.find(&Index { sno, ino })
 }

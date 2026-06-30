@@ -190,10 +190,17 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn unlink(&self, _name: &str) -> SysResult<()> {
+        unimplemented!();
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn rmdir(&self, _name: &str) -> SysResult<()> {
+        unimplemented!();
         Err(Errno::EOPNOTSUPP)
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {
+        unimplemented!();
         let _ = target;
         Err(Errno::EOPNOTSUPP)
     }
@@ -245,6 +252,7 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn InodeOps>, _new_name: &str) -> SysResult<()> {
+        unimplemented!();
         Err(Errno::EOPNOTSUPP)
     }
 
@@ -299,6 +307,7 @@ pub trait InodeOps: DowncastSync {
     }
 
     fn chmod(&self, _mode: Mode) -> SysResult<()> {
+        unimplemented!();
         Err(Errno::EOPNOTSUPP)
     }
 
@@ -309,6 +318,7 @@ pub trait InodeOps: DowncastSync {
     fn chown(&self, uid: Option<Uid>, gid: Option<Uid>) -> SysResult<()> {
         let _ = uid;
         let _ = gid;
+        unimplemented!();
         Err(Errno::EOPNOTSUPP)
     }
 

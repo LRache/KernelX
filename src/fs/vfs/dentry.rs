@@ -854,15 +854,12 @@ impl Dentry {
         }
 
         let inode = create(&parent_inode, name, mode, owner)?;
-        vfs().cache.insert(
-            &Index {
-                sno: self.sno(),
-                ino: inode.get_ino(),
-            },
-            inode.clone(),
-        )?;
+        let index = Index {
+            sno: self.sno(),
+            ino: inode.get_ino(),
+        };
 
-        Ok(inode)
+        Ok(vfs().cache.get_or_insert(index, inode))
     }
 
     pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
@@ -902,7 +899,11 @@ impl Dentry {
         self.check_sticky_remove_perm(&parent_inode, &child_inode)?;
 
         child_inode.sync()?;
-        parent_inode.unlink(name)?;
+        if remove_dir {
+            parent_inode.rmdir(name)?;
+        } else {
+            parent_inode.unlink(name)?;
+        }
 
         self.children.lock().remove(name);
         vfs().cache.remove(&child.get_inode_index());

@@ -1,4 +1,5 @@
 pub mod backtrace;
+pub mod crc;
 pub mod defer;
 pub mod dmesg;
 pub mod initcell;

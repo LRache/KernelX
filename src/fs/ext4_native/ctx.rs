@@ -1,0 +1,83 @@
+use alloc::sync::Arc;
+
+use crate::driver::BlockDriverOps;
+use crate::fs::ext4_native::inode::Inode;
+use crate::fs::ext4_native::ondisk::{Ext4IncompatFeatures, Ext4RoCompatFeatures, debug_errno};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
+use crate::fs::{InodeOps, Mode};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::uapi::Statfs;
+use crate::klib::SleepLock;
+
+pub struct Context {
+    pub(super) fsno: u32,
+    pub(super) driver: Arc<dyn BlockDriverOps>,
+
+    // checksum / format identity
+    pub(super) uuid: [u8; 16],
+    pub(super) checksum_seed: u32,
+    pub(super) metadata_csum: bool,
+
+    // filesystem geometry
+    pub(super) block_size: u32,
+    pub(super) blocks_count: u64,
+    pub(super) first_data_block: u32,
+    pub(super) blocks_per_group: u32,
+    pub(super) inodes_per_group: u32,
+    pub(super) inode_size: u16,
+    pub(super) desc_size: u16,
+    pub(super) groups_count: u32,
+
+    // feature gates used by low-level readers/writers
+    pub(super) feature_compat: u32,
+    pub(super) feature_incompat: Ext4IncompatFeatures,
+    pub(super) feature_ro_compat: Ext4RoCompatFeatures,
+}
+
+pub struct SuperBlock {
+    context: Arc<SleepLock<Context>>,
+}
+
+impl SuperBlockOps for SuperBlock {
+    fn get_root_ino(&self) -> u32 {
+        2
+    }
+
+    fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
+        let inode = self.context.lock().read_inode(ino)?;
+        Ok(Arc::new(Inode::new(Arc::downgrade(&self.context), inode)))
+    }
+
+    fn create_temp(&self, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+        unimplemented!("ext4_native::SuperBlock::create_temp")
+    }
+
+    fn statfs(&self) -> SysResult<Statfs> {
+        self.context.lock().statfs()
+    }
+
+    fn sync(&self) -> SysResult<()> {
+        Ok(())
+    }
+
+    fn type_name(&self) -> &'static str {
+        "ext4_native"
+    }
+}
+
+pub struct FileSystem;
+
+impl FileSystemOps for FileSystem {
+    fn create(
+        &self,
+        fsno: u32,
+        driver: Option<Arc<dyn BlockDriverOps>>,
+        _options: MountOptions,
+    ) -> SysResult<Arc<dyn SuperBlockOps>> {
+        let driver = driver.ok_or_else(|| debug_errno("FileSystem::create: block driver is None", Errno::EINVAL))?;
+        let ctx = Context::from_device(fsno, driver)?;
+        Ok(Arc::new(SuperBlock {
+            context: Arc::new(SleepLock::new(ctx, "ext4_native::Superblock::context")),
+        }))
+    }
+}
