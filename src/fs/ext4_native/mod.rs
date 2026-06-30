@@ -1,9 +1,13 @@
-// Experimental read-only native ext4 backend. On-disk layout parsing and extent
-// traversal are informed by ../ext4_rs (MIT) and adapted for KernelX VFS.
-
-mod filesystem;
+mod ctx;
 mod inode;
-mod superblock;
-mod utils;
+mod ondisk;
 
-pub use filesystem::FileSystem;
+#[allow(unused_imports)]
+use ctx::Context;
+#[allow(unused_imports)]
+use ondisk::{
+    DirBlock, DirEntry2, Ext4BitmapBlock, Ext4GroupDesc, Ext4Inode, Ext4Superblock, ExtentBlock, ExtentHeader,
+    ExtentIdx, ExtentLeaf, clear_bit, set_bit, test_bit,
+};
+
+pub use ctx::FileSystem;

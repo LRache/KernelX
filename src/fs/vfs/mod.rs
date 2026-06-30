@@ -12,7 +12,7 @@ use superblock_table::SuperBlockTable;
 pub use dentry::Dentry;
 pub use fileop::*;
 pub use fsop::*;
-pub use init::{init, spawn_inode_cache_reaper};
+pub use init::init;
 pub use mount::*;
 
 use crate::klib::InitedCell;

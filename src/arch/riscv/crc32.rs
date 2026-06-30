@@ -21,7 +21,7 @@ pub(super) fn crc32c(seed: u32, buf: &[u8]) -> u32 {
         offset += 8;
     }
 
-    crate::klib::crc32c::default_crc32c(crc, &buf[offset..])
+    crate::klib::crc::crc32c_update(crc, &buf[offset..])
 }
 
 #[inline(always)]

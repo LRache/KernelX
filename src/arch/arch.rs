@@ -83,7 +83,7 @@ pub trait ArchTrait {
     fn is_kernel_addr(addr: usize) -> bool;
 
     fn crc32c(seed: u32, buf: &[u8]) -> u32 {
-        crate::klib::crc32c::default_crc32c(seed, buf)
+        crate::klib::crc::crc32c_update(seed, buf)
     }
 }
 

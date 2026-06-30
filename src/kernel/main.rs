@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::collections::BTreeMap;
 
+use crate::fs::vfs;
 use crate::kernel::event::timer;
 use crate::kernel::scheduler::{Processor, Task};
 use crate::kernel::{config, kthread, mm, scheduler, task};
@@ -54,10 +55,10 @@ fn kinit() {
         BOOT_ARGS.get("initargs").unwrap_or(&""),
         BOOT_ARGS.get("tty").unwrap_or(&config::DEFAULT_INITTTY),
     );
-    fs::vfs::spawn_inode_cache_reaper();
 
     #[cfg(feature = "watchdog")]
     kthread::spawn(scheduler::watchdog::kwatchdog);
+    kthread::spawn(vfs::inode_cache_reclaimer);
 
     kinfo!("KernelX initialized successfully!");
 

@@ -353,6 +353,8 @@ pub trait VfsInodeOps: DowncastSync {
 
     fn unlink(&self, name: &str) -> SysResult<()>;
 
+    fn rmdir(&self, name: &str) -> SysResult<()>;
+
     fn symlink(&self, target: &str) -> SysResult<()>;
 
     fn readat(&self, buf: &mut [u8], offset: usize, direct: bool) -> SysResult<usize>;
@@ -493,6 +495,10 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
 
     fn unlink(&self, name: &str) -> SysResult<()> {
         self.inner.unlink(name)
+    }
+
+    fn rmdir(&self, name: &str) -> SysResult<()> {
+        self.inner.rmdir(name)
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {
@@ -684,6 +690,10 @@ pub trait InodeOps: Send + Sync + Sized + 'static {
 
     fn unlink(&self, _name: &str) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
+    }
+
+    fn rmdir(&self, name: &str) -> SysResult<()> {
+        self.unlink(name)
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {
@@ -918,6 +928,10 @@ impl<T: InodeOps> InodeOps for Arc<T> {
 
     fn unlink(&self, name: &str) -> SysResult<()> {
         self.as_ref().unlink(name)
+    }
+
+    fn rmdir(&self, name: &str) -> SysResult<()> {
+        self.as_ref().rmdir(name)
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {

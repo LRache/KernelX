@@ -1,5 +1,5 @@
 pub mod backtrace;
-pub mod crc32c;
+pub mod crc;
 pub mod defer;
 pub mod dmesg;
 pub mod initcell;
