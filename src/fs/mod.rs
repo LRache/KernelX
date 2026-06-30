@@ -17,6 +17,6 @@ mod vfat;
 
 pub use filesystem::MountOptions;
 pub use init::{fini, init, mount_init_fs};
-pub use inode::{FileType, Inode, InodeOps, Mode, Owner};
+pub use inode::{FileType, Inode, InodeOps, Mode, Owner, VfsInode};
 pub use perm::{Perm, PermFlags};
 pub use vfs::Dentry;

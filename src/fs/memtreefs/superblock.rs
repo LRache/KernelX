@@ -2,8 +2,8 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
 use crate::arch;
-use crate::fs::filesystem::SuperBlockOps;
-use crate::fs::{InodeOps, Mode};
+use crate::fs::filesystem::VfsSuperBlockOps;
+use crate::fs::{Inode, Mode, VfsInode};
 use crate::kernel::errno::{Errno, SysResult};
 #[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
@@ -13,7 +13,7 @@ use crate::kernel::uapi::Statfs;
 use crate::klib::LazyInitedCell;
 use crate::klib::SpinLock;
 
-use super::inode::{Inode as MemInode, InodeMeta};
+use super::inode::{InodeMeta, MemInodeOps, RegularInode};
 
 pub trait StaticFsInfo: Send + Sync + 'static {
     const MAX_FILENAME_LEN: Option<usize> = None;
@@ -29,12 +29,12 @@ pub trait StaticFsInfo: Send + Sync + 'static {
     }
 }
 
-pub struct SuperBlockInner {
-    inodes: BTreeMap<u32, Arc<dyn InodeOps>>,
+pub struct SuperBlockInner<T: StaticFsInfo> {
+    inodes: BTreeMap<u32, Arc<dyn MemInodeOps<T>>>,
     max_inode: u32,
 }
 
-impl SuperBlockInner {
+impl<T: StaticFsInfo> SuperBlockInner<T> {
     pub fn new() -> Self {
         Self {
             inodes: BTreeMap::new(),
@@ -42,9 +42,9 @@ impl SuperBlockInner {
         }
     }
 
-    pub fn alloc_inode<F>(&mut self, f: F) -> (u32, Arc<dyn InodeOps>)
+    pub fn alloc_inode<F>(&mut self, f: F) -> (u32, Arc<dyn MemInodeOps<T>>)
     where
-        F: FnOnce(u32) -> Arc<dyn InodeOps>,
+        F: FnOnce(u32) -> Arc<dyn MemInodeOps<T>>,
     {
         let ino = self.max_inode;
         self.max_inode += 1;
@@ -59,7 +59,7 @@ impl SuperBlockInner {
         ino
     }
 
-    pub fn insert_inode(&mut self, ino: u32, inode: Arc<dyn InodeOps>) {
+    pub fn insert_inode(&mut self, ino: u32, inode: Arc<dyn MemInodeOps<T>>) {
         self.inodes.insert(ino, inode);
     }
 
@@ -67,13 +67,13 @@ impl SuperBlockInner {
         self.inodes.remove(&ino);
     }
 
-    pub fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
+    pub fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn MemInodeOps<T>>> {
         let inode = self.inodes.get(&ino).ok_or(Errno::ENOENT)?.clone();
         Ok(inode)
     }
 }
 pub struct SuperBlock<T: StaticFsInfo> {
-    inner: Arc<SpinLock<SuperBlockInner>>,
+    inner: Arc<SpinLock<SuperBlockInner<T>>>,
     #[cfg(feature = "fanotify")]
     fanotify: LazyInitedCell<Arc<Fanotify>>,
     read_only: bool,
@@ -86,7 +86,7 @@ impl<T: StaticFsInfo> SuperBlock<T> {
 
         {
             inner.lock().alloc_inode(|ino| {
-                Arc::new(MemInode::<T>::new(
+                Arc::new(RegularInode::<T>::new(
                     ino,
                     InodeMeta::new(Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap(), ino, 0),
                     inner.clone(),
@@ -103,13 +103,8 @@ impl<T: StaticFsInfo> SuperBlock<T> {
         }
     }
 
-    pub fn root_inode(&self) -> Arc<MemInode<T>> {
-        let root = self.inner.lock().get_inode(0).unwrap();
-        if let Ok(root) = root.downcast_arc::<MemInode<T>>() {
-            root
-        } else {
-            unreachable!()
-        }
+    pub fn root_inode(&self) -> Arc<dyn MemInodeOps<T>> {
+        self.inner.lock().get_inode(0).unwrap()
     }
 
     pub fn alloc_inode_number(&self) -> u32 {
@@ -117,14 +112,14 @@ impl<T: StaticFsInfo> SuperBlock<T> {
     }
 }
 
-impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
+impl<T: StaticFsInfo> VfsSuperBlockOps for SuperBlock<T> {
     fn get_root_ino(&self) -> u32 {
         0
     }
 
-    fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
+    fn get_inode(&self, ino: u32) -> SysResult<Arc<Inode>> {
         let inode = self.inner.lock().get_inode(ino)?;
-        Ok(inode)
+        Ok(VfsInode::new(inode))
     }
 
     #[cfg(feature = "fanotify")]
@@ -137,16 +132,16 @@ impl<T: StaticFsInfo> SuperBlockOps for SuperBlock<T> {
         Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
     }
 
-    fn create_temp(&self, mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+    fn create_temp(&self, mode: Mode) -> SysResult<Arc<Inode>> {
         let mut inner = self.inner.lock();
         let ino = inner.alloc_inode_number();
         let mut meta = InodeMeta::new(mode, ino, self.get_root_ino());
         meta.owner = (current::fsuid(), current::fsgid());
 
-        let inode: Arc<dyn InodeOps> = Arc::new(MemInode::<T>::new(ino, meta, self.inner.clone()));
+        let inode: Arc<dyn MemInodeOps<T>> = Arc::new(RegularInode::<T>::new(ino, meta, self.inner.clone()));
         inner.insert_inode(ino, inode.clone());
 
-        Ok(inode)
+        Ok(VfsInode::new(inode))
     }
 
     fn statfs(&self) -> SysResult<Statfs> {

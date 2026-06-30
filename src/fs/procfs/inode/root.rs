@@ -126,12 +126,7 @@ impl InodeOps for RootInode {
         Ok(0)
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        inode: Arc<Inode>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.expect("procfs root requires associated dentry");
         Arc::new(RandomAccessFile::new(inode, dentry, flags))
     }
@@ -180,12 +175,7 @@ impl InodeOps for MountsInode {
         Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        inode: Arc<Inode>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 
@@ -233,12 +223,7 @@ impl InodeOps for MemInfoInode {
         Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        inode: Arc<Inode>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 

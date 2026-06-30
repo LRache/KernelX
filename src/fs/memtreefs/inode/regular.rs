@@ -1,4 +1,3 @@
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::time::Duration;
@@ -6,99 +5,37 @@ use core::time::Duration;
 use crate::arch;
 use crate::driver::chosen::kclock;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{Inode as VfsInode, InodeLockState, InodeSealOps, Mode, Owner};
-use crate::fs::{Dentry, FileType, InodeOps};
+use crate::fs::inode::{Inode as VfsInode, Mode, Owner};
+use crate::fs::memtreefs::superblock::{StaticFsInfo, SuperBlockInner};
+use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::ipc::Pipe;
-use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
+use crate::kernel::mm::{AddrSpace, PhysPageFrame};
+use crate::kernel::uapi::{FileFallocateFlags, FileStat, Uid};
 use crate::klib::SpinLock;
 
-use super::superblock::{StaticFsInfo, SuperBlockInner};
+use super::MemInodeOps;
+use super::meta::{InodeMeta, Meta};
 
-struct FileMeta {
-    pages: BTreeMap<usize, Arc<PhysPageFrame>>,
-    filesize: usize,
-}
-
-impl FileMeta {
-    fn new() -> Self {
-        Self {
-            pages: BTreeMap::new(),
-            filesize: 0,
-        }
-    }
-}
-
-enum Meta {
-    File(FileMeta),
-    Directory(BTreeMap<String, u32>),
-    Symlink(String),
-}
-
-pub struct InodeMeta {
-    meta: Meta,
-    mode: Mode,
-    pub(super) owner: (Uid, Uid),
-    mtime: Duration,
-    atime: Duration,
-    ctime: Duration,
-    rdev: u64,
-    links: u32,
-    seals: Option<FileSealFlags>,
-    shared_mmap_count: usize,
-    writable_shared_mmap_count: usize,
-}
-
-impl InodeMeta {
-    pub fn new(mode: Mode, ino: u32, parent_ino: u32) -> Self {
-        let meta = match mode & Mode::S_IFMT {
-            Mode::S_IFDIR => {
-                let mut children = BTreeMap::new();
-                children.insert(".".into(), ino);
-                children.insert("..".into(), parent_ino);
-                Meta::Directory(children)
-            }
-            Mode::S_IFLNK => Meta::Symlink(String::new()),
-            _ => Meta::File(FileMeta::new()),
-        };
-        Self {
-            meta,
-            mode,
-            owner: (0, 0),
-            mtime: Duration::ZERO,
-            atime: Duration::ZERO,
-            ctime: Duration::ZERO,
-            rdev: 0,
-            links: 0,
-            seals: None,
-            shared_mmap_count: 0,
-            writable_shared_mmap_count: 0,
-        }
-    }
-}
-
-pub struct Inode<T: StaticFsInfo> {
+pub struct RegularInode<T: StaticFsInfo> {
     ino: u32,
     meta: SpinLock<InodeMeta>,
-    lock_state: SpinLock<InodeLockState>,
-    superblock: Arc<SpinLock<SuperBlockInner>>,
+    superblock: Arc<SpinLock<SuperBlockInner<T>>>,
     _marker: core::marker::PhantomData<T>,
 }
 
-impl<T: StaticFsInfo> Inode<T> {
-    pub fn new(ino: u32, meta: InodeMeta, superblock: Arc<SpinLock<SuperBlockInner>>) -> Self {
+impl<T: StaticFsInfo> RegularInode<T> {
+    pub fn new(ino: u32, meta: InodeMeta, superblock: Arc<SpinLock<SuperBlockInner<T>>>) -> Self {
         Self {
             ino,
-            meta: SpinLock::new(meta, "Inode::meta"),
-            lock_state: SpinLock::new(InodeLockState::new(), "Inode::lock_state"),
+            meta: SpinLock::new(meta, "RegularInode::meta"),
             superblock,
             _marker: core::marker::PhantomData,
         }
     }
 
-    pub fn add_child(&self, name: String, child: Arc<dyn InodeOps>) -> SysResult<()> {
+    pub fn add_child(&self, name: String, child: Arc<dyn MemInodeOps<T>>) -> SysResult<()> {
         if let Meta::Directory(ref mut children) = self.meta.lock().meta {
             T::check_filename(&name)?;
 
@@ -106,7 +43,7 @@ impl<T: StaticFsInfo> Inode<T> {
                 return Err(Errno::EEXIST);
             }
 
-            let ino = child.get_ino();
+            let ino = child.as_ref().get_ino();
             children.insert(name, ino);
             self.superblock.lock().insert_inode(ino, child);
 
@@ -120,33 +57,7 @@ impl<T: StaticFsInfo> Inode<T> {
         size.div_ceil(arch::PGSIZE)
     }
 
-    fn check_write_seals(
-        file_meta: &FileMeta,
-        seals: Option<FileSealFlags>,
-        offset: usize,
-        len: usize,
-    ) -> SysResult<()> {
-        if len == 0 {
-            return Ok(());
-        }
-
-        let Some(seals) = seals else {
-            return Ok(());
-        };
-
-        if seals.intersects(FileSealFlags::F_SEAL_WRITE | FileSealFlags::F_SEAL_FUTURE_WRITE) {
-            return Err(Errno::EPERM);
-        }
-
-        let end = offset.checked_add(len).ok_or(Errno::EFBIG)?;
-        if end > file_meta.filesize && seals.contains(FileSealFlags::F_SEAL_GROW) {
-            return Err(Errno::EPERM);
-        }
-
-        Ok(())
-    }
-
-    fn create_child(&self, name: &str, mode: Mode, owner: Owner, rdev: u64) -> SysResult<Arc<dyn InodeOps>> {
+    fn create_child(&self, name: &str, mode: Mode, owner: Owner, rdev: u64) -> SysResult<Arc<dyn MemInodeOps<T>>> {
         let mut meta = self.meta.lock();
         if let Meta::Directory(ref mut children) = meta.meta {
             T::check_filename(name)?;
@@ -163,7 +74,7 @@ impl<T: StaticFsInfo> Inode<T> {
             child_meta.rdev = rdev;
             child_meta.links += 1;
 
-            let inode = Arc::new(Self::new(ino, child_meta, self.superblock.clone()));
+            let inode: Arc<dyn MemInodeOps<T>> = Arc::new(Self::new(ino, child_meta, self.superblock.clone()));
             children.insert(name.into(), ino);
 
             meta.links += 1;
@@ -177,116 +88,24 @@ impl<T: StaticFsInfo> Inode<T> {
     }
 }
 
-impl<T: StaticFsInfo> InodeSealOps for Inode<T> {
-    fn init_seals(&self, seals: FileSealFlags) -> SysResult<()> {
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return Err(Errno::EINVAL);
-        }
-        if meta.seals.is_some() {
-            return Err(Errno::EINVAL);
-        }
-        meta.seals = Some(seals);
-        Ok(())
-    }
-
-    fn seals(&self) -> SysResult<FileSealFlags> {
-        self.meta.lock().seals.ok_or(Errno::EINVAL)
-    }
-
-    fn add_seals(&self, seals: FileSealFlags) -> SysResult<()> {
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return Err(Errno::EINVAL);
-        }
-
-        let current = meta.seals.ok_or(Errno::EINVAL)?;
-        if current.contains(FileSealFlags::F_SEAL_SEAL) {
-            return Err(Errno::EPERM);
-        }
-        if seals.contains(FileSealFlags::F_SEAL_WRITE) && meta.writable_shared_mmap_count > 0 {
-            return Err(Errno::EBUSY);
-        }
-
-        meta.seals = Some(current | seals);
-        Ok(())
-    }
-
-    fn begin_shared_mmap(&self, writable: bool) {
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return;
-        }
-
-        meta.shared_mmap_count = meta
-            .shared_mmap_count
-            .checked_add(1)
-            .expect("memtreefs shared_mmap_count overflow");
-        if writable {
-            meta.writable_shared_mmap_count = meta
-                .writable_shared_mmap_count
-                .checked_add(1)
-                .expect("memtreefs writable_shared_mmap_count overflow");
-        }
-    }
-
-    fn update_shared_mmap_writable(&self, old_writable: bool, new_writable: bool) {
-        if old_writable == new_writable {
-            return;
-        }
-
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return;
-        }
-
-        if new_writable {
-            meta.writable_shared_mmap_count = meta
-                .writable_shared_mmap_count
-                .checked_add(1)
-                .expect("memtreefs writable_shared_mmap_count overflow");
-        } else {
-            debug_assert!(
-                meta.writable_shared_mmap_count > 0,
-                "memtreefs writable mmap count underflow"
-            );
-            meta.writable_shared_mmap_count = meta.writable_shared_mmap_count.saturating_sub(1);
-        }
-    }
-
-    fn end_shared_mmap(&self, writable: bool) {
-        let mut meta = self.meta.lock();
-        if !matches!(meta.meta, Meta::File(_)) {
-            return;
-        }
-
-        debug_assert!(meta.shared_mmap_count > 0, "memtreefs shared mmap count underflow");
-        meta.shared_mmap_count = meta.shared_mmap_count.saturating_sub(1);
-
-        if writable {
-            debug_assert!(
-                meta.writable_shared_mmap_count > 0,
-                "memtreefs writable mmap count underflow"
-            );
-            meta.writable_shared_mmap_count = meta.writable_shared_mmap_count.saturating_sub(1);
-        }
-    }
-}
-
-impl<T: StaticFsInfo> InodeOps for Inode<T> {
-    fn filesystem_refcount_bias(&self) -> usize {
-        1
-    }
-
-    fn as_seal_ops(&self) -> Option<&dyn InodeSealOps> {
+impl<T: StaticFsInfo> MemInodeOps<T> for RegularInode<T> {
+    fn as_regular(&self) -> Option<&RegularInode<T>> {
         Some(self)
     }
 
-    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+    fn get_ino(&self) -> u32 {
+        RegularInode::<T>::get_ino(self)
+    }
+
+    fn type_name(&self) -> &'static str {
+        RegularInode::<T>::type_name(self)
+    }
+
+    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn MemInodeOps<T>>> {
         self.create_child(name, mode, owner, 0)
     }
 
-    fn mknod(&self, name: &str, mode: Mode, owner: Owner, dev: u64) -> SysResult<Arc<dyn InodeOps>> {
+    fn mknod(&self, name: &str, mode: Mode, owner: Owner, dev: u64) -> SysResult<Arc<dyn MemInodeOps<T>>> {
         match mode & Mode::S_IFMT {
             Mode::S_IFCHR | Mode::S_IFBLK => self.create_child(name, mode, owner, dev),
             Mode::S_IFIFO => self.create_child(name, mode, owner, 0),
@@ -294,12 +113,153 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
     }
 
-    fn get_ino(&self) -> u32 {
-        self.ino
+    fn add_child(&self, name: String, child: Arc<dyn MemInodeOps<T>>) -> SysResult<()> {
+        self.add_child(name, child)
     }
 
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
+    fn link(&self, name: &str, target: &dyn MemInodeOps<T>) -> SysResult<()> {
+        let target = target.as_regular().ok_or(Errno::EXDEV)?;
+        RegularInode::<T>::link(self, name, target)
+    }
+
+    fn unlink(&self, name: &str) -> SysResult<()> {
+        RegularInode::<T>::unlink(self, name)
+    }
+
+    fn symlink(&self, target: &str) -> SysResult<()> {
+        RegularInode::<T>::symlink(self, target)
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, direct: bool) -> SysResult<usize> {
+        RegularInode::<T>::readat(self, buf, offset, direct)
+    }
+
+    fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        RegularInode::<T>::writeat(self, buf, offset)
+    }
+
+    fn read_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, direct: bool) -> SysResult<usize> {
+        RegularInode::<T>::read_to_user(self, ubuf, offset, direct)
+    }
+
+    fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, direct: bool) -> SysResult<usize> {
+        RegularInode::<T>::write_from_user(self, ubuf, offset, direct)
+    }
+
+    fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
+        RegularInode::<T>::get_dent(self, index)
+    }
+
+    fn lookup(&self, name: &str) -> SysResult<u32> {
+        RegularInode::<T>::lookup(self, name)
+    }
+
+    fn rename(&self, old_name: &str, new_parent: &dyn MemInodeOps<T>, new_name: &str) -> SysResult<()> {
+        let new_parent = new_parent.as_regular().ok_or(Errno::EXDEV)?;
+        RegularInode::<T>::rename(self, old_name, new_parent, new_name)
+    }
+
+    fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
+        RegularInode::<T>::readlink(self, buf)
+    }
+
+    fn follow_magic_link(&self) -> SysResult<Option<Arc<Dentry>>> {
+        Ok(None)
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        RegularInode::<T>::size(self)
+    }
+
+    fn mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<Arc<PhysPageFrame>>> {
+        RegularInode::<T>::mmap_shared_page(self, file_page_index)
+    }
+
+    fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
+        RegularInode::<T>::writeback_mmap_shared_page(self, file_page_index, frame)
+    }
+
+    fn release_mmap_shared_page(&self, file_page_index: usize) {
+        let _ = file_page_index;
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        RegularInode::<T>::mode(self)
+    }
+
+    fn chmod(&self, mode: Mode) -> SysResult<()> {
+        RegularInode::<T>::chmod(self, mode)
+    }
+
+    fn owner(&self) -> SysResult<(Uid, Uid)> {
+        RegularInode::<T>::owner(self)
+    }
+
+    fn chown(&self, uid: Option<Uid>, gid: Option<Uid>) -> SysResult<()> {
+        RegularInode::<T>::chown(self, uid, gid)
+    }
+
+    fn inode_type(&self) -> SysResult<FileType> {
+        RegularInode::<T>::inode_type(self)
+    }
+
+    fn sync(&self) -> SysResult<()> {
+        Ok(())
+    }
+
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        let _ = request;
+        let _ = arg;
+        let _ = addrspace;
+        Err(Errno::ENOTTY)
+    }
+
+    fn fstat(&self) -> SysResult<FileStat> {
+        RegularInode::<T>::fstat(self)
+    }
+
+    fn truncate(&self, new_size: u64) -> SysResult<()> {
+        RegularInode::<T>::truncate(self, new_size)
+    }
+
+    fn fallocate(&self, flags: FileFallocateFlags, offset: u64, len: u64) -> SysResult<()> {
+        RegularInode::<T>::fallocate(self, flags, offset, len)
+    }
+
+    fn update_atime(&self, time: &Duration) -> SysResult<()> {
+        RegularInode::<T>::update_atime(self, time)
+    }
+
+    fn update_mtime(&self, time: &Duration) -> SysResult<()> {
+        RegularInode::<T>::update_mtime(self, time)
+    }
+
+    fn update_ctime(&self, time: &Duration) -> SysResult<()> {
+        RegularInode::<T>::update_ctime(self, time)
+    }
+
+    fn update_mtime_ctime(&self, time: &Duration) -> SysResult<()> {
+        RegularInode::<T>::update_mtime(self, time)?;
+        RegularInode::<T>::update_ctime(self, time)
+    }
+
+    fn open_file(
+        &self,
+        inode: Arc<VfsInode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> SysResult<Arc<dyn FileOps>> {
+        RegularInode::<T>::open_file(self, inode, dentry, flags)
+    }
+
+    fn wrap_file(&self, inode: Arc<VfsInode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        RegularInode::<T>::wrap_file(self, inode, dentry, flags)
+    }
+}
+
+impl<T: StaticFsInfo> RegularInode<T> {
+    fn get_ino(&self) -> u32 {
+        self.ino
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
@@ -316,13 +276,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
     }
 
-    fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
-        let target_inode = target.downcast_ref::<Self>().ok_or(Errno::EXDEV)?;
-        let existing = self.superblock.lock().get_inode(target_inode.get_ino())?;
-        if !Arc::ptr_eq(&existing, target) {
-            return Err(Errno::EXDEV);
-        }
-
+    fn link(&self, name: &str, target_inode: &Self) -> SysResult<()> {
         if target_inode.inode_type()? == FileType::Directory {
             return Err(Errno::EPERM);
         }
@@ -412,12 +366,10 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn writeat(&self, buf: &[u8], offset: usize) -> Result<usize, Errno> {
         let mut inode_meta = self.meta.lock();
-        let seals = inode_meta.seals;
         if let Meta::File(ref mut meta) = inode_meta.meta {
             if buf.is_empty() {
                 return Ok(0);
             }
-            Self::check_write_seals(meta, seals, offset, buf.len())?;
 
             let mut written_bytes = 0;
             let mut current_offset = offset;
@@ -449,14 +401,12 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, _direct: bool) -> SysResult<usize> {
         {
             let inode_meta = self.meta.lock();
-            let seals = inode_meta.seals;
-            let Meta::File(ref meta) = inode_meta.meta else {
+            let Meta::File(_) = inode_meta.meta else {
                 return Err(Errno::EINVAL);
             };
             if ubuf.length() == 0 {
                 return Ok(0);
             }
-            Self::check_write_seals(meta, seals, offset, ubuf.length())?;
         }
 
         let mut written_bytes = 0;
@@ -482,7 +432,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
             let child = self.superblock.lock().get_inode(ino)?;
             let now = kclock::now().unwrap_or_default();
 
-            let remove_inode = if let Some(child_inode) = child.downcast_ref::<Self>() {
+            let remove_inode = if let Some(child_inode) = child.as_ref().as_regular() {
                 // SAFETY: parent and child are distinct inode instances here; the
                 // current lockdep model keys only by class name and reports this
                 // parent->child meta nesting as same-lock recursion.
@@ -497,7 +447,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 child_meta.ctime = now;
                 child_meta.links == 0
             } else {
-                if child.inode_type()? == FileType::Directory {
+                if child.as_ref().inode_type()? == FileType::Directory {
                     return Err(Errno::EIO);
                 }
                 true
@@ -515,11 +465,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
-        let new_parent = new_parent.downcast_ref::<Self>().ok_or(Errno::EXDEV)?;
-        if !Arc::ptr_eq(&self.superblock, &new_parent.superblock) {
-            return Err(Errno::EXDEV);
-        }
+    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
         if old_name == "." || old_name == ".." || new_name == "." || new_name == ".." {
             return Err(Errno::EINVAL);
         }
@@ -534,7 +480,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
         let remove_target = |target_ino: u32, source_is_dir: bool| -> SysResult<()> {
             let target = self.superblock.lock().get_inode(target_ino)?;
-            let target_inode = target.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+            let target_inode = target.as_ref().as_regular().ok_or(Errno::EIO)?;
             let mut target_meta = target_inode.meta.lock();
             let target_is_dir = matches!(target_meta.meta, Meta::Directory(_));
 
@@ -568,7 +514,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
         let old_ino = *old_children.get(old_name).ok_or(Errno::ENOENT)?;
         let source = self.superblock.lock().get_inode(old_ino)?;
-        let source_inode = source.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+        let source_inode = source.as_ref().as_regular().ok_or(Errno::EIO)?;
         let source_is_dir = source_inode.inode_type()? == FileType::Directory;
 
         if self.ino == new_parent.ino {
@@ -606,7 +552,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 }
 
                 let ancestor = self.superblock.lock().get_inode(ancestor_ino)?;
-                let ancestor_inode = ancestor.downcast_ref::<Self>().ok_or(Errno::EIO)?;
+                let ancestor_inode = ancestor.as_ref().as_regular().ok_or(Errno::EIO)?;
                 let ancestor_meta = ancestor_inode.meta.lock();
                 let Meta::Directory(ancestor_children) = &ancestor_meta.meta else {
                     return Err(Errno::ENOTDIR);
@@ -684,17 +630,12 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         Ok(self.meta.lock().mode)
     }
 
+    fn inode_type(&self) -> SysResult<FileType> {
+        self.mode().map(|mode| mode.into())
+    }
+
     fn chmod(&self, mode: Mode) -> SysResult<()> {
         let mut meta = self.meta.lock();
-        if meta
-            .seals
-            .is_some_and(|seals| seals.contains(FileSealFlags::F_SEAL_EXEC))
-        {
-            let exec_bits = Mode::S_IXUSR | Mode::S_IXGRP | Mode::S_IXOTH;
-            if (meta.mode & exec_bits) != (mode & exec_bits) {
-                return Err(Errno::EPERM);
-            }
-        }
         let file_type = meta.mode & Mode::S_IFMT;
         meta.mode = file_type | (mode & !Mode::S_IFMT);
         Ok(())
@@ -778,17 +719,8 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
         let mut meta = self.meta.lock();
-        let seals = meta.seals;
         if let Meta::File(ref mut file_meta) = meta.meta {
             let new_size = usize::try_from(new_size).map_err(|_| Errno::EFBIG)?;
-            if let Some(seals) = seals {
-                if new_size < file_meta.filesize && seals.contains(FileSealFlags::F_SEAL_SHRINK) {
-                    return Err(Errno::EPERM);
-                }
-                if new_size > file_meta.filesize && seals.contains(FileSealFlags::F_SEAL_GROW) {
-                    return Err(Errno::EPERM);
-                }
-            }
 
             if new_size < file_meta.filesize {
                 let new_pages = Self::pages_for_size(new_size);
@@ -823,14 +755,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         }
 
         let mut meta = self.meta.lock();
-        let seals = meta.seals;
         if let Meta::File(ref mut file_meta) = meta.meta {
-            if let Some(seals) = seals
-                && seals.intersects(FileSealFlags::F_SEAL_WRITE | FileSealFlags::F_SEAL_FUTURE_WRITE)
-            {
-                return Err(Errno::EPERM);
-            }
-
             let offset = usize::try_from(offset).map_err(|_| Errno::EFBIG)?;
             let len = usize::try_from(len).map_err(|_| Errno::EFBIG)?;
             if len == 0 || offset >= file_meta.filesize {
@@ -950,7 +875,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
                 drop(meta);
 
                 let inode = self.superblock.lock().get_inode(ino)?;
-                let file_type = inode.inode_type()?;
+                let file_type = inode.as_ref().inode_type()?;
 
                 let result = DirResult { ino, name, file_type };
                 Ok(Some((result, index + 1)))
@@ -963,7 +888,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
     }
 
     fn open_file(
-        self: Arc<Self>,
+        &self,
         inode: Arc<VfsInode>,
         dentry: Option<Arc<Dentry>>,
         flags: FileFlags,
@@ -976,12 +901,7 @@ impl<T: StaticFsInfo> InodeOps for Inode<T> {
         Ok(self.wrap_file(inode, dentry, flags))
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        inode: Arc<VfsInode>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<VfsInode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 

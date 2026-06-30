@@ -2,11 +2,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::driver::BlockDriverOps;
-use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, VfsSuperBlockOps};
 use crate::kernel::errno::{Errno, SysResult};
 
 struct SuperBlockEntry {
-    superblock: Arc<dyn SuperBlockOps>,
+    superblock: Arc<dyn VfsSuperBlockOps>,
     options: MountOptions,
 }
 
@@ -31,7 +31,7 @@ impl SuperBlockTable {
         Ok(sno as u32)
     }
 
-    pub fn get(&self, sno: u32) -> Option<Arc<dyn SuperBlockOps>> {
+    pub fn get(&self, sno: u32) -> Option<Arc<dyn VfsSuperBlockOps>> {
         let entry = self.table.get(sno as usize)?.as_ref()?;
         Some(entry.superblock.clone())
     }

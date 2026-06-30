@@ -56,12 +56,7 @@ impl InodeOps for KvmInode {
         Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() | 0o666))
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        _inode: Arc<Inode>,
-        _dentry: Option<Arc<Dentry>>,
-        _flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, _inode: Arc<Inode>, _dentry: Option<Arc<Dentry>>, _flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(VTaskSet::new())
     }
 }

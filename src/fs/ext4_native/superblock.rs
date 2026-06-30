@@ -13,7 +13,7 @@ use crate::driver::chosen::kclock;
 use crate::fs::file::DirResult;
 use crate::fs::filesystem::SuperBlockOps;
 use crate::fs::inode::Mode;
-use crate::fs::{FileType, InodeOps, Owner};
+use crate::fs::{FileType, Owner};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
@@ -21,7 +21,7 @@ use crate::kernel::uapi::{FileStat, Statfs, StatfsFlags};
 use crate::klib::SleepLock;
 use crate::klib::lru::LRUCache;
 
-use super::inode::Inode;
+use super::inode::Inode as Ext4NativeInode;
 use super::utils::{EXT4_CRC32_INIT, crc32c};
 
 const SUPERBLOCK_OFFSET: u64 = 1024;
@@ -3363,11 +3363,13 @@ impl SuperBlock {
 }
 
 impl SuperBlockOps for SuperBlock {
+    type Inode = Ext4NativeInode;
+
     fn get_root_ino(&self) -> u32 {
         ROOT_INO
     }
 
-    fn create_temp(&self, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+    fn create_temp(&self, _mode: Mode) -> SysResult<Self::Inode> {
         if self.is_readonly() {
             Err(Errno::EROFS)
         } else {
@@ -3375,11 +3377,11 @@ impl SuperBlockOps for SuperBlock {
         }
     }
 
-    fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
+    fn get_inode(&self, ino: u32) -> SysResult<Self::Inode> {
         if !self.inner.lock().has_inode(ino) {
             return Err(Errno::ENOENT);
         }
-        Ok(Arc::new(Inode::new(ino, self.inner.clone())?))
+        Ext4NativeInode::new(ino, self.inner.clone())
     }
 
     fn statfs(&self) -> SysResult<Statfs> {

@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, VfsSuperBlockOps};
 use crate::fs::vfs::vfs::VirtualFileSystem;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{Statfs, StatfsFlags};
@@ -12,7 +12,7 @@ impl VirtualFileSystem {
         self.fstype_map.insert(name, fs);
     }
 
-    fn get_superblock(&self, sno: u32) -> SysResult<Arc<dyn SuperBlockOps>> {
+    fn get_superblock(&self, sno: u32) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         let superblock_table = self.superblock_table.lock();
         let superblock = superblock_table.get(sno).ok_or(Errno::EINVAL)?;
 

@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::driver::BlockDriverOps;
-use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, VfsSuperBlock, VfsSuperBlockOps};
 use crate::kernel::errno::{Errno, SysResult};
 
 use super::superblock::SuperBlock;
@@ -14,8 +14,8 @@ impl FileSystemOps for FileSystem {
         _fsno: u32,
         driver: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
-    ) -> SysResult<Arc<dyn SuperBlockOps>> {
+    ) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         let driver = driver.ok_or(Errno::ENODEV)?;
-        Ok(SuperBlock::new(driver, options.read_only)?)
+        Ok(VfsSuperBlock::new(SuperBlock::new(driver, options.read_only)?))
     }
 }

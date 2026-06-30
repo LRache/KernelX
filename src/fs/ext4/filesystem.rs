@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use super::superblock::Ext4SuperBlock;
 use crate::driver::BlockDriverOps;
-use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, VfsSuperBlock, VfsSuperBlockOps};
 use crate::kernel::errno::Errno;
 
 pub struct Ext4FileSystem;
@@ -13,11 +13,11 @@ impl FileSystemOps for Ext4FileSystem {
         _: u32,
         driver: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
-    ) -> Result<Arc<dyn SuperBlockOps>, Errno> {
+    ) -> Result<Arc<dyn VfsSuperBlockOps>, Errno> {
         let driver = driver.unwrap();
         if driver.is_readonly() && !options.read_only {
             return Err(Errno::EACCES);
         }
-        Ok(Ext4SuperBlock::new(driver, options.read_only)?)
+        Ok(VfsSuperBlock::new(Ext4SuperBlock::new(driver, options.read_only)?))
     }
 }

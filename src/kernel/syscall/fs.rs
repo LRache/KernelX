@@ -12,7 +12,7 @@ use crate::fs::devfs::LoopInode;
 use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, PosixFadviseAdvice, SeekWhence};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
-use crate::fs::{Dentry, FileType, Inode, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
+use crate::fs::{Dentry, FileType, Inode, Mode, MountOptions, Owner, Perm, PermFlags, VfsInode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{
     Event, FanotifyEventMask, notify_fanotify, notify_fanotify_dentry,
@@ -3438,10 +3438,9 @@ pub fn mount(
             match current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &source)) {
                 Ok(dentry) => {
                     let inode = dentry.get_inode();
-                    let raw_inode = inode.clone_ops();
-                    if let Ok(blk_inode) = raw_inode.clone().downcast_arc::<BlockDevInode>() {
+                    if let Ok(blk_inode) = inode.clone().downcast_arc::<VfsInode<BlockDevInode>>() {
                         Some(blk_inode.driver().clone())
-                    } else if let Ok(blk_inode) = raw_inode.downcast_arc::<LoopInode>() {
+                    } else if let Ok(blk_inode) = inode.downcast_arc::<VfsInode<LoopInode>>() {
                         Some(blk_inode.driver()?)
                     } else {
                         return Err(Errno::ENOTBLK);

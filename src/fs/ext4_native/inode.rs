@@ -5,12 +5,12 @@ use core::time::Duration;
 
 use crate::arch;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{Inode as VfsInode, InodeLockState, InodeOps, Mode, Owner};
+use crate::fs::inode::{Inode as VfsInode, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::uapi::{FileFallocateFlags, FileStat, Uid};
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::SleepLock;
 
 use super::superblock::{InodePageCache, SuperBlockInner};
 
@@ -22,7 +22,6 @@ pub struct Inode {
     fast_cached_write: AtomicBool,
     last_write_time_sec: AtomicUsize,
     page_cache: SleepLock<InodePageCache>,
-    lock_state: SpinLock<InodeLockState>,
 }
 
 impl Inode {
@@ -38,7 +37,6 @@ impl Inode {
             fast_cached_write: AtomicBool::new(fast_cached_write),
             last_write_time_sec: AtomicUsize::new(0),
             page_cache: SleepLock::new(InodePageCache::new(), "Ext4NativeInode::page_cache"),
-            lock_state: SpinLock::new(InodeLockState::new(), "Ext4NativeInode::lock_state"),
         })
     }
 
@@ -193,45 +191,32 @@ impl InodeOps for Inode {
         "ext4native"
     }
 
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
-    }
-
     fn begin_write_open(&self) -> SysResult<()> {
         if self.superblock.lock().is_readonly() {
             return Err(Errno::EROFS);
         }
 
-        let mut lock_state = self.lock_state.lock();
-        if lock_state.exec_count() > 0 {
-            return Err(Errno::ETXTBSY);
-        }
-        lock_state.increment_writer_count();
         Ok(())
     }
 
-    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Self> {
         let child_ino = self.superblock.lock().create_child(self.ino, name, mode, owner, 0)?;
         self.page_cache.lock().clear();
-        Ok(Arc::new(Self::new(child_ino, self.superblock.clone())?))
+        Self::new(child_ino, self.superblock.clone())
     }
 
-    fn mknod(&self, name: &str, mode: Mode, owner: Owner, dev: u64) -> SysResult<Arc<dyn InodeOps>> {
+    fn mknod(&self, name: &str, mode: Mode, owner: Owner, dev: u64) -> SysResult<Self> {
         match mode & Mode::S_IFMT {
             Mode::S_IFCHR | Mode::S_IFBLK | Mode::S_IFIFO => {
                 let child_ino = self.superblock.lock().create_child(self.ino, name, mode, owner, dev)?;
                 self.page_cache.lock().clear();
-                Ok(Arc::new(Self::new(child_ino, self.superblock.clone())?))
+                Self::new(child_ino, self.superblock.clone())
             }
             _ => Err(Errno::EOPNOTSUPP),
         }
     }
 
-    fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
-        let target = target.downcast_ref::<Self>().ok_or(Errno::EXDEV)?;
-        if !Arc::ptr_eq(&self.superblock, &target.superblock) {
-            return Err(Errno::EXDEV);
-        }
+    fn link(&self, name: &str, target: &Self) -> SysResult<()> {
         self.superblock.lock().link_child(self.ino, name, target.ino)?;
         self.page_cache.lock().clear();
         Ok(())
@@ -249,11 +234,7 @@ impl InodeOps for Inode {
         Ok(())
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
-        let new_parent = new_parent.downcast_ref::<Self>().ok_or(Errno::EXDEV)?;
-        if !Arc::ptr_eq(&self.superblock, &new_parent.superblock) {
-            return Err(Errno::EXDEV);
-        }
+    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
         self.superblock
             .lock()
             .rename_child(self.ino, old_name, new_parent.ino, new_name)?;
@@ -485,12 +466,7 @@ impl InodeOps for Inode {
         self.superblock.lock().flush_inode(self.ino)
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        inode: Arc<VfsInode>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<VfsInode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

@@ -13,14 +13,14 @@ use crate::fs::ext4::ffi::*;
 use crate::fs::ext4::superblock::{SuperBlockInner, map_error_to_kernel};
 use crate::fs::ext4::util::{get_block_size, revision_tuple};
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{Inode, InodeLockState, InodeOps, Mode, Owner};
+use crate::fs::inode::{Inode, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::ipc::Pipe;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::SleepLock;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum InodeType {
@@ -474,7 +474,6 @@ pub struct Ext4Inode {
     cacheable_file: bool,
     cached_size: AtomicUsize,
     fast_cached_write: AtomicBool,
-    lock_state: SpinLock<InodeLockState>,
     page_cache: SleepLock<InodePageCache>,
 }
 
@@ -498,7 +497,6 @@ impl Ext4Inode {
             cacheable_file,
             cached_size: AtomicUsize::new(cached_size),
             fast_cached_write: AtomicBool::new(fast_cached_write),
-            lock_state: SpinLock::new(InodeLockState::new(), "Ext4Inode::lock_state"),
             page_cache: SleepLock::new(InodePageCache::new(), "Ext4Inode::page_cache"),
         })
     }
@@ -747,11 +745,7 @@ impl InodeOps for Ext4Inode {
         "ext4"
     }
 
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
-    }
-
-    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Self> {
         let child_ino = self.with_ref(|superblock, parent_ref| {
             if inode_type(parent_ref) != InodeType::Directory {
                 return Err(Errno::ENOTDIR);
@@ -828,7 +822,7 @@ impl InodeOps for Ext4Inode {
             }
         })?;
 
-        Ok(Arc::new(Self::new(child_ino, self.superblock.clone())?))
+        Self::new(child_ino, self.superblock.clone())
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {
@@ -845,8 +839,7 @@ impl InodeOps for Ext4Inode {
         })
     }
 
-    fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
-        let target = target.downcast_ref::<Ext4Inode>().ok_or(Errno::EXDEV)?;
+    fn link(&self, name: &str, target: &Self) -> SysResult<()> {
         self.with_ref(|superblock, parent_ref| {
             let mut child_ref = superblock.read_inode_ref(target.ino)?;
             let result = (|| {
@@ -1022,11 +1015,7 @@ impl InodeOps for Ext4Inode {
         })
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
-        let new_parent = new_parent.downcast_ref::<Ext4Inode>().ok_or(Errno::EXDEV)?;
-        if !Arc::ptr_eq(&self.superblock, &new_parent.superblock) {
-            return Err(Errno::EXDEV);
-        }
+    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
         if self.ino == new_parent.ino && old_name == new_name {
             return Ok(());
         }
@@ -1388,7 +1377,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn open_file(
-        self: Arc<Self>,
+        &self,
         inode: Arc<Inode>,
         dentry: Option<Arc<Dentry>>,
         flags: FileFlags,
@@ -1401,12 +1390,7 @@ impl InodeOps for Ext4Inode {
         Ok(self.wrap_file(inode, dentry, flags))
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        inode: Arc<Inode>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

@@ -6,7 +6,7 @@ use crate::kernel::errno::SysResult;
 use crate::klib::SpinLock;
 use crate::klib::lru::LRUCache;
 
-use super::{Index, Inode, InodeOps};
+use super::{Index, Inode};
 
 pub struct Cache {
     cache: SpinLock<LRUCache<Index, Arc<Inode>>>,
@@ -19,12 +19,8 @@ impl Cache {
         }
     }
 
-    fn idle_ops_refcount(inode: &Arc<Inode>) -> usize {
-        1 + inode.ops().filesystem_refcount_bias()
-    }
-
     fn is_idle(inode: &Arc<Inode>) -> bool {
-        Arc::strong_count(inode) <= 1 && Arc::strong_count(inode.ops()) <= Self::idle_ops_refcount(inode)
+        Arc::strong_count(inode) <= 1
     }
 
     fn low_watermark() -> usize {
@@ -93,7 +89,7 @@ impl Cache {
         self.cache.lock().len()
     }
 
-    pub fn insert(&self, index: &Index, inode: Arc<dyn InodeOps>) -> SysResult<Arc<Inode>> {
+    pub fn insert(&self, index: &Index, inode: Arc<Inode>) -> SysResult<Arc<Inode>> {
         let (inode, removed) = {
             let mut cache = self.cache.lock();
             let mut removed = Vec::new();
@@ -102,7 +98,6 @@ impl Cache {
                 removed = Self::reclaim(&mut cache);
             }
 
-            let inode = Arc::new(Inode::new(inode));
             if let Some(old) = Self::remove_entry(&mut cache, index) {
                 removed.push(old);
             }
@@ -166,7 +161,7 @@ impl Cache {
             let mut cache = self.cache.lock();
             let mut inodes = Vec::new();
             let _ = cache.try_for_each_mut(|_, inode| -> Result<(), ()> {
-                inodes.push(inode.clone_ops());
+                inodes.push(inode.clone());
                 Ok(())
             });
             inodes

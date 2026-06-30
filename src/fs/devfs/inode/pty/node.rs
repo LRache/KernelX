@@ -4,12 +4,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fs::devfs::superblock::DevfsInfo;
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::inode::InodeLockState;
-use crate::fs::memtreefs::inode::Inode as MemInode;
+use crate::fs::memtreefs::inode::MemInodeOps;
 use crate::fs::{Dentry, Inode, InodeOps, Mode, memtreefs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
-use crate::klib::SpinLock;
 
 use super::file::{PtmxFile, PtsFile};
 use super::inner::PtyInner;
@@ -17,19 +15,21 @@ use super::inner::PtyInner;
 pub struct PtmxInode {
     ino: u32,
     superblock: Arc<memtreefs::SuperBlock<DevfsInfo>>,
-    pts_dir: Arc<MemInode<DevfsInfo>>,
+    pts_dir: Arc<dyn MemInodeOps<DevfsInfo>>,
     next_id: AtomicUsize,
-    lock_state: SpinLock<InodeLockState>,
 }
 
 impl PtmxInode {
-    pub fn new(ino: u32, superblock: Arc<memtreefs::SuperBlock<DevfsInfo>>, pts_dir: Arc<MemInode<DevfsInfo>>) -> Self {
+    pub fn new(
+        ino: u32,
+        superblock: Arc<memtreefs::SuperBlock<DevfsInfo>>,
+        pts_dir: Arc<dyn MemInodeOps<DevfsInfo>>,
+    ) -> Self {
         Self {
             ino,
             superblock,
             pts_dir,
             next_id: AtomicUsize::new(0),
-            lock_state: SpinLock::new(InodeLockState::new(), "PtmxInode::lock_state"),
         }
     }
 }
@@ -43,10 +43,6 @@ impl InodeOps for PtmxInode {
         "devfs"
     }
 
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
-    }
-
     fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EINVAL)
     }
@@ -56,7 +52,7 @@ impl InodeOps for PtmxInode {
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
-        char_fstat(self.ino, self.mode()?)
+        char_fstat(self.ino, InodeOps::mode(self)?)
     }
 
     fn mode(&self) -> SysResult<Mode> {
@@ -67,16 +63,13 @@ impl InodeOps for PtmxInode {
         Ok(0)
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        inode: Arc<Inode>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(PtyInner::new(id, self.pts_dir.clone()));
-        let slave_inode = Arc::new(PtsInode::new(self.superblock.alloc_inode_number(), inner.clone()));
+        let slave_inode: Arc<dyn MemInodeOps<DevfsInfo>> =
+            Arc::new(PtsInode::new(self.superblock.alloc_inode_number(), inner.clone()));
         self.pts_dir
+            .as_ref()
             .add_child(format!("{}", id), slave_inode)
             .expect("failed to add /dev/pts entry");
 
@@ -87,16 +80,11 @@ impl InodeOps for PtmxInode {
 struct PtsInode {
     ino: u32,
     inner: Arc<PtyInner>,
-    lock_state: SpinLock<InodeLockState>,
 }
 
 impl PtsInode {
     fn new(ino: u32, inner: Arc<PtyInner>) -> Self {
-        Self {
-            ino,
-            inner,
-            lock_state: SpinLock::new(InodeLockState::new(), "PtsInode::lock_state"),
-        }
+        Self { ino, inner }
     }
 }
 
@@ -109,10 +97,6 @@ impl InodeOps for PtsInode {
         "devfs"
     }
 
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
-    }
-
     fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EINVAL)
     }
@@ -122,7 +106,7 @@ impl InodeOps for PtsInode {
     }
 
     fn fstat(&self) -> SysResult<FileStat> {
-        char_fstat(self.ino, self.mode()?)
+        char_fstat(self.ino, InodeOps::mode(self)?)
     }
 
     fn mode(&self) -> SysResult<Mode> {
@@ -133,12 +117,7 @@ impl InodeOps for PtsInode {
         Ok(0)
     }
 
-    fn wrap_file(
-        self: Arc<Self>,
-        inode: Arc<Inode>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         Arc::new(PtsFile::new(self.inner.clone(), inode, dentry, flags))
     }
 }

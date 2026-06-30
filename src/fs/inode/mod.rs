@@ -9,7 +9,7 @@ mod posix_flock;
 pub use bsd_flock::BsdFlockType;
 pub use cache::Cache;
 pub use index::Index;
-pub use inode::{Inode, InodeLockState, InodeOps, InodeSealOps, release_bsd_flock};
+pub use inode::{Inode, InodeLockState, InodeOps, InodeSealOps, VfsInode, downcast_inode, release_bsd_flock};
 pub use mode::{FileType, Mode};
 pub use owner::Owner;
 pub use posix_flock::{PosixFlock, PosixFlockType};

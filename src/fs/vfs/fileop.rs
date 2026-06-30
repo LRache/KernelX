@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::driver::BlockDriverOps;
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
-use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, VfsSuperBlockOps};
 use crate::fs::inode::{FileType, Index, Mode, Owner};
 use crate::fs::memtreefs;
 use crate::fs::perm::Perm;
@@ -35,7 +35,7 @@ impl FileSystemOps for MemfdFileSystem {
         _fsno: u32,
         _driver: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
-    ) -> SysResult<Arc<dyn SuperBlockOps>> {
+    ) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         Ok(Arc::new(memtreefs::SuperBlock::<MemfdFsInfo>::new(options.read_only)))
     }
 }

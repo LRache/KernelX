@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-use crate::fs::inode::{FileType, Index, Inode, InodeOps, Mode, Owner};
+use crate::fs::inode::{FileType, Index, Inode, Mode, Owner};
 use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
@@ -817,7 +817,7 @@ impl Dentry {
         name: &str,
         mode: Mode,
         owner: Owner,
-        create: impl FnOnce(&Arc<Inode>, &str, Mode, Owner) -> SysResult<Arc<dyn InodeOps>>,
+        create: impl FnOnce(&Arc<Inode>, &str, Mode, Owner) -> SysResult<Arc<Inode>>,
     ) -> SysResult<Arc<Inode>> {
         self.check_child_mutation_perm()?;
 
@@ -921,6 +921,9 @@ impl Dentry {
 
     pub fn link(self: &Arc<Self>, name: &str, target: &Arc<Dentry>) -> SysResult<()> {
         self.check_child_mutation_perm()?;
+        if self.sno() != target.sno() {
+            return Err(Errno::EXDEV);
+        }
 
         match self.lookup(name) {
             Ok(_) => return Err(Errno::EEXIST),
@@ -929,13 +932,15 @@ impl Dentry {
         }
 
         let target_inode = target.get_inode();
-        self.get_inode().link(name, target_inode.ops())?;
+        self.get_inode().link(name, &target_inode)?;
 
         Ok(())
     }
 
     pub fn rename(self: &Arc<Self>, old_name: &str, new_parent: &Arc<Dentry>, new_name: &str) -> SysResult<()> {
-        debug_assert!(self.sno() == new_parent.sno());
+        if self.sno() != new_parent.sno() {
+            return Err(Errno::EXDEV);
+        }
         debug_assert!(old_name != "." && old_name != "..");
         debug_assert!(new_name != "." && new_name != "..");
         if Arc::ptr_eq(self, new_parent) && old_name == new_name {
@@ -970,7 +975,7 @@ impl Dentry {
             Err(err) => return Err(err),
         };
 
-        old_parent_inode.rename(old_name, new_parent_inode.ops(), new_name)?;
+        old_parent_inode.rename(old_name, &new_parent_inode, new_name)?;
 
         self.children.lock().remove(old_name);
         new_parent.children.lock().remove(new_name);

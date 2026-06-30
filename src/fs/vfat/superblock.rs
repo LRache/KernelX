@@ -7,15 +7,15 @@ use core::{char, cmp};
 use bitflags::bitflags;
 
 use crate::driver::BlockDriverOps;
+use crate::fs::FileType;
 use crate::fs::file::DirResult;
 use crate::fs::filesystem::SuperBlockOps;
 use crate::fs::inode::Mode;
-use crate::fs::{FileType, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Statfs};
 use crate::klib::SleepLock;
 
-use super::inode::Inode;
+use super::inode::Inode as VfatInode;
 
 const BOOT_SECTOR_SIZE: usize = 512;
 const BOOT_SIGNATURE_OFFSET: usize = 510;
@@ -586,15 +586,17 @@ impl SuperBlock {
 }
 
 impl SuperBlockOps for SuperBlock {
+    type Inode = VfatInode;
+
     fn get_root_ino(&self) -> u32 {
         ROOT_INO
     }
 
-    fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
+    fn get_inode(&self, ino: u32) -> SysResult<Self::Inode> {
         if !self.inner.lock().has_inode(ino) {
             return Err(Errno::ENOENT);
         }
-        Ok(Arc::new(Inode::new(ino, self.inner.clone())))
+        Ok(VfatInode::new(ino, self.inner.clone()))
     }
 
     fn statfs(&self) -> SysResult<Statfs> {

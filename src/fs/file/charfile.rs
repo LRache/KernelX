@@ -42,7 +42,7 @@ impl CharFile {
         let previous = self.fd_refs.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(previous > 0, "CharFile::fd_refs underflow");
         if previous == 1 {
-            release_bsd_flock(self.inode.ops(), self.flock_owner_id());
+            release_bsd_flock(&self.inode, self.flock_owner_id());
         }
     }
 }
