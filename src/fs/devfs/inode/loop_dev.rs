@@ -230,6 +230,10 @@ impl InodeOps for LoopInode {
         "devfs"
     }
 
+    fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(Some(self.driver()?))
+    }
+
     fn readat(&self, buf: &mut [u8], offset: usize, direct: bool) -> SysResult<usize> {
         self.target_inode()?.readat(buf, offset, direct)
     }

@@ -2,6 +2,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::time::Duration;
 
+use crate::driver::BlockDriverOps;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::inode::{Inode as VfsInode, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
@@ -21,6 +22,10 @@ pub trait MemInodeOps<T: StaticFsInfo>: Send + Sync + 'static {
     fn get_ino(&self) -> u32;
 
     fn type_name(&self) -> &'static str;
+
+    fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(None)
+    }
 
     fn create(&self, _name: &str, _mode: Mode, _owner: Owner) -> SysResult<Arc<dyn MemInodeOps<T>>> {
         Err(Errno::EOPNOTSUPP)
@@ -210,6 +215,10 @@ impl<T: StaticFsInfo, I: InodeOps> MemInodeOps<T> for I {
 
     fn type_name(&self) -> &'static str {
         InodeOps::type_name(self)
+    }
+
+    fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        InodeOps::block_driver(self)
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {

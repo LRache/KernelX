@@ -74,15 +74,15 @@ impl BlockDevInode {
     pub fn new(ino: u32, driver: Arc<dyn BlockDriverOps>) -> Self {
         Self { ino, driver }
     }
-
-    pub fn driver(&self) -> &Arc<dyn BlockDriverOps> {
-        &self.driver
-    }
 }
 
 impl InodeOps for BlockDevInode {
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(Some(self.driver.clone()))
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
