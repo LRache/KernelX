@@ -3,6 +3,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::FileType;
@@ -33,6 +34,7 @@ pub struct Inode {
     context: Weak<SleepLock<Context>>,
     inode: SleepLock<Ext4Inode>,
     dents_cache: SpinLock<Option<Vec<DirResult>>>,
+    metadata_dirty: AtomicBool,
     deleted: AtomicBool,
 }
 
@@ -42,12 +44,20 @@ impl Inode {
             context,
             inode: SleepLock::new(inode, "ext4_native::Inode::inode"),
             dents_cache: SpinLock::new(None, "ext4_native::Inode::dents_cache"),
+            metadata_dirty: AtomicBool::new(false),
             deleted: AtomicBool::new(false),
         }
     }
 
     fn refresh_cached_state(&self, inode: &Ext4Inode) {
-        *self.inode.lock() = inode.clone();
+        let mut current = self.inode.lock();
+        let mut refreshed = inode.clone();
+        if self.metadata_dirty.load(Ordering::Acquire) {
+            refreshed.i_atime = current.i_atime;
+            refreshed.i_mtime = current.i_mtime;
+            refreshed.i_ctime = current.i_ctime;
+        }
+        *current = refreshed;
     }
 
     fn invalidate_dir_cache(&self) {
@@ -69,9 +79,17 @@ impl Inode {
     }
 
     fn mark_deleted(&self, inode: &Ext4Inode) {
+        self.metadata_dirty.store(false, Ordering::Release);
         self.refresh_cached_state(inode);
         self.invalidate_dir_cache();
         self.deleted.store(true, Ordering::Release);
+    }
+
+    fn update_metadata(&self, update: impl FnOnce(&mut Ext4Inode)) -> SysResult<()> {
+        let mut inode = self.inode.lock();
+        update(&mut inode);
+        self.metadata_dirty.store(true, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -390,15 +408,21 @@ impl InodeOps for Inode {
         if self.deleted.load(Ordering::Acquire) {
             return Ok(());
         }
+        if !self.metadata_dirty.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
 
-        let context = self
-            .context
-            .upgrade()
-            // .ok_or_else(|| debug_errno("sync: context has been dropped", Errno::EIO))?;
-            .ok_or(Errno::EIO)?;
+        let Some(context) = self.context.upgrade() else {
+            self.metadata_dirty.store(true, Ordering::Release);
+            return Err(Errno::EIO);
+        };
         let context = context.lock();
         let mut inode = self.inode.lock();
-        context.write_inode(&mut inode)
+        if let Err(err) = context.write_inode(&mut inode) {
+            self.metadata_dirty.store(true, Ordering::Release);
+            return Err(err);
+        }
+        Ok(())
     }
 
     fn type_name(&self) -> &'static str {
@@ -832,7 +856,29 @@ impl InodeOps for Inode {
             st_gid: inode.i_gid as u32,
             st_blksize: blksize as i32,
             st_blocks: inode.i_blocks as u64,
+            st_atime_sec: inode.i_atime as i64,
+            st_mtime_sec: inode.i_mtime as i64,
+            st_ctime_sec: inode.i_ctime as i64,
             ..FileStat::default()
+        })
+    }
+
+    fn update_atime(&self, time: &Duration) -> SysResult<()> {
+        self.update_metadata(|inode| inode.set_atime(time))
+    }
+
+    fn update_mtime(&self, time: &Duration) -> SysResult<()> {
+        self.update_metadata(|inode| inode.set_mtime(time))
+    }
+
+    fn update_ctime(&self, time: &Duration) -> SysResult<()> {
+        self.update_metadata(|inode| inode.set_ctime(time))
+    }
+
+    fn update_mtime_ctime(&self, time: &Duration) -> SysResult<()> {
+        self.update_metadata(|inode| {
+            inode.set_mtime(time);
+            inode.set_ctime(time);
         })
     }
 

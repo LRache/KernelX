@@ -158,6 +158,9 @@ pub struct Ext4Inode {
     pub i_gid: u16,
     pub i_links_count: u16,
 
+    pub i_atime: u32,
+    pub i_ctime: u32,
+    pub i_mtime: u32,
     pub i_size: u64,
     pub i_blocks: u64,
     pub i_flags: Ext4InodeFlags,

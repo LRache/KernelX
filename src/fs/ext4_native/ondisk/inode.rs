@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::crc::crc32c_update;
 
@@ -6,6 +8,9 @@ use super::*;
 const INODE_MODE_OFF: usize = 0x00;
 const INODE_UID_OFF: usize = 0x02;
 const INODE_SIZE_LO_OFF: usize = 0x04;
+const INODE_ATIME_OFF: usize = 0x08;
+const INODE_CTIME_OFF: usize = 0x0C;
+const INODE_MTIME_OFF: usize = 0x10;
 const INODE_GID_OFF: usize = 0x18;
 const INODE_LINKS_COUNT_OFF: usize = 0x1A;
 const INODE_BLOCKS_LO_OFF: usize = 0x1C;
@@ -44,6 +49,9 @@ impl Ext4Inode {
             i_uid: get_u16_le(raw, INODE_UID_OFF)?,
             i_gid: get_u16_le(raw, INODE_GID_OFF)?,
             i_links_count: get_u16_le(raw, INODE_LINKS_COUNT_OFF)?,
+            i_atime: get_u32_le(raw, INODE_ATIME_OFF)?,
+            i_ctime: get_u32_le(raw, INODE_CTIME_OFF)?,
+            i_mtime: get_u32_le(raw, INODE_MTIME_OFF)?,
             i_size,
             i_blocks,
             i_flags: Ext4InodeFlags::from_bits_retain(get_u32_le(raw, INODE_FLAGS_OFF)?),
@@ -65,6 +73,18 @@ impl Ext4Inode {
     pub fn i_block_mut(&mut self) -> &mut [u8] {
         let end = INODE_BLOCK_ARRAY_OFF + INODE_BLOCK_ARRAY_SIZE;
         &mut self.raw[INODE_BLOCK_ARRAY_OFF..end]
+    }
+
+    pub fn set_atime(&mut self, time: &Duration) {
+        self.i_atime = encode_time(time);
+    }
+
+    pub fn set_ctime(&mut self, time: &Duration) {
+        self.i_ctime = encode_time(time);
+    }
+
+    pub fn set_mtime(&mut self, time: &Duration) {
+        self.i_mtime = encode_time(time);
     }
 }
 
@@ -125,6 +145,9 @@ impl Context {
         put_u16_le(&mut inode.raw, INODE_UID_OFF, inode.i_uid)?;
         put_u16_le(&mut inode.raw, INODE_GID_OFF, inode.i_gid)?;
         put_u16_le(&mut inode.raw, INODE_LINKS_COUNT_OFF, inode.i_links_count)?;
+        put_u32_le(&mut inode.raw, INODE_ATIME_OFF, inode.i_atime)?;
+        put_u32_le(&mut inode.raw, INODE_CTIME_OFF, inode.i_ctime)?;
+        put_u32_le(&mut inode.raw, INODE_MTIME_OFF, inode.i_mtime)?;
 
         put_u32_le(&mut inode.raw, INODE_SIZE_LO_OFF, inode.i_size as u32)?;
         put_u32_le(&mut inode.raw, INODE_SIZE_HIGH_OFF, (inode.i_size >> 32) as u32)?;
@@ -211,6 +234,10 @@ impl Context {
         }
         Ok(())
     }
+}
+
+fn encode_time(time: &Duration) -> u32 {
+    time.as_secs() as u32
 }
 
 pub(crate) fn lookup_lblk(context: &Context, inode: &Ext4Inode, lblk: u32) -> SysResult<Option<u64>> {
