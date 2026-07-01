@@ -401,14 +401,3 @@ fn extent_len(raw: u16) -> u16 {
         raw - EXT_INIT_MAX_LEN
     }
 }
-
-#[allow(dead_code)]
-fn _reject_indexed_directory(inode: &Ext4Inode) -> SysResult<()> {
-    if inode.i_flags.contains(Ext4InodeFlags::INDEX) {
-        return ret_errno(
-            "_reject_indexed_directory: indexed directory is not supported",
-            Errno::EOPNOTSUPP,
-        );
-    }
-    Ok(())
-}
