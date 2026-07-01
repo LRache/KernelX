@@ -8,7 +8,6 @@ use super::*;
 const ROOT_EXTENT_MAX: u16 = ((INODE_BLOCK_ARRAY_SIZE - EXTENT_HEADER_SIZE) / EXTENT_ENTRY_SIZE) as u16;
 const DEFAULT_EXTRA_ISIZE: u16 = 32;
 const EXT_INIT_MAX_LEN: u16 = 32768;
-const EXT4_FT_DIR: u8 = 2;
 
 #[derive(Clone, Copy)]
 struct BuiltExtentNode {
@@ -359,8 +358,8 @@ impl Context {
             pblk,
             raw: Vec::new(),
             entries: vec![
-                new_dir_entry(dir_ino, b".", EXT4_FT_DIR, dot_len)?,
-                new_dir_entry(parent_ino, b"..", EXT4_FT_DIR, dotdot_len)?,
+                new_dir_entry(dir_ino, b".", Ext4DirEntryFileType::Directory, dot_len)?,
+                new_dir_entry(parent_ino, b"..", Ext4DirEntryFileType::Directory, dotdot_len)?,
             ],
         };
         self.write_dir_block(dir_ino, dir_generation, &mut block)
@@ -372,7 +371,7 @@ impl Context {
         dir_inode: &mut Ext4Inode,
         name: &[u8],
         child_ino: u32,
-        file_type: u8,
+        file_type: Ext4DirEntryFileType,
     ) -> SysResult<()> {
         if dir_inode.i_flags.contains(Ext4InodeFlags::INDEX) {
             return ret_errno("insert_dirent: htree indexed directory unsupported", Errno::EOPNOTSUPP);
@@ -1083,7 +1082,7 @@ fn writable_dir_bytes(block_size: usize, metadata_csum: bool) -> SysResult<usize
     }
 }
 
-fn new_dir_entry(inode: u32, name: &[u8], file_type: u8, rec_len: u16) -> SysResult<DirEntry2> {
+fn new_dir_entry(inode: u32, name: &[u8], file_type: Ext4DirEntryFileType, rec_len: u16) -> SysResult<DirEntry2> {
     if name.len() > EXT4_MAX_NAME_LEN {
         return ret_errno("new_dir_entry: file name is too long", Errno::EINVAL);
     }
@@ -1094,7 +1093,7 @@ fn new_dir_entry(inode: u32, name: &[u8], file_type: u8, rec_len: u16) -> SysRes
         inode,
         rec_len,
         name_len: name.len() as u8,
-        file_type,
+        file_type: file_type.as_u8(),
         name: name_buf,
         entry_off: 0,
     })
@@ -1111,7 +1110,12 @@ fn unused_dir_entry(rec_len: u16) -> DirEntry2 {
     }
 }
 
-fn insert_dirent_into_block(block: &mut DirBlock, name: &[u8], child_ino: u32, file_type: u8) -> SysResult<bool> {
+fn insert_dirent_into_block(
+    block: &mut DirBlock,
+    name: &[u8],
+    child_ino: u32,
+    file_type: Ext4DirEntryFileType,
+) -> SysResult<bool> {
     let need = dirent_min_len(name.len())?;
 
     for idx in 0..block.entries.len() {

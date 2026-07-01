@@ -13,7 +13,9 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::{SleepLock, SpinLock};
 
-use super::ondisk::{DirEntry2, Ext4InodeFlags, debug_errno, lookup_extent_lblk, lookup_lblk, ret_errno};
+use super::ondisk::{
+    DirEntry2, Ext4DirEntryFileType, Ext4InodeFlags, debug_errno, lookup_extent_lblk, lookup_lblk, ret_errno,
+};
 use super::{Context, Ext4Inode, ExtentLeaf};
 
 const S_IFMT: u16 = 0xF000;
@@ -21,14 +23,6 @@ const S_IFDIR: u16 = 0x4000;
 const S_IFREG: u16 = 0x8000;
 const EXT_INIT_MAX_LEN: u16 = 32768;
 const MAX_BULK_ALLOC_BLOCKS: usize = 128;
-
-const EXT4_FT_REG_FILE: u8 = 1;
-const EXT4_FT_DIR: u8 = 2;
-const EXT4_FT_CHRDEV: u8 = 3;
-const EXT4_FT_BLKDEV: u8 = 4;
-const EXT4_FT_FIFO: u8 = 5;
-const EXT4_FT_SOCK: u8 = 6;
-const EXT4_FT_SYMLINK: u8 = 7;
 
 pub struct Inode {
     context: Weak<SleepLock<Context>>,
@@ -432,9 +426,9 @@ impl InodeOps for Inode {
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Self> {
         let mode_type = mode & Mode::S_IFMT;
         let (is_dir, file_type) = if mode_type == Mode::S_IFREG {
-            (false, EXT4_FT_REG_FILE)
+            (false, Ext4DirEntryFileType::Regular)
         } else if mode_type == Mode::S_IFDIR {
-            (true, EXT4_FT_DIR)
+            (true, Ext4DirEntryFileType::Directory)
         } else {
             return ret_errno("create: unsupported inode type", Errno::EOPNOTSUPP);
         };
@@ -635,7 +629,7 @@ impl InodeOps for Inode {
             if mode_type != S_IFREG {
                 return ret_errno("link: unsupported target inode type", Errno::EOPNOTSUPP);
             }
-            EXT4_FT_REG_FILE
+            Ext4DirEntryFileType::Regular
         };
 
         match self.lookup(name) {
@@ -1137,15 +1131,15 @@ fn lookup_name_in_dir(context: &Context, inode: &Ext4Inode, needle: &[u8]) -> Sy
         .ok_or(Errno::ENOENT)
 }
 
-fn dirent_file_type(mode: u16) -> SysResult<u8> {
+fn dirent_file_type(mode: u16) -> SysResult<Ext4DirEntryFileType> {
     match mode & S_IFMT {
-        S_IFREG => Ok(EXT4_FT_REG_FILE),
-        S_IFDIR => Ok(EXT4_FT_DIR),
-        0xA000 => Ok(EXT4_FT_SYMLINK),
-        0x2000 => Ok(EXT4_FT_CHRDEV),
-        0x6000 => Ok(EXT4_FT_BLKDEV),
-        0x1000 => Ok(EXT4_FT_FIFO),
-        0xC000 => Ok(EXT4_FT_SOCK),
+        S_IFREG => Ok(Ext4DirEntryFileType::Regular),
+        S_IFDIR => Ok(Ext4DirEntryFileType::Directory),
+        0xA000 => Ok(Ext4DirEntryFileType::Symlink),
+        0x2000 => Ok(Ext4DirEntryFileType::CharacterDevice),
+        0x6000 => Ok(Ext4DirEntryFileType::BlockDevice),
+        0x1000 => Ok(Ext4DirEntryFileType::Fifo),
+        0xC000 => Ok(Ext4DirEntryFileType::Socket),
         _ => ret_errno("dirent_file_type: unsupported inode type", Errno::EOPNOTSUPP),
     }
 }
@@ -1232,14 +1226,14 @@ fn to_dir_result(entry: &DirEntry2) -> DirResult {
 }
 
 fn ext4_file_type(ft: u8) -> FileType {
-    match ft {
-        EXT4_FT_REG_FILE => FileType::Regular,
-        EXT4_FT_DIR => FileType::Directory,
-        EXT4_FT_CHRDEV => FileType::CharDevice,
-        EXT4_FT_BLKDEV => FileType::BlockDevice,
-        EXT4_FT_FIFO => FileType::FIFO,
-        EXT4_FT_SOCK => FileType::Socket,
-        EXT4_FT_SYMLINK => FileType::Symlink,
-        _ => FileType::Unknown,
+    match Ext4DirEntryFileType::try_from(ft) {
+        Ok(Ext4DirEntryFileType::Regular) => FileType::Regular,
+        Ok(Ext4DirEntryFileType::Directory) => FileType::Directory,
+        Ok(Ext4DirEntryFileType::CharacterDevice) => FileType::CharDevice,
+        Ok(Ext4DirEntryFileType::BlockDevice) => FileType::BlockDevice,
+        Ok(Ext4DirEntryFileType::Fifo) => FileType::FIFO,
+        Ok(Ext4DirEntryFileType::Socket) => FileType::Socket,
+        Ok(Ext4DirEntryFileType::Symlink) => FileType::Symlink,
+        Err(_) => FileType::Unknown,
     }
 }

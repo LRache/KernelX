@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use bitflags::bitflags;
+use num_enum::TryFromPrimitive;
 
 pub(super) const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
 pub(super) const EXT4_SUPERBLOCK_SIZE: usize = 1024;
@@ -146,6 +147,24 @@ pub struct Ext4GroupDesc {
 pub struct Ext4BitmapBlock {
     pub pblk: u64,
     pub raw: Vec<u8>,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+pub enum Ext4DirEntryFileType {
+    Regular = 1,
+    Directory = 2,
+    CharacterDevice = 3,
+    BlockDevice = 4,
+    Fifo = 5,
+    Socket = 6,
+    Symlink = 7,
+}
+
+impl Ext4DirEntryFileType {
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 #[derive(Clone)]
