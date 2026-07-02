@@ -155,7 +155,7 @@ ifeq ($(CONFIG_BACKTRACE),y)
 	@ $(BUILD_ENV) cargo build $(CARGO_FLAGS)
 endif
 
-check: clib vdso
+check:
 	@ $(BUILD_ENV) cargo check $(CARGO_FLAGS)
 
 clean:
