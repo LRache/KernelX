@@ -13,9 +13,9 @@ impl FileSystemOps for FileSystem {
         &self,
         _fsno: u32,
         driver: Option<Arc<dyn BlockDriverOps>>,
-        _options: MountOptions,
+        options: MountOptions,
     ) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         let driver = driver.ok_or(Errno::ENODEV)?;
-        Ok(VfsSuperBlock::new(SuperBlock::new(driver)?))
+        Ok(VfsSuperBlock::new(SuperBlock::new(driver, options.read_only)?))
     }
 }

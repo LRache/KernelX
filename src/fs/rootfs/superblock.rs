@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 
 use crate::driver::BlockDriverOps;
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
-use crate::fs::{Dentry, InodeOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps, VfsSuperBlock, VfsSuperBlockOps};
+use crate::fs::{Dentry, Inode, InodeOps};
 use crate::kernel::errno::{Errno, SysResult};
 #[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
@@ -47,7 +47,7 @@ impl InodeOps for RootInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, _: Option<Arc<Dentry>>, _: FileFlags) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, _: Arc<Inode>, _: Option<Arc<Dentry>>, _: FileFlags) -> Arc<dyn FileOps> {
         unreachable!()
     }
 }
@@ -69,12 +69,14 @@ impl RootFileSystemSuperBlock {
 }
 
 impl SuperBlockOps for RootFileSystemSuperBlock {
+    type Inode = RootInode;
+
     fn get_root_ino(&self) -> u32 {
         0
     }
 
-    fn get_inode(&self, _ino: u32) -> Result<Arc<dyn InodeOps>, Errno> {
-        Ok(Arc::new(RootInode::new()))
+    fn get_inode(&self, _ino: u32) -> Result<Self::Inode, Errno> {
+        Ok(RootInode::new())
     }
 
     #[cfg(feature = "fanotify")]
@@ -98,7 +100,7 @@ impl FileSystemOps for RootFileSystem {
         _fsno: u32,
         _driver: Option<Arc<dyn BlockDriverOps>>,
         _options: MountOptions,
-    ) -> Result<Arc<dyn SuperBlockOps>, Errno> {
-        Ok(Arc::new(RootFileSystemSuperBlock::new()))
+    ) -> Result<Arc<dyn VfsSuperBlockOps>, Errno> {
+        Ok(VfsSuperBlock::new(RootFileSystemSuperBlock::new()))
     }
 }

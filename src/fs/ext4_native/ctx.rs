@@ -1,10 +1,10 @@
 use alloc::sync::Arc;
 
 use crate::driver::BlockDriverOps;
+use crate::fs::Mode;
 use crate::fs::ext4_native::inode::Inode;
 use crate::fs::ext4_native::ondisk::{Ext4IncompatFeatures, Ext4RoCompatFeatures, debug_errno};
-use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
-use crate::fs::{InodeOps, Mode};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps, VfsSuperBlock, VfsSuperBlockOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
 use crate::klib::SleepLock;
@@ -15,6 +15,8 @@ pub struct Context {
 
     // checksum / format identity
     pub(super) uuid: [u8; 16],
+    pub(super) hash_seed: [u32; 4],
+    pub(super) flags: u32,
     pub(super) checksum_seed: u32,
     pub(super) metadata_csum: bool,
 
@@ -39,16 +41,18 @@ pub struct SuperBlock {
 }
 
 impl SuperBlockOps for SuperBlock {
+    type Inode = Inode;
+
     fn get_root_ino(&self) -> u32 {
         2
     }
 
-    fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
+    fn get_inode(&self, ino: u32) -> SysResult<Self::Inode> {
         let inode = self.context.lock().read_inode(ino)?;
-        Ok(Arc::new(Inode::new(Arc::downgrade(&self.context), inode)))
+        Ok(Inode::new(Arc::downgrade(&self.context), inode))
     }
 
-    fn create_temp(&self, _mode: Mode) -> SysResult<Arc<dyn InodeOps>> {
+    fn create_temp(&self, _mode: Mode) -> SysResult<Self::Inode> {
         unimplemented!("ext4_native::SuperBlock::create_temp")
     }
 
@@ -73,10 +77,10 @@ impl FileSystemOps for FileSystem {
         fsno: u32,
         driver: Option<Arc<dyn BlockDriverOps>>,
         _options: MountOptions,
-    ) -> SysResult<Arc<dyn SuperBlockOps>> {
+    ) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         let driver = driver.ok_or_else(|| debug_errno("FileSystem::create: block driver is None", Errno::EINVAL))?;
         let ctx = Context::from_device(fsno, driver)?;
-        Ok(Arc::new(SuperBlock {
+        Ok(VfsSuperBlock::new(SuperBlock {
             context: Arc::new(SleepLock::new(ctx, "ext4_native::Superblock::context")),
         }))
     }

@@ -4,9 +4,8 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::driver::char::tty::TtyState;
-use crate::fs::InodeOps;
 use crate::fs::devfs::superblock::DevfsInfo;
-use crate::fs::memtreefs::inode::Inode as MemInode;
+use crate::fs::memtreefs::inode::MemInodeOps;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue};
 use crate::kernel::scheduler::current;
@@ -22,7 +21,7 @@ struct PtyOpenState {
 pub(super) struct PtyInner {
     pub(super) id: usize,
     slave_name: String,
-    pts_dir: Arc<MemInode<DevfsInfo>>,
+    pts_dir: Arc<dyn MemInodeOps<DevfsInfo>>,
     pub(super) tty: TtyState,
     master_recv: SpinLock<RingBuffer<u8, 4096>>,
     pub(super) master_waiters: SpinLock<WaitQueue<Event>>,
@@ -36,7 +35,7 @@ pub(super) struct PtyInner {
 }
 
 impl PtyInner {
-    pub(super) fn new(id: usize, pts_dir: Arc<MemInode<DevfsInfo>>) -> Self {
+    pub(super) fn new(id: usize, pts_dir: Arc<dyn MemInodeOps<DevfsInfo>>) -> Self {
         Self {
             id,
             slave_name: format!("{}", id),
@@ -106,7 +105,7 @@ impl PtyInner {
             state.locked = true;
         }
 
-        let _ = self.pts_dir.unlink(&self.slave_name);
+        let _ = self.pts_dir.as_ref().unlink(&self.slave_name);
         self.wake_master(FileEvent::HANG_UP);
         self.wake_slave(FileEvent::HANG_UP);
     }

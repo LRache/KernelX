@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::driver::BlockDriverOps;
-use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, VfsSuperBlockOps};
 use crate::fs::memtreefs;
 use crate::kernel::errno::SysResult;
 
@@ -26,7 +26,7 @@ impl FileSystemOps for FileSystem {
         _sno: u32,
         _driver: Option<Arc<dyn BlockDriverOps>>,
         options: MountOptions,
-    ) -> SysResult<Arc<dyn SuperBlockOps>> {
+    ) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         Ok(Arc::new(memtreefs::SuperBlock::<TmpfsInfo>::new(options.read_only)))
     }
 }

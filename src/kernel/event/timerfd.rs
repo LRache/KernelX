@@ -6,7 +6,7 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver::chosen::kclock;
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue, timer};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -338,7 +338,7 @@ impl FileOps for TimerFd {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         None
     }
 

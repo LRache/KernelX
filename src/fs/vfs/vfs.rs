@@ -5,8 +5,7 @@ use alloc::vec::Vec;
 use bitflags::bitflags;
 
 use crate::fs::filesystem::FileSystemOps;
-use crate::fs::inode;
-use crate::fs::inode::InodeOps;
+use crate::fs::inode::{self, Inode};
 use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::{InitedCell, SleepLock, SpinLock};
@@ -384,7 +383,7 @@ impl VirtualFileSystem {
         Ok(parent)
     }
 
-    pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
+    pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<Inode>> {
         let index = inode::Index { sno, ino };
         if let Some(inode) = self.cache.find(&index) {
             return Ok(inode);
@@ -395,8 +394,7 @@ impl VirtualFileSystem {
             superblock_table.get(sno).ok_or(Errno::ENOENT)?
         };
         let inode = superblock.get_inode(ino)?;
-
-        Ok(self.cache.get_or_insert(index, inode))
+        self.cache.insert(&index, inode)
     }
 }
 

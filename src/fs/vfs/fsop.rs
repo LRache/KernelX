@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::fs::filesystem::{FileSystemOps, VfsSuperBlockOps};
 use crate::fs::inode::Index;
 use crate::fs::vfs::vfs::VirtualFileSystem;
 use crate::kernel::config;
@@ -23,7 +23,7 @@ impl VirtualFileSystem {
         self.fstype_map.insert(name, fs);
     }
 
-    fn get_superblock(&self, sno: u32) -> SysResult<Arc<dyn SuperBlockOps>> {
+    fn get_superblock(&self, sno: u32) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         let superblock_table = self.superblock_table.lock();
         let superblock = superblock_table.get(sno).ok_or(Errno::EINVAL)?;
 
@@ -70,6 +70,6 @@ pub fn evict_inode(sno: u32, ino: u32) {
     vfs().cache.remove(&Index { sno, ino });
 }
 
-pub fn find_cached_inode(sno: u32, ino: u32) -> Option<Arc<dyn crate::fs::InodeOps>> {
+pub fn find_cached_inode(sno: u32, ino: u32) -> Option<Arc<crate::fs::Inode>> {
     vfs().cache.find(&Index { sno, ino })
 }

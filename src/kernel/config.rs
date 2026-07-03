@@ -3,13 +3,13 @@ use crate::arch;
 pub const USER_STACK_TOP: usize = 1 << 38; // Example user stack top address
 pub const USER_STACK_PAGE_COUNT_MAX: usize = 2048; // Example user stack page count
 
-pub const USER_BRK_BASE: usize = 0x1_0000_0000; // Base address for user brk
+pub const USER_BRK_BASE: usize = 0x4000_0000; // Base address for user brk
 pub const USER_BRK_MAX: usize = 0x2_0000_0000; // Maximum reachable brk, exclusive heap end boundary
 
-pub const USER_MAP_BASE: usize = USER_BRK_MAX; // Base address for user mappings
+pub const USER_MAP_BASE: usize = 0x4_0000_0000; // Base address for user mappings
 
 pub const USER_EXEC_ADDR_BASE: usize = 0x1_0000;
-pub const USER_LINKER_ADDR_BASE: usize = 0x4000_0000; // Base address for the dynamic linker
+pub const USER_LINKER_ADDR_BASE: usize = USER_BRK_MAX; // Base address for the dynamic linker
 pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 
 pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
@@ -29,7 +29,8 @@ cfg_if::cfg_if!(
     }
 );
 
-pub const INODE_CACHE_SIZE: usize = 32768; // Inode cache size
+pub const INODE_CACHE_HIGH_WATERMARK: usize = 512; // Start reclaiming when inode cache reaches this size
+pub const INODE_CACHE_LOW_WATERMARK: usize = INODE_CACHE_HIGH_WATERMARK / 4 * 3; // Reclaim idle inodes down to this size
 pub const EXT4_INODE_PAGE_CACHE_SIZE: usize = 512; // Ext4 inode page cache size
 pub const INODE_CACHE_RECLAIM_INTERVAL_MS: u64 = 500; // Background inode cache reclaim interval
 
@@ -42,6 +43,8 @@ pub const MAX_SYMLINK_DEPTH: usize = 40;
 // pub const PIPE_CAPACITY: usize = 0x20000; // Capacity of the pipe buffer
 pub const PIPE_BUFFER_PAGES: usize = 16; // Number of pages allocated for pipe buffer
 pub const PIPE_CAPACITY: usize = PIPE_BUFFER_PAGES * arch::PGSIZE;
+
+pub const TIMER_INTERRUPT_INTERVAL_US: u64 = 10000; // Timer interrupt interval in microseconds
 
 /* ------ BOOT ARGS ------- */
 pub const DEFAULT_BOOT_ROOT_DEVICE: &str = match option_env!("CONFIG_DEFAULT_BOOT_ROOT_DEVICE") {

@@ -15,7 +15,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use crate::fs::{Dentry, InodeOps};
+use crate::fs::{Dentry, Inode};
 use crate::kernel::event::{Event, TimerTable, WaitQueue};
 use crate::kernel::ipc::{PendingSignalQueue, SignalActionTable, SignalNum};
 use crate::kernel::scheduler::Task;
@@ -41,7 +41,7 @@ pub struct PCB {
     state: SpinLock<State>,
     child_wait_status: SpinLock<Option<ChildWaitStatus>>,
     exec_path: SpinLock<String>,
-    exec_inode: SpinLock<Option<Arc<dyn InodeOps>>>,
+    exec_inode: SpinLock<Option<Arc<Inode>>>,
 
     pub tasks: SleepLock<Vec<Arc<TCB>>>,
     root: SpinLock<Arc<Dentry>>,

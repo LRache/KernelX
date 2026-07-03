@@ -79,6 +79,7 @@ arch_export! {
     scan_device() -> ();
 
     is_kernel_addr(addr: usize) -> bool;
+    crc32c(seed: u32, buf: &[u8]) -> u32;
 }
 
 pub fn try_uptime() -> Option<Duration> {

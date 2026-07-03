@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::mem::size_of;
 
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, Event, FileEvent, WaitQueue};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
@@ -191,7 +191,7 @@ impl FileOps for EventFd {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         None
     }
 

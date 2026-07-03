@@ -110,6 +110,21 @@ impl Ext4Superblock {
     }
 
     #[inline]
+    fn hash_seed(&self) -> SysResult<[u32; 4]> {
+        Ok([
+            get_u32_le(&self.raw, SB_HASH_SEED_OFF)?,
+            get_u32_le(&self.raw, SB_HASH_SEED_OFF + 4)?,
+            get_u32_le(&self.raw, SB_HASH_SEED_OFF + 8)?,
+            get_u32_le(&self.raw, SB_HASH_SEED_OFF + 12)?,
+        ])
+    }
+
+    #[inline]
+    fn flags(&self) -> SysResult<u32> {
+        get_u32_le(&self.raw, SB_FLAGS_OFF)
+    }
+
+    #[inline]
     fn checksum_type(&self) -> SysResult<u8> {
         get_u8(&self.raw, SB_CHECKSUM_TYPE_OFF)
     }
@@ -236,6 +251,8 @@ impl Context {
             fsno,
             driver,
             uuid,
+            hash_seed: sb.hash_seed()?,
+            flags: sb.flags()?,
             checksum_seed,
             metadata_csum,
             block_size,

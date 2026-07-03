@@ -4,16 +4,15 @@ use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
 use crate::driver::chosen::kclock;
-use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps};
-use crate::fs::inode::{InodeLockState, InodeOps, Mode};
+use crate::fs::inode::{InodeOps, Mode};
+use crate::fs::{Dentry, Inode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::FileEvent;
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::current;
 use crate::kernel::task::CapabilitySet;
 use crate::kernel::uapi::FileStat;
-use crate::klib::SpinLock;
 
 /// Linux-compatible `struct rtc_time`
 #[repr(C)]
@@ -32,25 +31,17 @@ struct RtcTime {
 
 pub struct RtcInode {
     ino: u32,
-    lock_state: SpinLock<InodeLockState>,
 }
 
 impl RtcInode {
     pub fn new(ino: u32) -> Self {
-        Self {
-            ino,
-            lock_state: SpinLock::new(InodeLockState::new(), "RtcInode::lock_state"),
-        }
+        Self { ino }
     }
 }
 
 impl InodeOps for RtcInode {
     fn get_ino(&self) -> u32 {
         self.ino
-    }
-
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
     }
 
     fn type_name(&self) -> &'static str {
@@ -88,17 +79,13 @@ impl InodeOps for RtcInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RtcFile {
-            inode: self,
-            dentry,
-            flags,
-        })
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RtcFile { inode, dentry, flags })
     }
 }
 
 struct RtcFile {
-    inode: Arc<RtcInode>,
+    inode: Arc<Inode>,
     dentry: Option<Arc<Dentry>>,
     flags: FileFlags,
 }
@@ -159,8 +146,8 @@ impl FileOps for RtcFile {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
-        None
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
+        Some(&self.inode)
     }
 
     fn get_dentry(&self) -> Option<&Arc<Dentry>> {

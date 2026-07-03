@@ -234,4 +234,8 @@ impl ArchTrait for Arch {
     fn is_kernel_addr(addr: usize) -> bool {
         addr >> 63 != 0
     }
+
+    fn crc32c(seed: u32, buf: &[u8]) -> u32 {
+        super::crc32::crc32c(seed, buf)
+    }
 }

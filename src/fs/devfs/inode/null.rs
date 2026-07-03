@@ -1,33 +1,23 @@
 use alloc::sync::Arc;
 
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::InodeLockState;
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::FileStat;
-use crate::klib::SpinLock;
 
 pub struct NullInode {
     ino: u32,
-    lock_state: SpinLock<InodeLockState>,
 }
 
 impl NullInode {
     pub fn new(ino: u32) -> Self {
-        Self {
-            ino,
-            lock_state: SpinLock::new(InodeLockState::new(), "NullInode::lock_state"),
-        }
+        Self { ino }
     }
 }
 
 impl InodeOps for NullInode {
     fn get_ino(&self) -> u32 {
         self.ino
-    }
-
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
     }
 
     fn type_name(&self) -> &'static str {
@@ -68,7 +58,7 @@ impl InodeOps for NullInode {
         Ok(Mode::from_bits_truncate(Mode::S_IFCHR.bits() as u32 | 0o666))
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

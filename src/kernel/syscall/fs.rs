@@ -8,11 +8,9 @@ use core::usize;
 use num_enum::TryFromPrimitive;
 
 use crate::driver;
-use crate::fs::devfs::LoopInode;
-use crate::fs::devfs::devnode::BlockDevInode;
 use crate::fs::file::{FileFlags, FileOps, PosixFadviseAdvice, SeekWhence};
 use crate::fs::inode::{BsdFlockType, PosixFlock, PosixFlockType};
-use crate::fs::{Dentry, FileType, InodeOps, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
+use crate::fs::{Dentry, FileType, Inode, Mode, MountOptions, Owner, Perm, PermFlags, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{
     Event, FanotifyEventMask, notify_fanotify, notify_fanotify_dentry,
@@ -127,7 +125,7 @@ enum FcntlWhence {
     End = 2,
 }
 
-fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<&Arc<dyn InodeOps>> {
+fn fcntl_lock_inode(file: &Arc<dyn FileOps>) -> SysResult<&Arc<Inode>> {
     let inode = file.get_inode().ok_or(Errno::EINVAL)?;
     if inode.lock_state().is_none() {
         return Err(Errno::EINVAL);
@@ -140,7 +138,10 @@ fn update_file_times(file: &dyn FileOps, time: &Duration, is_write: bool) -> Sys
         if is_write {
             inode.update_mtime_ctime(time)?;
         } else {
-            inode.update_atime(time)?;
+            match inode.update_atime(time) {
+                Ok(()) | Err(Errno::EROFS) => {}
+                Err(err) => return Err(err),
+            }
         }
     }
     Ok(())
@@ -148,15 +149,15 @@ fn update_file_times(file: &dyn FileOps, time: &Duration, is_write: bool) -> Sys
 
 fn finish_file_io(file: &dyn FileOps, bytes: usize, is_write: bool) -> SyscallRet {
     if bytes > 0 {
-        let time = driver::chosen::kclock::now()?;
-        update_file_times(file, &time, is_write)?;
+        // let time = driver::chosen::kclock::now()?;
+        // update_file_times(file, &time, is_write)?;
     }
     Ok(bytes)
 }
 
 fn normalize_posix_flock(
     file: &Arc<dyn FileOps>,
-    inode: &Arc<dyn InodeOps>,
+    inode: &Arc<Inode>,
     flock: &Flock,
 ) -> SysResult<(Option<PosixFlockType>, i64, i64)> {
     let lock_type = match FcntlLockType::try_from(flock.l_type).map_err(|_| Errno::EINVAL)? {
@@ -2337,10 +2338,7 @@ pub fn fanotify_mark(
                     .ensure_superblock_fanotify()?
                     .add_mark(&listener, flags, mask, fdinfo_key);
             } else {
-                let Some(fanotify) = inode.ensure_fanotify() else {
-                    return Err(Errno::EOPNOTSUPP);
-                };
-                fanotify.add_mark(&listener, flags, mask, fdinfo_key);
+                inode.ensure_fanotify().add_mark(&listener, flags, mask, fdinfo_key);
             }
         }
         FanotifyMarkOp::Remove => {
@@ -3438,13 +3436,7 @@ pub fn mount(
             match current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &source)) {
                 Ok(dentry) => {
                     let inode = dentry.get_inode();
-                    if let Ok(blk_inode) = inode.clone().downcast_arc::<BlockDevInode>() {
-                        Some(blk_inode.driver().clone())
-                    } else if let Ok(blk_inode) = inode.downcast_arc::<LoopInode>() {
-                        Some(blk_inode.driver()?)
-                    } else {
-                        return Err(Errno::ENOTBLK);
-                    }
+                    Some(inode.block_driver()?.ok_or(Errno::ENOTBLK)?)
                 }
                 Err(e) => {
                     if e == Errno::ENOENT {

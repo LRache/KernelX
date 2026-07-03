@@ -139,8 +139,8 @@ impl ArchTrait for Arch {
     }
 
     fn set_next_time_event_us(interval: u64) {
-        let ticks = (interval * *STABLE_COUNTER_FREQ_HZ) / 1_000_000;
-        let tcfg = (ticks as usize) << csr::tcfg::INITVAL_SHIFT | csr::tcfg::PERIODIC | csr::tcfg::EN;
+        let ticks = interval.saturating_mul(*STABLE_COUNTER_FREQ_HZ).saturating_add(999_999) / 1_000_000;
+        let tcfg = (ticks.max(1) as usize) << csr::tcfg::INITVAL_SHIFT | csr::tcfg::EN;
         csr::write::<{ csr::num::TCFG }>(tcfg);
     }
 

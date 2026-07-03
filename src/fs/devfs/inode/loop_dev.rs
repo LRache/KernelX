@@ -5,9 +5,9 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver::BlockDriverOps;
 use crate::driver::block::LoopDevice;
-use crate::fs::Dentry;
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, InodeOps, Mode};
+use crate::fs::inode::{InodeOps, Mode};
+use crate::fs::{Dentry, Inode, VfsInode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler::current;
@@ -16,7 +16,7 @@ use crate::klib::SpinLock;
 
 #[derive(Default)]
 struct LoopState {
-    target_inode: Option<Arc<dyn InodeOps>>,
+    target_inode: Option<Arc<Inode>>,
 }
 
 bitflags! {
@@ -106,7 +106,6 @@ impl Default for LoopInfo64 {
 pub struct LoopInode {
     ino: u32,
     minor: u32,
-    lock_state: SpinLock<InodeLockState>,
     state: SpinLock<LoopState>,
     readahead: Arc<AtomicUsize>,
     read_only: Arc<AtomicBool>,
@@ -117,7 +116,6 @@ impl LoopInode {
         Self {
             ino,
             minor,
-            lock_state: SpinLock::new(InodeLockState::new(), "LoopInode::lock_state"),
             state: SpinLock::new(LoopState::default(), "LoopInode::state"),
             readahead: Arc::new(AtomicUsize::new(0)),
             read_only: Arc::new(AtomicBool::new(false)),
@@ -129,7 +127,7 @@ impl LoopInode {
         ((7u64) << 8) | self.minor as u64
     }
 
-    fn bind_target_inode(&self, target_inode: Arc<dyn InodeOps>) -> SysResult<()> {
+    fn bind_target_inode(&self, target_inode: Arc<Inode>) -> SysResult<()> {
         let mut state = self.state.lock();
         if state.target_inode.is_some() {
             return Err(Errno::EBUSY);
@@ -152,7 +150,7 @@ impl LoopInode {
         self.state.lock().target_inode.is_some()
     }
 
-    fn target_inode(&self) -> SysResult<Arc<dyn InodeOps>> {
+    fn target_inode(&self) -> SysResult<Arc<Inode>> {
         self.state.lock().target_inode.clone().ok_or(Errno::ENXIO)
     }
 
@@ -228,12 +226,12 @@ impl InodeOps for LoopInode {
         self.ino
     }
 
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
-    }
-
     fn type_name(&self) -> &'static str {
         "devfs"
+    }
+
+    fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(Some(self.driver()?))
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize, direct: bool) -> SysResult<usize> {
@@ -296,7 +294,7 @@ impl InodeOps for LoopInode {
                 let backing_file = current::fdtable().lock().get(arg)?;
                 let target_inode = backing_file.get_inode().cloned().ok_or(Errno::EINVAL)?;
                 let read_only = !backing_file.writable();
-                if target_inode.clone().downcast_arc::<LoopInode>().is_ok() {
+                if target_inode.clone().downcast_arc::<VfsInode<LoopInode>>().is_ok() {
                     return Err(Errno::EINVAL);
                 }
                 self.bind_target_inode(target_inode)?;
@@ -345,8 +343,8 @@ impl InodeOps for LoopInode {
         }
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
         let dentry = dentry.unwrap();
-        Arc::new(RandomAccessFile::new(self, dentry, flags))
+        Arc::new(RandomAccessFile::new(inode, dentry, flags))
     }
 }

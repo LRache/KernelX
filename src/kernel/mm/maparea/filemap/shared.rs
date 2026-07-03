@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::fs::InodeOps;
+use crate::fs::Inode;
 use crate::fs::inode::Index as InodeIndex;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Area, MapAreaInfo, MemoryFaultSignal};
@@ -27,7 +27,7 @@ impl FrameState {
 }
 
 pub struct SharedFileMapArea {
-    inode: Arc<dyn InodeOps>,
+    inode: Arc<Inode>,
     ubase: usize,
     offset: usize,
     states: Vec<FrameState>,
@@ -43,7 +43,7 @@ impl SharedFileMapArea {
     pub fn new(
         ubase: usize,
         perm: MapPerm,
-        inode: Arc<dyn InodeOps>,
+        inode: Arc<Inode>,
         index: InodeIndex,
         offset: usize,
         length: usize,

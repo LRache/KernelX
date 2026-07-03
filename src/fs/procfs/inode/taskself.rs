@@ -4,7 +4,7 @@ use core::cmp::min;
 
 use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::procfs::inode::fill_kstat_common;
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi::FileStat;
@@ -70,8 +70,8 @@ impl InodeOps for TaskDirSelfInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {

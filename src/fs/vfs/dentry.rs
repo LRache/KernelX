@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-use crate::fs::inode::{FileType, Index, InodeOps, Mode, Owner};
+use crate::fs::inode::{FileType, Index, Inode, Mode, Owner};
 use crate::fs::perm::{Perm, PermFlags};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
@@ -91,7 +91,7 @@ pub struct Dentry {
     parent: Option<Arc<Dentry>>,
     mount_location: SpinLock<Option<DentryLocation>>,
     children: SpinLock<BTreeMap<String, Weak<Dentry>>>,
-    inode: SpinLock<Weak<dyn InodeOps>>,
+    inode: SpinLock<Weak<Inode>>,
 
     /// All mounts that are mounted on this dentry. The last one is the topmost mount. For a dentry without mounts, it is empty.
     mount_stack: SpinLock<Vec<Arc<Dentry>>>,
@@ -457,11 +457,7 @@ impl Dentry {
         Ok(())
     }
 
-    fn check_sticky_remove_perm(
-        &self,
-        parent_inode: &Arc<dyn InodeOps>,
-        child_inode: &Arc<dyn InodeOps>,
-    ) -> SysResult<()> {
+    fn check_sticky_remove_perm(&self, parent_inode: &Arc<Inode>, child_inode: &Arc<Inode>) -> SysResult<()> {
         let parent_mode = parent_inode.mode()?;
         if !parent_mode.contains(Mode::S_ISVTX) {
             return Ok(());
@@ -485,7 +481,7 @@ impl Dentry {
         Err(Errno::EPERM)
     }
 
-    pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
+    pub fn new(name: &str, parent: &Arc<Dentry>, inode: &Arc<Inode>, sno: u32) -> Self {
         Self {
             inode_index: Index {
                 sno: sno,
@@ -501,7 +497,7 @@ impl Dentry {
         }
     }
 
-    pub fn root(inode: &Arc<dyn InodeOps>, sno: u32) -> Self {
+    pub fn root(inode: &Arc<Inode>, sno: u32) -> Self {
         Self {
             inode_index: Index {
                 sno,
@@ -553,7 +549,7 @@ impl Dentry {
             .ok_or(Errno::EOPNOTSUPP)
     }
 
-    pub fn get_inode(&self) -> Arc<dyn InodeOps> {
+    pub fn get_inode(&self) -> Arc<Inode> {
         let inode = self.inode.lock();
         match inode.upgrade() {
             None => {
@@ -698,7 +694,7 @@ impl Dentry {
         Ok(self)
     }
 
-    pub fn mount(self: &Arc<Self>, mount_to: &Arc<dyn InodeOps>, mount_to_sno: u32) -> Arc<Mount> {
+    pub fn mount(self: &Arc<Self>, mount_to: &Arc<Inode>, mount_to_sno: u32) -> Arc<Mount> {
         let (mount_parent, mountpoint) = self.new_mount_context();
         let mount = Arc::new(Mount::new(
             MountKind::Filesystem,
@@ -821,8 +817,8 @@ impl Dentry {
         name: &str,
         mode: Mode,
         owner: Owner,
-        create: impl FnOnce(&Arc<dyn InodeOps>, &str, Mode, Owner) -> SysResult<Arc<dyn InodeOps>>,
-    ) -> SysResult<Arc<dyn InodeOps>> {
+        create: impl FnOnce(&Arc<Inode>, &str, Mode, Owner) -> SysResult<Arc<Inode>>,
+    ) -> SysResult<Arc<Inode>> {
         self.check_child_mutation_perm()?;
 
         match self.lookup(name) {
@@ -853,22 +849,25 @@ impl Dentry {
             }
         }
 
-        let inode = create(&parent_inode, name, mode, owner)?;
-        let index = Index {
-            sno: self.sno(),
-            ino: inode.get_ino(),
-        };
+        let raw_inode = create(&parent_inode, name, mode, owner)?;
+        let inode = vfs().cache.insert(
+            &Index {
+                sno: self.sno(),
+                ino: raw_inode.get_ino(),
+            },
+            raw_inode,
+        )?;
 
-        Ok(vfs().cache.get_or_insert(index, inode))
+        Ok(inode)
     }
 
-    pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+    pub fn create(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<Inode>> {
         self.create_with(name, mode, owner, |parent_inode, name, mode, owner| {
             parent_inode.create(name, mode, owner)
         })
     }
 
-    pub fn mknod(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner, dev: u64) -> SysResult<Arc<dyn InodeOps>> {
+    pub fn mknod(self: &Arc<Self>, name: &str, mode: Mode, owner: Owner, dev: u64) -> SysResult<Arc<Inode>> {
         self.create_with(name, mode, owner, |parent_inode, name, mode, owner| {
             parent_inode.mknod(name, mode, owner, dev)
         })
@@ -926,6 +925,9 @@ impl Dentry {
 
     pub fn link(self: &Arc<Self>, name: &str, target: &Arc<Dentry>) -> SysResult<()> {
         self.check_child_mutation_perm()?;
+        if self.sno() != target.sno() {
+            return Err(Errno::EXDEV);
+        }
 
         match self.lookup(name) {
             Ok(_) => return Err(Errno::EEXIST),
@@ -935,19 +937,14 @@ impl Dentry {
 
         let target_inode = target.get_inode();
         self.get_inode().link(name, &target_inode)?;
-        vfs().cache.insert(
-            &Index {
-                sno: self.sno(),
-                ino: target_inode.get_ino(),
-            },
-            target_inode,
-        )?;
 
         Ok(())
     }
 
     pub fn rename(self: &Arc<Self>, old_name: &str, new_parent: &Arc<Dentry>, new_name: &str) -> SysResult<()> {
-        debug_assert!(self.sno() == new_parent.sno());
+        if self.sno() != new_parent.sno() {
+            return Err(Errno::EXDEV);
+        }
         debug_assert!(old_name != "." && old_name != "..");
         debug_assert!(new_name != "." && new_name != "..");
         if Arc::ptr_eq(self, new_parent) && old_name == new_name {

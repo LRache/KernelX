@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use bitflags::bitflags;
+use num_enum::TryFromPrimitive;
 
 pub(super) const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
 pub(super) const EXT4_SUPERBLOCK_SIZE: usize = 1024;
@@ -61,6 +62,8 @@ pub(super) const SB_FEATURE_COMPAT_OFF: usize = 0x5C;
 pub(super) const SB_FEATURE_INCOMPAT_OFF: usize = 0x60;
 pub(super) const SB_FEATURE_RO_COMPAT_OFF: usize = 0x64;
 pub(super) const SB_UUID_OFF: usize = 0x68;
+pub(super) const SB_HASH_SEED_OFF: usize = 0xEC;
+pub(super) const SB_FLAGS_OFF: usize = 0x160;
 pub(super) const SB_CHECKSUM_TYPE_OFF: usize = 0x175;
 pub(super) const SB_CHECKSUM_SEED_OFF: usize = 0x270;
 pub(super) const SB_CHECKSUM_OFF: usize = 0x3FC;
@@ -148,6 +151,24 @@ pub struct Ext4BitmapBlock {
     pub raw: Vec<u8>,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+pub enum Ext4DirEntryFileType {
+    Regular = 1,
+    Directory = 2,
+    CharacterDevice = 3,
+    BlockDevice = 4,
+    Fifo = 5,
+    Socket = 6,
+    Symlink = 7,
+}
+
+impl Ext4DirEntryFileType {
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 #[derive(Clone)]
 pub struct Ext4Inode {
     pub raw: Vec<u8>,
@@ -158,6 +179,9 @@ pub struct Ext4Inode {
     pub i_gid: u16,
     pub i_links_count: u16,
 
+    pub i_atime: u32,
+    pub i_ctime: u32,
+    pub i_mtime: u32,
     pub i_size: u64,
     pub i_blocks: u64,
     pub i_flags: Ext4InodeFlags,

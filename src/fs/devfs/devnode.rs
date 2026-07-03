@@ -3,26 +3,19 @@ use num_enum::TryFromPrimitive;
 
 use crate::driver::{BlockDriverOps, CharDriverOps};
 use crate::fs::file::{CharFile, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::InodeLockState;
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
-use crate::klib::SpinLock;
 
 pub struct CharDevInode {
     ino: u32,
     driver: Arc<dyn CharDriverOps>,
-    lock_state: SpinLock<InodeLockState>,
 }
 
 impl CharDevInode {
     pub fn new(ino: u32, driver: Arc<dyn CharDriverOps>) -> Self {
-        Self {
-            ino,
-            driver,
-            lock_state: SpinLock::new(InodeLockState::new(), "CharDevInode::lock_state"),
-        }
+        Self { ino, driver }
     }
 
     pub fn driver(&self) -> &Arc<dyn CharDriverOps> {
@@ -33,10 +26,6 @@ impl CharDevInode {
 impl InodeOps for CharDevInode {
     fn get_ino(&self) -> u32 {
         self.ino
-    }
-
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
     }
 
     fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
@@ -71,28 +60,19 @@ impl InodeOps for CharDevInode {
         "devfs"
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(CharFile::new(self.driver.clone(), self, dentry, flags))
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(CharFile::new(self.driver.clone(), inode, dentry, flags))
     }
 }
 
 pub struct BlockDevInode {
     ino: u32,
     driver: Arc<dyn BlockDriverOps>,
-    lock_state: SpinLock<InodeLockState>,
 }
 
 impl BlockDevInode {
     pub fn new(ino: u32, driver: Arc<dyn BlockDriverOps>) -> Self {
-        Self {
-            ino,
-            driver,
-            lock_state: SpinLock::new(InodeLockState::new(), "BlockDevInode::lock_state"),
-        }
-    }
-
-    pub fn driver(&self) -> &Arc<dyn BlockDriverOps> {
-        &self.driver
+        Self { ino, driver }
     }
 }
 
@@ -101,8 +81,8 @@ impl InodeOps for BlockDevInode {
         self.ino
     }
 
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
+    fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(Some(self.driver.clone()))
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
@@ -168,7 +148,7 @@ impl InodeOps for BlockDevInode {
         "devfs"
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

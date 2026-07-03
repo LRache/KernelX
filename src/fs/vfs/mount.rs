@@ -437,6 +437,9 @@ impl VirtualFileSystem {
         // translate the event location from `parent_mount`'s visible tree back
         // to the original source tree, using `parent_mount.source_root`.
         let source_dentry = Self::source_dentry_from_mount(parent_mount, mountpoint)?;
+        let Some(relative_path) = Self::relative_path_from_dentry(&parent_source_root, &source_dentry) else {
+            return Ok(Vec::new());
+        };
         let mut targets = Vec::new();
         for (receiver_mounts, kind) in [
             (group.peers(), PropagationTargetKind::Peer),
@@ -455,11 +458,7 @@ impl VirtualFileSystem {
                     continue;
                 }
                 // Mount event broadcast step 2:
-                // find the same source-tree location under this receiver's source root,
-                // then replay that relative path from the receiver's visible root.
-                let Some(relative_path) = Self::relative_path_from_dentry(&receiver_source_root, &source_dentry) else {
-                    continue;
-                };
+                // replay the shared source-tree relative path from the receiver's visible root.
                 let Some(receiver_root) = receiver.root() else {
                     continue;
                 };
@@ -698,19 +697,15 @@ impl VirtualFileSystem {
             if !Self::is_mount_record_active(mounted) {
                 return false;
             }
-            if let Some(mountpoint) = mounted.mountpoint()
-                && targets
-                    .iter()
-                    .any(|(target_mountpoint, _, _, _)| mountpoint.get_path() == target_mountpoint.get_path())
+            if targets
+                .iter()
+                .any(|(_, target_mount, _, _)| Arc::ptr_eq(mounted, target_mount))
             {
                 return false;
             }
-            !targets
+            targets
                 .iter()
-                .any(|(_, target_mount, _, _)| Arc::ptr_eq(mounted, target_mount))
-                && targets
-                    .iter()
-                    .any(|(_, target_mount, _, _)| mounted.is_descendant_of(target_mount))
+                .any(|(_, target_mount, _, _)| mounted.is_descendant_of(target_mount))
         }) {
             return Err(Errno::EBUSY);
         }

@@ -2,9 +2,9 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::driver::CharDriverOps;
+use crate::fs::Dentry;
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::inode::release_bsd_flock;
-use crate::fs::{Dentry, InodeOps};
+use crate::fs::inode::{Inode, release_bsd_flock};
 use crate::kernel::errno::SysResult;
 use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
@@ -12,7 +12,7 @@ use crate::kernel::uapi::FileStat;
 
 pub struct CharFile {
     driver: Arc<dyn CharDriverOps>,
-    inode: Arc<dyn InodeOps>,
+    inode: Arc<Inode>,
     dentry: Option<Arc<Dentry>>,
     readable: bool,
     writable: bool,
@@ -23,7 +23,7 @@ pub struct CharFile {
 impl CharFile {
     pub fn new(
         driver: Arc<dyn CharDriverOps>,
-        inode: Arc<dyn InodeOps>,
+        inode: Arc<Inode>,
         dentry: Option<Arc<Dentry>>,
         flags: FileFlags,
     ) -> Self {
@@ -82,7 +82,7 @@ impl FileOps for CharFile {
         self.dentry.as_ref()
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         Some(&self.inode)
     }
 

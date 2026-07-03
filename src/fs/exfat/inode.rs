@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeOps, Mode, Owner};
+use crate::fs::inode::{Inode as VfsInode, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::{FileStat, Uid};
@@ -29,15 +29,15 @@ impl InodeOps for Inode {
         "exfat"
     }
 
-    fn create(&self, _name: &str, _mode: Mode, _owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+    fn create(&self, _name: &str, _mode: Mode, _owner: Owner) -> SysResult<Self> {
         Err(Errno::EROFS)
     }
 
-    fn mknod(&self, _name: &str, _mode: Mode, _owner: Owner, _dev: u64) -> SysResult<Arc<dyn InodeOps>> {
+    fn mknod(&self, _name: &str, _mode: Mode, _owner: Owner, _dev: u64) -> SysResult<Self> {
         Err(Errno::EROFS)
     }
 
-    fn link(&self, _name: &str, _target: &Arc<dyn InodeOps>) -> SysResult<()> {
+    fn link(&self, _name: &str, _target: &Self) -> SysResult<()> {
         Err(Errno::EROFS)
     }
 
@@ -49,7 +49,7 @@ impl InodeOps for Inode {
         Err(Errno::EROFS)
     }
 
-    fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn InodeOps>, _new_name: &str) -> SysResult<()> {
+    fn rename(&self, _old_name: &str, _new_parent: &Self, _new_name: &str) -> SysResult<()> {
         Err(Errno::EROFS)
     }
 
@@ -101,7 +101,7 @@ impl InodeOps for Inode {
         Err(Errno::EROFS)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    fn wrap_file(&self, inode: Arc<VfsInode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

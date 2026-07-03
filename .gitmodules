@@ -4,7 +4,7 @@
 	branch = kernelx-patched
 [submodule "tools/qperf"]
 	path = tools/qperf
-	url = https://github.com/Starry-OS/qperf.git
+	url = git@github.com:LRache/qemu-qperf.git
 [submodule "tools/FlameGraph"]
 	path = tools/FlameGraph
 	url = https://github.com/brendangregg/FlameGraph.git

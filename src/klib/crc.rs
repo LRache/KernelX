@@ -1,3 +1,5 @@
+pub const CRC32C_INIT: u32 = 0xffff_ffff;
+
 const CRC32C_TABLE: [[u32; 256]; 8] = {
     const CRC32C_POLY_REVERSED: u32 = 0x82F63B78;
 
@@ -136,7 +138,7 @@ pub fn crc16_update(mut crc: u16, data: &[u8]) -> u16 {
         i += 8;
     }
 
-    // 处理剩余不足 8 字节的尾部
+    // Handle the remaining tail shorter than eight bytes.
     while i < len {
         let idx = (crc as u8) ^ data[i];
         crc = CRC16_TABLE[0][idx as usize] ^ (crc >> 8);

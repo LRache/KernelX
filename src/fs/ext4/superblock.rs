@@ -4,7 +4,6 @@ use alloc::vec::Vec;
 use core::mem;
 
 use crate::driver::BlockDriverOps;
-use crate::fs::InodeOps;
 use crate::fs::ext4::blockdev::Ext4BlockDevice;
 use crate::fs::ext4::ffi::*;
 use crate::fs::ext4::inode::Ext4Inode;
@@ -274,8 +273,10 @@ impl Ext4SuperBlock {
 }
 
 impl SuperBlockOps for Ext4SuperBlock {
-    fn get_inode(&self, ino: u32) -> SysResult<Arc<dyn InodeOps>> {
-        Ok(Arc::new(Ext4Inode::new(ino, self.inner())?))
+    type Inode = Ext4Inode;
+
+    fn get_inode(&self, ino: u32) -> SysResult<Self::Inode> {
+        Ext4Inode::new(ino, self.inner())
     }
 
     fn get_root_ino(&self) -> u32 {

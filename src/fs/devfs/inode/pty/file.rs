@@ -4,9 +4,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use num_enum::TryFromPrimitive;
 
 use crate::driver::char::tty::TtyIoctlResult;
+use crate::fs::Dentry;
 use crate::fs::file::{FileFlags, FileOps};
-use crate::fs::inode::release_bsd_flock;
-use crate::fs::{Dentry, InodeOps};
+use crate::fs::inode::{Inode, release_bsd_flock};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{EpollNotifier, Event, FileEvent};
 use crate::kernel::mm::AddrSpace;
@@ -18,19 +18,14 @@ use super::inner::PtyInner;
 
 pub(super) struct PtmxFile {
     inner: Arc<PtyInner>,
-    inode: Arc<dyn InodeOps>,
+    inode: Arc<Inode>,
     dentry: Option<Arc<Dentry>>,
     flags: SpinLock<FileFlags>,
     fd_refs: AtomicUsize,
 }
 
 impl PtmxFile {
-    pub(super) fn new(
-        inner: Arc<PtyInner>,
-        inode: Arc<dyn InodeOps>,
-        dentry: Option<Arc<Dentry>>,
-        flags: FileFlags,
-    ) -> Self {
+    pub(super) fn new(inner: Arc<PtyInner>, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Self {
         Self {
             inner,
             inode,
@@ -80,7 +75,7 @@ impl FileOps for PtmxFile {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         Some(&self.inode)
     }
 
@@ -175,14 +170,14 @@ impl FileOps for PtmxFile {
 
 pub struct PtsFile {
     inner: Arc<PtyInner>,
-    inode: Arc<dyn InodeOps>,
+    inode: Arc<Inode>,
     dentry: Option<Arc<Dentry>>,
     flags: SpinLock<FileFlags>,
     fd_refs: AtomicUsize,
 }
 
 impl PtsFile {
-    pub fn new(inner: Arc<PtyInner>, inode: Arc<dyn InodeOps>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Self {
+    pub fn new(inner: Arc<PtyInner>, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Self {
         Self {
             inner,
             inode,
@@ -226,7 +221,7 @@ impl FileOps for PtsFile {
         Ok(())
     }
 
-    fn get_inode(&self) -> Option<&Arc<dyn InodeOps>> {
+    fn get_inode(&self) -> Option<&Arc<Inode>> {
         Some(&self.inode)
     }
 

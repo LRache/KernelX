@@ -13,19 +13,14 @@ use crate::fs::ext4::ffi::*;
 use crate::fs::ext4::superblock::{SuperBlockInner, map_error_to_kernel};
 use crate::fs::ext4::util::{get_block_size, revision_tuple};
 use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
-use crate::fs::inode::{InodeLockState, InodeOps, Mode, Owner};
+use crate::fs::inode::{Inode, InodeOps, Mode, Owner};
 use crate::fs::{Dentry, FileType};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-#[cfg(feature = "fanotify")]
-use crate::kernel::event::Fanotify;
 use crate::kernel::ipc::Pipe;
-use crate::kernel::ipc::pipe::PipeInner;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::uapi::{FileStat, Uid};
-#[cfg(feature = "fanotify")]
-use crate::klib::LazyInitedCell;
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::SleepLock;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum InodeType {
@@ -479,11 +474,7 @@ pub struct Ext4Inode {
     cacheable_file: bool,
     cached_size: AtomicUsize,
     fast_cached_write: AtomicBool,
-    lock_state: SpinLock<InodeLockState>,
     page_cache: SleepLock<InodePageCache>,
-    pipe: SpinLock<Option<Arc<PipeInner>>>,
-    #[cfg(feature = "fanotify")]
-    fanotify: LazyInitedCell<Arc<Fanotify>>,
 }
 
 impl Ext4Inode {
@@ -506,11 +497,7 @@ impl Ext4Inode {
             cacheable_file,
             cached_size: AtomicUsize::new(cached_size),
             fast_cached_write: AtomicBool::new(fast_cached_write),
-            lock_state: SpinLock::new(InodeLockState::new(), "Ext4Inode::lock_state"),
             page_cache: SleepLock::new(InodePageCache::new(), "Ext4Inode::page_cache"),
-            pipe: SpinLock::new(None, "Ext4Inode::pipe"),
-            #[cfg(feature = "fanotify")]
-            fanotify: LazyInitedCell::new("Ext4Inode::fanotify"),
         })
     }
 
@@ -530,17 +517,6 @@ impl Ext4Inode {
                 Ok(value)
             }
         }
-    }
-
-    fn fifo_pipe_inner(&self) -> Arc<PipeInner> {
-        let mut pipe = self.pipe.lock();
-        if let Some(pipe) = &*pipe {
-            return pipe.clone();
-        }
-
-        let new_pipe = Arc::new(PipeInner::new(config::PIPE_CAPACITY));
-        *pipe = Some(new_pipe.clone());
-        new_pipe
     }
 
     fn is_cacheable_file(&self) -> bool {
@@ -769,21 +745,7 @@ impl InodeOps for Ext4Inode {
         "ext4"
     }
 
-    fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
-        Some(&self.lock_state)
-    }
-
-    #[cfg(feature = "fanotify")]
-    fn fanotify(&self) -> Option<Arc<Fanotify>> {
-        self.fanotify.get()
-    }
-
-    #[cfg(feature = "fanotify")]
-    fn ensure_fanotify(&self) -> Option<Arc<Fanotify>> {
-        Some(self.fanotify.get_or_init(|| Arc::new(Fanotify::new())))
-    }
-
-    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Arc<dyn InodeOps>> {
+    fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Self> {
         let child_ino = self.with_ref(|superblock, parent_ref| {
             if inode_type(parent_ref) != InodeType::Directory {
                 return Err(Errno::ENOTDIR);
@@ -860,7 +822,7 @@ impl InodeOps for Ext4Inode {
             }
         })?;
 
-        Ok(Arc::new(Self::new(child_ino, self.superblock.clone())?))
+        Self::new(child_ino, self.superblock.clone())
     }
 
     fn unlink(&self, name: &str) -> SysResult<()> {
@@ -877,8 +839,7 @@ impl InodeOps for Ext4Inode {
         })
     }
 
-    fn link(&self, name: &str, target: &Arc<dyn InodeOps>) -> SysResult<()> {
-        let target = target.downcast_ref::<Ext4Inode>().ok_or(Errno::EXDEV)?;
+    fn link(&self, name: &str, target: &Self) -> SysResult<()> {
         self.with_ref(|superblock, parent_ref| {
             let mut child_ref = superblock.read_inode_ref(target.ino)?;
             let result = (|| {
@@ -1054,11 +1015,7 @@ impl InodeOps for Ext4Inode {
         })
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Arc<dyn InodeOps>, new_name: &str) -> SysResult<()> {
-        let new_parent = new_parent.downcast_ref::<Ext4Inode>().ok_or(Errno::EXDEV)?;
-        if !Arc::ptr_eq(&self.superblock, &new_parent.superblock) {
-            return Err(Errno::EXDEV);
-        }
+    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
         if self.ino == new_parent.ino && old_name == new_name {
             return Ok(());
         }
@@ -1419,18 +1376,22 @@ impl InodeOps for Ext4Inode {
         self.superblock.lock().flush()
     }
 
-    fn open_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> SysResult<Arc<dyn FileOps>> {
+    fn open_file(
+        &self,
+        inode: Arc<Inode>,
+        dentry: Option<Arc<Dentry>>,
+        flags: FileFlags,
+    ) -> SysResult<Arc<dyn FileOps>> {
         if (self.mode()? & Mode::S_IFMT) == Mode::S_IFIFO {
-            let inner = self.fifo_pipe_inner();
-            let inode: Arc<dyn InodeOps> = self;
+            let inner = inode.fifo_pipe_inner();
             return Pipe::open_fifo(inner, inode, dentry, flags);
         }
 
-        Ok(self.wrap_file(dentry, flags))
+        Ok(self.wrap_file(inode, dentry, flags))
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(RandomAccessFile::new(self, dentry.unwrap(), flags))
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }
 
