@@ -104,12 +104,15 @@ impl Context {
     }
 
     fn verify_dir_block_checksum(&self, dir_ino: u32, dir_generation: u32, raw: &[u8]) -> SysResult<()> {
-        let off = dir_tail_offset(raw)?.ok_or_else(|| {
-            debug_errno(
+        let Some(off) = dir_tail_offset(raw)? else {
+            if try_parse_dx_node(raw, self.metadata_csum)? {
+                return Ok(());
+            }
+            return Err(debug_errno(
                 "verify_dir_block_checksum: missing directory tail checksum entry",
                 Errno::EIO,
-            )
-        })?;
+            ));
+        };
         let stored = get_u32_le(raw, off + 8)?;
         let calc = self.dir_block_checksum(dir_ino, dir_generation, raw)?;
         if stored != calc {

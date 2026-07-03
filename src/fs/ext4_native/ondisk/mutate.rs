@@ -1,19 +1,83 @@
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cmp;
 
 use crate::kernel::errno::{Errno, SysResult};
+use crate::klib::crc::crc32c_update;
 
 use super::*;
 
 const ROOT_EXTENT_MAX: u16 = ((INODE_BLOCK_ARRAY_SIZE - EXTENT_HEADER_SIZE) / EXTENT_ENTRY_SIZE) as u16;
 const DEFAULT_EXTRA_ISIZE: u16 = 32;
 const EXT_INIT_MAX_LEN: u16 = 32768;
+const DX_ROOT_INFO_OFF: usize = 24;
+const DX_ROOT_ENTRY_OFF: usize = 32;
+const DX_NODE_ENTRY_OFF: usize = 8;
+const DX_ENTRY_SIZE: usize = 8;
+const EXT4_SUPERBLOCK_FLAGS_UNSIGNED_HASH: u32 = 0x0002;
 
 #[derive(Clone, Copy)]
 struct BuiltExtentNode {
     first_lblk: u32,
     pblk: u64,
     depth: u16,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HTreeHashVersion {
+    Legacy = 0,
+    HalfMd4 = 1,
+    Tea = 2,
+    LegacyUnsigned = 3,
+    HalfMd4Unsigned = 4,
+    TeaUnsigned = 5,
+}
+
+impl HTreeHashVersion {
+    fn from_raw(version: u8, superblock_flags: u32) -> SysResult<Self> {
+        let version =
+            if version <= HTreeHashVersion::Tea as u8 && superblock_flags & EXT4_SUPERBLOCK_FLAGS_UNSIGNED_HASH != 0 {
+                version + 3
+            } else {
+                version
+            };
+        match version {
+            0 => Ok(Self::Legacy),
+            1 => Ok(Self::HalfMd4),
+            2 => Ok(Self::Tea),
+            3 => Ok(Self::LegacyUnsigned),
+            4 => Ok(Self::HalfMd4Unsigned),
+            5 => Ok(Self::TeaUnsigned),
+            _ => Err(Errno::EOPNOTSUPP),
+        }
+    }
+
+    fn unsigned(self) -> bool {
+        matches!(self, Self::LegacyUnsigned | Self::HalfMd4Unsigned | Self::TeaUnsigned)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HTreeNode {
+    entry_offset: usize,
+    limit: u16,
+    count: u16,
+}
+
+struct HTreeLeafPath {
+    index_pblk: u64,
+    index_raw: Vec<u8>,
+    index_node: HTreeNode,
+    index_position: usize,
+    leaf_pblk: u64,
+}
+
+struct HashedDirectoryEntry {
+    hash: u32,
+    ino: u32,
+    name: Vec<u8>,
+    file_type: u8,
+    rec_len: u16,
 }
 
 impl Context {
@@ -373,9 +437,6 @@ impl Context {
         child_ino: u32,
         file_type: Ext4DirEntryFileType,
     ) -> SysResult<()> {
-        if dir_inode.i_flags.contains(Ext4InodeFlags::INDEX) {
-            return ret_errno("insert_dirent: htree indexed directory unsupported", Errno::EOPNOTSUPP);
-        }
         if dir_inode.i_flags.contains(Ext4InodeFlags::INLINE_DATA) {
             return ret_errno("insert_dirent: inline_data directory unsupported", Errno::EOPNOTSUPP);
         }
@@ -384,6 +445,9 @@ impl Context {
         }
         if name.is_empty() || name.len() > EXT4_MAX_NAME_LEN {
             return ret_errno("insert_dirent: invalid file name length", Errno::EINVAL);
+        }
+        if dir_inode.i_flags.contains(Ext4InodeFlags::INDEX) {
+            return self.insert_indexed_dirent(dir_ino, dir_inode, name, child_ino, file_type);
         }
 
         let root = self.parse_extent_root(dir_inode)?;
@@ -440,9 +504,6 @@ impl Context {
     }
 
     pub fn remove_dirent(&self, dir_ino: u32, dir_inode: &mut Ext4Inode, name: &[u8]) -> SysResult<(u32, u8)> {
-        if dir_inode.i_flags.contains(Ext4InodeFlags::INDEX) {
-            return ret_errno("remove_dirent: htree indexed directory unsupported", Errno::EOPNOTSUPP);
-        }
         if dir_inode.i_flags.contains(Ext4InodeFlags::INLINE_DATA) {
             return ret_errno("remove_dirent: inline_data directory unsupported", Errno::EOPNOTSUPP);
         }
@@ -451,6 +512,9 @@ impl Context {
         }
         if name.is_empty() || name.len() > EXT4_MAX_NAME_LEN {
             return ret_errno("remove_dirent: invalid file name length", Errno::EINVAL);
+        }
+        if dir_inode.i_flags.contains(Ext4InodeFlags::INDEX) {
+            return self.remove_indexed_dirent(dir_ino, dir_inode, name);
         }
 
         let root = self.parse_extent_root(dir_inode)?;
@@ -473,14 +537,14 @@ impl Context {
     }
 
     pub fn patch_dotdot(&self, dir_ino: u32, dir_inode: &Ext4Inode, parent_ino: u32) -> SysResult<()> {
-        if dir_inode.i_flags.contains(Ext4InodeFlags::INDEX) {
-            return ret_errno("patch_dotdot: htree indexed directory unsupported", Errno::EOPNOTSUPP);
-        }
         if dir_inode.i_flags.contains(Ext4InodeFlags::INLINE_DATA) {
             return ret_errno("patch_dotdot: inline_data directory unsupported", Errno::EOPNOTSUPP);
         }
         if !dir_inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
             return ret_errno("patch_dotdot: non-extent directory unsupported", Errno::EOPNOTSUPP);
+        }
+        if dir_inode.i_flags.contains(Ext4InodeFlags::INDEX) {
+            return self.patch_indexed_dotdot(dir_ino, dir_inode, parent_ino);
         }
 
         let root = self.parse_extent_root(dir_inode)?;
@@ -497,6 +561,395 @@ impl Context {
         }
 
         ret_errno("patch_dotdot: missing '..' entry", Errno::EIO)
+    }
+
+    fn read_directory_logical_raw(&self, dir_ino: u32, dir_inode: &Ext4Inode, lblk: u32) -> SysResult<(u64, Vec<u8>)> {
+        let root = self.parse_extent_root(dir_inode)?;
+        let pblk = lookup_lblk_mut(self, root, dir_ino, dir_inode.i_generation, lblk)?
+            .ok_or_else(|| debug_errno("read_directory_logical_raw: missing directory data block", Errno::EIO))?;
+        Ok((pblk, self.read_fs_block(pblk)?))
+    }
+
+    fn insert_indexed_dirent(
+        &self,
+        dir_ino: u32,
+        dir_inode: &mut Ext4Inode,
+        name: &[u8],
+        child_ino: u32,
+        file_type: Ext4DirEntryFileType,
+    ) -> SysResult<()> {
+        let (root_pblk, root_raw) = self.read_directory_logical_raw(dir_ino, dir_inode, 0)?;
+        let (hash_version, _, _) = self.parse_htree_root(&root_raw)?;
+        let hash = htree_hash(name, self.hash_seed, hash_version)?;
+        let leaf = self.find_indexed_directory_leaf(dir_ino, dir_inode, hash, root_pblk, root_raw)?;
+
+        let mut dir_block = self.read_dir_block(dir_ino, dir_inode.i_generation, leaf.leaf_pblk)?;
+        let old_block = dir_block.clone();
+        if insert_dirent_into_block(&mut dir_block, name, child_ino, file_type)? {
+            self.write_dir_block(dir_ino, dir_inode.i_generation, &mut dir_block)?;
+            if let Err(err) = self.write_inode(dir_inode) {
+                let mut restore = old_block;
+                let _ = self.write_dir_block(dir_ino, dir_inode.i_generation, &mut restore);
+                return Err(err);
+            }
+            return Ok(());
+        }
+
+        self.split_indexed_directory_leaf(dir_ino, dir_inode, leaf, hash_version, hash, name, child_ino, file_type)
+    }
+
+    fn remove_indexed_dirent(&self, dir_ino: u32, dir_inode: &Ext4Inode, name: &[u8]) -> SysResult<(u32, u8)> {
+        let (_, root_raw) = self.read_directory_logical_raw(dir_ino, dir_inode, 0)?;
+        let (hash_version, root, indirect_levels) = self.parse_htree_root(&root_raw)?;
+        let hash = htree_hash(name, self.hash_seed, hash_version)?;
+        let root_start = htree_find_position(&root_raw, root, hash);
+
+        match indirect_levels {
+            0 => {
+                let mut pos = root_start;
+                while pos < root.count as usize {
+                    if pos != root_start && !htree_hash_matches(&root_raw, root, pos, hash) {
+                        break;
+                    }
+                    let leaf_lblk = htree_entry_block(&root_raw, root, pos)?;
+                    if let Some(removed) = self.try_remove_indexed_leaf(dir_ino, dir_inode, leaf_lblk, name)? {
+                        return Ok(removed);
+                    }
+                    pos += 1;
+                }
+            }
+            1 => {
+                let mut root_pos = root_start;
+                while root_pos < root.count as usize {
+                    if root_pos != root_start && !htree_hash_matches(&root_raw, root, root_pos, hash) {
+                        break;
+                    }
+
+                    let node_lblk = htree_entry_block(&root_raw, root, root_pos)?;
+                    let (_, node_raw) = self.read_directory_logical_raw(dir_ino, dir_inode, node_lblk)?;
+                    let node = self.parse_htree_node(&node_raw)?;
+                    let node_start = if root_pos == root_start {
+                        htree_find_position(&node_raw, node, hash)
+                    } else {
+                        0
+                    };
+
+                    let mut node_pos = node_start;
+                    while node_pos < node.count as usize {
+                        if node_pos != node_start && !htree_hash_matches(&node_raw, node, node_pos, hash) {
+                            break;
+                        }
+                        let leaf_lblk = htree_entry_block(&node_raw, node, node_pos)?;
+                        if let Some(removed) = self.try_remove_indexed_leaf(dir_ino, dir_inode, leaf_lblk, name)? {
+                            return Ok(removed);
+                        }
+                        node_pos += 1;
+                    }
+
+                    root_pos += 1;
+                }
+            }
+            _ => return Err(Errno::EOPNOTSUPP),
+        }
+
+        ret_errno("remove_indexed_dirent: name not found", Errno::ENOENT)
+    }
+
+    fn try_remove_indexed_leaf(
+        &self,
+        dir_ino: u32,
+        dir_inode: &Ext4Inode,
+        leaf_lblk: u32,
+        name: &[u8],
+    ) -> SysResult<Option<(u32, u8)>> {
+        let (leaf_pblk, _) = self.read_directory_logical_raw(dir_ino, dir_inode, leaf_lblk)?;
+        let mut dir_block = self.read_dir_block(dir_ino, dir_inode.i_generation, leaf_pblk)?;
+        let Some(removed) = remove_dirent_from_block(&mut dir_block, name)? else {
+            return Ok(None);
+        };
+        self.write_dir_block(dir_ino, dir_inode.i_generation, &mut dir_block)?;
+        Ok(Some(removed))
+    }
+
+    fn patch_indexed_dotdot(&self, dir_ino: u32, dir_inode: &Ext4Inode, parent_ino: u32) -> SysResult<()> {
+        let (pblk, mut raw) = self.read_directory_logical_raw(dir_ino, dir_inode, 0)?;
+        let dot_len = get_u16_le(&raw, 4)? as usize;
+        let header_end = dot_len
+            .checked_add(DIR_ENTRY_HEADER_SIZE)
+            .ok_or_else(|| debug_errno("patch_indexed_dotdot: dotdot header overflow", Errno::EINVAL))?;
+        if dot_len == 0 || header_end > raw.len() {
+            return ret_errno("patch_indexed_dotdot: invalid dot entry length", Errno::EIO);
+        }
+        let name_len = get_u8(&raw, dot_len + 6)? as usize;
+        let name_off = dot_len
+            .checked_add(DIR_ENTRY_HEADER_SIZE)
+            .ok_or_else(|| debug_errno("patch_indexed_dotdot: name offset overflow", Errno::EINVAL))?;
+        let name_end = name_off
+            .checked_add(name_len)
+            .ok_or_else(|| debug_errno("patch_indexed_dotdot: name end overflow", Errno::EINVAL))?;
+        if name_end > raw.len() || &raw[name_off..name_end] != b".." {
+            return ret_errno("patch_indexed_dotdot: missing '..' entry", Errno::EIO);
+        }
+
+        put_u32_le(&mut raw, dot_len, parent_ino)?;
+        self.set_dirent_tail_checksum(dir_ino, dir_inode.i_generation, &mut raw)?;
+        self.write_fs_block(pblk, &raw)
+    }
+
+    fn find_indexed_directory_leaf(
+        &self,
+        dir_ino: u32,
+        dir_inode: &Ext4Inode,
+        hash: u32,
+        root_pblk: u64,
+        root_raw: Vec<u8>,
+    ) -> SysResult<HTreeLeafPath> {
+        let (_, root, indirect_levels) = self.parse_htree_root(&root_raw)?;
+        let root_position = htree_find_position(&root_raw, root, hash);
+
+        match indirect_levels {
+            0 => {
+                let leaf_lblk = htree_entry_block(&root_raw, root, root_position)?;
+                let (leaf_pblk, _) = self.read_directory_logical_raw(dir_ino, dir_inode, leaf_lblk)?;
+                Ok(HTreeLeafPath {
+                    index_pblk: root_pblk,
+                    index_raw: root_raw,
+                    index_node: root,
+                    index_position: root_position,
+                    leaf_pblk,
+                })
+            }
+            1 => {
+                let node_lblk = htree_entry_block(&root_raw, root, root_position)?;
+                let (node_pblk, node_raw) = self.read_directory_logical_raw(dir_ino, dir_inode, node_lblk)?;
+                let node = self.parse_htree_node(&node_raw)?;
+                let node_position = htree_find_position(&node_raw, node, hash);
+                let leaf_lblk = htree_entry_block(&node_raw, node, node_position)?;
+                let (leaf_pblk, _) = self.read_directory_logical_raw(dir_ino, dir_inode, leaf_lblk)?;
+                Ok(HTreeLeafPath {
+                    index_pblk: node_pblk,
+                    index_raw: node_raw,
+                    index_node: node,
+                    index_position: node_position,
+                    leaf_pblk,
+                })
+            }
+            _ => Err(Errno::EOPNOTSUPP),
+        }
+    }
+
+    fn parse_htree_root(&self, raw: &[u8]) -> SysResult<(HTreeHashVersion, HTreeNode, u8)> {
+        let block_size = self.block_size as usize;
+        if raw.len() != block_size
+            || get_u16_le(raw, 4)? != DX_ROOT_INFO_OFF as u16 - 12
+            || get_u16_le(raw, 16)? as usize != block_size - 12
+            || get_u32_le(raw, DX_ROOT_INFO_OFF)? != 0
+            || get_u8(raw, DX_ROOT_INFO_OFF + 5)? != 8
+            || get_u8(raw, DX_ROOT_INFO_OFF + 7)? != 0
+        {
+            return Err(Errno::EIO);
+        }
+
+        let hash_version = HTreeHashVersion::from_raw(get_u8(raw, DX_ROOT_INFO_OFF + 4)?, self.flags)?;
+        let indirect_levels = get_u8(raw, DX_ROOT_INFO_OFF + 6)?;
+        if indirect_levels > 1 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+
+        let entry_space = block_size
+            .checked_sub(DX_ROOT_ENTRY_OFF)
+            .and_then(|space| space.checked_sub(self.htree_tail_size()))
+            .ok_or_else(|| debug_errno("parse_htree_root: entry space underflow", Errno::EIO))?;
+        let expected_limit = entry_space / DX_ENTRY_SIZE;
+        let node = self.parse_htree_entries(raw, DX_ROOT_ENTRY_OFF, expected_limit)?;
+        Ok((hash_version, node, indirect_levels))
+    }
+
+    fn parse_htree_node(&self, raw: &[u8]) -> SysResult<HTreeNode> {
+        let block_size = self.block_size as usize;
+        if raw.len() != block_size || get_u16_le(raw, 4)? as usize != block_size {
+            return Err(Errno::EIO);
+        }
+        let entry_space = block_size
+            .checked_sub(DX_NODE_ENTRY_OFF)
+            .and_then(|space| space.checked_sub(self.htree_tail_size()))
+            .ok_or_else(|| debug_errno("parse_htree_node: entry space underflow", Errno::EIO))?;
+        let expected_limit = entry_space / DX_ENTRY_SIZE;
+        self.parse_htree_entries(raw, DX_NODE_ENTRY_OFF, expected_limit)
+    }
+
+    fn parse_htree_entries(&self, raw: &[u8], entry_offset: usize, expected_limit: usize) -> SysResult<HTreeNode> {
+        if entry_offset + 4 > raw.len() || expected_limit > u16::MAX as usize {
+            return Err(Errno::EIO);
+        }
+        let limit = get_u16_le(raw, entry_offset)?;
+        let count = get_u16_le(raw, entry_offset + 2)?;
+        if limit as usize != expected_limit || count == 0 || count > limit {
+            return Err(Errno::EIO);
+        }
+        let entries_end = entry_offset
+            .checked_add(
+                (limit as usize)
+                    .checked_mul(DX_ENTRY_SIZE)
+                    .ok_or_else(|| debug_errno("parse_htree_entries: entries span overflow", Errno::EINVAL))?,
+            )
+            .ok_or_else(|| debug_errno("parse_htree_entries: entries end overflow", Errno::EINVAL))?;
+        if entries_end > raw.len() {
+            return Err(Errno::EIO);
+        }
+        Ok(HTreeNode {
+            entry_offset,
+            limit,
+            count,
+        })
+    }
+
+    fn htree_tail_size(&self) -> usize {
+        if self.metadata_csum { 8 } else { 0 }
+    }
+
+    fn split_indexed_directory_leaf(
+        &self,
+        dir_ino: u32,
+        dir_inode: &mut Ext4Inode,
+        mut leaf: HTreeLeafPath,
+        hash_version: HTreeHashVersion,
+        hash: u32,
+        name: &[u8],
+        child_ino: u32,
+        file_type: Ext4DirEntryFileType,
+    ) -> SysResult<()> {
+        if leaf.index_node.count >= leaf.index_node.limit {
+            return Err(Errno::EOPNOTSUPP);
+        }
+
+        let original_inode = dir_inode.clone();
+        let old_index_raw = leaf.index_raw.clone();
+        let old_leaf_block = self.read_dir_block(dir_ino, dir_inode.i_generation, leaf.leaf_pblk)?;
+        let mut entries = self.collect_hashed_directory_entries(&old_leaf_block, hash_version)?;
+        entries.push(HashedDirectoryEntry {
+            hash,
+            ino: child_ino,
+            name: name.to_vec(),
+            file_type: file_type.as_u8(),
+            rec_len: dirent_min_len(name.len())?,
+        });
+        entries.sort_by_key(|entry| entry.hash);
+
+        let usable_len = writable_dir_bytes(self.block_size as usize, self.metadata_csum)?;
+        let mid = split_hashed_entries(&entries, usable_len)?;
+        let new_hash = entries[mid]
+            .hash
+            .wrapping_add(u32::from(entries[mid].hash == entries[mid - 1].hash));
+        let new_lblk = u32::try_from(dir_inode.i_size / self.block_size as u64)
+            .map_err(|_| debug_errno("split_indexed_directory_leaf: new logical block overflow", Errno::EFBIG))?;
+        let new_pblk = self.alloc_block()?;
+
+        let result = (|| -> SysResult<()> {
+            self.insert_extent_1blk(dir_ino, dir_inode, new_lblk, new_pblk)?;
+            dir_inode.i_size = dir_inode
+                .i_size
+                .checked_add(self.block_size as u64)
+                .ok_or_else(|| debug_errno("split_indexed_directory_leaf: directory size overflow", Errno::EINVAL))?;
+
+            let mut left = dir_block_from_hashed_entries(leaf.leaf_pblk, &entries[..mid], usable_len)?;
+            let mut right = dir_block_from_hashed_entries(new_pblk, &entries[mid..], usable_len)?;
+
+            leaf.index_node = htree_insert_entry(
+                &mut leaf.index_raw,
+                leaf.index_node,
+                leaf.index_position,
+                new_hash,
+                new_lblk,
+            )?;
+            self.set_htree_block_checksum(dir_inode, &mut leaf.index_raw, leaf.index_node)?;
+
+            self.write_dir_block(dir_ino, dir_inode.i_generation, &mut right)?;
+            self.write_dir_block(dir_ino, dir_inode.i_generation, &mut left)?;
+            self.write_fs_block(leaf.index_pblk, &leaf.index_raw)?;
+            self.write_inode(dir_inode)
+        })();
+
+        if let Err(err) = result {
+            let mut restore_leaf = old_leaf_block;
+            let _ = self.write_dir_block(dir_ino, original_inode.i_generation, &mut restore_leaf);
+            let _ = self.write_fs_block(leaf.index_pblk, &old_index_raw);
+            let mut restore_inode = original_inode.clone();
+            let _ = self.write_inode(&mut restore_inode);
+            let _ = self.free_block(new_pblk);
+            *dir_inode = original_inode;
+            return Err(err);
+        }
+
+        Ok(())
+    }
+
+    fn collect_hashed_directory_entries(
+        &self,
+        block: &DirBlock,
+        hash_version: HTreeHashVersion,
+    ) -> SysResult<Vec<HashedDirectoryEntry>> {
+        let mut entries = Vec::new();
+        for entry in &block.entries {
+            if entry.inode == 0 || entry.name_len == 0 {
+                continue;
+            }
+            let name = entry.name_slice().to_vec();
+            entries.push(HashedDirectoryEntry {
+                hash: htree_hash(&name, self.hash_seed, hash_version)?,
+                ino: entry.inode,
+                name,
+                file_type: entry.file_type,
+                rec_len: dirent_min_len(entry.name_len as usize)?,
+            });
+        }
+        Ok(entries)
+    }
+
+    fn set_htree_block_checksum(&self, inode: &Ext4Inode, raw: &mut [u8], node: HTreeNode) -> SysResult<()> {
+        if !self.metadata_csum {
+            return Ok(());
+        }
+
+        let tail = node
+            .entry_offset
+            .checked_add(node.limit as usize * DX_ENTRY_SIZE)
+            .ok_or_else(|| debug_errno("set_htree_block_checksum: tail offset overflow", Errno::EINVAL))?;
+        if tail
+            .checked_add(8)
+            .ok_or_else(|| debug_errno("set_htree_block_checksum: tail end overflow", Errno::EINVAL))?
+            > raw.len()
+        {
+            return Err(Errno::EIO);
+        }
+
+        put_u32_le(raw, tail + 4, 0)?;
+        let checksum_len = node
+            .entry_offset
+            .checked_add(node.count as usize * DX_ENTRY_SIZE)
+            .ok_or_else(|| debug_errno("set_htree_block_checksum: checksum length overflow", Errno::EINVAL))?;
+        let mut checksum = self.checksum_seed;
+        checksum = crc32c_update(checksum, &inode.ino.to_le_bytes());
+        checksum = crc32c_update(checksum, &inode.i_generation.to_le_bytes());
+        checksum = crc32c_update(checksum, &raw[..checksum_len]);
+        checksum = crc32c_update(checksum, &raw[tail..tail + 8]);
+        put_u32_le(raw, tail + 4, checksum)
+    }
+
+    fn set_dirent_tail_checksum(&self, dir_ino: u32, dir_generation: u32, raw: &mut [u8]) -> SysResult<()> {
+        if !self.metadata_csum {
+            return Ok(());
+        }
+        let Some(off) = dir_entry_tail_offset(raw)? else {
+            return Ok(());
+        };
+
+        put_u32_le(raw, off + 8, 0)?;
+        let mut checksum = self.checksum_seed;
+        checksum = crc32c_update(checksum, &dir_ino.to_le_bytes());
+        checksum = crc32c_update(checksum, &dir_generation.to_le_bytes());
+        checksum = crc32c_update(checksum, &raw[..off]);
+        put_u32_le(raw, off + 8, checksum)
     }
 
     fn encode_extent_root(&self, inode: &mut Ext4Inode, root: &mut ExtentBlock) -> SysResult<()> {
@@ -1082,6 +1535,28 @@ fn writable_dir_bytes(block_size: usize, metadata_csum: bool) -> SysResult<usize
     }
 }
 
+fn dir_entry_tail_offset(raw: &[u8]) -> SysResult<Option<usize>> {
+    if raw.len() < DIR_ENTRY_TAIL_SIZE {
+        return Ok(None);
+    }
+
+    let off = raw.len() - DIR_ENTRY_TAIL_SIZE;
+    let reserved_zero1 = get_u32_le(raw, off)?;
+    let rec_len = get_u16_le(raw, off + 4)?;
+    let reserved_zero2 = get_u8(raw, off + 6)?;
+    let reserved_ft = get_u8(raw, off + 7)?;
+
+    if reserved_zero1 == 0
+        && rec_len == DIR_ENTRY_TAIL_SIZE as u16
+        && reserved_zero2 == 0
+        && reserved_ft == EXT4_DIRENTRY_DIR_CSUM
+    {
+        Ok(Some(off))
+    } else {
+        Ok(None)
+    }
+}
+
 fn new_dir_entry(inode: u32, name: &[u8], file_type: Ext4DirEntryFileType, rec_len: u16) -> SysResult<DirEntry2> {
     if name.len() > EXT4_MAX_NAME_LEN {
         return ret_errno("new_dir_entry: file name is too long", Errno::EINVAL);
@@ -1108,6 +1583,54 @@ fn unused_dir_entry(rec_len: u16) -> DirEntry2 {
         name: [0u8; EXT4_MAX_NAME_LEN],
         entry_off: 0,
     }
+}
+
+fn dir_block_from_hashed_entries(
+    pblk: u64,
+    entries: &[HashedDirectoryEntry],
+    usable_len: usize,
+) -> SysResult<DirBlock> {
+    if entries.is_empty() {
+        return ret_errno("dir_block_from_hashed_entries: empty leaf", Errno::EIO);
+    }
+
+    let mut dir_entries = Vec::new();
+    let mut offset = 0usize;
+    for (index, entry) in entries.iter().enumerate() {
+        let rec_len = if index + 1 == entries.len() {
+            usable_len
+                .checked_sub(offset)
+                .ok_or_else(|| debug_errno("dir_block_from_hashed_entries: rec_len underflow", Errno::EINVAL))?
+        } else {
+            entry.rec_len as usize
+        };
+        if rec_len < entry.rec_len as usize || rec_len > u16::MAX as usize {
+            return ret_errno("dir_block_from_hashed_entries: invalid rec_len", Errno::EIO);
+        }
+
+        let mut name = [0u8; EXT4_MAX_NAME_LEN];
+        if entry.name.len() > EXT4_MAX_NAME_LEN {
+            return ret_errno("dir_block_from_hashed_entries: file name is too long", Errno::EINVAL);
+        }
+        name[..entry.name.len()].copy_from_slice(&entry.name);
+        dir_entries.push(DirEntry2 {
+            inode: entry.ino,
+            rec_len: rec_len as u16,
+            name_len: entry.name.len() as u8,
+            file_type: entry.file_type,
+            name,
+            entry_off: 0,
+        });
+        offset = offset
+            .checked_add(entry.rec_len as usize)
+            .ok_or_else(|| debug_errno("dir_block_from_hashed_entries: offset overflow", Errno::EINVAL))?;
+    }
+
+    Ok(DirBlock {
+        pblk,
+        raw: Vec::new(),
+        entries: dir_entries,
+    })
 }
 
 fn insert_dirent_into_block(
@@ -1181,4 +1704,284 @@ fn remove_dirent_from_block(block: &mut DirBlock, name: &[u8]) -> SysResult<Opti
     }
 
     Ok(None)
+}
+
+fn htree_entry_offset(node: HTreeNode, index: usize) -> SysResult<usize> {
+    if index >= node.count as usize {
+        return Err(Errno::EIO);
+    }
+    node.entry_offset
+        .checked_add(
+            index
+                .checked_mul(DX_ENTRY_SIZE)
+                .ok_or_else(|| debug_errno("htree_entry_offset: index overflow", Errno::EINVAL))?,
+        )
+        .ok_or_else(|| debug_errno("htree_entry_offset: offset overflow", Errno::EINVAL))
+}
+
+fn htree_entry_hash(raw: &[u8], node: HTreeNode, index: usize) -> SysResult<u32> {
+    get_u32_le(raw, htree_entry_offset(node, index)?)
+}
+
+fn htree_entry_block(raw: &[u8], node: HTreeNode, index: usize) -> SysResult<u32> {
+    get_u32_le(raw, htree_entry_offset(node, index)? + 4)
+}
+
+fn htree_insert_entry(
+    raw: &mut [u8],
+    mut node: HTreeNode,
+    position: usize,
+    hash: u32,
+    logical_block: u32,
+) -> SysResult<HTreeNode> {
+    if position >= node.count as usize || node.count >= node.limit {
+        return Err(Errno::EIO);
+    }
+
+    let insert_index = position
+        .checked_add(1)
+        .ok_or_else(|| debug_errno("htree_insert_entry: insert index overflow", Errno::EINVAL))?;
+    let insert_offset = node
+        .entry_offset
+        .checked_add(
+            insert_index
+                .checked_mul(DX_ENTRY_SIZE)
+                .ok_or_else(|| debug_errno("htree_insert_entry: insert offset span overflow", Errno::EINVAL))?,
+        )
+        .ok_or_else(|| debug_errno("htree_insert_entry: insert offset overflow", Errno::EINVAL))?;
+    let old_end = node
+        .entry_offset
+        .checked_add(node.count as usize * DX_ENTRY_SIZE)
+        .ok_or_else(|| debug_errno("htree_insert_entry: old end overflow", Errno::EINVAL))?;
+    let new_end = old_end
+        .checked_add(DX_ENTRY_SIZE)
+        .ok_or_else(|| debug_errno("htree_insert_entry: new end overflow", Errno::EINVAL))?;
+    if new_end > raw.len() {
+        return Err(Errno::EIO);
+    }
+
+    raw.copy_within(insert_offset..old_end, insert_offset + DX_ENTRY_SIZE);
+    put_u32_le(raw, insert_offset, hash)?;
+    put_u32_le(raw, insert_offset + 4, logical_block)?;
+    node.count += 1;
+    put_u16_le(raw, node.entry_offset + 2, node.count)?;
+    Ok(node)
+}
+
+fn htree_hash_matches(raw: &[u8], node: HTreeNode, index: usize, hash: u32) -> bool {
+    htree_entry_hash(raw, node, index).is_ok_and(|entry_hash| entry_hash & !1 == hash)
+}
+
+fn htree_find_position(raw: &[u8], node: HTreeNode, hash: u32) -> usize {
+    let mut low = 1usize;
+    let mut high = node.count as usize;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if htree_entry_hash(raw, node, middle).unwrap_or(u32::MAX) > hash {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low - 1
+}
+
+fn split_hashed_entries(entries: &[HashedDirectoryEntry], usable_len: usize) -> SysResult<usize> {
+    if entries.len() < 2 {
+        return Err(Errno::EIO);
+    }
+
+    let mut current_size = 0usize;
+    for (index, entry) in entries.iter().enumerate() {
+        let rec_len = entry.rec_len as usize;
+        if index > 0
+            && current_size
+                .checked_add(rec_len)
+                .ok_or_else(|| debug_errno("split_hashed_entries: size overflow", Errno::EINVAL))?
+                > usable_len / 2
+        {
+            return Ok(index);
+        }
+        current_size = current_size
+            .checked_add(rec_len)
+            .ok_or_else(|| debug_errno("split_hashed_entries: current size overflow", Errno::EINVAL))?;
+    }
+
+    Ok(entries.len() - 1)
+}
+
+fn htree_hash(name: &[u8], seed: [u32; 4], version: HTreeHashVersion) -> SysResult<u32> {
+    if name.is_empty() || name.len() > EXT4_MAX_NAME_LEN {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
+    let mut state = seed;
+    match version {
+        HTreeHashVersion::Tea | HTreeHashVersion::TeaUnsigned => {
+            let mut remaining = name;
+            while !remaining.is_empty() {
+                let data = htree_prep_hashbuf(remaining, 16, version.unsigned());
+                htree_tea(&mut state, data);
+                remaining = remaining.get(cmp::min(16, remaining.len())..).ok_or(Errno::EIO)?;
+            }
+            Ok(htree_normalize_hash(state[0]))
+        }
+        HTreeHashVersion::Legacy | HTreeHashVersion::LegacyUnsigned => {
+            Ok(htree_normalize_hash(htree_legacy_hash(name, version.unsigned())))
+        }
+        HTreeHashVersion::HalfMd4 | HTreeHashVersion::HalfMd4Unsigned => {
+            let mut remaining = name;
+            while !remaining.is_empty() {
+                let data = htree_prep_hashbuf(remaining, 32, version.unsigned());
+                htree_half_md4(&mut state, data);
+                remaining = remaining.get(cmp::min(32, remaining.len())..).ok_or(Errno::EIO)?;
+            }
+            Ok(htree_normalize_hash(state[1]))
+        }
+    }
+}
+
+fn htree_normalize_hash(mut hash: u32) -> u32 {
+    hash &= !1;
+    if hash == 0xffff_fffe {
+        hash = 0xffff_fffc;
+    }
+    hash
+}
+
+fn htree_legacy_hash(name: &[u8], unsigned_char: bool) -> u32 {
+    let mut h1 = 0x12a3_fe2d_u32;
+    let mut h2 = 0x37ab_e8f9_u32;
+    let multi = 0x6d22_f5_u32;
+
+    for &byte in name {
+        let value = htree_char_value(byte, unsigned_char);
+        let mut h0 = h2.wrapping_add(h1 ^ value.wrapping_mul(multi));
+        if h0 & 0x8000_0000 != 0 {
+            h0 = h0.wrapping_sub(0x7fff_ffff);
+        }
+        h2 = h1;
+        h1 = h0;
+    }
+
+    h1.wrapping_shl(1)
+}
+
+fn htree_prep_hashbuf(name: &[u8], output_len: usize, unsigned_char: bool) -> [u32; 8] {
+    let padding =
+        (name.len() as u32) | ((name.len() as u32) << 8) | ((name.len() as u32) << 16) | ((name.len() as u32) << 24);
+    let output_words = output_len / core::mem::size_of::<u32>();
+    let len = cmp::min(name.len(), output_len);
+    let mut data = [0u32; 8];
+    let mut word = padding;
+    let mut word_index = 0usize;
+
+    for (i, &byte) in name[..len].iter().enumerate() {
+        if i % 4 == 0 {
+            word = padding;
+        }
+        word = word.wrapping_shl(8).wrapping_add(htree_char_value(byte, unsigned_char));
+        if i % 4 == 3 {
+            data[word_index] = word;
+            word_index += 1;
+            word = padding;
+        }
+    }
+
+    if word_index < output_words {
+        data[word_index] = word;
+        word_index += 1;
+    }
+    while word_index < output_words {
+        data[word_index] = padding;
+        word_index += 1;
+    }
+
+    data
+}
+
+fn htree_char_value(byte: u8, unsigned_char: bool) -> u32 {
+    if unsigned_char {
+        byte as u32
+    } else {
+        (byte as i8 as i32) as u32
+    }
+}
+
+fn htree_tea(state: &mut [u32; 4], data: [u32; 8]) {
+    let mut x = state[0];
+    let mut y = state[1];
+    for i in 1..=16u32 {
+        let sum = i.wrapping_mul(0x9e37_79b9);
+        x = x.wrapping_add(
+            y.wrapping_shl(4).wrapping_add(data[0]) ^ y.wrapping_add(sum) ^ y.wrapping_shr(5).wrapping_add(data[1]),
+        );
+        y = y.wrapping_add(
+            x.wrapping_shl(4).wrapping_add(data[2]) ^ x.wrapping_add(sum) ^ x.wrapping_shr(5).wrapping_add(data[3]),
+        );
+    }
+    state[0] = state[0].wrapping_add(x);
+    state[1] = state[1].wrapping_add(y);
+}
+
+fn htree_half_md4(state: &mut [u32; 4], data: [u32; 8]) {
+    let mut a = state[0];
+    let mut b = state[1];
+    let mut c = state[2];
+    let mut d = state[3];
+
+    md4_ff(&mut a, b, c, d, data[0], 3);
+    md4_ff(&mut d, a, b, c, data[1], 7);
+    md4_ff(&mut c, d, a, b, data[2], 11);
+    md4_ff(&mut b, c, d, a, data[3], 19);
+    md4_ff(&mut a, b, c, d, data[4], 3);
+    md4_ff(&mut d, a, b, c, data[5], 7);
+    md4_ff(&mut c, d, a, b, data[6], 11);
+    md4_ff(&mut b, c, d, a, data[7], 19);
+
+    md4_gg(&mut a, b, c, d, data[1], 3);
+    md4_gg(&mut d, a, b, c, data[3], 5);
+    md4_gg(&mut c, d, a, b, data[5], 9);
+    md4_gg(&mut b, c, d, a, data[7], 13);
+    md4_gg(&mut a, b, c, d, data[0], 3);
+    md4_gg(&mut d, a, b, c, data[2], 5);
+    md4_gg(&mut c, d, a, b, data[4], 9);
+    md4_gg(&mut b, c, d, a, data[6], 13);
+
+    md4_hh(&mut a, b, c, d, data[3], 3);
+    md4_hh(&mut d, a, b, c, data[7], 9);
+    md4_hh(&mut c, d, a, b, data[2], 11);
+    md4_hh(&mut b, c, d, a, data[6], 15);
+    md4_hh(&mut a, b, c, d, data[1], 3);
+    md4_hh(&mut d, a, b, c, data[5], 9);
+    md4_hh(&mut c, d, a, b, data[0], 11);
+    md4_hh(&mut b, c, d, a, data[4], 15);
+
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+}
+
+fn md4_ff(target: &mut u32, b: u32, c: u32, d: u32, x: u32, shift: u32) {
+    *target = target
+        .wrapping_add((b & c) | (!b & d))
+        .wrapping_add(x)
+        .rotate_left(shift);
+}
+
+fn md4_gg(target: &mut u32, b: u32, c: u32, d: u32, x: u32, shift: u32) {
+    *target = target
+        .wrapping_add((b & c) | (b & d) | (c & d))
+        .wrapping_add(x)
+        .wrapping_add(0x5a82_7999)
+        .rotate_left(shift);
+}
+
+fn md4_hh(target: &mut u32, b: u32, c: u32, d: u32, x: u32, shift: u32) {
+    *target = target
+        .wrapping_add(b ^ c ^ d)
+        .wrapping_add(x)
+        .wrapping_add(0x6ed9_eba1)
+        .rotate_left(shift);
 }

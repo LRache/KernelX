@@ -15,6 +15,8 @@ pub struct Context {
 
     // checksum / format identity
     pub(super) uuid: [u8; 16],
+    pub(super) hash_seed: [u32; 4],
+    pub(super) flags: u32,
     pub(super) checksum_seed: u32,
     pub(super) metadata_csum: bool,
 
