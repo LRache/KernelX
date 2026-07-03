@@ -176,18 +176,44 @@ impl Inode {
         *self.dents_cache.lock() = None;
     }
 
-    fn cached_dir_results(&self) -> Option<Vec<DirResult>> {
-        self.dents_cache.lock().clone()
-    }
-
     fn dir_results(&self, context: &Context, inode: &Ext4Inode) -> SysResult<Vec<DirResult>> {
-        if let Some(entries) = self.cached_dir_results() {
-            return Ok(entries);
+        if let Some(entries) = self.dents_cache.lock().as_ref() {
+            return Ok(entries.clone());
         }
 
         let entries = read_dir_results_from_disk(context, inode)?;
         *self.dents_cache.lock() = Some(entries.clone());
         Ok(entries)
+    }
+
+    fn dir_result_at(&self, context: &Context, inode: &Ext4Inode, index: usize) -> SysResult<Option<DirResult>> {
+        if let Some(entries) = self.dents_cache.lock().as_ref() {
+            return Ok(entries.get(index).cloned());
+        }
+
+        let entries = read_dir_results_from_disk(context, inode)?;
+        let result = entries.get(index).cloned();
+        *self.dents_cache.lock() = Some(entries);
+        Ok(result)
+    }
+
+    fn lookup_dir_entry(&self, context: &Context, inode: &Ext4Inode, needle: &[u8]) -> SysResult<u32> {
+        if let Some(entries) = self.dents_cache.lock().as_ref() {
+            return entries
+                .iter()
+                .find(|entry| entry.name.as_bytes() == needle)
+                .map(|entry| entry.ino)
+                .ok_or(Errno::ENOENT);
+        }
+
+        let entries = read_dir_results_from_disk(context, inode)?;
+        let result = entries
+            .iter()
+            .find(|entry| entry.name.as_bytes() == needle)
+            .map(|entry| entry.ino)
+            .ok_or(Errno::ENOENT);
+        *self.dents_cache.lock() = Some(entries);
+        result
     }
 
     fn mark_deleted(&self, inode: &Ext4Inode) {
@@ -1196,11 +1222,9 @@ impl InodeOps for Inode {
         let inode = self.inode.lock();
 
         ensure_dir_readable(&inode)?;
-        let entries = self.dir_results(&context, &inode)?;
-        if let Some(entry) = entries.get(index) {
-            return Ok(Some((entry.clone(), index + 1)));
-        }
-        Ok(None)
+        Ok(self
+            .dir_result_at(&context, &inode, index)?
+            .map(|entry| (entry, index + 1)))
     }
 
     fn lookup(&self, name: &str) -> SysResult<u32> {
@@ -1218,12 +1242,7 @@ impl InodeOps for Inode {
             return ret_errno("lookup: name is empty or too long", Errno::ENOENT);
         }
 
-        let entries = self.dir_results(&context, &inode)?;
-        entries
-            .into_iter()
-            .find(|entry| entry.name.as_bytes() == needle)
-            .map(|entry| entry.ino)
-            .ok_or(Errno::ENOENT)
+        self.lookup_dir_entry(&context, &inode, needle)
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {
@@ -1649,7 +1668,11 @@ fn ensure_dir_writable(inode: &Ext4Inode, op: &str) -> SysResult<()> {
 }
 
 fn lookup_name_in_dir(context: &Context, inode: &Ext4Inode, needle: &[u8]) -> SysResult<u32> {
-    cached_or_load_dir_results(context, inode)?
+    if let Some(cached) = cached_ext4_inode(context.fsno, inode.ino) {
+        return cached.lookup_dir_entry(context, inode, needle);
+    }
+
+    read_dir_results_from_disk(context, inode)?
         .into_iter()
         .find(|entry| entry.name.as_bytes() == needle)
         .map(|entry| entry.ino)
