@@ -24,7 +24,7 @@ pub fn rseq() -> Result<usize, Errno> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct Utsname {
     pub sysname: [u8; UTS_FIELD_LEN],
     pub nodename: [u8; UTS_FIELD_LEN],
@@ -33,8 +33,6 @@ pub struct Utsname {
     pub machine: [u8; UTS_FIELD_LEN],
     pub domainname: [u8; UTS_FIELD_LEN],
 }
-
-impl UserStruct for Utsname {}
 
 impl Utsname {
     pub fn new() -> Self {
@@ -109,13 +107,11 @@ pub fn setdomainname(uptr_name: UBuffer, len: usize) -> SyscallRet {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct RLimit {
     rlim_cur: usize,
     rlim_max: usize,
 }
-
-impl UserStruct for RLimit {}
 
 #[repr(usize)]
 #[derive(Debug, TryFromPrimitive)]
@@ -301,7 +297,7 @@ pub fn get_mempolicy() -> SyscallRet {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, UserStruct)]
 pub struct Rusage {
     ru_utime: Timeval,  // user CPU time used
     ru_stime: Timeval,  // system CPU time used
@@ -320,8 +316,6 @@ pub struct Rusage {
     ru_nvcsw: isize,    // voluntary context switches
     ru_nivcsw: isize,   // involuntary context switches
 }
-
-impl UserStruct for Rusage {}
 
 impl Default for Rusage {
     fn default() -> Self {
@@ -377,7 +371,7 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
 }
 
 #[repr(C)]
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, UserStruct)]
 pub struct Sysinfo {
     uptime: usize,
     loads: [usize; 3],
@@ -393,21 +387,18 @@ pub struct Sysinfo {
     mem_unit: u32,
     _f: [u8; 20 - 2 * core::mem::size_of::<isize>() - core::mem::size_of::<i32>()],
 }
-impl UserStruct for Sysinfo {}
 
 /// Clock ticks per second, matching the Linux userspace CLK_TCK value.
 const CLK_TCK: u64 = 100;
 
 #[repr(C)]
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, UserStruct)]
 pub struct Tms {
     tms_utime: usize,  // user CPU time of process
     tms_stime: usize,  // system CPU time of process
     tms_cutime: usize, // user CPU time of waited-for children
     tms_cstime: usize, // system CPU time of waited-for children
 }
-
-impl UserStruct for Tms {}
 
 pub fn times(uptr_tms: UPtr<Tms>) -> SyscallRet {
     let pcb = current::pcb();

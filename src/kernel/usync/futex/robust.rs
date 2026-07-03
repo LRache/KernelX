@@ -8,14 +8,12 @@ struct RobustList {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, UserStruct)]
 pub struct RobustListHead {
     list: RobustList,
     futex_offset: usize,
     pending: usize,
 }
-
-impl UserStruct for RobustListHead {}
 
 impl TCB {
     pub fn set_robust_list(&self, uaddr: usize) {

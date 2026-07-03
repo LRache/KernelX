@@ -3,7 +3,7 @@ use crate::kernel::ipc::{SignalAction, SignalActionFlags, SignalSet};
 use crate::kernel::syscall::UserStruct;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct Sigaction {
     pub sa_handler: usize,
     pub sa_flags: u32,
@@ -30,5 +30,3 @@ impl From<SignalAction> for Sigaction {
         }
     }
 }
-
-impl UserStruct for Sigaction {}

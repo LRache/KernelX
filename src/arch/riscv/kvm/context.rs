@@ -1,31 +1,25 @@
 use crate::kernel::syscall::UserStruct;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 pub struct KvmRegs {
     pub pc: usize,
     pub gpr: [usize; 31],
 }
 
-impl UserStruct for KvmRegs {}
-
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 pub struct KvmSRegs {
     pub satp: usize,
 }
 
-impl UserStruct for KvmSRegs {}
-
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 pub struct KvmPageFault {
     pub addr: usize,
     pub access_type: usize,
     pub inst: usize,
 }
-
-impl UserStruct for KvmPageFault {}
 
 #[repr(C)]
 #[derive(Clone, Copy)]

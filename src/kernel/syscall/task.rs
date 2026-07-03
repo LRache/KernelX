@@ -661,7 +661,7 @@ pub fn clone(flags: usize, stack: usize, uptr_parent_tid: UPtr<Tid>, arg3: usize
 
 /// clone3 `clone_args` struct layout from Linux UAPI
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct KernelCloneArgs {
     flags: u64,
     pidfd: u64,
@@ -672,8 +672,6 @@ pub struct KernelCloneArgs {
     stack_size: u64,
     tls: u64,
 }
-
-impl UserStruct for KernelCloneArgs {}
 
 const CLONE_ARGS_MIN_SIZE: usize = core::mem::size_of::<KernelCloneArgs>();
 

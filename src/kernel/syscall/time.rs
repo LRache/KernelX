@@ -15,31 +15,25 @@ use crate::kernel::task::CapabilitySet;
 use super::common::{ITimerSpec, Timespec, Timeval};
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct SetTimeval {
     tv_sec: i64,
     tv_usec: i64,
 }
 
-impl UserStruct for SetTimeval {}
-
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct SetTimespec {
     tv_sec: i64,
     tv_nsec: i64,
 }
 
-impl UserStruct for SetTimespec {}
-
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct Timezone {
     tz_minuteswest: i32,
     tz_dsttime: i32,
 }
-
-impl UserStruct for Timezone {}
 
 pub fn gettimeofday(uptr_timeval: UPtr<Timeval>, uptr_tz: UPtr<u8>) -> SysResult<usize> {
     if !uptr_tz.is_null() {
@@ -257,7 +251,7 @@ enum SigEventNotify {
 const SIGEV_PAD_SIZE: usize = 64 - core::mem::size_of::<usize>() - 3 * core::mem::size_of::<i32>();
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct SigEvent {
     sigev_value: usize,
     sigev_signo: i32,
@@ -265,8 +259,6 @@ pub struct SigEvent {
     sigev_notify_thread_id: i32,
     _pad: [u8; SIGEV_PAD_SIZE],
 }
-
-impl UserStruct for SigEvent {}
 
 impl SigEvent {
     fn notify(self) -> SysResult<TimerNotify> {

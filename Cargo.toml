@@ -48,6 +48,7 @@ fdt = { git = "https://github.com/LRache/fdt-rust.git"}
 bitfield-struct = "0.8.0" 
 bitvec = { version = "1.0.1" , default-features = false, features = ["alloc"] }
 visionfive2-sd = { git = "https://github.com/os-module/visionfive2-sd.git", rev = "af75139" }
+kernelx-derive = { path = "crates/kernelx-derive" }
 
 [build-dependencies]
 bindgen = "0.72.1"
