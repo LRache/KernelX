@@ -16,7 +16,7 @@ pub fn init() {
     vfs.register_filesystem("devfs", &devfs::FileSystem);
     vfs.register_filesystem("ext2", &Ext4FileSystem);
     vfs.register_filesystem("ext3", &Ext4FileSystem);
-    vfs.register_filesystem("ext4", &Ext4FileSystem);
+    vfs.register_filesystem("ext4", &Ext4NativeFileSystem);
     vfs.register_filesystem("ext4native", &Ext4NativeFileSystem);
     vfs.register_filesystem("exfat", &ExfatFileSystem);
     vfs.register_filesystem("vfat", &VfatFileSystem);
