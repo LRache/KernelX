@@ -16,11 +16,6 @@ pub enum IpProtocol {
     Udp = 17,
 }
 
-/// Common IPv4 protocol numbers
-pub const PROTO_ICMP: u8 = IpProtocol::Icmp as u8;
-pub const PROTO_TCP: u8 = IpProtocol::Tcp as u8;
-pub const PROTO_UDP: u8 = IpProtocol::Udp as u8;
-
 enum IPv4Payload<'a> {
     TCP(TCPBuilder<'a>),
     UDP(UDPBuilder<'a>),
