@@ -222,9 +222,15 @@ impl KvmAddrSpace {
             .unwrap_or(requested_perm);
 
         if pagetable.is_mapped(user_fault.gpage) {
-            pagetable.mmap_replace(user_fault.gpage, kpage, perm);
+            // SAFETY: This stage-2 mapping is invalidated by AddrSpaceWatcher
+            // on host unmap/remap/permission changes, but the host page is not
+            // pinned between translate() and this PTE update.
+            unsafe { pagetable.mmap_replace_raw(user_fault.gpage, kpage, perm) };
         } else {
-            pagetable.mmap(user_fault.gpage, kpage, perm);
+            // SAFETY: This stage-2 mapping is invalidated by AddrSpaceWatcher
+            // on host unmap/remap/permission changes, but the host page is not
+            // pinned between translate() and this PTE update.
+            unsafe { pagetable.mmap_raw(user_fault.gpage, kpage, perm) };
         }
 
         Some(kpage + user_fault.page_offset)

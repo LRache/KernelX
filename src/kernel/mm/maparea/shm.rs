@@ -94,7 +94,7 @@ impl Area for ShmArea {
         addrspace
             .pagetable()
             .lock()
-            .mmap(uaddr & !arch::PGMASK, kpage, self.perm);
+            .mmap(uaddr & !arch::PGMASK, frame, self.perm);
         Ok(kpage + page_offset)
     }
 
@@ -103,8 +103,7 @@ impl Area for ShmArea {
         let frames = self.frames.frames.lock();
         for i in 0..frames.len() {
             let uaddr = self.ubase + i * arch::PGSIZE;
-            let kaddr = frames[i].get_page();
-            pt.munmap_with_check(uaddr, kaddr);
+            pt.munmap(uaddr, &frames[i]);
         }
     }
 

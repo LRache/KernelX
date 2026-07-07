@@ -271,7 +271,7 @@ pub struct PhysPageFrame {
 }
 
 impl PhysPageFrame {
-    pub fn new(page: usize) -> Self {
+    fn new(page: usize) -> Self {
         Self { page }
     }
 

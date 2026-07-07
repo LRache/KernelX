@@ -216,7 +216,9 @@ impl Area for SharedFileMapArea {
 
         if !self.states[page_index].is_mapped() {
             let mut pagetable = addrspace.pagetable().lock();
-            pagetable.mmap(self.ubase + page_index * arch::PGSIZE, kpage, self.perm);
+            if let FrameState::Loaded { frame, .. } = &self.states[page_index] {
+                pagetable.mmap(self.ubase + page_index * arch::PGSIZE, frame, self.perm);
+            }
             if let FrameState::Loaded { mapped, .. } = &mut self.states[page_index] {
                 *mapped = true;
             }
@@ -266,7 +268,7 @@ impl Area for SharedFileMapArea {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
                 // The page may not be mapped to the page table if it was loaded by
                 // `translate_read` or `translate_write` but never accessed afterwards.
-                let _ = pagetable.munmap(uaddr);
+                let _ = pagetable.munmap(uaddr, &frame);
             }
 
             // Write back the page if it was loaded, regardless of whether it was mapped or not.

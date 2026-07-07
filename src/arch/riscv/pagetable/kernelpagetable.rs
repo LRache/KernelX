@@ -79,7 +79,7 @@ pub unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
 
     let mut pagetable = KERNEL_PAGETABLE.lock();
     while kaddr < kend {
-        pagetable.munmap(kaddr).expect("page must be mapped");
+        pagetable.munmap_raw(kaddr).expect("page must be mapped");
         kaddr += PGSIZE;
     }
 

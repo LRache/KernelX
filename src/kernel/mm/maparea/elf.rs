@@ -57,7 +57,7 @@ impl ELFArea {
         let area_offset = page_index * arch::PGSIZE;
         let file_offset = self.file_offset + area_offset;
 
-        let frame = PhysPageFrame::alloc_zeroed();
+        let frame = Arc::new(PhysPageFrame::alloc_zeroed());
         if area_offset < self.file_length {
             // Read up to a page, but not beyond the file length for this segment.
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
@@ -68,10 +68,8 @@ impl ELFArea {
 
         let page = frame.get_page();
 
-        pagetable
-            .lock()
-            .mmap(self.ubase + area_offset, frame.get_page(), self.perm);
-        self.frames[page_index] = Frame::Allocated(Arc::new(frame));
+        pagetable.lock().mmap(self.ubase + area_offset, &frame, self.perm);
+        self.frames[page_index] = Frame::Allocated(frame);
 
         page
     }
@@ -90,24 +88,25 @@ impl ELFArea {
             unreachable!();
         };
 
+        let new_frame = Arc::new(new_frame);
         let page = new_frame.get_page();
         let uaddr = self.ubase + page_index * arch::PGSIZE;
 
-        addrspace.pagetable().lock().mmap_replace(uaddr, page, self.perm);
+        addrspace.pagetable().lock().mmap_replace(uaddr, &new_frame, self.perm);
         addrspace.notify_addrspace_remap(uaddr, 1);
-        self.frames[page_index] = Frame::Allocated(Arc::new(new_frame));
+        self.frames[page_index] = Frame::Allocated(new_frame);
 
         page
     }
 
-    fn map_cow_page(&self, page_index: usize, frame: &PhysPageFrame, addrspace: &AddrSpace) -> usize {
+    fn map_cow_page(&self, page_index: usize, frame: &Arc<PhysPageFrame>, addrspace: &AddrSpace) -> usize {
         let page = frame.get_page();
         let uaddr = self.ubase + page_index * arch::PGSIZE;
 
         addrspace
             .pagetable()
             .lock()
-            .mmap_replace(uaddr, page, self.perm - MapPerm::W);
+            .mmap_replace(uaddr, frame, self.perm - MapPerm::W);
 
         page
     }
@@ -280,10 +279,10 @@ impl Area for ELFArea {
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         let mut pagetable = pagetable.lock();
         for (page_index, frame) in self.frames.iter_mut().enumerate() {
-            if !frame.is_unallocated() {
+            if let Frame::Allocated(frame) | Frame::Cow(frame) = frame {
                 // The page may not be mapped to the page table if it was loaded by
                 // `translate_read` or `translate_write` but never accessed afterwards.
-                let _ = pagetable.munmap(self.ubase + page_index * arch::PGSIZE);
+                let _ = pagetable.munmap(self.ubase + page_index * arch::PGSIZE, frame);
             }
             *frame = Frame::Unallocated;
         }

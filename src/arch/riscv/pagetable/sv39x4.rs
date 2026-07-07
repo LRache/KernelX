@@ -136,7 +136,7 @@ impl Sv39x4PageTable {
 }
 
 impl PageTableTrait for Sv39x4PageTable {
-    fn mmap(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
+    unsafe fn mmap_raw(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
         flags |= PTEFlags::U | PTEFlags::A | PTEFlags::D;
 
@@ -153,7 +153,7 @@ impl PageTableTrait for Sv39x4PageTable {
         pte.write_back().expect("Failed to write back Sv39x4 PTE");
     }
 
-    fn mmap_replace(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
+    unsafe fn mmap_replace_raw(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
         flags |= PTEFlags::A | PTEFlags::D;
 
@@ -173,7 +173,7 @@ impl PageTableTrait for Sv39x4PageTable {
         }
     }
 
-    fn munmap(&mut self, gaddr: usize) -> Result<(), ()> {
+    fn munmap_raw(&mut self, gaddr: usize) -> Result<(), ()> {
         if let Some(mut pte) = self.find_pte(gaddr) {
             pte.set_flags(PTEFlags::empty());
             pte.write_back().expect("Failed to write back Sv39x4 PTE for munmap");

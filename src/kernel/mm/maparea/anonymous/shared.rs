@@ -30,10 +30,10 @@ impl SharedAnonymousArea {
     }
 
     fn allocate_page(uaddr: usize, perm: MapPerm, frame: &SpinLock<Frame>, addrspace: &AddrSpace) -> usize {
-        let page_frame = PhysPageFrame::alloc_zeroed();
+        let page_frame = Arc::new(PhysPageFrame::alloc_zeroed());
         let kpage = page_frame.get_page();
-        addrspace.pagetable().lock().mmap(uaddr, kpage, perm);
-        *frame.lock() = Frame::Allocated(Arc::new(page_frame));
+        addrspace.pagetable().lock().mmap(uaddr, &page_frame, perm);
+        *frame.lock() = Frame::Allocated(page_frame);
         kpage
     }
 }
@@ -142,7 +142,7 @@ impl Area for SharedAnonymousArea {
                         addrspace
                             .pagetable()
                             .lock()
-                            .mmap(uaddr & !(arch::PGSIZE - 1), kpage, self.perm);
+                            .mmap(uaddr & !(arch::PGSIZE - 1), f, self.perm);
                         kpage
                     }
                     Frame::Cow(_) => unreachable!("SharedAnonymousArea should not have CoW frames"),
@@ -210,10 +210,10 @@ impl Area for SharedAnonymousArea {
         for (i, p) in frames.iter().enumerate() {
             // Only unmap from this process's page table; don't touch the shared frames
             let p = p.lock();
-            if !p.is_unallocated() {
+            if let Frame::Allocated(frame) = &*p {
                 // The page may not be mapped to the page table if it was loaded by
                 // `translate_read` or `translate_write` but never accessed afterwards.
-                let _ = pagetable.munmap(self.ubase + i * arch::PGSIZE);
+                let _ = pagetable.munmap(self.ubase + i * arch::PGSIZE, frame);
             }
         }
     }

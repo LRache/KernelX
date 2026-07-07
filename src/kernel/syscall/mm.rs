@@ -424,13 +424,9 @@ pub fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: usize, _
     let copy_len = old_pages * arch::PGSIZE;
     let addrspace = current::addrspace();
     for offset in (0..copy_len).step_by(arch::PGSIZE) {
-        let src = addrspace.with_map_manager_mut(|mgr| mgr.translate_read(old_addr + offset, &addrspace));
-        let dst = addrspace.with_map_manager_mut(|mgr| mgr.translate_write(new_addr + offset, &addrspace));
-        if let (Some(src), Some(dst)) = (src, dst) {
-            unsafe {
-                core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, arch::PGSIZE);
-            }
-        }
+        let _ = addrspace.with_translated_read_write(old_addr + offset, new_addr + offset, arch::PGSIZE, |src, dst| {
+            dst.copy_from_slice(src);
+        });
     }
 
     addrspace.unmap_area(old_addr, old_pages)?;

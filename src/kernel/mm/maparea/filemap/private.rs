@@ -72,14 +72,27 @@ impl PrivateFileMapArea {
             }
         }
 
-        let kpage = frame.get_page();
+        let frame = Arc::new(SwappableNoFileFrame::allocated(uaddr, frame, addrspace));
+        let kpage = frame.get_page_swap_in();
 
+        #[cfg(not(feature = "swap-memory"))]
         addrspace
             .pagetable()
             .lock()
-            .mmap(self.ubase + area_offset, kpage, self.perm);
-        self.frames[page_index] =
-            FrameState::Allocated(Arc::new(SwappableNoFileFrame::allocated(uaddr, frame, addrspace)));
+            .mmap(self.ubase + area_offset, frame.frame(), self.perm);
+        #[cfg(feature = "swap-memory")]
+        {
+            // SAFETY: swap-memory does not expose an Arc<PhysPageFrame> pin
+            // here; this relies on the loaded page remaining resident until
+            // the PTE is installed.
+            unsafe {
+                addrspace
+                    .pagetable()
+                    .lock()
+                    .mmap_raw(self.ubase + area_offset, kpage, self.perm)
+            };
+        }
+        self.frames[page_index] = FrameState::Allocated(frame);
 
         kpage
     }
@@ -97,11 +110,23 @@ impl PrivateFileMapArea {
             FrameState::Cow(frame) => frame.copy(addrspace),
             _ => panic!("Invalid type for copy-on-write"),
         };
+        let frame = Arc::new(frame);
         let uaddr = self.ubase + area_offset;
 
-        addrspace.pagetable().lock().mmap_replace(uaddr, kpage, self.perm);
+        #[cfg(not(feature = "swap-memory"))]
+        addrspace
+            .pagetable()
+            .lock()
+            .mmap_replace(uaddr, frame.frame(), self.perm);
+        #[cfg(feature = "swap-memory")]
+        {
+            // SAFETY: swap-memory does not expose an Arc<PhysPageFrame> pin
+            // for the newly copied page; this relies on the page remaining
+            // resident until this PTE replacement is installed.
+            unsafe { addrspace.pagetable().lock().mmap_replace_raw(uaddr, kpage, self.perm) };
+        }
         addrspace.notify_addrspace_remap(uaddr, 1);
-        self.frames[page_index] = FrameState::Allocated(Arc::new(frame));
+        self.frames[page_index] = FrameState::Allocated(frame);
 
         kpage
     }
@@ -110,10 +135,23 @@ impl PrivateFileMapArea {
         let kpage = frame.get_page_swap_in();
         let uaddr = self.ubase + page_index * arch::PGSIZE;
 
+        #[cfg(not(feature = "swap-memory"))]
         addrspace
             .pagetable()
             .lock()
-            .mmap_replace(uaddr, kpage, self.perm - MapPerm::W);
+            .mmap_replace(uaddr, frame.frame(), self.perm - MapPerm::W);
+        #[cfg(feature = "swap-memory")]
+        {
+            // SAFETY: swap-memory does not expose an Arc<PhysPageFrame> pin
+            // for this CoW frame; this relies on get_page_swap_in() keeping the
+            // returned kpage resident until the PTE is installed.
+            unsafe {
+                addrspace
+                    .pagetable()
+                    .lock()
+                    .mmap_replace_raw(uaddr, kpage, self.perm - MapPerm::W)
+            };
+        }
 
         kpage
     }
@@ -122,7 +160,9 @@ impl PrivateFileMapArea {
     fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
         debug_assert!(frame.is_swapped_out(), "FrameState is not swapped out");
         let kpage = frame.get_page_swap_in();
-        addrspace.pagetable().write().mmap(frame.uaddr(), kpage, self.perm);
+        // SAFETY: This is the existing swap-memory gap: get_page_swap_in()
+        // returns a bare kpage without a pin that spans this PTE update.
+        unsafe { addrspace.pagetable().write().mmap_raw(frame.uaddr(), kpage, self.perm) };
     }
 }
 
@@ -328,10 +368,14 @@ impl Area for PrivateFileMapArea {
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         let mut pagetable = pagetable.lock();
         for (page_index, frame) in self.frames.iter_mut().enumerate() {
-            if !frame.is_unallocated() {
+            if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
                 // The page may not be mapped to the page table if it was loaded by
                 // `translate_read` or `translate_write` but never accessed afterwards.
-                let _ = pagetable.munmap(self.ubase + page_index * arch::PGSIZE);
+                let uaddr = self.ubase + page_index * arch::PGSIZE;
+                #[cfg(not(feature = "swap-memory"))]
+                let _ = pagetable.munmap(uaddr, frame.frame());
+                #[cfg(feature = "swap-memory")]
+                let _ = pagetable.munmap_raw(uaddr);
             }
             *frame = FrameState::Unallocated;
         }

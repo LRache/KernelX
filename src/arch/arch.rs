@@ -1,6 +1,8 @@
 use core::time::Duration;
 
-use crate::kernel::mm::MapPerm;
+use alloc::sync::Arc;
+
+use crate::kernel::mm::{MapPerm, PhysPageFrame};
 
 use super::{KernelContext, SigContext};
 
@@ -18,10 +20,25 @@ pub enum CloneABI {
 }
 
 pub trait PageTableTrait {
-    fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
-    fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
+    fn mmap(&mut self, uaddr: usize, frame: &Arc<PhysPageFrame>, perm: MapPerm) {
+        // SAFETY: The caller provides an Arc-backed frame reference, so the
+        // physical page is alive while the raw PTE is installed. Longer-lived
+        // mapping ownership is maintained by the owning MapArea state.
+        unsafe { self.mmap_raw(uaddr, frame.get_page(), perm) };
+    }
+    unsafe fn mmap_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
+    fn mmap_replace(&mut self, uaddr: usize, frame: &Arc<PhysPageFrame>, perm: MapPerm) {
+        // SAFETY: The replacement target is derived from an Arc-backed frame
+        // borrowed by the caller. The owner keeps the frame resident across the
+        // map-area state transition that accompanies this PTE update.
+        unsafe { self.mmap_replace_raw(uaddr, frame.get_page(), perm) };
+    }
+    unsafe fn mmap_replace_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm);
-    fn munmap(&mut self, uaddr: usize) -> Result<(), ()>;
+    fn munmap(&mut self, uaddr: usize, frame: &Arc<PhysPageFrame>) -> bool {
+        self.munmap_with_check(uaddr, frame.get_page())
+    }
+    fn munmap_raw(&mut self, uaddr: usize) -> Result<(), ()>;
     fn munmap_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> bool;
 
     #[allow(dead_code)]

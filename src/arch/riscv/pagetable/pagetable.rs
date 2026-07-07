@@ -210,7 +210,7 @@ unsafe impl<T: PageAllocator> Send for PageTableImpls<T> {}
 unsafe impl<T: PageAllocator> Sync for PageTableImpls<T> {}
 
 impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
-    fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
+    unsafe fn mmap_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags = perm.into();
 
         flags |= PTEFlags::A | PTEFlags::D;
@@ -237,7 +237,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
     //     pte.write_back().expect("Failed to write back PTE");
     // }
 
-    fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
+    unsafe fn mmap_replace_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
         let flags = perm.into();
 
         let mut pte = self.find_pte_or_create(uaddr);
@@ -261,7 +261,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         }
     }
 
-    fn munmap(&mut self, vaddr: usize) -> Result<(), ()> {
+    fn munmap_raw(&mut self, vaddr: usize) -> Result<(), ()> {
         if let Some(pte) = self.find_pte(vaddr) {
             let mut pte = pte;
             pte.set_flags(PTEFlags::empty());

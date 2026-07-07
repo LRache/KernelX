@@ -419,7 +419,7 @@ unsafe impl Send for PageTable {}
 unsafe impl Sync for PageTable {}
 
 impl PageTableTrait for PageTable {
-    fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
+    unsafe fn mmap_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
         flags |= PTEFlags::P;
         if perm.contains(MapPerm::W) {
@@ -452,7 +452,7 @@ impl PageTableTrait for PageTable {
     //     pte.write_back().expect("Failed to write back PTE on mmap_paddr");
     // }
 
-    fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
+    unsafe fn mmap_replace_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
         flags |= PTEFlags::P;
         if perm.contains(MapPerm::W) {
@@ -478,7 +478,7 @@ impl PageTableTrait for PageTable {
         }
     }
 
-    fn munmap(&mut self, uaddr: usize) -> Result<(), ()> {
+    fn munmap_raw(&mut self, uaddr: usize) -> Result<(), ()> {
         if let Some(mut pte) = self.find_pte(uaddr) {
             pte.set_flags(PTEFlags::empty());
             pte.write_back().expect("Failed to write back PTE on munmap");
