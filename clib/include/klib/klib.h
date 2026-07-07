@@ -9,6 +9,8 @@ extern "C" {
 
 void klib_init();
 
+long klog_info(const char *file, unsigned int line, unsigned int column, const char *fmt, ...);
+
 /* Kernel panic — implemented in Rust (rust_kpanic), called from C */
 __attribute__((noreturn)) void kpanic(const char *file, int line, const char *msg);
 

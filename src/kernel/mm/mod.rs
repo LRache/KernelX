@@ -7,7 +7,7 @@ pub mod ubuf;
 pub mod vdso;
 
 pub use addrspace::*;
-pub use page::{FixedContiguousPhysPageFrame, PhysPageFrame};
+pub use page::*;
 
 #[cfg(feature = "swap-memory")]
 pub mod swappable;

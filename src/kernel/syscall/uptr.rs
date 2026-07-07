@@ -7,6 +7,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
+pub use kernelx_derive::UserStruct;
 
 /// Macro to implement From<usize> for user pointer types
 macro_rules! impl_from_usize {
@@ -26,6 +27,7 @@ pub trait UserStruct: Sized + Copy {}
 
 impl UserStruct for u8 {}
 impl UserStruct for u32 {}
+impl UserStruct for i32 {}
 impl UserStruct for usize {}
 impl UserStruct for () {}
 
@@ -150,7 +152,7 @@ impl UBuffer {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct UString {
     uaddr: usize,
 }
@@ -182,8 +184,6 @@ impl UString {
         if self.is_null() { Err(Errno::EINVAL) } else { Ok(self) }
     }
 }
-
-impl UserStruct for UString {}
 
 impl From<usize> for UString {
     fn from(uaddr: usize) -> Self {

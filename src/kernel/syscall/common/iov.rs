@@ -3,13 +3,11 @@ use crate::kernel::syscall::UserStruct;
 use crate::kernel::syscall::uptr::UPtr;
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, UserStruct)]
 pub struct IOVec {
     pub base: usize,
     pub len: usize,
 }
-
-impl UserStruct for IOVec {}
 
 #[derive(Clone, Copy)]
 pub struct IOVecCursor {

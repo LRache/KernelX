@@ -130,7 +130,7 @@ impl Into<usize> for SignalNum {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, UserStruct)]
 #[repr(C)]
 pub struct SignalSet(usize);
 
@@ -183,5 +183,3 @@ impl Into<usize> for SignalSet {
         self.0
     }
 }
-
-impl UserStruct for SignalSet {}

@@ -82,15 +82,13 @@ impl SocketAddr {
 
 /// Mirrors `struct sockaddr_in` from Linux UAPI (16 bytes).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct SockAddrIn {
     pub sin_family: u16,
     pub sin_port: u16,
     pub sin_addr: u32,
     pub sin_zero: [u8; 8],
 }
-
-impl UserStruct for SockAddrIn {}
 
 /// Trait for protocol-specific socket behavior (UDP, TCP, etc.).
 pub trait SocketInner: Send + Sync {

@@ -14,14 +14,12 @@ use super::addrspace::KvmAddrSpace;
 use super::vtask::VTask;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 struct KvmMapArea {
     addr: usize,
     length: usize,
     mapped_addr: usize,
 }
-
-impl UserStruct for KvmMapArea {}
 
 pub struct VTaskSet {
     addrspace: Arc<KvmAddrSpace>,

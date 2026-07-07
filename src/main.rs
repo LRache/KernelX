@@ -10,6 +10,7 @@ mod driver;
 mod fs;
 mod kernel;
 mod klib;
+mod kmodule;
 #[cfg(feature = "kvm")]
 mod kvm;
 mod net;

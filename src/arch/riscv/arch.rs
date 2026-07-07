@@ -1,16 +1,18 @@
-use core::time::Duration;
-
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use core::time::Duration;
+use elf::abi;
 
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
 use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task};
 use crate::arch::{self, Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
 use crate::kernel::config;
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::{MapPerm, page};
 use crate::kernel::scheduler::current;
 use crate::klib::{InitedCell, SpinLock};
+use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 use crate::{driver, kinfo, kwarn};
 
 use super::csr::{SIE, Sstatus, stvec};
@@ -233,6 +235,26 @@ impl ArchTrait for Arch {
     #[inline(always)]
     fn is_kernel_addr(addr: usize) -> bool {
         addr >> 63 != 0
+    }
+
+    fn elf_native_machine() -> u16 {
+        abi::EM_RISCV
+    }
+
+    fn kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction> {
+        super::kmodule::relocation_action(relocation_type)
+    }
+
+    fn apply_kmodule_relocation(
+        relocation_type: u32,
+        place: &mut [u8],
+        value: Option<KModuleRelocationValue>,
+    ) -> SysResult<()> {
+        super::kmodule::apply_relocation(relocation_type, place, value)
+    }
+
+    fn flush_kmodule_icache() {
+        super::kmodule::flush_icache();
     }
 
     fn crc32c(seed: u32, buf: &[u8]) -> u32 {

@@ -12,13 +12,11 @@ fn checked_duration(tv_sec: i64, tv_nsec: i64) -> SysResult<Duration> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct Timespec {
     pub tv_sec: u64,
     pub tv_nsec: u64,
 }
-
-impl UserStruct for Timespec {}
 
 impl TryFrom<Timespec> for Duration {
     type Error = Errno;
@@ -38,13 +36,11 @@ impl From<Duration> for Timespec {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct Timeval {
     pub tv_sec: u64,
     pub tv_usec: u64,
 }
-
-impl UserStruct for Timeval {}
 
 impl Timeval {
     pub const ZERO: Self = Self { tv_sec: 0, tv_usec: 0 };
@@ -70,13 +66,11 @@ impl From<Timeval> for Duration {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct Timespec32 {
     pub tv_sec: i32,
     pub tv_nsec: i32,
 }
-
-impl UserStruct for Timespec32 {}
 
 impl TryFrom<Timespec32> for Duration {
     type Error = Errno;
@@ -87,13 +81,11 @@ impl TryFrom<Timespec32> for Duration {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct ITimerSpec {
     pub it_interval: Timespec,
     pub it_value: Timespec,
 }
-
-impl UserStruct for ITimerSpec {}
 
 impl ITimerSpec {
     pub fn into_durations(self) -> SysResult<(Duration, Duration)> {
@@ -109,13 +101,11 @@ impl ITimerSpec {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct ITimerVal {
     pub it_interval: Timeval,
     pub it_value: Timeval,
 }
-
-impl UserStruct for ITimerVal {}
 
 impl ITimerVal {
     pub fn from_durations(interval: Duration, value: Duration) -> Self {

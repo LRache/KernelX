@@ -96,7 +96,7 @@ bitflags! {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 struct Flock {
     l_type: i16,
     l_whence: i16,
@@ -106,8 +106,6 @@ struct Flock {
     l_pid: i32,
     __pad1: i32,
 }
-
-impl UserStruct for Flock {}
 
 #[derive(TryFromPrimitive)]
 #[repr(i16)]
@@ -830,14 +828,12 @@ pub fn memfd_create(uptr_name: UString, flags: usize) -> SyscallRet {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 pub struct OpenHow {
     flags: u64,
     mode: u64,
     resolve: u64,
 }
-
-impl UserStruct for OpenHow {}
 
 const OPEN_HOW_SIZE: usize = size_of::<OpenHow>();
 

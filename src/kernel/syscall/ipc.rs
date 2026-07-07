@@ -384,13 +384,12 @@ pub fn rt_sigaction(
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, UserStruct)]
 pub struct USignalStack {
     ss_sp: usize,
     ss_flags: usize,
     ss_size: usize,
 }
-impl UserStruct for USignalStack {}
 
 const MINSIGSTKSZ: usize = 2048;
 
@@ -750,14 +749,12 @@ pub fn msgrcv(msqid: usize, msgp: usize, msgsz: usize, msgtyp: usize, msgflg: us
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct UserSembuf {
     sem_num: u16,
     sem_op: i16,
     sem_flg: i16,
 }
-
-impl UserStruct for UserSembuf {}
 
 fn read_sem_ops(sops: UArray<UserSembuf>, nsops: usize) -> SysResult<Vec<sem::SemOp>> {
     if sops.is_null() || nsops == 0 {
@@ -844,7 +841,7 @@ pub fn shmat(shmid: usize, shmaddr: usize, shmflg: usize) -> SyscallRet {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 struct UserIpcPerm {
     key: i32,
     uid: u32,
@@ -858,10 +855,8 @@ struct UserIpcPerm {
     reserved2: usize,
 }
 
-impl UserStruct for UserIpcPerm {}
-
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 struct UserShmidDs {
     shm_perm: UserIpcPerm,
     shm_segsz: usize,
@@ -874,8 +869,6 @@ struct UserShmidDs {
     reserved5: usize,
     reserved6: usize,
 }
-
-impl UserStruct for UserShmidDs {}
 
 impl From<shm::ShmStat> for UserShmidDs {
     fn from(stat: shm::ShmStat) -> Self {
@@ -906,7 +899,7 @@ impl From<shm::ShmStat> for UserShmidDs {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 struct UserSemidDs {
     sem_perm: UserIpcPerm,
     sem_otime: i64,
@@ -915,8 +908,6 @@ struct UserSemidDs {
     reserved3: usize,
     reserved4: usize,
 }
-
-impl UserStruct for UserSemidDs {}
 
 impl From<sem::SemStat> for UserSemidDs {
     fn from(stat: sem::SemStat) -> Self {
@@ -943,7 +934,7 @@ impl From<sem::SemStat> for UserSemidDs {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 struct UserMsqidDs {
     msg_perm: UserIpcPerm,
     msg_stime: i64,
@@ -957,8 +948,6 @@ struct UserMsqidDs {
     reserved4: usize,
     reserved5: usize,
 }
-
-impl UserStruct for UserMsqidDs {}
 
 impl From<msg::MsgStat> for UserMsqidDs {
     fn from(stat: msg::MsgStat) -> Self {
@@ -990,7 +979,7 @@ impl From<msg::MsgStat> for UserMsqidDs {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 struct UserSemInfo {
     semmap: i32,
     semmni: i32,
@@ -1003,8 +992,6 @@ struct UserSemInfo {
     semvmx: i32,
     semaem: i32,
 }
-
-impl UserStruct for UserSemInfo {}
 
 impl From<sem::SemInfo> for UserSemInfo {
     fn from(info: sem::SemInfo) -> Self {
@@ -1024,7 +1011,7 @@ impl From<sem::SemInfo> for UserSemInfo {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 struct UserMsgInfo {
     msgpool: i32,
     msgmap: i32,
@@ -1035,8 +1022,6 @@ struct UserMsgInfo {
     msgtql: i32,
     msgseg: u16,
 }
-
-impl UserStruct for UserMsgInfo {}
 
 impl From<msg::MsgInfo> for UserMsgInfo {
     fn from(info: msg::MsgInfo) -> Self {

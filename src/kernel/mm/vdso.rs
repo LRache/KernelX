@@ -2,13 +2,18 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use elf::endian::LittleEndian;
+use elf::file::Class;
+use elf::{ElfBytes, abi};
+
 use crate::arch::{self, PageTableTrait};
 use crate::kernel::config;
 use crate::kernel::mm::MapPerm;
-use crate::kernel::mm::elf::def::{Elf64Ehdr, Elf64Phdr};
 use crate::klib::initcell::InitedCell;
 
 use super::PhysPageFrame;
+
+type VdsoElf<'a> = ElfBytes<'a, LittleEndian>;
 
 unsafe extern "C" {
     static __vdso_start: u8;
@@ -53,32 +58,30 @@ struct VDSOInfo {
 
 static VDSO: InitedCell<VDSOInfo> = InitedCell::uninit();
 
-fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
-    let ph_addr = VDSO_BYTES.as_ptr() as usize + ehdr.e_phoff as usize;
+fn load_programs(file: &VdsoElf<'_>) -> Vec<LoadedProgram> {
+    let phdrs = file.segments().expect("Invalid VDSO ELF program headers");
     let mut loaded_programs = Vec::new();
 
-    for i in 0..ehdr.e_phnum {
-        let phdr = unsafe { (ph_addr as *const Elf64Phdr).add(i as usize).as_ref().unwrap() };
-        if !phdr.is_load() {
+    for phdr in phdrs.iter() {
+        if phdr.p_type != abi::PT_LOAD {
             continue;
         }
 
         let mut pages = vec![];
         let mut loaded = 0;
         let mut copied = 0;
-        let memsz = phdr.p_memsz as usize;
-        let filesz = phdr.p_filesz as usize;
-        // let program_start = (vdso_start() + phdr.p_offset as usize) as *const u8;
-        let program_start = (VDSO_BYTES.as_ptr() as usize + phdr.p_offset as usize) as *const u8;
+        let memsz = to_usize(phdr.p_memsz);
+        let filesz = to_usize(phdr.p_filesz);
+        let offset = to_usize(phdr.p_offset);
+        let end = offset.checked_add(filesz).expect("Invalid VDSO ELF segment range");
+        let program = VDSO_BYTES.get(offset..end).expect("Invalid VDSO ELF segment range");
 
         // Load unaligned
-        let pageoff = phdr.p_vaddr as usize & arch::PGMASK;
+        let pageoff = to_usize(phdr.p_vaddr) & arch::PGMASK;
         if pageoff != 0 {
             let page = Arc::new(PhysPageFrame::alloc_zeroed());
             let to_copy = core::cmp::min(arch::PGSIZE - pageoff, filesz);
-            unsafe {
-                core::ptr::copy_nonoverlapping(program_start, page.ptr().add(pageoff), to_copy);
-            }
+            page.slice()[pageoff..pageoff + to_copy].copy_from_slice(&program[..to_copy]);
 
             loaded += to_copy;
             copied += to_copy;
@@ -88,9 +91,7 @@ fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
         while loaded < filesz {
             let page = Arc::new(PhysPageFrame::alloc_zeroed());
             let to_copy = core::cmp::min(arch::PGSIZE, filesz - copied);
-            unsafe {
-                core::ptr::copy_nonoverlapping(program_start.add(loaded), page.ptr(), to_copy);
-            }
+            page.slice()[..to_copy].copy_from_slice(&program[copied..copied + to_copy]);
 
             pages.push(page);
             copied += to_copy;
@@ -104,7 +105,7 @@ fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
         }
 
         loaded_programs.push(LoadedProgram {
-            ubase: phdr.p_vaddr as usize,
+            ubase: to_usize(phdr.p_vaddr),
             pages,
         });
     }
@@ -114,15 +115,14 @@ fn load_programs(ehdr: &Elf64Ehdr) -> Vec<LoadedProgram> {
 
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
-    // let ehdr = unsafe {(vdso_start() as *const Elf64Ehdr).as_ref().unwrap()};
-    let ehdr = unsafe { (VDSO_BYTES.as_ptr() as *const Elf64Ehdr).as_ref().unwrap() };
+    let file = ElfBytes::<LittleEndian>::minimal_parse(VDSO_BYTES).expect("Invalid VDSO ELF");
 
-    if !ehdr.is_valid_elf() || !ehdr.is_64bit() || !ehdr.is_little_endian() || !ehdr.is_native() || !ehdr.is_dynamic() {
-        panic!("Invalid VDSO ELF header: {:?}", ehdr);
+    if file.ehdr.class != Class::ELF64 || !is_native(file.ehdr.e_machine) || file.ehdr.e_type != abi::ET_DYN {
+        panic!("Invalid VDSO ELF header: {:?}", file.ehdr);
     }
 
     // load VDSO's program to memory
-    let loaded_programs = load_programs(ehdr);
+    let loaded_programs = load_programs(&file);
 
     VDSO.init(VDSOInfo {
         programs: loaded_programs,
@@ -136,5 +136,20 @@ pub fn map_to_pagetale(pagetable: &mut arch::PageTable) {
             pagetable.mmap(uaddr, page, MapPerm::R | MapPerm::X | MapPerm::U);
             uaddr += arch::PGSIZE;
         }
+    }
+}
+
+fn to_usize(value: u64) -> usize {
+    usize::try_from(value).expect("VDSO ELF field does not fit in usize")
+}
+
+fn is_native(e_machine: u16) -> bool {
+    #[cfg(arch_riscv64)]
+    {
+        e_machine == abi::EM_RISCV
+    }
+    #[cfg(arch_loongarch64)]
+    {
+        e_machine == abi::EM_LOONGARCH
     }
 }
