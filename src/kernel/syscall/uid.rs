@@ -58,23 +58,19 @@ fn read_cap_user_header(header: UPtr<CapUserHeader>) -> SysResult<(CapUserHeader
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct CapUserHeader {
     version: u32,
     pid: i32,
 }
 
-impl UserStruct for CapUserHeader {}
-
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct CapUserData {
     effective: u32,
     permitted: u32,
     inheritable: u32,
 }
-
-impl UserStruct for CapUserData {}
 
 impl CapUserData {
     const ZERO: Self = Self {

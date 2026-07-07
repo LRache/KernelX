@@ -46,13 +46,11 @@ impl EpollEventSet {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct EpollEvent {
     pub events: EpollEventSet,
     pub data: u64,
 }
-
-impl UserStruct for EpollEvent {}
 
 impl EpollEvent {
     fn ready(self, ready: FileEvent) -> Self {

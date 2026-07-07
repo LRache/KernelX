@@ -50,15 +50,13 @@ bitflags! {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct FutexWaitv {
     val: u64,
     uaddr: u64,
     flags: u32,
     __reserved: u32,
 }
-
-impl UserStruct for FutexWaitv {}
 
 #[repr(usize)]
 #[derive(Clone, Copy, TryFromPrimitive)]

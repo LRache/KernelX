@@ -57,31 +57,25 @@ impl KvmInterruptState {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 pub struct KvmInterrupt {
     pub kind: usize,
     pub irq: usize,
 }
 
-impl UserStruct for KvmInterrupt {}
-
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 pub struct KvmGpr {
     pub index: usize,
     pub value: usize,
 }
 
-impl UserStruct for KvmGpr {}
-
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, UserStruct)]
 pub struct KvmRun {
     pub inst: usize,
     pub val: usize,
 }
-
-impl UserStruct for KvmRun {}
 
 enum VTaskExitReason {
     MemoryFault,

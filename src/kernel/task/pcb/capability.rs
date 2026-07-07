@@ -7,6 +7,7 @@ bitflags! {
         const KILL = 1 << 5;
         const SETPCAP = 1 << 8;
         const NET_RAW = 1 << 13;
+        const SYS_MODULE = 1 << 16;
         const SYS_RESOURCE = 1 << 24;
         const SYS_TIME = 1 << 25;
     }

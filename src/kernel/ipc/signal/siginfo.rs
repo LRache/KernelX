@@ -120,7 +120,7 @@ impl Into<USiFields> for KSiFields {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct SigInfo {
     pub si_signo: i32,   // Signal number
     pub si_errno: i32,   // An errno value
@@ -156,5 +156,3 @@ impl SigInfo {
         unsafe { self.fields.rt }
     }
 }
-
-impl UserStruct for SigInfo {}

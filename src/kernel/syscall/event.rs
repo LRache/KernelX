@@ -291,11 +291,10 @@ pub fn timerfd_gettime(fd: usize, uptr_value: UPtr<ITimerSpec>) -> SysResult<usi
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct FdSet {
     fds_bits: [usize; FD_SET_SIZE / (8 * core::mem::size_of::<usize>())], // support up to 512 fds
 }
-impl UserStruct for FdSet {}
 
 impl FdSet {
     fn bit_index(fd: usize) -> (usize, usize) {
@@ -644,13 +643,12 @@ impl From<FileEvent> for PollEventSet {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct Pollfd {
     fd: i32,
     events: PollEventSet,
     revents: PollEventSet,
 }
-impl UserStruct for Pollfd {}
 
 impl Pollfd {
     pub fn default() -> Self {

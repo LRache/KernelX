@@ -1,7 +1,7 @@
 use crate::kernel::syscall::UserStruct;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct FileStat {
     pub st_dev: u64,
     pub st_ino: u64,
@@ -56,8 +56,6 @@ impl Default for FileStat {
     }
 }
 
-impl UserStruct for FileStat {}
-
 /// `struct statx_timestamp` (include/uapi/linux/stat.h).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -69,7 +67,7 @@ pub struct StatxTimestamp {
 
 /// `struct statx` (256 B).
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct Statx {
     pub stx_mask: u32,
     pub stx_blksize: u32,
@@ -103,8 +101,6 @@ impl Default for Statx {
         unsafe { core::mem::zeroed() }
     }
 }
-
-impl UserStruct for Statx {}
 
 /// Commonly requested statx mask bits.
 pub mod statx_mask {

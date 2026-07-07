@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -9,8 +10,10 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 TEST_ROOT_DIR = "tests"
+INIT_RUNNER_SOURCE = BASE_DIR / "support" / "autorun-init.c"
+INIT_RUNNER_LIST = Path("etc/kx-tests.list")
 
-TESTS = [
+DEFAULT_TESTS = [
     # "basic-ulib",
     # "basic-musl",
     # "basic-glibc",
@@ -20,6 +23,7 @@ TESTS = [
     # "pthread-musl",
     # "stdio",
     "pthread-musl",
+    "kmodule",
 ]
 
 COMMON_GLIBC_RUNTIME_FILES = [
@@ -34,12 +38,12 @@ COMMON_GLIBC_RUNTIME_FILES = [
 ARCH_CONFIGS = {
     "riscv64": {
         "aliases": ("riscv", "rv64"),
-        "gnu_prefix": "riscv64-linux-gnu-",
+        "gnu_prefix": "riscv64-unknown-linux-gnu-",
         "elf_prefix": "riscv64-unknown-elf-",
         "musl_prefix": "riscv64-linux-musl-",
         "musl_libc": "/opt/riscv64-linux-musl-cross/riscv64-linux-musl/lib/libc.so",
         "musl_loader": "ld-musl-riscv64.so.1",
-        "glibc_cc": "riscv64-linux-gnu-gcc",
+        "glibc_cc": "riscv64-unknown-linux-gnu-gcc",
         "glibc_loader": "ld-linux-riscv64-lp64d.so.1",
         "glibc_loader_path": "lib/ld-linux-riscv64-lp64d.so.1",
         "glibc_search_dirs": (
@@ -48,7 +52,7 @@ ARCH_CONFIGS = {
             "/usr/lib/riscv64-linux-gnu",
         ),
         "cargo_target": "riscv64gc-unknown-linux-gnu",
-        "cargo_linker": "riscv64-linux-gnu-gcc",
+        "cargo_linker": "riscv64-unknown-linux-gnu-gcc",
         "sysroot": "/usr/riscv64-linux-gnu",
         "unsupported_tests": (),
     },
@@ -110,6 +114,86 @@ def normalize_isa(isa):
     raise ValueError(f"Unsupported ISA {isa}, supported: {supported}")
 
 
+def available_tests():
+    tests = []
+    for test_dir in sorted(BASE_DIR.iterdir()):
+        if not test_dir.is_dir() or test_dir.name == "build":
+            continue
+        if (test_dir / "Makefile").is_file() or (test_dir / "makefile").is_file():
+            tests.append(test_dir.name)
+    return tests
+
+
+def split_test_args(args):
+    tests = []
+    for arg in args:
+        tests.extend(test for test in (part.strip() for part in arg.split(",")) if test)
+    return tests
+
+
+def dedup(items):
+    result = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def dedup_paths(paths):
+    result = []
+    seen = set()
+    for path in paths:
+        path = Path(path)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description="Build selected usertests into an ext4 image")
+    parser.add_argument("isa", nargs="?", default="riscv64", help="target ISA, e.g. riscv64 or loongarch64")
+    parser.add_argument("tests", nargs="*", help="test suites to import; use 'all' for every suite with a Makefile")
+    parser.add_argument(
+        "--tests",
+        dest="tests_option",
+        action="append",
+        default=[],
+        metavar="LIST",
+        help="comma-separated test suites to import",
+    )
+    parser.add_argument("--list-tests", action="store_true", help="list available test suites and exit")
+    autorun_group = parser.add_mutually_exclusive_group()
+    autorun_group.add_argument("--autorun", dest="autorun", action="store_true", help="generate autorun /init")
+    autorun_group.add_argument("--no-autorun", dest="autorun", action="store_false", help="do not generate autorun /init")
+    parser.set_defaults(autorun=True)
+    return parser.parse_args(argv[1:])
+
+
+def select_tests(positional_tests, option_tests):
+    selected = split_test_args(option_tests) + split_test_args(positional_tests)
+    if not selected:
+        return list(DEFAULT_TESTS)
+
+    if selected == ["all"]:
+        return available_tests()
+    if "all" in selected:
+        raise ValueError("'all' cannot be combined with other test suites")
+
+    available = set(available_tests())
+    unknown = [test for test in selected if test not in available]
+    if unknown:
+        known = ", ".join(available_tests())
+        raise ValueError(f"Unknown test suite(s): {', '.join(unknown)}. Available: {known}")
+
+    return dedup(selected)
+
+
 def env_or_config(env_name, config, config_name):
     return os.environ.get(env_name, config[config_name])
 
@@ -154,6 +238,115 @@ def compiler_file(gcc, filename):
     return None
 
 
+def compiler_output(gcc, *args):
+    if not shutil.which(gcc):
+        return None
+
+    result = subprocess.run(
+        [gcc, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+
+    output = result.stdout.strip()
+    return output or None
+
+
+def glibc_compiler(config):
+    if "GLIBC_CC" in os.environ:
+        return os.environ["GLIBC_CC"]
+
+    cross_compile = os.environ.get("CROSS_COMPILE")
+    if cross_compile:
+        return f"{cross_compile}gcc"
+
+    return config["glibc_cc"]
+
+
+def compiler_sysroot(gcc):
+    sysroot = compiler_output(gcc, "--print-sysroot")
+    if sysroot is None:
+        return None
+
+    path = Path(sysroot)
+    if path == Path("/"):
+        return None
+    return path
+
+
+def compiler_multiarch(gcc):
+    return compiler_output(gcc, "-print-multiarch")
+
+
+def glibc_sysroot_dirs(gcc, config):
+    sysroot = env_path("SYSROOT") or compiler_sysroot(gcc)
+    if sysroot is None:
+        return []
+
+    loader_dir = Path(config["glibc_loader_path"]).parent
+    dirs = [
+        sysroot / loader_dir,
+        sysroot / "lib",
+        sysroot / "lib64",
+        sysroot / "usr" / "lib",
+        sysroot / "usr" / "lib64",
+    ]
+
+    multiarch = compiler_multiarch(gcc)
+    if multiarch:
+        dirs.extend(
+            [
+                sysroot / "lib" / multiarch,
+                sysroot / "usr" / "lib" / multiarch,
+            ]
+        )
+
+    return dedup_paths(dirs)
+
+
+def test_command_path(suite, test):
+    return f"/{TEST_ROOT_DIR}/{suite}/{test}"
+
+
+def commands_from_run_list(suite):
+    run_list = Path(suite) / "run.list"
+    if not run_list.is_file():
+        return None
+
+    commands = []
+    for raw_line in run_list.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("/"):
+            commands.append(line)
+        else:
+            commands.append(f"/{TEST_ROOT_DIR}/{suite}/{line}")
+
+    return commands
+
+
+def commands_from_outputs(suite, output_dir):
+    commands = []
+    entries = sorted(entry for entry in output_dir.iterdir() if entry.is_dir())
+    for entry in entries:
+        candidate = entry / entry.name
+        if candidate.is_file():
+            commands.append(test_command_path(suite, entry.name))
+
+    if commands:
+        return commands
+
+    for entry in sorted(output_dir.iterdir()):
+        if entry.is_file() and os.access(entry, os.X_OK):
+            commands.append(test_command_path(suite, entry.name))
+
+    return commands
+
+
 def copy_test_outputs(output_dir, target_dir, test):
     copied = 0
 
@@ -187,7 +380,7 @@ def copy_runtime_file(src, dest, desc):
 
 
 def find_glibc_runtime_file(filename, config):
-    gcc = env_or_config("GLIBC_CC", config, "glibc_cc")
+    gcc = glibc_compiler(config)
     search_dirs = libc_dirs_from_env("GLIBC_LIB_DIR", "LIBC_DIR")
 
     glibc_libc = env_path("GLIBC_LIBC")
@@ -196,7 +389,9 @@ def find_glibc_runtime_file(filename, config):
             return glibc_libc
         search_dirs.append(glibc_libc.parent)
 
+    search_dirs.extend(glibc_sysroot_dirs(gcc, config))
     search_dirs.extend(Path(directory) for directory in config["glibc_search_dirs"])
+    search_dirs = dedup_paths(search_dirs)
 
     return find_file_in_dirs(filename, search_dirs) or compiler_file(gcc, filename)
 
@@ -269,11 +464,16 @@ def make_vars_for_test(test, isa, config):
         )
 
     if test == "basic-glibc-static":
-        gcc = env_or_config("GLIBC_CC", config, "glibc_cc")
+        gcc = glibc_compiler(config)
         glibc_libc = env_path("GLIBC_LIBC")
         glibc_dir = os.environ.get("GLIBC_DIR") or os.environ.get("GLIBC_LIB_DIR") or os.environ.get("LIBC_DIR")
         if not glibc_dir and glibc_libc:
             glibc_dir = str(glibc_libc.parent)
+        if not glibc_dir:
+            sysroot_dirs = glibc_sysroot_dirs(gcc, config)
+            libc = find_file_in_dirs("libc.a", sysroot_dirs) or find_file_in_dirs("libc.so", sysroot_dirs)
+            if libc:
+                glibc_dir = str(libc.parent)
         libc = compiler_file(gcc, "libc.a") or compiler_file(gcc, "libc.so")
         if not glibc_dir and libc:
             glibc_dir = str(libc.parent)
@@ -283,6 +483,8 @@ def make_vars_for_test(test, isa, config):
         crt_dirs = libc_dirs_from_env("GLIBC_CRT_DIR", "GLIBC_DIR", "GLIBC_LIB_DIR", "LIBC_DIR")
         if glibc_libc:
             crt_dirs.append(glibc_libc.parent)
+        crt_dirs.extend(glibc_sysroot_dirs(gcc, config))
+        crt_dirs = dedup_paths(crt_dirs)
         crt1 = find_file_in_dirs("crt1.o", crt_dirs) or compiler_file(gcc, "crt1.o")
         crti = find_file_in_dirs("crti.o", crt_dirs) or compiler_file(gcc, "crti.o")
         crtn = find_file_in_dirs("crtn.o", crt_dirs) or compiler_file(gcc, "crtn.o")
@@ -296,7 +498,7 @@ def make_vars_for_test(test, isa, config):
 def build_test(test, isa, rootfs_dir, config):
     if test in config["unsupported_tests"]:
         log_warn(f"{test} does not support {isa}, skipping...")
-        return
+        return []
 
     test_dir = Path(test)
     output_dir = test_dir / "build" / isa / "output"
@@ -306,7 +508,7 @@ def build_test(test, isa, rootfs_dir, config):
 
     if not test_dir.is_dir():
         log_warn(f"Test directory {test_dir} does not exist, skipping...")
-        return
+        return []
 
     log_info(f"Building {test} for {isa}...")
     shutil.rmtree(output_dir, ignore_errors=True)
@@ -318,17 +520,36 @@ def build_test(test, isa, rootfs_dir, config):
         result = subprocess.run(make_args, cwd=test_dir)
         if result.returncode != 0:
             log_error(f"Failed to build {test}")
-            return
+            return []
         log_info(f"{test} build completed successfully")
     else:
         log_warn(f"No Makefile found in {test}, skipping build...")
 
     if not output_dir.is_dir():
         log_warn(f"Output directory {output_dir} does not exist for {test}")
-        return
+        return []
 
     log_info(f"Collecting files from {output_dir}...")
     copy_test_outputs(output_dir, target_dir, test)
+    return commands_from_run_list(test) or commands_from_outputs(test, output_dir)
+
+
+def build_autorun_init(rootfs_dir, config, commands):
+    list_file = rootfs_dir / INIT_RUNNER_LIST
+    list_file.parent.mkdir(parents=True, exist_ok=True)
+    list_file.write_text("".join(f"{command}\n" for command in commands))
+
+    (rootfs_dir / "tmp").mkdir(parents=True, exist_ok=True)
+
+    gcc = glibc_compiler(config)
+    log_info(f"Building autorun init with {gcc}...")
+    try:
+        run([gcc, "-Wall", "-Wextra", "-O2", str(INIT_RUNNER_SOURCE), "-o", str(rootfs_dir / "init")])
+    except subprocess.CalledProcessError:
+        log_error("Failed to build autorun init")
+        return False
+
+    return True
 
 
 def create_image(build_dir, rootfs_dir, isa, img_size):
@@ -373,10 +594,10 @@ def human_size(path):
     return f"{size}B"
 
 
-def print_contents(rootfs_dir):
+def print_contents(rootfs_dir, tests):
     print(f"Contents of {rootfs_dir}/:")
     tests_root = rootfs_dir / TEST_ROOT_DIR
-    for test in TESTS:
+    for test in tests:
         test_dir = tests_root / test
         if not test_dir.is_dir():
             continue
@@ -390,12 +611,23 @@ def print_contents(rootfs_dir):
 def main(argv):
     os.chdir(BASE_DIR)
 
-    raw_isa = argv[1] if len(argv) > 1 else "riscv64"
+    args = parse_args(argv)
+    if args.list_tests:
+        for test in available_tests():
+            print(test)
+        return 0
+
     try:
-        isa = normalize_isa(raw_isa)
+        isa = normalize_isa(args.isa)
     except ValueError as err:
         log_error(str(err))
         return 1
+    try:
+        tests = select_tests(args.tests, args.tests_option)
+    except ValueError as err:
+        log_error(str(err))
+        return 1
+
     config = ARCH_CONFIGS[isa]
     img_size = os.environ.get("IMG_SIZE", "1024")
     build_dir = Path(os.environ.get("BUILD_DIR", "build"))
@@ -405,14 +637,19 @@ def main(argv):
     print(f"  ISA: {isa}")
     print(f"  Image size: {img_size}MB")
     print(f"  Build directory: {build_dir}")
-    print(f"  Tests: {' '.join(TESTS)}")
+    print(f"  Tests: {' '.join(tests)}")
+    print(f"  Autorun init: {'yes' if args.autorun else 'no'}")
 
     log_info("Creating directory structure...")
     shutil.rmtree(rootfs_dir, ignore_errors=True)
     rootfs_dir.mkdir(parents=True, exist_ok=True)
 
-    for test in TESTS:
-        build_test(test, isa, rootfs_dir, config)
+    test_commands = []
+    for test in tests:
+        test_commands.extend(build_test(test, isa, rootfs_dir, config))
+
+    if args.autorun and not build_autorun_init(rootfs_dir, config, test_commands):
+        return 1
 
     copy_musl_runtime(rootfs_dir, config)
     copy_glibc_runtime(rootfs_dir, config)
@@ -425,7 +662,7 @@ def main(argv):
     print(f"Generated image: {img_file}")
     print(f"Image size: {human_size(img_file)}")
     print()
-    print_contents(rootfs_dir)
+    print_contents(rootfs_dir, tests)
 
     return 0
 

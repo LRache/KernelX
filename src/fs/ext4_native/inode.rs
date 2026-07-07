@@ -1134,6 +1134,8 @@ impl InodeOps for Inode {
         let same_parent = old_parent_ino == new_parent_ino;
 
         if same_parent {
+            let fsno;
+            let mut target_to_evict = None;
             let mut parent = self.inode.lock();
             ensure_dir_writable(&parent, "rename")?;
 
@@ -1141,18 +1143,37 @@ impl InodeOps for Inode {
             if old_name == new_name {
                 return Ok(());
             }
+            let mut src_inode = context.read_inode(src_ino)?;
+            let src_mode_type = src_inode.i_mode & S_IFMT;
+            let file_type = dirent_file_type(src_inode.i_mode)?;
+            fsno = context.fsno;
+
             match lookup_name_in_dir(&context, &parent, new_name_bytes) {
-                Ok(_) => return ret_errno("rename: destination already exists", Errno::EEXIST),
+                Ok(target_ino) if target_ino == src_ino => return Ok(()),
+                Ok(target_ino) => {
+                    target_to_evict =
+                        remove_rename_target(&context, &mut parent, new_name_bytes, src_mode_type, target_ino)?
+                }
                 Err(Errno::ENOENT) => {}
                 Err(err) => return Err(err),
             }
 
-            let src_inode = context.read_inode(src_ino)?;
-            let file_type = dirent_file_type(src_inode.i_mode)?;
+            let time = now();
+            parent.set_mtime(&time);
+            parent.set_ctime(&time);
+            src_inode.set_ctime(&time);
 
             context.insert_dirent(parent.ino, &mut parent, new_name_bytes, src_ino, file_type)?;
             context.remove_dirent(parent.ino, &mut parent, old_name_bytes)?;
+            context.write_inode(&mut parent)?;
+            context.write_inode(&mut src_inode)?;
+            sync_cached_inode(fsno, &src_inode);
             self.invalidate_dir_cache();
+            drop(parent);
+            drop(context);
+            if let Some(ino) = target_to_evict {
+                evict_inode(fsno, ino);
+            }
             return Ok(());
         }
 
@@ -1168,19 +1189,37 @@ impl InodeOps for Inode {
         ensure_dir_writable(&new_parent_inode, "rename")?;
 
         let src_ino = lookup_name_in_dir(&context, &old_parent, old_name_bytes)?;
-        match lookup_name_in_dir(&context, &new_parent_inode, new_name_bytes) {
-            Ok(_) => return ret_errno("rename: destination already exists", Errno::EEXIST),
-            Err(Errno::ENOENT) => {}
-            Err(err) => return Err(err),
-        }
-
-        let src_inode = context.read_inode(src_ino)?;
+        let mut src_inode = context.read_inode(src_ino)?;
         let src_mode_type = src_inode.i_mode & S_IFMT;
         let file_type = dirent_file_type(src_inode.i_mode)?;
 
         if src_mode_type == S_IFDIR && new_parent_inode.ino == src_ino {
             return ret_errno("rename: cannot move directory into itself", Errno::EINVAL);
         }
+
+        let fsno = context.fsno;
+        let mut target_to_evict = None;
+        match lookup_name_in_dir(&context, &new_parent_inode, new_name_bytes) {
+            Ok(target_ino) if target_ino == src_ino => return Ok(()),
+            Ok(target_ino) => {
+                target_to_evict = remove_rename_target(
+                    &context,
+                    &mut new_parent_inode,
+                    new_name_bytes,
+                    src_mode_type,
+                    target_ino,
+                )?
+            }
+            Err(Errno::ENOENT) => {}
+            Err(err) => return Err(err),
+        }
+
+        let time = now();
+        old_parent.set_mtime(&time);
+        old_parent.set_ctime(&time);
+        new_parent_inode.set_mtime(&time);
+        new_parent_inode.set_ctime(&time);
+        src_inode.set_ctime(&time);
 
         context.insert_dirent(
             new_parent_inode.ino,
@@ -1205,10 +1244,20 @@ impl InodeOps for Inode {
         }
 
         context.remove_dirent(old_parent.ino, &mut old_parent, old_name_bytes)?;
+        context.write_inode(&mut old_parent)?;
+        context.write_inode(&mut new_parent_inode)?;
+        context.write_inode(&mut src_inode)?;
+        sync_cached_inode(fsno, &src_inode);
         self.invalidate_dir_cache();
         new_parent.invalidate_dir_cache();
         if src_mode_type == S_IFDIR {
             invalidate_cached_dir(context.fsno, src_ino);
+        }
+        drop(old_parent);
+        drop(new_parent_inode);
+        drop(context);
+        if let Some(ino) = target_to_evict {
+            evict_inode(fsno, ino);
         }
         Ok(())
     }
@@ -1748,6 +1797,73 @@ fn is_dir_empty(context: &Context, inode: &Ext4Inode) -> SysResult<bool> {
     Ok(cached_or_load_dir_results(context, inode)?
         .into_iter()
         .all(|entry| entry.name.as_bytes() == b"." || entry.name.as_bytes() == b".."))
+}
+
+fn check_rename_target_type(source_mode_type: u16, target_mode_type: u16) -> SysResult<()> {
+    if source_mode_type == S_IFDIR && target_mode_type != S_IFDIR {
+        return ret_errno("rename: directory cannot replace non-directory", Errno::ENOTDIR);
+    }
+    if source_mode_type != S_IFDIR && target_mode_type == S_IFDIR {
+        return ret_errno("rename: non-directory cannot replace directory", Errno::EISDIR);
+    }
+    Ok(())
+}
+
+fn remove_rename_target(
+    context: &Context,
+    parent: &mut Ext4Inode,
+    name: &[u8],
+    source_mode_type: u16,
+    target_ino: u32,
+) -> SysResult<Option<u32>> {
+    let mut target = context.read_inode(target_ino)?;
+    let target_mode_type = target.i_mode & S_IFMT;
+    check_rename_target_type(source_mode_type, target_mode_type)?;
+
+    if target.i_links_count == 0 {
+        return ret_errno("rename: target inode link count is already zero", Errno::EIO);
+    }
+
+    if target_mode_type == S_IFDIR {
+        ensure_rmdir_cleanup_supported(&target)?;
+        if !is_dir_empty(context, &target)? {
+            return ret_errno("rename: target directory is not empty", Errno::ENOTEMPTY);
+        }
+
+        context.remove_dirent(parent.ino, parent, name)?;
+        parent.i_links_count = parent
+            .i_links_count
+            .checked_sub(1)
+            .ok_or_else(|| debug_errno("rename: parent link count underflow", Errno::EIO))?;
+        destroy_unlinked_inode(context, &mut target, true)?;
+        mark_cached_inode_deleted(context.fsno, &target);
+        return Ok(Some(target_ino));
+    }
+
+    if target.i_links_count > 1 {
+        let old_links = target.i_links_count;
+        let old_ctime = target.i_ctime;
+        target.i_links_count -= 1;
+        target.set_ctime(&now());
+        context.write_inode(&mut target)?;
+        sync_cached_inode(context.fsno, &target);
+
+        if let Err(err) = context.remove_dirent(parent.ino, parent, name) {
+            target.i_links_count = old_links;
+            target.i_ctime = old_ctime;
+            let _ = context.write_inode(&mut target);
+            sync_cached_inode(context.fsno, &target);
+            return Err(err);
+        }
+
+        return Ok(None);
+    }
+
+    ensure_unlink_cleanup_supported(&target)?;
+    context.remove_dirent(parent.ino, parent, name)?;
+    destroy_unlinked_inode(context, &mut target, false)?;
+    mark_cached_inode_deleted(context.fsno, &target);
+    Ok(Some(target_ino))
 }
 
 fn destroy_unlinked_inode(context: &Context, inode: &mut Ext4Inode, was_dir: bool) -> SysResult<()> {

@@ -1,6 +1,8 @@
 use core::time::Duration;
 
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::MapPerm;
+use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 
 use super::{KernelContext, SigContext};
 
@@ -81,6 +83,16 @@ pub trait ArchTrait {
     fn get_frame_pointer() -> usize;
     unsafe fn frame_info(fp: usize) -> (usize, usize);
     fn is_kernel_addr(addr: usize) -> bool;
+
+    fn elf_native_machine() -> u16;
+
+    fn kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction>;
+    fn apply_kmodule_relocation(
+        relocation_type: u32,
+        place: &mut [u8],
+        value: Option<KModuleRelocationValue>,
+    ) -> SysResult<()>;
+    fn flush_kmodule_icache();
 
     fn crc32c(seed: u32, buf: &[u8]) -> u32 {
         crate::klib::crc::crc32c_update(seed, buf)

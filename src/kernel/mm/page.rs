@@ -327,6 +327,46 @@ impl Drop for PhysPageFrame {
 }
 
 #[derive(Debug)]
+pub struct ContiguousPhysPageFrame {
+    page: usize,
+    n: usize,
+}
+
+impl ContiguousPhysPageFrame {
+    pub fn new(page: usize, n: usize) -> Self {
+        debug_assert!(n > 0, "Page count must be greater than zero");
+        Self { page, n }
+    }
+
+    pub fn alloc(n: usize) -> Self {
+        Self::new(alloc_contiguous(n), n)
+    }
+
+    pub fn size(&self) -> usize {
+        self.n * arch::PGSIZE
+    }
+
+    pub fn slice(&self) -> &mut [u8] {
+        // SAFETY: `page` points to `n` contiguous page frames owned by this object until Drop.
+        unsafe { core::slice::from_raw_parts_mut(self.page as *mut u8, self.size()) }
+    }
+
+    pub fn get_page(&self) -> usize {
+        self.page
+    }
+
+    pub fn ptr(&self) -> *mut u8 {
+        self.get_page() as *mut u8
+    }
+}
+
+impl Drop for ContiguousPhysPageFrame {
+    fn drop(&mut self) {
+        free_contiguous(self.page, self.n);
+    }
+}
+
+#[derive(Debug)]
 pub struct FixedContiguousPhysPageFrame<const N: usize> {
     page: usize,
 }

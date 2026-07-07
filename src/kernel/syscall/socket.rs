@@ -30,13 +30,11 @@ const SO_RCVTIMEO_NEW: usize = 66;
 const UNIX_PATH_MAX: usize = 108;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 struct SockTimeval {
     tv_sec: i64,
     tv_usec: i64,
 }
-
-impl UserStruct for SockTimeval {}
 
 impl TryFrom<SockTimeval> for Option<Duration> {
     type Error = Errno;
@@ -53,7 +51,7 @@ impl TryFrom<SockTimeval> for Option<Duration> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 struct SocketAddrUn {
     sun_family: u16,
     sun_path: [u8; UNIX_PATH_MAX],
@@ -86,8 +84,6 @@ impl SocketAddrUn {
         core::str::from_utf8(path).map_err(|_| Errno::EINVAL)
     }
 }
-
-impl UserStruct for SocketAddrUn {}
 
 #[repr(usize)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
@@ -545,7 +541,7 @@ pub fn shutdown(fd: usize, how: usize) -> SyscallRet {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct UMsgHdr {
     msg_name: usize,
     msg_namelen: u32,
@@ -555,8 +551,6 @@ pub struct UMsgHdr {
     msg_controllen: usize,
     msg_flags: i32,
 }
-
-impl UserStruct for UMsgHdr {}
 
 impl UMsgHdr {
     fn validate(&self) -> SysResult<()> {
@@ -574,13 +568,11 @@ impl UMsgHdr {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct UMMsgHdr {
     msg_hdr: UMsgHdr,
     msg_len: u32,
 }
-
-impl UserStruct for UMMsgHdr {}
 
 fn total_iov_len(iov_base: usize, iovcnt: usize) -> Result<usize, Errno> {
     if iovcnt == 0 {

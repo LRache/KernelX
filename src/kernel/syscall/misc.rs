@@ -2,16 +2,16 @@ use alloc::vec;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
-use crate::arch;
 use crate::fs::vfs;
 use crate::kernel::config;
 use crate::kernel::errno::Errno;
 use crate::kernel::scheduler::current;
-use crate::kernel::syscall::uptr::{UBuffer, UPtr, UserPointer};
+use crate::kernel::syscall::uptr::{UBuffer, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
-use crate::kernel::task::UTS_NAME_MAX;
+use crate::kernel::task::{CapabilitySet, UTS_NAME_MAX};
 use crate::klib::dmesg;
 use crate::klib::random::random;
+use crate::{arch, kmodule};
 
 use super::common::Timeval;
 
@@ -24,7 +24,7 @@ pub fn rseq() -> Result<usize, Errno> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct Utsname {
     pub sysname: [u8; UTS_FIELD_LEN],
     pub nodename: [u8; UTS_FIELD_LEN],
@@ -33,8 +33,6 @@ pub struct Utsname {
     pub machine: [u8; UTS_FIELD_LEN],
     pub domainname: [u8; UTS_FIELD_LEN],
 }
-
-impl UserStruct for Utsname {}
 
 impl Utsname {
     pub fn new() -> Self {
@@ -109,13 +107,11 @@ pub fn setdomainname(uptr_name: UBuffer, len: usize) -> SyscallRet {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct RLimit {
     rlim_cur: usize,
     rlim_max: usize,
 }
-
-impl UserStruct for RLimit {}
 
 #[repr(usize)]
 #[derive(Debug, TryFromPrimitive)]
@@ -295,13 +291,59 @@ pub fn membarrier() -> SyscallRet {
     Ok(0)
 }
 
+fn load_module_status(status: i32) -> SyscallRet {
+    if status < 0 {
+        let errno = Errno::try_from(-status).unwrap_or(Errno::EINVAL);
+        return Err(errno);
+    }
+    Ok(status as usize)
+}
+
+pub fn init_module(uptr_module: UBuffer, len: usize, _uptr_params: UPtr<u8>) -> SyscallRet {
+    if !current::capable(CapabilitySet::SYS_MODULE) {
+        return Err(Errno::EPERM);
+    }
+    uptr_module.should_not_null()?;
+    if len == 0 {
+        return Err(Errno::ENOEXEC);
+    }
+    if len > kmodule::MAX_KMODULE_IMAGE_SIZE {
+        return Err(Errno::EFBIG);
+    }
+
+    let mut image = vec![0u8; len];
+    uptr_module.read(0, &mut image)?;
+
+    load_module_status(kmodule::load(&image)?)
+}
+
+pub fn finit_module(fd: usize, _uptr_params: UPtr<u8>, _flags: usize) -> SyscallRet {
+    if !current::capable(CapabilitySet::SYS_MODULE) {
+        return Err(Errno::EPERM);
+    }
+
+    let file = current::fdtable().lock().get(fd)?;
+    load_module_status(kmodule::load_file(file.as_ref())?)
+}
+
+pub fn delete_module(uptr_name: UString, _flags: usize) -> SyscallRet {
+    if !current::capable(CapabilitySet::SYS_MODULE) {
+        return Err(Errno::EPERM);
+    }
+    uptr_name.should_not_null()?;
+
+    let name = uptr_name.read_string_fixed::<256>()?;
+    kmodule::unload(name)?;
+    Ok(0)
+}
+
 pub fn get_mempolicy() -> SyscallRet {
     // TODO: Not implemented yet
     Ok(0)
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, UserStruct)]
 pub struct Rusage {
     ru_utime: Timeval,  // user CPU time used
     ru_stime: Timeval,  // system CPU time used
@@ -320,8 +362,6 @@ pub struct Rusage {
     ru_nvcsw: isize,    // voluntary context switches
     ru_nivcsw: isize,   // involuntary context switches
 }
-
-impl UserStruct for Rusage {}
 
 impl Default for Rusage {
     fn default() -> Self {
@@ -377,7 +417,7 @@ pub fn getrusage(who: usize, uptr_rusage: UPtr<Rusage>) -> SyscallRet {
 }
 
 #[repr(C)]
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, UserStruct)]
 pub struct Sysinfo {
     uptime: usize,
     loads: [usize; 3],
@@ -393,21 +433,18 @@ pub struct Sysinfo {
     mem_unit: u32,
     _f: [u8; 20 - 2 * core::mem::size_of::<isize>() - core::mem::size_of::<i32>()],
 }
-impl UserStruct for Sysinfo {}
 
 /// Clock ticks per second, matching the Linux userspace CLK_TCK value.
 const CLK_TCK: u64 = 100;
 
 #[repr(C)]
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, UserStruct)]
 pub struct Tms {
     tms_utime: usize,  // user CPU time of process
     tms_stime: usize,  // system CPU time of process
     tms_cutime: usize, // user CPU time of waited-for children
     tms_cstime: usize, // system CPU time of waited-for children
 }
-
-impl UserStruct for Tms {}
 
 pub fn times(uptr_tms: UPtr<Tms>) -> SyscallRet {
     let pcb = current::pcb();

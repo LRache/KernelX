@@ -9,6 +9,9 @@
 ```sh
 ./usertests/build.sh riscv64
 ./usertests/build.sh loongarch64
+./usertests/build.sh riscv64 kmodule filesystem
+./usertests/build.sh riscv64 --tests kmodule,filesystem
+./usertests/build.sh riscv64 kmodule --no-autorun
 ```
 
 `build.sh` 只负责定位脚本目录并执行 `build.py`。`build.py` 会自动切换到 `usertests` 目录作为工作目录，因此相对路径都以 `usertests/` 为基准。
@@ -26,15 +29,27 @@ la64
 
 ## 测试列表
 
-要构建哪些测试由 `build.py` 顶部的 `TESTS` 列表决定：
+不额外传测试名时，要构建哪些测试由 `build.py` 顶部的 `DEFAULT_TESTS` 列表决定：
 
 ```python
-TESTS = [
-    "basic-glibc",
+DEFAULT_TESTS = [
+    "pthread-musl",
+    "kmodule",
 ]
 ```
 
-目前默认只启用 `basic-glibc`。需要构建更多测试时，在这个列表中取消注释或添加对应目录名，例如 `stdio`、`filesystem`、`pthread` 等。
+也可以通过命令行选择本次要导入镜像的测试 suite，不需要修改源码：
+
+```sh
+./usertests/build.sh riscv64 kmodule
+./usertests/build.sh riscv64 kmodule filesystem
+./usertests/build.sh riscv64 --tests kmodule,filesystem
+./usertests/build.sh riscv64 all
+./usertests/build.sh riscv64 kmodule --no-autorun
+./usertests/build.sh --list-tests
+```
+
+其中 `all` 表示导入所有带 `Makefile` 的 suite。脚本会校验测试名，拼错或不存在的 suite 会直接报错。
 
 每个测试套件必须是 `usertests/<suite>/` 下的一个目录，并且通常提供自己的 `Makefile`。构建脚本会对每个 suite 执行：
 
@@ -51,10 +66,10 @@ make all ISA=<isa> ARCH=<isa> ...
 `riscv64` 默认使用：
 
 ```text
-CROSS_COMPILE=riscv64-linux-gnu-
+CROSS_COMPILE=riscv64-unknown-linux-gnu-
 ELF_CROSS_COMPILER=riscv64-unknown-elf-
 MUSL_CROSS_COMPILE=riscv64-linux-musl-
-GLIBC_CC 等效为 riscv64-linux-gnu-gcc
+GLIBC_CC 等效为 riscv64-unknown-linux-gnu-gcc
 MUSL_CC 等效为 riscv64-linux-musl-gcc
 CARGO_TARGET=riscv64gc-unknown-linux-gnu
 ```
@@ -136,6 +151,43 @@ build/<isa>/tests/<suite>/<data-file>
 
 如果某个旧 Makefile 仍然输出平铺文件，脚本会直接复制这些文件到 `tests/<suite>/`。
 
+## 自动运行 init
+
+默认情况下，`build.py` 会生成用于启动后自动运行测试的 `/init`。如果只想构建和打包测试，不需要自动运行，
+可以传入 `--no-autorun`：
+
+```sh
+./usertests/build.sh riscv64 kmodule
+./usertests/build.sh riscv64 --tests kmodule,pthread-musl
+./usertests/build.sh riscv64 kmodule --no-autorun
+```
+
+默认自动运行模式会额外生成：
+
+```text
+/init
+/etc/kx-tests.list
+/tmp
+```
+
+`/init` 是一个小的 C runner，启动后会创建并挂载 `/tmp` 为 tmpfs，然后按 `/etc/kx-tests.list`
+逐个 `fork`、`exec`、`wait` 测试程序，最后打印汇总结果。
+
+测试清单的生成规则是：
+
+1. 如果 suite 下存在 `run.list`，按其中的非空非注释行生成命令。相对路径会解释为 `/tests/<suite>/<line>`，绝对路径保持不变。
+2. 如果没有 `run.list`，则按现有输出目录约定自动推导：`build/<isa>/output/<case>/<case>` 会变成 `/tests/<suite>/<case>`。
+3. 如果输出是平铺文件，则只把带可执行权限的文件加入清单。
+
+例如 kmodule suite 中的 `hello` case 会自动生成：
+
+```text
+/tests/kmodule/hello
+```
+
+这让新增 case 时只需要继续遵循 `output/<case>/<case>` 的产物布局；只有需要特殊参数或特殊顺序时，才需要为 suite
+增加 `run.list`。
+
 ## libc 和运行时库
 
 glibc 和 musl 的位置通过环境变量传递。脚本优先使用环境变量，找不到时才使用架构默认路径或编译器查询结果。
@@ -143,6 +195,7 @@ glibc 和 musl 的位置通过环境变量传递。脚本优先使用环境变�
 常用变量：
 
 ```text
+CROSS_COMPILE glibc 测试使用的交叉编译前缀；未设置 GLIBC_CC 时，也用它推导 gcc 和 sysroot
 GLIBC_CC      glibc 测试使用的 C 编译器，同时作为 glibc 运行时查询编译器
 MUSL_CC       musl 测试使用的 C 编译器，同时可用于查询 musl libc.so
 LIBC_DIR       通用 libc 目录，glibc/musl 都可作为兜底使用
@@ -153,12 +206,23 @@ MUSL_LIB_DIR   musl 库目录
 MUSL_LIBC      musl libc.so 的完整路径
 ```
 
+如果没有显式提供 `GLIBC_LIB_DIR` / `LIBC_DIR` / `GLIBC_LIBC`，脚本会优先使用 `GLIBC_CC`，否则使用
+`${CROSS_COMPILE}gcc` 执行 `--print-sysroot`，并从这个 sysroot 下的 `lib`、`lib64`、`usr/lib`、
+`usr/lib64` 和 multiarch 目录查找 glibc loader 与运行时库。
+
 示例：
 
 ```sh
 GLIBC_LIB_DIR=/usr/riscv64-linux-gnu/lib \
 MUSL_LIB_DIR=/opt/riscv64-linux-musl-cross/riscv64-linux-musl/lib \
 ./usertests/build.sh riscv64
+```
+
+使用自定义交叉工具链时：
+
+```sh
+CROSS_COMPILE=/opt/cross-tools/riscv64-unknown-linux-gnu/bin/riscv64-unknown-linux-gnu- \
+./usertests/build.sh riscv64 kmodule
 ```
 
 loongarch 示例：
