@@ -65,6 +65,12 @@ SECTIONS {
     .rodata : {
         __rodata_start = .;
         *(.got*)
+        . = ALIGN(8);
+        __kmodule_exports_start = .;
+        KEEP(*(.kmodule.exports))
+        KEEP(*(.kmodule.exports.*))
+        __kmodule_exports_end = .;
+        . = ALIGN(8);
         *(.rodata*)
         *(.srodata*)
         . = ALIGN(4K);

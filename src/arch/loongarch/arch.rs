@@ -2,11 +2,14 @@
 
 use alloc::boxed::Box;
 use core::time::Duration;
+use elf::abi;
 
 use crate::arch::arch::{Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::MapPerm;
 use crate::klib::initcell::InitedCell;
+use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 
 use super::boot::EarlyUart;
 use super::context::KernelContext;
@@ -183,5 +186,25 @@ impl ArchTrait for Arch {
         // DMW0/1 live in the upper half (bit 63 set); every kernel VA comes
         // out of paddr_to_kaddr, which OR-s in DMW1_MASK.
         (addr as isize) < 0
+    }
+
+    fn elf_native_machine() -> u16 {
+        abi::EM_LOONGARCH
+    }
+
+    fn kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction> {
+        super::kmodule::relocation_action(relocation_type)
+    }
+
+    fn apply_kmodule_relocation(
+        relocation_type: u32,
+        place: &mut [u8],
+        value: Option<KModuleRelocationValue>,
+    ) -> SysResult<()> {
+        super::kmodule::apply_relocation(relocation_type, place, value)
+    }
+
+    fn flush_kmodule_icache() {
+        super::kmodule::flush_icache();
     }
 }

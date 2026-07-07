@@ -7,6 +7,7 @@ mod csr;
 pub mod eiointc;
 mod fdt;
 mod iocsr;
+pub mod kmodule;
 mod pagetable;
 pub mod pch_pic;
 mod task;

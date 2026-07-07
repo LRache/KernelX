@@ -117,6 +117,8 @@ macro_rules! syscall_entries {
             // Misc
             81  => misc::sync(0),
             92  => misc::personality(1),
+            105 => misc::init_module(3),
+            106 => misc::delete_module(2),
             116 => misc::syslog(3),
             119 => misc::sched_setscheduler(3),
             120 => misc::sched_getscheduler(1),
@@ -137,6 +139,7 @@ macro_rules! syscall_entries {
             261 => misc::prlimit64(4),
             262 => fs::fanotify_init(2),
             263 => fs::fanotify_mark(5),
+            273 => misc::finit_module(3),
             278 => misc::getrandom(3),
             283 => misc::membarrier(0),
             293 => misc::rseq(0),

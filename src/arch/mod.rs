@@ -40,7 +40,9 @@ macro_rules! arch_export {
     };
 }
 
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::MapPerm;
+use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 use core::time::Duration;
 
 arch_export! {
@@ -79,6 +81,10 @@ arch_export! {
     scan_device() -> ();
 
     is_kernel_addr(addr: usize) -> bool;
+    elf_native_machine() -> u16;
+    kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction>;
+    apply_kmodule_relocation(relocation_type: u32, place: &mut [u8], value: Option<KModuleRelocationValue>) -> SysResult<()>;
+    flush_kmodule_icache() -> ();
     crc32c(seed: u32, buf: &[u8]) -> u32;
 }
 

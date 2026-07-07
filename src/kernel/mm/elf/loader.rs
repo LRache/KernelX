@@ -81,27 +81,12 @@ fn read_phdr_table(file: &Arc<RandomAccessFile>, ehdr: &ElfHeader) -> Result<Vec
     Ok(phdrs)
 }
 
-fn is_native(ehdr: &ElfHeader) -> bool {
-    #[cfg(arch_riscv64)]
-    {
-        ehdr.e_machine == abi::EM_RISCV
-    }
-    #[cfg(arch_loongarch64)]
-    {
-        ehdr.e_machine == abi::EM_LOONGARCH
-    }
-}
-
 fn is_executable(ehdr: &ElfHeader) -> bool {
     ehdr.e_type == abi::ET_EXEC
 }
 
 fn is_dynamic(ehdr: &ElfHeader) -> bool {
     ehdr.e_type == abi::ET_DYN
-}
-
-fn is_load(phdr: &ProgramHeader) -> bool {
-    phdr.p_type == abi::PT_LOAD
 }
 
 pub fn load_elf(
@@ -117,7 +102,7 @@ pub fn load_elf(
         return Err(Errno::ENOEXEC);
     }
 
-    if !is_native(&ehdr) {
+    if ehdr.e_machine != arch::elf_native_machine() {
         println!(
             "Unsupported ELF format: e_machine={:#x} does not match kernel arch",
             ehdr.e_machine
@@ -143,7 +128,7 @@ pub fn load_elf(
     let phdrs = read_phdr_table(file, &ehdr)?;
 
     for phdr in &phdrs {
-        if is_load(phdr) {
+        if phdr.p_type == abi::PT_LOAD {
             load_program_from_file(phdr, file, addrspace, addr_base)?;
         } else if phdr.p_type == abi::PT_PHDR {
             phdr_addr = Some(to_usize(phdr.p_vaddr)?.checked_add(addr_base).ok_or(Errno::ENOEXEC)?);
@@ -226,7 +211,7 @@ fn load_interpreter(root: &Arc<Dentry>, path: &str, addrspace: &AddrSpace, perm:
 
     let ehdr = read_ehdr(&file)?;
 
-    if ehdr.class != Class::ELF64 || !is_native(&ehdr) {
+    if ehdr.class != Class::ELF64 || ehdr.e_machine != arch::elf_native_machine() {
         return Err(Errno::ENOEXEC);
     }
 
@@ -238,7 +223,7 @@ fn load_interpreter(root: &Arc<Dentry>, path: &str, addrspace: &AddrSpace, perm:
     let phdrs = read_phdr_table(&file, &ehdr)?;
 
     for phdr in &phdrs {
-        if is_load(phdr) {
+        if phdr.p_type == abi::PT_LOAD {
             load_program_from_file(phdr, &file, addrspace, addr_base)?;
         }
     }

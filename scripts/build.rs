@@ -2,11 +2,11 @@ fn main() {
     let arch = std::env::var("ARCH").unwrap();
     let arch_bits = std::env::var("ARCH_BITS").unwrap();
     let sysroot = std::env::var("SYSROOT").unwrap_or_default();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
 
     track_kernelx_env_vars();
 
     // Symbol table for stack backtrace (debug only)
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let symbols_dir = format!("{}/build/{}{}", manifest_dir, arch, arch_bits);
     let symbols_path = format!("{}/symbols.bin", symbols_dir);
     // Create empty placeholder so include_bytes! doesn't fail on first build
@@ -26,12 +26,12 @@ fn main() {
     println!("cargo:rustc-cfg=arch_{}{}", arch, arch_bits);
 
     // Link C library
-    println!("cargo:rustc-link-search=native=clib/build/{}{}", arch, arch_bits);
-    println!("cargo:rustc-link-lib=static=kernelx_clib");
-    println!(
-        "cargo:rerun-if-changed=clib/build/{}{}/libkernelx_clib.a",
-        arch, arch_bits
-    );
+    let clib_archive = format!("{}/clib/build/{}{}/libkernelx_clib.a", manifest_dir, arch, arch_bits);
+    println!("cargo:rustc-link-arg=--gc-sections");
+    println!("cargo:rustc-link-arg=--whole-archive");
+    println!("cargo:rustc-link-arg={}", clib_archive);
+    println!("cargo:rustc-link-arg=--no-whole-archive");
+    println!("cargo:rerun-if-changed={}", clib_archive);
 
     generate_ext4_bindings(&manifest_dir, &arch, &arch_bits, &sysroot);
 

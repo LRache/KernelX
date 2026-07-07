@@ -3,6 +3,7 @@ mod cpu;
 mod crc32;
 pub mod csr;
 mod fdt;
+pub mod kmodule;
 mod pagetable;
 mod plic;
 mod sbi_driver;
