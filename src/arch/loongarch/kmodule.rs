@@ -39,7 +39,7 @@ pub fn apply_relocation(
     let relocation = LoongArchRelocation::try_from(relocation_type).map_err(|_| Errno::ENOEXEC)?;
     match relocation {
         LoongArchRelocation::None => Ok(()),
-        LoongArchRelocation::Abs64 => write_abs64(place, resolved_relocation(value)?.value),
+        LoongArchRelocation::Abs64 => write_abs64(place, resolved_relocation(value)?.1),
         LoongArchRelocation::B26 => {
             let (base, value) = resolved_relocation(value)?;
             write_branch26(place, pcrel_offset(value, base)?)
@@ -56,8 +56,8 @@ pub fn apply_relocation(
             let (base, value) = resolved_relocation(value)?;
             write_pcala_hi20(place, base, value)
         }
-        LoongArchRelocation::PcalaLo12 => write_page_offset12(place, resolved_relocation(value)?.value),
-        LoongArchRelocation::GotPcLo12 => write_page_offset12(place, resolved_relocation(value)?.value),
+        LoongArchRelocation::PcalaLo12 => write_page_offset12(place, resolved_relocation(value)?.1),
+        LoongArchRelocation::GotPcLo12 => write_page_offset12(place, resolved_relocation(value)?.1),
     }
 }
 
