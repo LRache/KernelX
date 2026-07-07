@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::{FileOps, RandomAccessFile};
-use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
 use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
+use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -97,7 +97,12 @@ impl PrivateFileMapArea {
         kpage
     }
 
-    fn copy_on_write_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
+    fn copy_on_write_page(
+        &mut self,
+        page_index: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> usize {
         debug_assert!(page_index < self.frames.len());
 
         debug_assert!(
@@ -106,12 +111,18 @@ impl PrivateFileMapArea {
         );
 
         let area_offset = page_index * arch::PGSIZE;
+        let uaddr = self.ubase + area_offset;
+        map_change_notifier.before_map_change(MapChange {
+            uaddr,
+            page_count: 1,
+            event: MapChangeEvent::Remap,
+        });
+
         let (frame, kpage) = match &self.frames[page_index] {
             FrameState::Cow(frame) => frame.copy(addrspace),
             _ => panic!("Invalid type for copy-on-write"),
         };
         let frame = Arc::new(frame);
-        let uaddr = self.ubase + area_offset;
 
         #[cfg(not(feature = "swap-memory"))]
         addrspace
@@ -125,7 +136,6 @@ impl PrivateFileMapArea {
             // resident until this PTE replacement is installed.
             unsafe { addrspace.pagetable().lock().mmap_replace_raw(uaddr, kpage, self.perm) };
         }
-        addrspace.notify_addrspace_remap(uaddr, 1);
         self.frames[page_index] = FrameState::Allocated(frame);
 
         kpage
@@ -188,7 +198,12 @@ impl Area for PrivateFileMapArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<usize> {
         debug_assert!(uaddr >= self.ubase);
 
         if !self.perm.contains(MapPerm::W) {
@@ -207,7 +222,7 @@ impl Area for PrivateFileMapArea {
                 FrameState::Allocated(frame) => frame.get_page_swap_in(),
                 FrameState::Cow(_) => {
                     // Copy-on-write: create a new copy for this process
-                    self.copy_on_write_page(page_index, addrspace)
+                    self.copy_on_write_page(page_index, addrspace, map_change_notifier)
                 }
             };
 
@@ -266,6 +281,7 @@ impl Area for PrivateFileMapArea {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Result<usize, MemoryFaultSignal> {
         debug_assert!(uaddr >= self.ubase);
 
@@ -283,14 +299,15 @@ impl Area for PrivateFileMapArea {
                 }
                 FrameState::Cow(_) => {
                     if access_type == MemAccessType::Write {
-                        self.copy_on_write_page(page_index, addrspace);
+                        self.copy_on_write_page(page_index, addrspace, map_change_notifier);
                     } else if let FrameState::Cow(frame) = &self.frames[page_index] {
                         self.map_cow_page(page_index, frame, addrspace);
                     }
                 }
             }
             if access_type == MemAccessType::Write {
-                self.translate_write(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
+                self.translate_write(uaddr, addrspace, map_change_notifier)
+                    .ok_or(MemoryFaultSignal::Segv)
             } else {
                 self.translate_read(uaddr, addrspace).ok_or(MemoryFaultSignal::Segv)
             }

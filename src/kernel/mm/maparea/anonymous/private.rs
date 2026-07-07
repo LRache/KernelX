@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::kernel::mm::maparea::area::{Area, MemoryFaultSignal};
 use crate::kernel::mm::maparea::nofilemap::{FrameState, SwappableNoFileFrame};
+use crate::kernel::mm::maparea::{Area, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
@@ -49,12 +49,23 @@ impl PrivateAnonymousArea {
         kpage
     }
 
-    fn copy_on_write_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
+    fn copy_on_write_page(
+        &mut self,
+        page_index: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> usize {
         debug_assert!(page_index < self.frames.len());
         debug_assert!(self.frames[page_index].is_cow());
 
-        let kpage = self.frames[page_index].cow_to_allocated(addrspace);
         let uaddr = self.ubase + page_index * arch::PGSIZE;
+        map_change_notifier.before_map_change(MapChange {
+            uaddr,
+            page_count: 1,
+            event: MapChangeEvent::Remap,
+        });
+
+        let kpage = self.frames[page_index].cow_to_allocated(addrspace);
 
         #[cfg(not(feature = "swap-memory"))]
         addrspace.pagetable().lock().mmap_replace(
@@ -71,7 +82,6 @@ impl PrivateAnonymousArea {
             // remaining resident across cow_to_allocated() and this PTE update.
             unsafe { addrspace.pagetable().lock().mmap_replace_raw(uaddr, kpage, self.perm) };
         }
-        addrspace.notify_addrspace_remap(uaddr, 1);
 
         kpage
     }
@@ -132,7 +142,12 @@ impl Area for PrivateAnonymousArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         if !self.perm.contains(MapPerm::W) {
@@ -151,7 +166,7 @@ impl Area for PrivateAnonymousArea {
                 }
                 FrameState::Cow(_) => {
                     // Copy-on-write: create a new copy for this process
-                    self.copy_on_write_page(page_index, addrspace)
+                    self.copy_on_write_page(page_index, addrspace, map_change_notifier)
                 }
             };
 
@@ -209,6 +224,7 @@ impl Area for PrivateAnonymousArea {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Result<usize, MemoryFaultSignal> {
         debug_assert!(uaddr >= self.ubase);
 
@@ -231,7 +247,7 @@ impl Area for PrivateAnonymousArea {
                     if access_type != MemAccessType::Write {
                         self.map_cow_page(page_index, frame, addrspace)
                     } else {
-                        self.copy_on_write_page(page_index, addrspace)
+                        self.copy_on_write_page(page_index, addrspace, map_change_notifier)
                     }
                 }
             };

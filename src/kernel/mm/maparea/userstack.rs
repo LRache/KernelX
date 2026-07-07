@@ -6,7 +6,7 @@ use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
+use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
@@ -106,7 +106,12 @@ impl UserStack {
         kpage
     }
 
-    fn copy_on_write_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
+    fn copy_on_write_page(
+        &mut self,
+        page_index: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> usize {
         debug_assert!(
             page_index < self.get_max_page_count(),
             "Page index out of bounds: {}",
@@ -118,8 +123,14 @@ impl UserStack {
             page_index
         );
 
-        let kpage = self.frames.get_mut(&page_index).unwrap().cow_to_allocated(addrspace);
         let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
+        map_change_notifier.before_map_change(MapChange {
+            uaddr,
+            page_count: 1,
+            event: MapChangeEvent::Remap,
+        });
+
+        let kpage = self.frames.get_mut(&page_index).unwrap().cow_to_allocated(addrspace);
 
         #[cfg(not(feature = "swap-memory"))]
         addrspace.pagetable().lock().mmap_replace(
@@ -142,7 +153,6 @@ impl UserStack {
                     .mmap_replace_raw(uaddr, kpage, MapPerm::R | MapPerm::W | MapPerm::U)
             };
         }
-        addrspace.notify_addrspace_remap(uaddr, 1);
 
         kpage
     }
@@ -377,7 +387,12 @@ impl Area for UserStack {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<usize> {
         if uaddr >= config::USER_STACK_TOP {
             return None;
         }
@@ -390,7 +405,7 @@ impl Area for UserStack {
             }
 
             let page = if matches!(self.frames.get(&page_index), Some(FrameState::Cow(_))) {
-                self.copy_on_write_page(page_index, addrspace)
+                self.copy_on_write_page(page_index, addrspace, map_change_notifier)
             } else {
                 match self.frames.get(&page_index).unwrap() {
                     FrameState::Allocated(frame) => frame.get_page_swap_in(),
@@ -438,6 +453,7 @@ impl Area for UserStack {
         addr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Result<usize, MemoryFaultSignal> {
         if addr >= config::USER_STACK_TOP {
             return Err(MemoryFaultSignal::Segv);
@@ -450,7 +466,7 @@ impl Area for UserStack {
         }
 
         if access_type == MemAccessType::Write && matches!(self.frames.get(&page_index), Some(FrameState::Cow(_))) {
-            self.copy_on_write_page(page_index, addrspace);
+            self.copy_on_write_page(page_index, addrspace, map_change_notifier);
         } else {
             match self.frames.get(&page_index) {
                 Some(FrameState::Allocated(frame)) => {
@@ -474,7 +490,8 @@ impl Area for UserStack {
         }
 
         if access_type == MemAccessType::Write {
-            self.translate_write(addr, addrspace).ok_or(MemoryFaultSignal::Segv)
+            self.translate_write(addr, addrspace, map_change_notifier)
+                .ok_or(MemoryFaultSignal::Segv)
         } else {
             self.translate_read(addr, addrspace).ok_or(MemoryFaultSignal::Segv)
         }

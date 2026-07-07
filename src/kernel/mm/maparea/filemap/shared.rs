@@ -9,7 +9,7 @@ use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::Inode;
 use crate::fs::inode::Index as InodeIndex;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::{Area, MapAreaInfo, MemoryFaultSignal};
+use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::kernel::uapi::FileSealFlags;
 use crate::klib::SpinLock;
@@ -195,7 +195,12 @@ impl Area for SharedFileMapArea {
         self.translate(uaddr)
     }
 
-    fn translate_write(&mut self, uaddr: usize, _addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        _addrspace: &AddrSpace,
+        _map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<usize> {
         self.translate(uaddr)
     }
 
@@ -204,6 +209,7 @@ impl Area for SharedFileMapArea {
         uaddr: usize,
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
+        _map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Result<usize, MemoryFaultSignal> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index >= self.states.len() {

@@ -4,7 +4,8 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::kernel::mm::maparea::area::{Area, Frame, MapAreaInfo, MemoryFaultSignal};
+use crate::kernel::mm::maparea::area::Frame;
+use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -63,7 +64,12 @@ impl Area for SharedAnonymousArea {
         Some(kpage + page_offset)
     }
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        _map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<usize> {
         debug_assert!(uaddr >= self.ubase);
 
         if !self.perm.contains(MapPerm::W) {
@@ -122,6 +128,7 @@ impl Area for SharedAnonymousArea {
         uaddr: usize,
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
+        _map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Result<usize, MemoryFaultSignal> {
         debug_assert!(uaddr >= self.ubase);
 

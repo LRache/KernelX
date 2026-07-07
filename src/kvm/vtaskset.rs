@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use num_enum::TryFromPrimitive;
 
 use crate::arch;
@@ -23,12 +24,14 @@ struct KvmMapArea {
 
 pub struct VTaskSet {
     addrspace: Arc<KvmAddrSpace>,
+    fd_refs: AtomicUsize,
 }
 
 impl VTaskSet {
     pub fn new() -> Self {
         Self {
             addrspace: KvmAddrSpace::new(),
+            fd_refs: AtomicUsize::new(0),
         }
     }
 
@@ -90,6 +93,17 @@ impl FileOps for VTaskSet {
         match req {
             VTaskSetIoctlRequest::CreateVCpu => self.create_vcpu(),
             VTaskSetIoctlRequest::MapArea => self.map_area(arg, addrspace),
+        }
+    }
+
+    fn on_fd_install(&self) -> SysResult<()> {
+        self.fd_refs.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn on_fd_remove(&self) {
+        if self.fd_refs.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.addrspace.unwatch_all_user_memory();
         }
     }
 }

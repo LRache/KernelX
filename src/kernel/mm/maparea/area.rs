@@ -7,6 +7,8 @@ use crate::kernel::errno::SysResult;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
+use super::watcher::MapChangeNotifier;
+
 #[derive(Clone, Debug)]
 pub struct MapAreaInfo {
     pub start: usize,
@@ -55,7 +57,16 @@ impl Frame {
 
 pub trait Area: Send {
     fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize>;
-    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize>;
+
+    /// `translate_write` translates a user virtual address to a physical address for write access.
+    /// It may unmap an old CoW page and allocate a new physical page if necessary so it should
+    /// notify the `map_change_notifier` before the change happens.
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<usize>;
 
     fn ubase(&self) -> usize;
 
@@ -67,11 +78,15 @@ pub trait Area: Send {
 
     fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area>;
 
+    /// `try_to_fix_memory_fault` tries to fix a memory fault at the given user virtual address with the given access type.
+    /// It may unmap an old CoW page and allocate a new physical page if necessary
+    /// so it should notify the `map_change_notifier` before the change happens.
     fn try_to_fix_memory_fault(
         &mut self,
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Result<usize, MemoryFaultSignal>;
 
     fn page_count(&self) -> usize;

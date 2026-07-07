@@ -7,6 +7,7 @@ mod nofilemap;
 pub mod shm;
 mod userbrk;
 mod userstack;
+mod watcher;
 
 pub use anonymous::{PrivateAnonymousArea, SharedAnonymousArea};
 pub use area::{Area, MapAreaInfo, MemoryFaultSignal};
@@ -15,3 +16,4 @@ pub use filemap::{PrivateFileMapArea, SharedFileMapArea};
 pub use manager::Manager;
 pub use shm::ShmArea;
 pub use userstack::{AuxKey, Auxv};
+pub use watcher::{MapChange, MapChangeEvent, MapChangeNotifier, MapManagerWatcher};

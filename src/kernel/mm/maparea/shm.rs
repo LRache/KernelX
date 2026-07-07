@@ -7,7 +7,7 @@ use crate::kernel::ipc::shm::{ShmFrames, on_shm_area_drop};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
-use super::{Area, MapAreaInfo, MemoryFaultSignal};
+use super::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal};
 
 pub struct ShmArea {
     ubase: usize,
@@ -44,13 +44,14 @@ impl Area for ShmArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, _addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        _addrspace: &AddrSpace,
+        _map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<usize> {
         self.translate_read(uaddr, _addrspace)
     }
-
-    // fn page_frames(&mut self) -> &mut [Frame] {
-    //     unimplemented!("ShmArea does not support page_frames")
-    // }
 
     fn ubase(&self) -> usize {
         self.ubase
@@ -81,6 +82,7 @@ impl Area for ShmArea {
         uaddr: usize,
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
+        _map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Result<usize, MemoryFaultSignal> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let page_offset = (uaddr - self.ubase) % arch::PGSIZE;

@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::{FileOps, RandomAccessFile};
-use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
+use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -74,9 +74,21 @@ impl ELFArea {
         page
     }
 
-    fn copy_on_write_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
+    fn copy_on_write_page(
+        &mut self,
+        page_index: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> usize {
         assert!(page_index < self.frames.len());
         assert!(self.frames[page_index].is_cow());
+
+        let uaddr = self.ubase + page_index * arch::PGSIZE;
+        map_change_notifier.before_map_change(MapChange {
+            uaddr,
+            page_count: 1,
+            event: MapChangeEvent::Remap,
+        });
 
         let cow_frame = core::mem::replace(&mut self.frames[page_index], Frame::Unallocated);
         let new_frame = if let Frame::Cow(frame) = cow_frame {
@@ -90,10 +102,8 @@ impl ELFArea {
 
         let new_frame = Arc::new(new_frame);
         let page = new_frame.get_page();
-        let uaddr = self.ubase + page_index * arch::PGSIZE;
 
         addrspace.pagetable().lock().mmap_replace(uaddr, &new_frame, self.perm);
-        addrspace.notify_addrspace_remap(uaddr, 1);
         self.frames[page_index] = Frame::Allocated(new_frame);
 
         page
@@ -132,7 +142,12 @@ impl Area for ELFArea {
         }
     }
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<usize> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -142,7 +157,7 @@ impl Area for ELFArea {
             let page = match page_frame {
                 Frame::Unallocated => self.load_page(page_index, addrspace.pagetable()),
                 Frame::Allocated(frame) => frame.get_page(),
-                Frame::Cow(_) => self.copy_on_write_page(page_index, addrspace),
+                Frame::Cow(_) => self.copy_on_write_page(page_index, addrspace, map_change_notifier),
             };
 
             Some(page + page_offset)
@@ -198,6 +213,7 @@ impl Area for ELFArea {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Result<usize, MemoryFaultSignal> {
         assert!(uaddr >= self.ubase);
 
@@ -219,7 +235,7 @@ impl Area for ELFArea {
                 }
                 Frame::Cow(frame) => {
                     if access_type == MemAccessType::Write {
-                        self.copy_on_write_page(page_index, addrspace)
+                        self.copy_on_write_page(page_index, addrspace, map_change_notifier)
                     } else {
                         self.map_cow_page(page_index, frame, addrspace)
                     }

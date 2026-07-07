@@ -1,15 +1,14 @@
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
+use alloc::sync::Arc;
 use fixedstr::tstr;
 use spin::Lazy;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::kernel::config::{MAX_PATH_LEN, USER_BRK_BASE, USER_RANDOM_ADDR_BASE};
+use crate::kernel::config::{MAX_PATH_LEN, USER_RANDOM_ADDR_BASE};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::Auxv;
+use crate::kernel::mm::maparea::{Auxv, MapManagerWatcher};
 use crate::kernel::mm::{PhysPageFrame, maparea};
 use crate::klib::{SleepLock, SpinLock};
 
@@ -22,18 +21,6 @@ cfg_if::cfg_if! {
 }
 
 static RANDOM_PAGE: Lazy<Arc<PhysPageFrame>> = Lazy::new(|| Arc::new(PhysPageFrame::alloc()));
-
-pub trait AddrSpaceWatcher: Send + Sync {
-    fn on_addrspace_unmap(&self, uaddr: usize, page_count: usize);
-
-    fn on_addrspace_remap(&self, uaddr: usize, page_count: usize) {
-        self.on_addrspace_unmap(uaddr, page_count);
-    }
-
-    fn on_addrspace_perm_change(&self, uaddr: usize, page_count: usize, _perm: MapPerm) {
-        self.on_addrspace_unmap(uaddr, page_count);
-    }
-}
 
 fn create_pagetable() -> PageTable {
     let mut pagetable = PageTable::new_user();
@@ -50,7 +37,6 @@ use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
 pub struct AddrSpace {
     map_manager: SleepLock<maparea::Manager>,
     pagetable: SpinLock<PageTable>,
-    watchers: SpinLock<Vec<Weak<dyn AddrSpaceWatcher>>>,
 
     #[cfg(feature = "swap-memory")]
     family_chain: AddrSpaceFamilyChain,
@@ -65,7 +51,6 @@ impl AddrSpace {
         let addrspace = Arc::new(AddrSpace {
             map_manager: SleepLock::new(maparea::Manager::new(), "AddrSpace::map_manager"),
             pagetable: SpinLock::new(pagetable, "AddrSpace::pagetable"),
-            watchers: SpinLock::new(Vec::new(), "AddrSpace::watchers"),
 
             #[cfg(feature = "swap-memory")]
             family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new(), "AddrSpace::family_chain")),
@@ -85,7 +70,6 @@ impl AddrSpace {
         let addrspace = Arc::new(AddrSpace {
             map_manager: SleepLock::new(new_map_manager, "AddrSpace::map_manager"),
             pagetable: SpinLock::new(new_pagetable, "AddrSpace::pagetable"),
-            watchers: SpinLock::new(Vec::new(), "AddrSpace::watchers"),
 
             #[cfg(feature = "swap-memory")]
             family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new(), "AddrSpace::family_chain")),
@@ -98,10 +82,6 @@ impl AddrSpace {
             self.family_chain.lock().push_back(weak);
         }
 
-        // Fork turns writable private pages in the parent into read-only COW
-        // mappings. Watchers cache user-VA backing, so invalidate broadly.
-        self.notify_addrspace_unmap(0, arch::page_count(arch::USEREND));
-
         addrspace
     }
 
@@ -111,7 +91,6 @@ impl AddrSpace {
     }
 
     pub fn create_user_stack(&self, argv: &[&str], envp: &[&str], auxv: &Auxv) -> Result<usize, Errno> {
-        // self.user_stack.create(argv, envp, aux, &mut self.map_manager)
         let mut map_manager = self.map_manager.lock();
         map_manager.create_user_stack(argv, envp, auxv, self)
     }
@@ -124,51 +103,29 @@ impl AddrSpace {
     }
 
     pub fn map_area_fixed(&self, uaddr: usize, area: Box<dyn maparea::Area>) -> Result<(), Errno> {
-        let page_count = area.page_count();
-        {
-            let mut map_manager = self.map_manager.lock();
-            map_manager.map_area_fixed(uaddr, area, &self.pagetable);
-        }
-        self.notify_addrspace_remap(uaddr, page_count);
+        let mut map_manager = self.map_manager.lock();
+        map_manager.map_area_fixed(uaddr, area, &self.pagetable);
 
         Ok(())
     }
 
     pub fn unmap_area(&self, uaddr: usize, page_count: usize) -> Result<(), Errno> {
-        {
-            let mut map_manager = self.map_manager.lock();
-            map_manager.unmap_area(uaddr, page_count, &self.pagetable)?;
-        }
-        self.notify_addrspace_unmap(uaddr, page_count);
+        let mut map_manager = self.map_manager.lock();
+        map_manager.unmap_area(uaddr, page_count, &self.pagetable)?;
 
         Ok(())
     }
 
     pub fn set_area_perm(&self, uaddr: usize, page_count: usize, perm: MapPerm) -> Result<(), Errno> {
-        {
-            let mut map_manager = self.map_manager.lock();
-            map_manager.set_map_area_perm(uaddr, page_count, perm, &self.pagetable)?;
-        }
-        self.notify_addrspace_perm_change(uaddr, page_count, perm);
+        let mut map_manager = self.map_manager.lock();
+        map_manager.set_map_area_perm(uaddr, page_count, perm, &self.pagetable)?;
 
         Ok(())
     }
 
     pub fn increase_userbrk(&self, ubrk: usize) -> Result<usize, Errno> {
-        let old_page_count = self.map_manager.lock().userbrk_page_count();
-        let new_ubrk = {
-            let mut map_manager = self.map_manager.lock();
-            map_manager.increase_userbrk(ubrk, &self.pagetable)?
-        };
-        let new_page_count = self.map_manager.lock().userbrk_page_count();
-        if new_page_count < old_page_count {
-            self.notify_addrspace_unmap(
-                USER_BRK_BASE + new_page_count * arch::PGSIZE,
-                old_page_count - new_page_count,
-            );
-        }
-
-        Ok(new_ubrk)
+        let mut map_manager = self.map_manager.lock();
+        map_manager.increase_userbrk(ubrk, &self.pagetable)
     }
 
     pub fn translate_write(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
@@ -453,48 +410,12 @@ impl AddrSpace {
         &self.pagetable
     }
 
-    pub fn add_watcher(&self, watcher: Weak<dyn AddrSpaceWatcher>) {
-        self.watchers.lock().push(watcher);
+    pub fn add_map_manager_watcher(&self, watcher: Arc<dyn MapManagerWatcher>) {
+        self.map_manager.lock().add_watcher(watcher);
     }
 
-    fn live_watchers(&self) -> Vec<Arc<dyn AddrSpaceWatcher>> {
-        let mut live = Vec::new();
-        self.watchers.lock().retain(|watcher| {
-            if let Some(watcher) = watcher.upgrade() {
-                live.push(watcher);
-                true
-            } else {
-                false
-            }
-        });
-        live
-    }
-
-    fn notify_addrspace_unmap(&self, uaddr: usize, page_count: usize) {
-        if page_count == 0 {
-            return;
-        }
-        for watcher in self.live_watchers() {
-            watcher.on_addrspace_unmap(uaddr, page_count);
-        }
-    }
-
-    pub(crate) fn notify_addrspace_remap(&self, uaddr: usize, page_count: usize) {
-        if page_count == 0 {
-            return;
-        }
-        for watcher in self.live_watchers() {
-            watcher.on_addrspace_remap(uaddr, page_count);
-        }
-    }
-
-    fn notify_addrspace_perm_change(&self, uaddr: usize, page_count: usize, perm: MapPerm) {
-        if page_count == 0 {
-            return;
-        }
-        for watcher in self.live_watchers() {
-            watcher.on_addrspace_perm_change(uaddr, page_count, perm);
-        }
+    pub fn remove_map_manager_watcher(&self, watcher: &Arc<dyn MapManagerWatcher>) {
+        self.map_manager.lock().remove_watcher(watcher);
     }
 
     pub fn with_map_manager_mut<F, R>(&self, f: F) -> R
@@ -529,5 +450,3 @@ impl AddrSpace {
         self.pagetable.write().take_access_dirty_bit(uaddr)
     }
 }
-
-unsafe impl Send for AddrSpace {}
