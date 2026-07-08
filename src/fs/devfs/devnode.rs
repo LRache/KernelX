@@ -17,15 +17,15 @@ impl CharDevInode {
     pub fn new(ino: u32, driver: Arc<dyn CharDriverOps>) -> Self {
         Self { ino, driver }
     }
-
-    pub fn driver(&self) -> &Arc<dyn CharDriverOps> {
-        &self.driver
-    }
 }
 
 impl InodeOps for CharDevInode {
     fn get_ino(&self) -> u32 {
         self.ino
+    }
+
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>> {
+        Ok(Some(self.driver.clone()))
     }
 
     fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {

@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
-use crate::driver::BlockDriverOps;
+use crate::driver::{BlockDriverOps, CharDriverOps};
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::inode::{Inode as VfsInode, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
@@ -24,6 +24,10 @@ impl<T: StaticFsInfo> InodeOps for Arc<dyn MemInodeOps<T>> {
 
     fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
         self.as_ref().block_driver()
+    }
+
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>> {
+        self.as_ref().char_driver()
     }
 
     fn create(&self, name: &str, mode: Mode, owner: Owner) -> SysResult<Self> {

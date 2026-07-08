@@ -3,7 +3,7 @@ use core::ops::Deref;
 use core::time::Duration;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::driver::BlockDriverOps;
+use crate::driver::{BlockDriverOps, CharDriverOps};
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::{Dentry, Perm};
 use crate::kernel::config;
@@ -334,6 +334,8 @@ pub trait VfsInodeOps: DowncastSync {
 
     fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>>;
 
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>>;
+
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>>;
 
     fn as_seal_ops(&self) -> Option<&dyn InodeSealOps>;
@@ -440,6 +442,10 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
 
     fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
         self.inner.block_driver()
+    }
+
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>> {
+        self.inner.char_driver()
     }
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
@@ -664,6 +670,10 @@ pub trait InodeOps: Send + Sync + Sized + 'static {
     fn type_name(&self) -> &'static str;
 
     fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(None)
+    }
+
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>> {
         Ok(None)
     }
 
