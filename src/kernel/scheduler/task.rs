@@ -41,9 +41,6 @@ impl Drop for KernelStack {
     }
 }
 
-unsafe impl Send for KernelStack {}
-unsafe impl Sync for KernelStack {}
-
 pub enum WakeupFailure {
     /// The task is not blocked.
     NotBlocked,

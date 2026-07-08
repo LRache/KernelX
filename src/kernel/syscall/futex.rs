@@ -132,15 +132,15 @@ pub fn futex(
 
             let key = futex_key(uaddr, private)?;
             let task = current::task().clone();
-            
+
             let mut futex_manager = futex::manager();
             let addr = read_futex_addr(uaddr, key)?;
-            
+
             if timeout == Some(Duration::ZERO) {
                 futex_manager.touch(addr, val as i32)?;
                 return Err(Errno::ETIMEDOUT);
             }
-            
+
             futex_manager.wait_current(addr, val as i32, bitset)?;
             drop(futex_manager);
 

@@ -163,9 +163,6 @@ impl KernelContext {
     }
 }
 
-unsafe impl Send for KernelContext {}
-unsafe impl Sync for KernelContext {}
-
 /// Snapshot of user state saved during signal delivery.
 #[repr(C)]
 #[repr(align(16))]

@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 pub struct TimerEvent {
     pub time: u64,
     // pub task: Arc<dyn Task>,
-    pub callback: Box<dyn FnOnce()>,
+    pub callback: Box<dyn FnOnce() + Send>,
     pub id: u64,
 }
 

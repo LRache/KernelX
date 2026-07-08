@@ -199,9 +199,3 @@ impl From<UserContext> for SigContext {
         }
     }
 }
-
-unsafe impl Send for UserContext {}
-unsafe impl Sync for UserContext {}
-
-unsafe impl Send for KernelContext {}
-unsafe impl Sync for KernelContext {}
