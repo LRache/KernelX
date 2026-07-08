@@ -67,7 +67,7 @@ __riscv_others_entry:
     la t0, main
 
     sfence.vma
-    csrw satp, a0
+    csrw satp, a3
     sfence.vma
 
     /*
