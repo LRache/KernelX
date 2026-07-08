@@ -817,8 +817,11 @@ impl TCB {
                 // SAFETY: tid_kaddr comes from a successful writable translation
                 // of the registered clear_child_tid user address.
                 unsafe { *(tid_kaddr as *mut Tid) = 0 };
-                let mut futex_manager = futex::manager();
-                let _ = futex_manager.wake(futex::FutexKey::private(&self.addrspace, tid_address), 1, u32::MAX);
+                if let Ok(frame) = self.addrspace.get_frame(tid_address) {
+                    let mut futex_manager = futex::manager();
+                    let _ =
+                        futex_manager.wake(futex::FutexKey::shared(&frame, tid_address & arch::PGMASK), 1, u32::MAX);
+                }
             }
         }
 
