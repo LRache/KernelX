@@ -1,5 +1,15 @@
 type SBIRet = Result<usize, isize>;
 
+#[repr(usize)]
+enum SBIExtension {
+    Hsm = 0x48534d,
+}
+
+#[repr(usize)]
+enum HsmFunction {
+    HartStart = 0,
+}
+
 fn sbi_call(
     fid: usize,
     eid: usize,
@@ -49,5 +59,14 @@ pub fn set_timer(time: u64) {
 }
 
 pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> SBIRet {
-    sbi_call(0x0, 0x2, hartid, start_addr, opaque, 0, 0, 0)
+    sbi_call(
+        HsmFunction::HartStart as usize,
+        SBIExtension::Hsm as usize,
+        hartid,
+        start_addr,
+        opaque,
+        0,
+        0,
+        0,
+    )
 }
