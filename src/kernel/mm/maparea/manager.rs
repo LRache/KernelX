@@ -7,7 +7,7 @@ use crate::arch::{self, PageTable};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::PrivateAnonymousArea;
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 use crate::{ktrace, print};
 
@@ -421,6 +421,19 @@ impl Manager {
             }
             let map_change_notifier = MapChangeNotifier::new(watchers);
             area.translate_write(uaddr, addrspace, &map_change_notifier)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_frame(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<Arc<PhysPageFrame>> {
+        let watchers = self.watchers.as_slice();
+        if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
+            if !area.perm().contains(MapPerm::W) {
+                return None;
+            }
+            let map_change_notifier = MapChangeNotifier::new(watchers);
+            area.get_frame(uaddr, addrspace, &map_change_notifier)
         } else {
             None
         }

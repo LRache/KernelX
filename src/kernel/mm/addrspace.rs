@@ -139,6 +139,10 @@ impl AddrSpace {
         self.map_manager.lock().translate_read(uaddr, self).ok_or(Errno::EFAULT)
     }
 
+    pub fn get_frame(self: &Arc<Self>, uaddr: usize) -> SysResult<Arc<PhysPageFrame>> {
+        self.map_manager.lock().get_frame(uaddr, self).ok_or(Errno::EFAULT)
+    }
+
     pub fn with_translated_read<F, R>(&self, uaddr: usize, len: usize, f: F) -> SysResult<R>
     where
         F: FnOnce(&[u8]) -> R,

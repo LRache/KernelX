@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::arch::{self, PageTable, PageTableTrait};
 use crate::kernel::ipc::shm::{ShmFrames, on_shm_area_drop};
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
 use super::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal};
@@ -51,6 +51,17 @@ impl Area for ShmArea {
         _map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Option<usize> {
         self.translate_read(uaddr, _addrspace)
+    }
+
+    fn get_frame(
+        &mut self,
+        uaddr: usize,
+        _addrspace: &AddrSpace,
+        _map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<Arc<PhysPageFrame>> {
+        let page_index = (uaddr - self.ubase) / arch::PGSIZE;
+        let frames = self.frames.frames.lock();
+        frames.get(page_index).cloned()
     }
 
     fn ubase(&self) -> usize {

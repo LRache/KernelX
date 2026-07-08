@@ -204,6 +204,21 @@ impl Area for SharedFileMapArea {
         self.translate(uaddr)
     }
 
+    fn get_frame(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<Arc<PhysPageFrame>> {
+        self.translate_write(uaddr, addrspace, map_change_notifier)?;
+
+        let page_index = (uaddr - self.ubase) / arch::PGSIZE;
+        match self.states.get(page_index)? {
+            FrameState::Loaded { frame, .. } => Some(frame.clone()),
+            FrameState::Unallocated => None,
+        }
+    }
+
     fn try_to_fix_memory_fault(
         &mut self,
         uaddr: usize,

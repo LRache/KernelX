@@ -814,8 +814,10 @@ impl TCB {
         if let Some(tid_address) = tid_address {
             if let Ok(tid_kaddr) = self.addrspace.translate_write(tid_address) {
                 // debug_assert!(tid_kaddr & 0x3 == 0);
+                // SAFETY: tid_kaddr comes from a successful writable translation
+                // of the registered clear_child_tid user address.
                 unsafe { *(tid_kaddr as *mut Tid) = 0 };
-                let _ = futex::wake(tid_kaddr, 1, u32::MAX);
+                let _ = futex::wake(futex::FutexKey::private(&self.addrspace, tid_address), 1, u32::MAX);
             }
         }
 

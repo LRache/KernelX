@@ -4,8 +4,9 @@ use core::convert::{TryFrom, TryInto};
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
+use crate::arch;
 use crate::driver::chosen::kclock;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::SyscallRet;
@@ -38,8 +39,15 @@ enum FutexOp {
 }
 
 const FUTEX_OP_MASK: usize = 0x7f;
-const FUTEX_CLOCK_REALTIME: usize = 0x100;
 const FUTEX_WAITV_MAX: usize = 128;
+
+bitflags! {
+    #[derive(Clone, Copy)]
+    struct FutexOpFlags: usize {
+        const PRIVATE = 0x80;
+        const CLOCK_REALTIME = 0x100;
+    }
+}
 
 bitflags! {
     #[derive(Clone, Copy)]
@@ -65,6 +73,21 @@ enum FutexWaitvClockId {
     Monotonic = 1,
 }
 
+fn futex_addr(uaddr: UPtr<i32>, private: bool) -> SysResult<futex::FutexAddr> {
+    let key = futex_key(uaddr, private)?;
+    let value = uaddr.read()?;
+    Ok(futex::FutexAddr::new(key, value))
+}
+
+fn futex_key(uaddr: UPtr<i32>, private: bool) -> SysResult<futex::FutexKey> {
+    if private {
+        Ok(futex::FutexKey::private(current::addrspace(), uaddr.uaddr()))
+    } else {
+        let frame = current::addrspace().get_frame(uaddr.uaddr())?;
+        Ok(futex::FutexKey::shared(&frame, uaddr.uaddr() & arch::PGMASK))
+    }
+}
+
 pub fn futex(
     uaddr: UPtr<i32>,
     futex_op: usize,
@@ -79,6 +102,8 @@ pub fn futex(
     }
 
     let op = FutexOp::try_from(futex_op & FUTEX_OP_MASK).map_err(|_| Errno::EINVAL)?;
+    let op_flags = FutexOpFlags::from_bits_truncate(futex_op);
+    let private = op_flags.contains(FutexOpFlags::PRIVATE);
     match op {
         FutexOp::Wait | FutexOp::WaitBitset => {
             let bitset = if op == FutexOp::WaitBitset {
@@ -93,7 +118,7 @@ pub fn futex(
             let timeout = if let Some(timeout) = timeout.read_optional()? {
                 let duration: Duration = timeout.try_into()?;
                 if op == FutexOp::WaitBitset {
-                    let now = if (futex_op & FUTEX_CLOCK_REALTIME) != 0 {
+                    let now = if op_flags.contains(FutexOpFlags::CLOCK_REALTIME) {
                         kclock::now()?
                     } else {
                         timer::now()
@@ -106,8 +131,8 @@ pub fn futex(
                 None
             };
 
-            let kaddr = uaddr.kaddr()?;
-            futex::wait_current(kaddr, val as i32, bitset)?;
+            let addr = futex_addr(uaddr, private)?;
+            futex::wait_current(addr, val as i32, bitset)?;
             if timeout == Some(Duration::ZERO) {
                 let task = current::task().clone();
                 futex::cancel_wait_all(&task);
@@ -134,7 +159,6 @@ pub fn futex(
             }
         }
         FutexOp::Wake | FutexOp::WakeBitset => {
-            let kaddr = uaddr.kaddr()?;
             let bitset = if op == FutexOp::WakeBitset {
                 val3 as u32
             } else {
@@ -143,7 +167,8 @@ pub fn futex(
             if bitset == 0 {
                 return Err(Errno::EINVAL);
             }
-            futex::wake(kaddr, val, bitset)
+            let key = futex_key(uaddr, private)?;
+            futex::wake(key, val, bitset)
         }
 
         FutexOp::REQUEUE | FutexOp::CmpRequeue => {
@@ -151,12 +176,12 @@ pub fn futex(
             if uaddr2.uaddr() & 3 != 0 {
                 return Err(Errno::EINVAL);
             }
-            let kaddr = uaddr.kaddr()?;
-            let kaddr2 = uaddr2.kaddr()?;
+            let addr = futex_addr(uaddr, private)?;
+            let key2 = futex_key(UPtr::<i32>::from_uaddr(uaddr2.uaddr()), private)?;
             let wake_count = val;
             let requeue_count = timeout.uaddr();
             let cmp = (op == FutexOp::CmpRequeue).then_some(val3 as i32);
-            futex::requeue(kaddr, kaddr2, wake_count, requeue_count, cmp)
+            futex::requeue(addr, key2, wake_count, requeue_count, cmp)
         }
     }
 }
@@ -199,23 +224,26 @@ pub fn futex_waitv(
             return Err(Errno::EINVAL);
         }
 
-        let kaddr = UPtr::<i32>::from_uaddr(uaddr).kaddr()?;
+        let addr = futex_addr(
+            UPtr::<i32>::from_uaddr(uaddr),
+            waiter_flags.contains(FutexWaitvFlags::FUTEX_PRIVATE_FLAG),
+        )?;
         let expected = u32::try_from(waiter.val).ok().map(|val| val as i32);
-        futexes.push((kaddr, expected));
+        futexes.push((addr, expected));
     }
 
-    let cancel_waiters = |_futexes: &[(usize, Option<i32>)]| {
+    let cancel_waiters = |_futexes: &[(futex::FutexAddr, Option<i32>)]| {
         let task = current::task().clone();
         futex::cancel_wait_all(&task);
     };
 
-    for (index, (kaddr, expected)) in futexes.iter().enumerate() {
+    for (index, (addr, expected)) in futexes.iter().enumerate() {
         let Some(expected) = expected else {
             cancel_waiters(&futexes[..index]);
             return Err(Errno::EAGAIN);
         };
 
-        if let Err(err) = futex::wait_current_waitv(*kaddr, *expected, u32::MAX, index) {
+        if let Err(err) = futex::wait_current_waitv(*addr, *expected, u32::MAX, index) {
             cancel_waiters(&futexes[..index]);
             return Err(err);
         }

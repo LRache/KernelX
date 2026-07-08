@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::arch;
@@ -7,7 +8,7 @@ use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal};
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
 use super::nofilemap::{FrameState, SwappableNoFileFrame};
@@ -416,6 +417,26 @@ impl Area for UserStack {
             Some(page + uaddr % arch::PGSIZE)
         } else {
             None
+        }
+    }
+
+    fn get_frame(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<Arc<PhysPageFrame>> {
+        self.translate_write(uaddr, addrspace, map_change_notifier)?;
+
+        #[cfg(feature = "swap-memory")]
+        {
+            let _ = uaddr;
+            None
+        }
+        #[cfg(not(feature = "swap-memory"))]
+        {
+            let page_index = (config::USER_STACK_TOP - uaddr - 1) / arch::PGSIZE;
+            self.frames.get(&page_index)?.frame().cloned()
         }
     }
 

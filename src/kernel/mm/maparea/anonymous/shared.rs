@@ -97,6 +97,24 @@ impl Area for SharedAnonymousArea {
         Some(kpage + page_offset)
     }
 
+    fn get_frame(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<Arc<PhysPageFrame>> {
+        self.translate_write(uaddr, addrspace, map_change_notifier)?;
+
+        let page_index = (uaddr - self.ubase) / arch::PGSIZE;
+        let frames = self.frames.lock();
+        let frame_lock = frames.get(page_index)?;
+        let frame = frame_lock.lock();
+        match &*frame {
+            Frame::Allocated(frame) => Some(frame.clone()),
+            Frame::Unallocated | Frame::Cow(_) => None,
+        }
+    }
+
     fn perm(&self) -> MapPerm {
         self.perm
     }

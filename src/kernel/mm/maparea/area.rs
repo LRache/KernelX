@@ -68,6 +68,15 @@ pub trait Area: Send {
         map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Option<usize>;
 
+    fn get_frame(
+        &mut self,
+        _uaddr: usize,
+        _addrspace: &AddrSpace,
+        _map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<Arc<PhysPageFrame>> {
+        None
+    }
+
     fn ubase(&self) -> usize;
 
     fn set_ubase(&mut self, _ubase: usize) {

@@ -166,6 +166,21 @@ impl Area for ELFArea {
         }
     }
 
+    fn get_frame(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<Arc<PhysPageFrame>> {
+        self.translate_write(uaddr, addrspace, map_change_notifier)?;
+
+        let page_index = (uaddr - self.ubase) / arch::PGSIZE;
+        match self.frames.get(page_index)? {
+            Frame::Allocated(frame) | Frame::Cow(frame) => Some(frame.clone()),
+            Frame::Unallocated => None,
+        }
+    }
+
     fn perm(&self) -> MapPerm {
         self.perm
     }

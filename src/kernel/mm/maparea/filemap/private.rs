@@ -232,6 +232,26 @@ impl Area for PrivateFileMapArea {
         }
     }
 
+    fn get_frame(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<Arc<PhysPageFrame>> {
+        self.translate_write(uaddr, addrspace, map_change_notifier)?;
+
+        #[cfg(feature = "swap-memory")]
+        {
+            let _ = uaddr;
+            None
+        }
+        #[cfg(not(feature = "swap-memory"))]
+        {
+            let page_index = (uaddr - self.ubase) / arch::PGSIZE;
+            self.frames.get(page_index)?.frame().cloned()
+        }
+    }
+
     fn perm(&self) -> MapPerm {
         self.perm
     }
