@@ -73,8 +73,7 @@ enum FutexWaitvClockId {
     Monotonic = 1,
 }
 
-fn futex_addr(uaddr: UPtr<i32>, private: bool) -> SysResult<futex::FutexAddr> {
-    let key = futex_key(uaddr, private)?;
+fn read_futex_addr(uaddr: UPtr<i32>, key: futex::FutexKey) -> SysResult<futex::FutexAddr> {
     let value = uaddr.read()?;
     Ok(futex::FutexAddr::new(key, value))
 }
@@ -131,19 +130,25 @@ pub fn futex(
                 None
             };
 
-            let addr = futex_addr(uaddr, private)?;
-            futex::wait_current(addr, val as i32, bitset)?;
+            let key = futex_key(uaddr, private)?;
+            let task = current::task().clone();
+            
+            let mut futex_manager = futex::manager();
+            let addr = read_futex_addr(uaddr, key)?;
+            
             if timeout == Some(Duration::ZERO) {
-                let task = current::task().clone();
-                futex::cancel_wait_all(&task);
+                futex_manager.touch(addr, val as i32)?;
                 return Err(Errno::ETIMEDOUT);
             }
+            
+            futex_manager.wait_current(addr, val as i32, bitset)?;
+            drop(futex_manager);
 
-            let timer_id = timeout.map(|timeout| timer::add_timer(current::task().clone(), timeout));
+            let timer_id = timeout.map(|timeout| timer::add_timer(task.clone(), timeout));
             let event = current::block("futex");
             if !matches!(event, Event::Futex) {
-                let task = current::task().clone();
-                futex::cancel_wait_all(&task);
+                let mut futex_manager = futex::manager();
+                futex_manager.cancel_wait_all(&task);
             }
             if let Some(timer_id) = timer_id {
                 if event != Event::Timeout {
@@ -168,7 +173,8 @@ pub fn futex(
                 return Err(Errno::EINVAL);
             }
             let key = futex_key(uaddr, private)?;
-            futex::wake(key, val, bitset)
+            let mut futex_manager = futex::manager();
+            futex_manager.wake(key, val, bitset)
         }
 
         FutexOp::REQUEUE | FutexOp::CmpRequeue => {
@@ -176,12 +182,14 @@ pub fn futex(
             if uaddr2.uaddr() & 3 != 0 {
                 return Err(Errno::EINVAL);
             }
-            let addr = futex_addr(uaddr, private)?;
+            let key = futex_key(uaddr, private)?;
             let key2 = futex_key(UPtr::<i32>::from_uaddr(uaddr2.uaddr()), private)?;
             let wake_count = val;
             let requeue_count = timeout.uaddr();
             let cmp = (op == FutexOp::CmpRequeue).then_some(val3 as i32);
-            futex::requeue(addr, key2, wake_count, requeue_count, cmp)
+            let mut futex_manager = futex::manager();
+            let addr = read_futex_addr(uaddr, key)?;
+            futex_manager.requeue(addr, key2, wake_count, requeue_count, cmp)
         }
     }
 }
@@ -224,39 +232,56 @@ pub fn futex_waitv(
             return Err(Errno::EINVAL);
         }
 
-        let addr = futex_addr(
-            UPtr::<i32>::from_uaddr(uaddr),
-            waiter_flags.contains(FutexWaitvFlags::FUTEX_PRIVATE_FLAG),
-        )?;
-        let expected = u32::try_from(waiter.val).ok().map(|val| val as i32);
-        futexes.push((addr, expected));
+        let uaddr = UPtr::<i32>::from_uaddr(uaddr);
+        let key = futex_key(uaddr, waiter_flags.contains(FutexWaitvFlags::FUTEX_PRIVATE_FLAG))?;
+        let expected = u32::try_from(waiter.val).map_err(|_| Errno::EAGAIN)? as i32;
+        futexes.push((uaddr, key, expected));
     }
 
-    let cancel_waiters = |_futexes: &[(futex::FutexAddr, Option<i32>)]| {
-        let task = current::task().clone();
-        futex::cancel_wait_all(&task);
-    };
+    let task = current::task().clone();
 
-    for (index, (addr, expected)) in futexes.iter().enumerate() {
-        let Some(expected) = expected else {
-            cancel_waiters(&futexes[..index]);
-            return Err(Errno::EAGAIN);
+    // Hold the futex manager lock while reading each futex word and deciding
+    // whether to link the waiter into its queue. Without that, this lost-wakeup
+    // race is possible:
+    //
+    //   | Task A (waiter)             | Task B (waker)
+    // 0 | read futex == expected      |
+    // 1 |                             | store futex = new_value
+    // 2 |                             | futex_wake()
+    // 3 | enqueue and sleep           |
+    //
+    // The lock makes futex_wake wait until Task A has either fully enqueued
+    // all waitv entries, rolled them back, or confirmed a zero-timeout touch.
+    let mut futex_manager = futex::manager();
+    for (index, (uaddr, key, expected)) in futexes.iter().enumerate() {
+        let addr = match read_futex_addr(*uaddr, *key) {
+            Ok(addr) => addr,
+            Err(err) => {
+                if timeout != Some(Duration::ZERO) {
+                    futex_manager.cancel_wait_all(&task);
+                }
+                return Err(err);
+            }
         };
-
-        if let Err(err) = futex::wait_current_waitv(*addr, *expected, u32::MAX, index) {
-            cancel_waiters(&futexes[..index]);
+        if timeout == Some(Duration::ZERO) {
+            futex_manager.touch(addr, *expected)?;
+            continue;
+        }
+        if let Err(err) = futex_manager.wait_current_waitv(addr, *expected, u32::MAX, index) {
+            futex_manager.cancel_wait_all(&task);
             return Err(err);
         }
     }
 
     if timeout == Some(Duration::ZERO) {
-        cancel_waiters(&futexes);
         return Err(Errno::ETIMEDOUT);
     }
+    drop(futex_manager);
 
-    let timer_id = timeout.map(|timeout| timer::add_timer(current::task().clone(), timeout));
+    let timer_id = timeout.map(|timeout| timer::add_timer(task.clone(), timeout));
     let event = current::block("futex_waitv");
-    cancel_waiters(&futexes);
+    let mut futex_manager = futex::manager();
+    futex_manager.cancel_wait_all(&task);
     if let Some(timer_id) = timer_id {
         if event != Event::Timeout {
             timer::remove_timer(timer_id);

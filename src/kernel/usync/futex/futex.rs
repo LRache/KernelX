@@ -7,7 +7,7 @@ use crate::kernel::event::Event;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::{Task, current};
-use crate::klib::SpinLock;
+use crate::klib::SleepLock;
 
 struct FutexWaitQueueItem {
     tcb: Arc<dyn Task>,
@@ -30,12 +30,12 @@ fn wake_waiter(item: FutexWaitQueueItem) -> bool {
     scheduler::wakeup_task(item.tcb, event).is_ok()
 }
 
-pub struct Futex {
+struct Futex {
     wait_list: LinkedList<FutexWaitQueueItem>,
 }
 
 impl Futex {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             wait_list: LinkedList::new(),
         }
@@ -49,7 +49,7 @@ impl Futex {
         });
     }
 
-    pub fn wake(&mut self, num: usize, mask: u32) -> SysResult<usize> {
+    fn wake(&mut self, num: usize, mask: u32) -> SysResult<usize> {
         if num == 0 {
             return Ok(0);
         }
@@ -74,7 +74,7 @@ impl Futex {
         Ok(woken)
     }
 
-    pub fn remove_waiter(&mut self, task: &Arc<dyn Task>) -> usize {
+    fn remove_waiter(&mut self, task: &Arc<dyn Task>) -> usize {
         let mut removed = 0;
         let mut cursor = self.wait_list.cursor_front_mut();
         while let Some(item) = cursor.current() {
@@ -135,7 +135,126 @@ impl FutexAddr {
     }
 }
 
-static FUTEXES: SpinLock<BTreeMap<FutexKey, SpinLock<Futex>>> = SpinLock::new(BTreeMap::new(), "static::FUTEXES");
+pub struct FutexManager {
+    futexes: BTreeMap<FutexKey, Futex>,
+}
+
+impl FutexManager {
+    const fn new() -> Self {
+        Self {
+            futexes: BTreeMap::new(),
+        }
+    }
+
+    pub fn wait_current(&mut self, addr: FutexAddr, expected: i32, bitset: u32) -> SysResult<()> {
+        self.wait_current_kind(addr, expected, bitset, FutexWaitKind::Wait)
+    }
+
+    pub fn touch(&mut self, addr: FutexAddr, expected: i32) -> SysResult<()> {
+        check_current_value(addr, expected)
+    }
+
+    pub fn wait_current_waitv(&mut self, addr: FutexAddr, expected: i32, bitset: u32, index: usize) -> SysResult<()> {
+        self.wait_current_kind(addr, expected, bitset, FutexWaitKind::Waitv { index })
+    }
+
+    fn wait_current_kind(&mut self, addr: FutexAddr, expected: i32, bitset: u32, kind: FutexWaitKind) -> SysResult<()> {
+        check_current_value(addr, expected)?;
+        let futex = self.futexes.entry(addr.key()).or_insert_with(Futex::new);
+        futex.wait_current(bitset, kind);
+        Ok(())
+    }
+
+    pub fn wake(&mut self, key: FutexKey, num: usize, mask: u32) -> SysResult<usize> {
+        let (woken, empty) = {
+            let Some(futex) = self.futexes.get_mut(&key) else {
+                return Ok(0);
+            };
+            let woken = futex.wake(num, mask)?;
+            (woken, futex.is_empty())
+        };
+
+        if empty {
+            self.futexes.remove(&key);
+        }
+
+        Ok(woken)
+    }
+
+    pub fn requeue(
+        &mut self,
+        addr: FutexAddr,
+        key2: FutexKey,
+        wake_count: usize,
+        requeue_count: usize,
+        val: Option<i32>,
+    ) -> SysResult<usize> {
+        let mut pending = LinkedList::new();
+
+        if let Some(val) = val {
+            check_current_value(addr, val)?;
+        }
+
+        let key = addr.key();
+        let (woken, moved, empty) = if let Some(futex) = self.futexes.get_mut(&key) {
+            let woken = futex.wake(wake_count, u32::MAX)?;
+            let mut moved = 0;
+            let mut cursor = futex.wait_list.cursor_front_mut();
+            while moved < requeue_count {
+                let Some(item) = cursor.remove_current() else {
+                    break;
+                };
+                pending.push_back(item);
+                moved += 1;
+            }
+            (woken, moved, futex.is_empty())
+        } else {
+            return Ok(0);
+        };
+
+        if moved == 0 {
+            if empty {
+                self.futexes.remove(&key);
+            }
+            return Ok(woken);
+        }
+
+        if empty && key != key2 {
+            self.futexes.remove(&key);
+        }
+
+        let futex2 = self.futexes.entry(key2).or_insert_with(Futex::new);
+        futex2.wait_list.append(&mut pending);
+
+        Ok(woken + moved)
+    }
+
+    pub fn cancel_wait_all(&mut self, task: &Arc<dyn Task>) -> usize {
+        let mut removed = 0;
+        let mut empty_keys = Vec::new();
+
+        for (key, futex) in self.futexes.iter_mut() {
+            let removed_count = futex.remove_waiter(task);
+
+            removed += removed_count;
+            if futex.is_empty() {
+                empty_keys.push(*key);
+            }
+        }
+
+        for key in empty_keys {
+            self.futexes.remove(&key);
+        }
+
+        removed
+    }
+}
+
+static FUTEX_MANAGER: SleepLock<FutexManager> = SleepLock::new(FutexManager::new(), "static::FUTEX_MANAGER");
+
+pub fn manager() -> impl core::ops::DerefMut<Target = FutexManager> {
+    FUTEX_MANAGER.lock()
+}
 
 fn check_current_value(addr: FutexAddr, expected: i32) -> SysResult<()> {
     if addr.value() != expected {
@@ -143,119 +262,4 @@ fn check_current_value(addr: FutexAddr, expected: i32) -> SysResult<()> {
     }
 
     Ok(())
-}
-
-pub fn wait_current(addr: FutexAddr, expected: i32, bitset: u32) -> SysResult<()> {
-    wait_current_kind(addr, expected, bitset, FutexWaitKind::Wait)
-}
-
-pub fn wait_current_waitv(addr: FutexAddr, expected: i32, bitset: u32, index: usize) -> SysResult<()> {
-    wait_current_kind(addr, expected, bitset, FutexWaitKind::Waitv { index })
-}
-
-fn wait_current_kind(addr: FutexAddr, expected: i32, bitset: u32, kind: FutexWaitKind) -> SysResult<()> {
-    let mut futexes = FUTEXES.lock();
-    check_current_value(addr, expected)?;
-    let futex = futexes
-        .entry(addr.key())
-        .or_insert_with(|| SpinLock::new(Futex::new(), "Futex"));
-
-    let mut futex = futex.lock();
-    futex.wait_current(bitset, kind);
-    Ok(())
-}
-
-pub fn wake(key: FutexKey, num: usize, mask: u32) -> SysResult<usize> {
-    let mut futexes = FUTEXES.lock();
-    let (woken, empty) = {
-        let Some(futex) = futexes.get(&key) else {
-            return Ok(0);
-        };
-        let mut futex = futex.lock();
-        let woken = futex.wake(num, mask)?;
-        (woken, futex.is_empty())
-    };
-
-    if empty {
-        futexes.remove(&key);
-    }
-
-    Ok(woken)
-}
-
-pub fn requeue(
-    addr: FutexAddr,
-    key2: FutexKey,
-    wake_count: usize,
-    requeue_count: usize,
-    val: Option<i32>,
-) -> SysResult<usize> {
-    let mut futexes = FUTEXES.lock();
-    let mut pending = LinkedList::new();
-
-    if let Some(val) = val {
-        check_current_value(addr, val)?;
-    }
-
-    let key = addr.key();
-    let (woken, moved, empty) = if let Some(futex_spinlock) = futexes.get(&key) {
-        let mut futex = futex_spinlock.lock();
-        let woken = futex.wake(wake_count, u32::MAX)?;
-        let mut moved = 0;
-        let mut cursor = futex.wait_list.cursor_front_mut();
-        while moved < requeue_count {
-            let Some(item) = cursor.remove_current() else {
-                break;
-            };
-            pending.push_back(item);
-            moved += 1;
-        }
-        (woken, moved, futex.is_empty())
-    } else {
-        return Ok(0);
-    };
-
-    if moved == 0 {
-        if empty {
-            futexes.remove(&key);
-        }
-        return Ok(woken);
-    }
-
-    if empty && key != key2 {
-        futexes.remove(&key);
-    }
-
-    let futex2_spinlock = futexes
-        .entry(key2)
-        .or_insert_with(|| SpinLock::new(Futex::new(), "Futex"));
-    let mut futex2 = futex2_spinlock.lock();
-    futex2.wait_list.append(&mut pending);
-
-    Ok(woken + moved)
-}
-
-pub fn cancel_wait_all(task: &Arc<dyn Task>) -> usize {
-    let mut futexes = FUTEXES.lock();
-    let mut removed = 0;
-    let mut empty_keys = Vec::new();
-
-    for (key, futex) in futexes.iter() {
-        let (removed_count, empty) = {
-            let mut futex = futex.lock();
-            let removed_count = futex.remove_waiter(task);
-            (removed_count, futex.is_empty())
-        };
-
-        removed += removed_count;
-        if empty {
-            empty_keys.push(*key);
-        }
-    }
-
-    for key in empty_keys {
-        futexes.remove(&key);
-    }
-
-    removed
 }
