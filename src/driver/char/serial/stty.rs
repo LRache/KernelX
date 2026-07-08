@@ -87,7 +87,8 @@ impl CharDriverOps for Stty {
                 }
 
                 self.waiters.lock().wait_current(Event::ReadReady);
-                match current::block("read_stty") {
+                current::schedule();
+                match current::task().take_wakeup_event().unwrap() {
                     Event::ReadReady => {}
                     Event::Signal => {
                         self.waiters.lock().remove_current();

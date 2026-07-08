@@ -693,6 +693,43 @@ impl TCB {
         &self.state
     }
 
+    pub fn block_if_no_pending_signal(&self, _reason: &str) -> bool {
+        debug_assert!(current::tid() == self.tid);
+
+        let mut state = self.state.lock();
+        if state.pending_signal.is_some() {
+            return false;
+        }
+        match state.state {
+            TCBState::Ready | TCBState::Running => {}
+            _ => return false,
+        }
+        state.state = TCBState::Blocked;
+        true
+    }
+
+    pub fn prepare_signal_wait(&self, signal_set: SignalSet, _reason: &str) -> SysResult<Option<PendingSignal>> {
+        debug_assert!(current::tid() == self.tid);
+
+        let mut state = self.state.lock();
+        if let Some(pending) = state.pending_signal {
+            if signal_set.contains(pending.signum) {
+                return Ok(state.pending_signal.take());
+            }
+            return Err(Errno::EINTR);
+        }
+        if let Some(pending) = self.parent.pending_signals().lock().pop_waiting(signal_set, self.tid) {
+            return Ok(Some(pending));
+        }
+        match state.state {
+            TCBState::Ready | TCBState::Running => {}
+            _ => return Err(Errno::EINTR),
+        }
+        state.signal_to_wait = signal_set;
+        state.state = TCBState::Blocked;
+        Ok(None)
+    }
+
     pub fn create_time(&self) -> Duration {
         self.create_time
     }

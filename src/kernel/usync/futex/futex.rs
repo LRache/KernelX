@@ -154,15 +154,23 @@ impl FutexManager {
         check_current_value(addr, expected)
     }
 
-    pub fn wait_current_waitv(&mut self, addr: FutexAddr, expected: i32, bitset: u32, index: usize) -> SysResult<()> {
-        self.wait_current_kind(addr, expected, bitset, FutexWaitKind::Waitv { index })
-    }
-
     fn wait_current_kind(&mut self, addr: FutexAddr, expected: i32, bitset: u32, kind: FutexWaitKind) -> SysResult<()> {
         check_current_value(addr, expected)?;
+        current::task().block(match kind {
+            FutexWaitKind::Wait => "futex",
+            FutexWaitKind::Waitv { .. } => "futex_waitv",
+        });
+        self.wait_current_unchecked(addr, bitset, kind);
+        Ok(())
+    }
+
+    pub fn wait_current_waitv_unchecked(&mut self, addr: FutexAddr, bitset: u32, index: usize) {
+        self.wait_current_unchecked(addr, bitset, FutexWaitKind::Waitv { index });
+    }
+
+    fn wait_current_unchecked(&mut self, addr: FutexAddr, bitset: u32, kind: FutexWaitKind) {
         let futex = self.futexes.entry(addr.key()).or_insert_with(Futex::new);
         futex.wait_current(bitset, kind);
-        Ok(())
     }
 
     pub fn wake(&mut self, key: FutexKey, num: usize, mask: u32) -> SysResult<usize> {

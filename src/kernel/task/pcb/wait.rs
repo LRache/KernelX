@@ -375,11 +375,15 @@ impl PCB {
 
     /// Blocks the current task until a matching child state may have changed.
     fn current_wait_for_child_state_change(&self, reason: &'static str, options: ChildWaitOptions) -> SysResult<()> {
-        self.waiting_task
-            .lock()
-            .push((current::task().clone(), options.wait_parent_tid));
+        let task = current::task().clone();
+        {
+            let mut waiting_task = self.waiting_task.lock();
+            task.block(reason);
+            waiting_task.push((task, options.wait_parent_tid));
+        }
 
-        let event = current::block(reason);
+        current::schedule();
+        let event = current::task().take_wakeup_event().unwrap();
         match event {
             Event::Process { .. } => Ok(()),
             Event::Signal => {

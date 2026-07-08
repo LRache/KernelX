@@ -209,7 +209,8 @@ impl PtyInner {
             }
 
             self.slave_waiters.lock().wait_current(Event::ReadReady);
-            match current::block("read_pty_slave") {
+            current::schedule();
+            match current::task().take_wakeup_event().unwrap() {
                 Event::ReadReady => {}
                 Event::Signal => {
                     self.slave_waiters.lock().remove_current();
@@ -226,7 +227,7 @@ impl PtyInner {
         blocked: bool,
         ring: &SpinLock<RingBuffer<u8, N>>,
         waiters: &SpinLock<WaitQueue<Event>>,
-        block_reason: &'static str,
+        _block_reason: &'static str,
         hung_up: impl Fn() -> bool,
         hangup_result: SysResult<usize>,
     ) -> SysResult<usize> {
@@ -255,7 +256,8 @@ impl PtyInner {
             }
 
             waiters.lock().wait_current(Event::ReadReady);
-            match current::block(block_reason) {
+            current::schedule();
+            match current::task().take_wakeup_event().unwrap() {
                 Event::ReadReady => {}
                 Event::Signal => {
                     waiters.lock().remove_current();

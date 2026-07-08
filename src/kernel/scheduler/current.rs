@@ -187,12 +187,6 @@ pub fn schedule() {
     processor().schedule()
 }
 
-pub fn block(reason: &'static str) -> Event {
-    task().block(reason);
-    schedule();
-    task().take_wakeup_event().unwrap()
-}
-
 // pub fn block_sigmask(reason: &'static str, mask: SignalSet) -> Event {
 //     let old_mask = tcb().swap_signal_mask(mask);
 //     task().block(reason);
@@ -208,8 +202,8 @@ pub fn block_uninterruptible(reason: &'static str) -> Event {
 }
 
 pub fn sleep(durations: Duration) -> Event {
-    timer::add_timer(task().clone(), durations);
     task().block("sleep");
+    timer::add_timer(task().clone(), durations);
     schedule();
     task().take_wakeup_event().unwrap()
 }

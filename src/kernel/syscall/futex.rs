@@ -145,7 +145,8 @@ pub fn futex(
             drop(futex_manager);
 
             let timer_id = timeout.map(|timeout| timer::add_timer(task.clone(), timeout));
-            let event = current::block("futex");
+            current::schedule();
+            let event = current::task().take_wakeup_event().unwrap();
             if !matches!(event, Event::Futex) {
                 let mut futex_manager = futex::manager();
                 futex_manager.cancel_wait_all(&task);
@@ -240,9 +241,9 @@ pub fn futex_waitv(
 
     let task = current::task().clone();
 
-    // Hold the futex manager lock while reading each futex word and deciding
-    // whether to link the waiter into its queue. Without that, this lost-wakeup
-    // race is possible:
+    // Hold the futex manager lock while reading each futex word and, for a
+    // real wait, until the current task is blocked and linked into every queue.
+    // Without that, this lost-wakeup race is possible:
     //
     //   | Task A (waiter)             | Task B (waker)
     // 0 | read futex == expected      |
@@ -253,33 +254,31 @@ pub fn futex_waitv(
     // The lock makes futex_wake wait until Task A has either fully enqueued
     // all waitv entries, rolled them back, or confirmed a zero-timeout touch.
     let mut futex_manager = futex::manager();
+    let mut wait_entries = Vec::new();
     for (index, (uaddr, key, expected)) in futexes.iter().enumerate() {
         let addr = match read_futex_addr(*uaddr, *key) {
             Ok(addr) => addr,
             Err(err) => {
-                if timeout != Some(Duration::ZERO) {
-                    futex_manager.cancel_wait_all(&task);
-                }
                 return Err(err);
             }
         };
-        if timeout == Some(Duration::ZERO) {
-            futex_manager.touch(addr, *expected)?;
-            continue;
-        }
-        if let Err(err) = futex_manager.wait_current_waitv(addr, *expected, u32::MAX, index) {
-            futex_manager.cancel_wait_all(&task);
-            return Err(err);
-        }
+        futex_manager.touch(addr, *expected)?;
+        wait_entries.push((addr, index));
     }
 
     if timeout == Some(Duration::ZERO) {
         return Err(Errno::ETIMEDOUT);
     }
+
+    task.block("futex_waitv");
+    for (addr, index) in wait_entries {
+        futex_manager.wait_current_waitv_unchecked(addr, u32::MAX, index);
+    }
     drop(futex_manager);
 
     let timer_id = timeout.map(|timeout| timer::add_timer(task.clone(), timeout));
-    let event = current::block("futex_waitv");
+    current::schedule();
+    let event = current::task().take_wakeup_event().unwrap();
     let mut futex_manager = futex::manager();
     futex_manager.cancel_wait_all(&task);
     if let Some(timer_id) = timer_id {
