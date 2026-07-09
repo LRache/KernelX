@@ -162,7 +162,17 @@ fn do_epoll_wait(
     }
 
     loop {
-        epoll.listener().wait_current();
+        if !epoll.listener().wait_current_if_not_ready() {
+            events = epoll.listener().collect_ready(maxevents);
+            if !events.is_empty() {
+                timer_id.map(|id| timer::remove_timer(id));
+                old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
+                uptr_events.write(0, &events)?;
+                return Ok(events.len());
+            }
+            continue;
+        }
+
         current::schedule();
 
         match current::task().take_wakeup_event().unwrap() {
