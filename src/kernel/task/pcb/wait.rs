@@ -395,20 +395,12 @@ impl PCB {
         &self,
         reason: &'static str,
         options: ChildWaitOptions,
-        child_matches: impl Fn(&PCB) -> bool,
-        ptrace_matches: impl Fn(&TCB) -> bool,
+        has_waitable_state: impl Fn(&[Arc<PCB>]) -> bool,
     ) -> SysResult<()> {
         let task = current::task().clone();
         {
             let mut child_wait = self.child_wait.lock();
-            if Self::matching_child_in(&child_wait.children, options, child_matches)
-                .1
-                .is_some()
-                || self
-                    .waitable_ptrace_task_matching(options.consume(false), ptrace_matches)
-                    .1
-                    .is_some()
-            {
+            if has_waitable_state(&child_wait.children) {
                 return Ok(());
             }
             task.block(reason);
@@ -457,12 +449,15 @@ impl PCB {
                 return Ok(None);
             }
 
-            self.current_wait_for_child_state_change(
-                "wait_child",
-                options,
-                |child| child.pid() == pid,
-                |task| task.tid() == pid,
-            )?;
+            self.current_wait_for_child_state_change("wait_child", options, |children| {
+                Self::matching_child_in(children, options, |child| child.pid() == pid)
+                    .1
+                    .is_some()
+                    || self
+                        .waitable_ptrace_task_matching(options.consume(false), |task| task.tid() == pid)
+                        .1
+                        .is_some()
+            })?;
         }
     }
 
@@ -492,7 +487,13 @@ impl PCB {
                 return Ok(None);
             }
 
-            self.current_wait_for_child_state_change("wait_any_child", options, |_| true, |_| true)?;
+            self.current_wait_for_child_state_change("wait_any_child", options, |children| {
+                Self::matching_child_in(children, options, |_| true).1.is_some()
+                    || self
+                        .waitable_ptrace_task_matching(options.consume(false), |_| true)
+                        .1
+                        .is_some()
+            })?;
         }
     }
 
@@ -522,12 +523,15 @@ impl PCB {
                 return Ok(None);
             }
 
-            self.current_wait_for_child_state_change(
-                "wait_child_by_pgid",
-                options,
-                |child| child.pgid() == pgid,
-                |task| task.parent().pgid() == pgid,
-            )?;
+            self.current_wait_for_child_state_change("wait_child_by_pgid", options, |children| {
+                Self::matching_child_in(children, options, |child| child.pgid() == pgid)
+                    .1
+                    .is_some()
+                    || self
+                        .waitable_ptrace_task_matching(options.consume(false), |task| task.parent().pgid() == pgid)
+                        .1
+                        .is_some()
+            })?;
         }
     }
 }
