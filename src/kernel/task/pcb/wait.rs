@@ -80,19 +80,25 @@ pub struct WaitResult {
 impl PCB {
     /// Wakes waiters that can observe a state change from the given child.
     pub fn wake_waiting_tasks(&self, child: Tid, wait_parent_tid: Tid) {
-        let mut waiting_task = self.waiting_task.lock();
+        let mut child_wait = self.child_wait.lock();
+        let mut woken_tasks = Vec::new();
         let mut i = 0;
-        while i < waiting_task.len() {
-            if waiting_task[i]
+        while i < child_wait.waiters.len() {
+            if child_wait.waiters[i]
                 .1
                 .map_or(true, |waiting_tid| waiting_tid == wait_parent_tid)
             {
-                let (task, _) = waiting_task.swap_remove(i);
-                let _ = scheduler::wakeup_task(task, Event::Process { child });
+                let (task, _) = child_wait.waiters.swap_remove(i);
+                woken_tasks.push(task);
             } else {
                 i += 1;
             }
         }
+        drop(child_wait);
+
+        woken_tasks.into_iter().for_each(|task| {
+            let _ = scheduler::wakeup_task(task, Event::Process { child });
+        });
     }
 
     /// Reports a ptrace stop to waiters and optionally sends SIGCHLD.
@@ -197,12 +203,14 @@ impl PCB {
 
     /// Registers or completes a pidfd read-ready wait.
     pub fn wait_pidfd_event(&self, waker: usize, event: FileEvent) -> Option<FileEvent> {
+        let mut waiters = self.pidfd_waiters.lock();
+
         if self.is_exited() {
             return event.contains(FileEvent::READ_READY).then_some(FileEvent::READ_READY);
         }
 
         if event.contains(FileEvent::READ_READY) {
-            self.pidfd_waiters.lock().wait(
+            waiters.wait(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::READ_READY,
@@ -282,12 +290,15 @@ impl PCB {
     }
 
     /// Finds a selected child and the first selected child with waitable state.
-    fn matching_child(&self, options: ChildWaitOptions, matches: impl Fn(&PCB) -> bool) -> (bool, Option<Arc<PCB>>) {
-        let children = self.children.lock();
+    fn matching_child_in(
+        children: &[Arc<PCB>],
+        options: ChildWaitOptions,
+        matches: impl Fn(&PCB) -> bool,
+    ) -> (bool, Option<Arc<PCB>>) {
         let mut has_matching_child = false;
         let mut waitable_child = None;
 
-        for child in children.iter() {
+        for child in children {
             if !matches(child)
                 || options
                     .wait_parent_tid
@@ -305,11 +316,17 @@ impl PCB {
         (has_matching_child, waitable_child)
     }
 
+    /// Finds a selected child and the first selected child with waitable state.
+    fn matching_child(&self, options: ChildWaitOptions, matches: impl Fn(&PCB) -> bool) -> (bool, Option<Arc<PCB>>) {
+        let child_wait = self.child_wait.lock();
+        Self::matching_child_in(&child_wait.children, options, matches)
+    }
+
     /// Recycles an exited child and accounts its accumulated CPU usage.
     fn reap_child(&self, child: Arc<PCB>) -> Option<(Arc<PCB>, ExitStatus)> {
         let status = child.recycle()?;
         self.accumulate_waited_child(&child);
-        self.children.lock().retain(|c| c.pid() != child.pid());
+        self.child_wait.lock().children.retain(|c| c.pid() != child.pid());
         Some((child, status))
     }
 
@@ -374,12 +391,28 @@ impl PCB {
     }
 
     /// Blocks the current task until a matching child state may have changed.
-    fn current_wait_for_child_state_change(&self, reason: &'static str, options: ChildWaitOptions) -> SysResult<()> {
+    fn current_wait_for_child_state_change(
+        &self,
+        reason: &'static str,
+        options: ChildWaitOptions,
+        child_matches: impl Fn(&PCB) -> bool,
+        ptrace_matches: impl Fn(&TCB) -> bool,
+    ) -> SysResult<()> {
         let task = current::task().clone();
         {
-            let mut waiting_task = self.waiting_task.lock();
+            let mut child_wait = self.child_wait.lock();
+            if Self::matching_child_in(&child_wait.children, options, child_matches)
+                .1
+                .is_some()
+                || self
+                    .waitable_ptrace_task_matching(options.consume(false), ptrace_matches)
+                    .1
+                    .is_some()
+            {
+                return Ok(());
+            }
             task.block(reason);
-            waiting_task.push((task, options.wait_parent_tid));
+            child_wait.waiters.push((task, options.wait_parent_tid));
         }
 
         current::schedule();
@@ -388,8 +421,9 @@ impl PCB {
             Event::Process { .. } => Ok(()),
             Event::Signal => {
                 // The waiter may still be queued if the sleep is interrupted by a signal.
-                self.waiting_task
+                self.child_wait
                     .lock()
+                    .waiters
                     .retain(|(task, _)| !Arc::ptr_eq(task, current::task()));
                 Err(Errno::EINTR)
             }
@@ -423,7 +457,12 @@ impl PCB {
                 return Ok(None);
             }
 
-            self.current_wait_for_child_state_change("wait_child", options)?;
+            self.current_wait_for_child_state_change(
+                "wait_child",
+                options,
+                |child| child.pid() == pid,
+                |task| task.tid() == pid,
+            )?;
         }
     }
 
@@ -453,7 +492,7 @@ impl PCB {
                 return Ok(None);
             }
 
-            self.current_wait_for_child_state_change("wait_any_child", options)?;
+            self.current_wait_for_child_state_change("wait_any_child", options, |_| true, |_| true)?;
         }
     }
 
@@ -483,7 +522,12 @@ impl PCB {
                 return Ok(None);
             }
 
-            self.current_wait_for_child_state_change("wait_child_by_pgid", options)?;
+            self.current_wait_for_child_state_change(
+                "wait_child_by_pgid",
+                options,
+                |child| child.pgid() == pgid,
+                |task| task.parent().pgid() == pgid,
+            )?;
         }
     }
 }
