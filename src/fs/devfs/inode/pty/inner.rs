@@ -18,20 +18,24 @@ struct PtyOpenState {
     slave_closed: bool,
 }
 
+struct PtyState {
+    open: PtyOpenState,
+    master_recv: RingBuffer<u8, 4096>,
+    master_waiters: WaitQueue<Event>,
+    slave_waiters: WaitQueue<Event>,
+}
+
 pub(super) struct PtyInner {
     pub(super) id: usize,
     slave_name: String,
     pts_dir: Arc<dyn MemInodeOps<DevfsInfo>>,
     pub(super) tty: TtyState,
-    master_recv: SpinLock<RingBuffer<u8, 4096>>,
-    pub(super) master_waiters: SpinLock<WaitQueue<Event>>,
-    pub(super) slave_waiters: SpinLock<WaitQueue<Event>>,
-    pub(super) master_epoll: Arc<EpollNotifier>,
-    pub(super) slave_epoll: Arc<EpollNotifier>,
-    state: SpinLock<PtyOpenState>,
+    state: SpinLock<PtyState>,
     master_open_count: AtomicUsize,
     slave_open_count: AtomicUsize,
     cleanup_done: AtomicBool,
+    pub(super) master_epoll: Arc<EpollNotifier>,
+    pub(super) slave_epoll: Arc<EpollNotifier>,
 }
 
 impl PtyInner {
@@ -41,28 +45,31 @@ impl PtyInner {
             slave_name: format!("{}", id),
             pts_dir,
             tty: TtyState::new(),
-            master_recv: SpinLock::new(RingBuffer::new(0), "PtyInner::master_recv"),
-            master_waiters: SpinLock::new(WaitQueue::new(), "PtyInner::master_waiters"),
-            slave_waiters: SpinLock::new(WaitQueue::new(), "PtyInner::slave_waiters"),
-            master_epoll: Arc::new(EpollNotifier::new()),
-            slave_epoll: Arc::new(EpollNotifier::new()),
             state: SpinLock::new(
-                PtyOpenState {
-                    locked: true,
-                    master_closed: false,
-                    slave_closed: true,
+                PtyState {
+                    open: PtyOpenState {
+                        locked: true,
+                        master_closed: false,
+                        slave_closed: true,
+                    },
+                    master_recv: RingBuffer::new(0),
+                    master_waiters: WaitQueue::new(),
+                    slave_waiters: WaitQueue::new(),
                 },
                 "PtyInner::state",
             ),
             master_open_count: AtomicUsize::new(0),
             slave_open_count: AtomicUsize::new(0),
             cleanup_done: AtomicBool::new(false),
+            master_epoll: Arc::new(EpollNotifier::new()),
+            slave_epoll: Arc::new(EpollNotifier::new()),
         }
     }
 
     pub(super) fn master_open(&self) {
+        let mut state = self.state.lock();
         self.master_open_count.fetch_add(1, Ordering::Relaxed);
-        self.state.lock().master_closed = false;
+        state.open.master_closed = false;
     }
 
     pub(super) fn master_close(&self) {
@@ -74,14 +81,12 @@ impl PtyInner {
     }
 
     pub(super) fn slave_open(&self) -> SysResult<()> {
-        {
-            let mut state = self.state.lock();
-            if state.locked || state.master_closed {
-                return Err(Errno::EIO);
-            }
-            state.slave_closed = false;
+        let mut state = self.state.lock();
+        if state.open.locked || state.open.master_closed {
+            return Err(Errno::EIO);
         }
         self.slave_open_count.fetch_add(1, Ordering::Relaxed);
+        state.open.slave_closed = false;
         Ok(())
     }
 
@@ -89,8 +94,9 @@ impl PtyInner {
         let previous = self.slave_open_count.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(previous > 0, "PtyInner::slave_open_count underflow");
         if previous == 1 {
-            self.state.lock().slave_closed = true;
-            self.wake_master(FileEvent::HANG_UP);
+            let mut state = self.state.lock();
+            state.open.slave_closed = true;
+            self.wake_master_locked(&mut state, FileEvent::HANG_UP);
         }
     }
 
@@ -101,119 +107,102 @@ impl PtyInner {
 
         {
             let mut state = self.state.lock();
-            state.master_closed = true;
-            state.locked = true;
+            state.open.master_closed = true;
+            state.open.locked = true;
+            self.wake_master_locked(&mut state, FileEvent::HANG_UP);
+            self.wake_slave_locked(&mut state, FileEvent::HANG_UP);
         }
 
         let _ = self.pts_dir.as_ref().unlink(&self.slave_name);
-        self.wake_master(FileEvent::HANG_UP);
-        self.wake_slave(FileEvent::HANG_UP);
     }
 
     pub(super) fn set_locked(&self, locked: bool) {
-        self.state.lock().locked = locked;
+        self.state.lock().open.locked = locked;
     }
 
     pub(super) fn locked(&self) -> bool {
-        self.state.lock().locked
-    }
-
-    fn slave_closed(&self) -> bool {
-        self.state.lock().slave_closed
-    }
-
-    fn master_closed(&self) -> bool {
-        self.state.lock().master_closed
-    }
-
-    fn wake_master(&self, event: FileEvent) {
-        self.master_waiters.lock().wake_all(|e| e);
-        self.master_epoll.notify(event);
-    }
-
-    fn wake_slave(&self, event: FileEvent) {
-        self.slave_waiters.lock().wake_all(|e| e);
-        self.slave_epoll.notify(event);
+        self.state.lock().open.locked
     }
 
     pub fn flush_input(&self) {
+        let _state = self.state.lock();
         self.tty.clear_input();
     }
 
     pub fn write_master(&self, buf: &[u8]) -> SysResult<usize> {
-        if self.master_closed() || self.slave_closed() {
+        let mut state = self.state.lock();
+        if state.open.master_closed || state.open.slave_closed {
             return Err(Errno::EIO);
         }
 
-        let mut echo = self.master_recv.lock();
-
         for &c in buf {
             let _ = self.tty.process_input_byte(c, |c| {
-                echo.push(c);
+                state.master_recv.push(c);
             });
         }
 
         let slave_ready = self.tty.input_ready();
-        let master_ready = !echo.empty();
-        drop(echo);
+        let master_ready = !state.master_recv.empty();
 
         if slave_ready {
-            self.wake_slave(FileEvent::READ_READY);
+            self.wake_slave_locked(&mut state, FileEvent::READ_READY);
         }
         if master_ready {
-            self.wake_master(FileEvent::READ_READY);
+            self.wake_master_locked(&mut state, FileEvent::READ_READY);
         }
         Ok(buf.len())
     }
 
     pub(super) fn write_slave(&self, buf: &[u8]) -> SysResult<usize> {
-        if self.master_closed() {
+        let mut state = self.state.lock();
+        if state.open.master_closed {
             return Err(Errno::EIO);
         }
 
-        let mut master_recv = self.master_recv.lock();
         for &c in buf {
-            self.tty.process_output_byte(c, |c| master_recv.push(c));
+            self.tty.process_output_byte(c, |c| state.master_recv.push(c));
         }
-        let ready = !master_recv.empty();
-        drop(master_recv);
 
+        let ready = !state.master_recv.empty();
         if ready {
-            self.wake_master(FileEvent::READ_READY);
+            self.wake_master_locked(&mut state, FileEvent::READ_READY);
         }
         Ok(buf.len())
     }
 
     pub fn read_master(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize> {
-        self.read_buffer(
-            buf,
-            blocked,
-            &self.master_recv,
-            &self.master_waiters,
-            "read_pty_master",
-            || self.slave_closed(),
-            Err(Errno::EIO),
-        )
-    }
-
-    pub fn read_slave(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize> {
         loop {
-            if let Some(read) = self.tty.read_input(buf) {
-                return Ok(read);
-            }
-            if self.master_closed() {
-                return Ok(0);
-            }
-            if !blocked {
-                return Err(Errno::EAGAIN);
+            {
+                let mut state = self.state.lock();
+                let mut drained = 0;
+                for slot in buf.iter_mut() {
+                    if let Some(c) = state.master_recv.pop() {
+                        *slot = c;
+                        drained += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if drained > 0 {
+                    return Ok(drained);
+                }
+                if state.open.slave_closed || state.open.master_closed {
+                    return Err(Errno::EIO);
+                }
+                if !blocked {
+                    return Err(Errno::EAGAIN);
+                }
+                // Not ready, not hung up: register the waiter under the same
+                // lock a waker must take, then drop the guard before scheduling.
+                state.master_waiters.wait_current(Event::ReadReady);
             }
 
-            self.slave_waiters.lock().wait_current(Event::ReadReady);
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
-                Event::ReadReady => {}
+                Event::ReadReady => continue,
                 Event::Signal => {
-                    self.slave_waiters.lock().remove_current();
+                    let mut state = self.state.lock();
+                    state.master_waiters.remove_current();
                     return Err(Errno::EINTR);
                 }
                 _ => unreachable!(),
@@ -221,46 +210,28 @@ impl PtyInner {
         }
     }
 
-    fn read_buffer<const N: usize>(
-        &self,
-        buf: &mut [u8],
-        blocked: bool,
-        ring: &SpinLock<RingBuffer<u8, N>>,
-        waiters: &SpinLock<WaitQueue<Event>>,
-        _block_reason: &'static str,
-        hung_up: impl Fn() -> bool,
-        hangup_result: SysResult<usize>,
-    ) -> SysResult<usize> {
+    pub fn read_slave(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize> {
         loop {
-            let mut read = 0;
             {
-                let mut ring = ring.lock();
-                for i in buf.iter_mut() {
-                    if let Some(c) = ring.pop() {
-                        *i = c;
-                        read += 1;
-                    } else {
-                        break;
-                    }
+                let mut state = self.state.lock();
+                if let Some(n) = self.tty.read_input(buf) {
+                    return Ok(n);
                 }
+                if state.open.master_closed {
+                    return Ok(0);
+                }
+                if !blocked {
+                    return Err(Errno::EAGAIN);
+                }
+                state.slave_waiters.wait_current(Event::ReadReady);
             }
 
-            if read > 0 {
-                return Ok(read);
-            }
-            if hung_up() {
-                return hangup_result;
-            }
-            if !blocked {
-                return Err(Errno::EAGAIN);
-            }
-
-            waiters.lock().wait_current(Event::ReadReady);
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
-                Event::ReadReady => {}
+                Event::ReadReady => continue,
                 Event::Signal => {
-                    waiters.lock().remove_current();
+                    let mut state = self.state.lock();
+                    state.slave_waiters.remove_current();
                     return Err(Errno::EINTR);
                 }
                 _ => unreachable!(),
@@ -269,28 +240,115 @@ impl PtyInner {
     }
 
     pub fn master_poll_event(&self, event: FileEvent) -> Option<FileEvent> {
+        let state = self.state.lock();
+        self.master_ready_locked(&state, event)
+    }
+
+    pub fn slave_poll_event(&self, event: FileEvent) -> Option<FileEvent> {
+        let state = self.state.lock();
+        self.slave_ready_locked(&state, event)
+    }
+
+    // -- poll-style wait helpers (used by file.rs) ---------------------------
+
+    /// Called by `PtmxFile::wait_event` after a poll has returned `None`.
+    /// Re-checks readiness under the lock (closing the race) and, if still
+    /// not ready, registers the poll waiter before returning `None`.
+    pub(super) fn master_wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let mut state = self.state.lock();
+        if let Some(ready) = self.master_ready_locked(&state, event) {
+            return Ok(Some(ready));
+        }
+        if event.contains(FileEvent::READ_READY) {
+            state.master_waiters.wait(
+                current::task().clone(),
+                Event::Poll {
+                    event: FileEvent::READ_READY,
+                    waker,
+                },
+            );
+        }
+        Ok(None)
+    }
+
+    pub(super) fn slave_wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let mut state = self.state.lock();
+        if let Some(ready) = self.slave_ready_locked(&state, event) {
+            return Ok(Some(ready));
+        }
+        if event.contains(FileEvent::READ_READY) {
+            state.slave_waiters.wait(
+                current::task().clone(),
+                Event::Poll {
+                    event: FileEvent::READ_READY,
+                    waker,
+                },
+            );
+        }
+        Ok(None)
+    }
+
+    pub(super) fn master_cancel_wait(&self) {
+        let mut state = self.state.lock();
+        state.master_waiters.remove_current();
+    }
+
+    pub(super) fn slave_cancel_wait(&self) {
+        let mut state = self.state.lock();
+        state.slave_waiters.remove_current();
+    }
+
+    // -- locked helpers (caller already holds `state`) -----------------------
+
+    fn wake_master_locked(&self, state: &mut PtyState, event: FileEvent) {
+        state.master_waiters.wake_all(|wait_event| match wait_event {
+            Event::Poll { event: interest, waker } => Event::Poll {
+                event: Self::poll_wake_event(event, interest),
+                waker,
+            },
+            event => event,
+        });
+        self.master_epoll.notify(event);
+    }
+
+    fn wake_slave_locked(&self, state: &mut PtyState, event: FileEvent) {
+        state.slave_waiters.wake_all(|wait_event| match wait_event {
+            Event::Poll { event: interest, waker } => Event::Poll {
+                event: Self::poll_wake_event(event, interest),
+                waker,
+            },
+            event => event,
+        });
+        self.slave_epoll.notify(event);
+    }
+
+    fn poll_wake_event(event: FileEvent, interest: FileEvent) -> FileEvent {
+        (event & interest) | (event & (FileEvent::ERROR | FileEvent::HANG_UP))
+    }
+
+    fn master_ready_locked(&self, state: &PtyState, event: FileEvent) -> Option<FileEvent> {
         let mut ready = FileEvent::empty();
-        if event.contains(FileEvent::WRITE_READY) && !self.slave_closed() && !self.master_closed() {
+        if event.contains(FileEvent::WRITE_READY) && !state.open.slave_closed && !state.open.master_closed {
             ready |= FileEvent::WRITE_READY;
         }
-        if event.contains(FileEvent::READ_READY) && !self.master_recv.lock().empty() {
+        if event.contains(FileEvent::READ_READY) && !state.master_recv.empty() {
             ready |= FileEvent::READ_READY;
         }
-        if self.slave_closed() || self.master_closed() {
+        if state.open.slave_closed || state.open.master_closed {
             ready |= FileEvent::HANG_UP;
         }
         if ready.is_empty() { None } else { Some(ready) }
     }
 
-    pub fn slave_poll_event(&self, event: FileEvent) -> Option<FileEvent> {
+    fn slave_ready_locked(&self, state: &PtyState, event: FileEvent) -> Option<FileEvent> {
         let mut ready = FileEvent::empty();
-        if event.contains(FileEvent::WRITE_READY) && !self.master_closed() {
+        if event.contains(FileEvent::WRITE_READY) && !state.open.master_closed {
             ready |= FileEvent::WRITE_READY;
         }
         if event.contains(FileEvent::READ_READY) && self.tty.input_ready() {
             ready |= FileEvent::READ_READY;
         }
-        if self.master_closed() {
+        if state.open.master_closed {
             ready |= FileEvent::HANG_UP;
         }
         if ready.is_empty() { None } else { Some(ready) }
