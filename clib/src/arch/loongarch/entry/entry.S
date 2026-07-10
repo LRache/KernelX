@@ -63,19 +63,16 @@ _entry:
     la.pcrel $sp, __stack_end
 
     /*
-     * main(hartid, heap_start, memory_top). heap_start and memory_top
-     * are VAs in the DMW1 high half — kernel arithmetic stays in the
-     * 64-bit linked space.
-     *
-     * memory_top = 0x9000_..._0000 | 0x1000_0000 (256 MiB). QEMU `-M virt`
-     * gives 256 MiB at PA [0, 0x1000_0000); past that is MMIO and cached
-     * loads there would raise ADE through DMW1. The frame allocator must
-     * respect this cap.
+     * Parse FDT memory before entering Rust. `main()` expects heap_start and
+     * memory_top as DMW1 VAs so kernel arithmetic stays in linked space.
      */
+    la.global $t0, __la_fdt_memory_top
+    jirl    $ra, $t0, 0
+    move    $s2, $a0
+
     move    $a0, $s0
     la.pcrel $a1, __kernel_end
-    lu12i.w $a2, 0x10000                /* 0x1000_0000 */
-    lu52i.d $a2, $a2, -1792             /* | 0x9000_..._0000 */
+    move    $a2, $s2
 
     la.global $t0, main
     jirl    $zero, $t0, 0
