@@ -4,7 +4,7 @@
 #include <sys/fcntl.h>
 
 int main() {
-    int fd = open("/basic-ulib/test-write.txt", 0, 0644);
+    int fd = open("/tests/basic-ulib/test-write.txt", O_RDWR, 0644);
     if (fd < 0) {
         puts("Failed to open file for writing");
         return 1;
@@ -20,7 +20,7 @@ int main() {
 
     close(fd);
 
-    fd = open("/basic-ulib/test-write.txt", 0);
+    fd = open("/tests/basic-ulib/test-write.txt", 0);
     if (fd < 0) {
         puts("Failed to reopen file for reading");
         return 1;

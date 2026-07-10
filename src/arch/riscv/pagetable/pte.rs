@@ -1,11 +1,11 @@
 use bitflags::bitflags;
-use core::ptr::NonNull;
 use core::fmt;
+use core::ptr::NonNull;
 
-use crate::kernel::mm::MapPerm;
-use crate::kernel::mm;
 use crate::arch::riscv::{PGBITS, PGMASK};
 use crate::arch::{kaddr_to_paddr, paddr_to_kaddr};
+use crate::kernel::mm;
+use crate::kernel::mm::MapPerm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Addr(usize);
@@ -46,11 +46,7 @@ impl Addr {
     }
 
     pub const fn vpn(self) -> [usize; 3] {
-        [
-            (self.0 >> 30) & 0x1ff,
-            (self.0 >> 21) & 0x1ff,
-            (self.0 >> 12) & 0x1ff,
-        ]
+        [(self.0 >> 30) & 0x1ff, (self.0 >> 21) & 0x1ff, (self.0 >> 12) & 0x1ff]
     }
 
     pub fn ppn(self) -> PPN {
@@ -77,7 +73,7 @@ impl From<Addr> for *mut usize {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PPN {
-    ppn: usize
+    ppn: usize,
 }
 
 impl PPN {
@@ -132,10 +128,18 @@ bitflags! {
 impl From<MapPerm> for PTEFlags {
     fn from(perm: MapPerm) -> Self {
         let mut flags = PTEFlags::V;
-        if perm.contains(MapPerm::R) { flags |= PTEFlags::R; }
-        if perm.contains(MapPerm::W) { flags |= PTEFlags::W; }
-        if perm.contains(MapPerm::X) { flags |= PTEFlags::X; }
-        if perm.contains(MapPerm::U) { flags |= PTEFlags::U; }
+        if perm.intersects(MapPerm::R | MapPerm::W) {
+            flags |= PTEFlags::R;
+        }
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::W;
+        }
+        if perm.contains(MapPerm::X) {
+            flags |= PTEFlags::X;
+        }
+        if perm.contains(MapPerm::U) {
+            flags |= PTEFlags::U;
+        }
         flags
     }
 }
@@ -143,21 +147,26 @@ impl From<MapPerm> for PTEFlags {
 impl Into<MapPerm> for PTEFlags {
     fn into(self) -> MapPerm {
         let mut perm = MapPerm::empty();
-        if self.contains(PTEFlags::R) { perm |= MapPerm::R; }
-        if self.contains(PTEFlags::W) { perm |= MapPerm::W; }
-        if self.contains(PTEFlags::X) { perm |= MapPerm::X; }
-        if self.contains(PTEFlags::U) { perm |= MapPerm::U; }
+        if self.contains(PTEFlags::R) {
+            perm |= MapPerm::R;
+        }
+        if self.contains(PTEFlags::W) {
+            perm |= MapPerm::W;
+        }
+        if self.contains(PTEFlags::X) {
+            perm |= MapPerm::X;
+        }
+        if self.contains(PTEFlags::U) {
+            perm |= MapPerm::U;
+        }
         perm
     }
 }
 
-impl PTE {    
+impl PTE {
     pub fn from_ptr(ptr: NonNull<usize>) -> Self {
         let pte = unsafe { ptr.read() };
-        Self {
-            pte,
-            ptr: Some(ptr),
-        }
+        Self { pte, ptr: Some(ptr) }
     }
 
     pub fn from_raw_ptr(ptr: *mut usize) -> Self {
@@ -213,7 +222,7 @@ impl fmt::Display for PTE {
 }
 
 pub struct PTETable {
-    base: *mut usize
+    base: *mut usize,
 }
 
 impl PTETable {

@@ -1,4 +1,4 @@
+pub mod inode;
 mod superblock;
-mod inode;
 
-pub use superblock::{SuperBlock, StaticFsInfo};
+pub use superblock::{StaticFsInfo, SuperBlock};

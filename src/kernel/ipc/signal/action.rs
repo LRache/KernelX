@@ -17,12 +17,21 @@ bitflags! {
         const SA_RESTORER  = 0x04000000;
         const SA_ONSTACK   = 0x08000000;
         const SA_RESTART   = 0x10000000;
+        const SA_INTERRUPT = 0x20000000;
         const SA_NODEFER   = 0x40000000;
         const SA_RESETHAND = 0x80000000;
     }
 }
 
-#[derive(Clone, Copy)]
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SignalStackFlags: usize {
+        const SS_ONSTACK = 1 << 0;
+        const SS_DISABLE = 1 << 1;
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SignalAction {
     pub handler: usize,
     pub mask: SignalSet,
@@ -47,16 +56,27 @@ impl SignalAction {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SignalStackState {
+    pub stack: Option<(usize, usize)>, // (ss_sp, ss_size)
+    pub on_stack: bool,
+}
+
+impl SignalStackState {
+    pub fn get_stack_top(&self) -> Option<usize> {
+        self.stack.map(|(sp, size)| (sp + size) & !0xf)
+    }
+}
+
+#[derive(Clone)]
 pub struct SignalActionTable {
-    actions: [SignalAction; 63],
-    stack: Option<(usize, usize)> // (ss_sp, ss_size)
+    actions: [SignalAction; 64],
 }
 
 impl SignalActionTable {
     pub fn new() -> Self {
         SignalActionTable {
-            actions: [SignalAction::empty(); 63],
-            stack: None,
+            actions: [SignalAction::empty(); 64],
         }
     }
 
@@ -65,21 +85,21 @@ impl SignalActionTable {
         self.actions[index - 1]
     }
 
-    pub fn get_stack_top(&self) -> Option<usize> {
-        self.stack.map(|(sp, size)| (sp + size) & !0xf)
-    }
-
-    pub fn get_stack(&self) -> Option<(usize, usize)> {
-        self.stack
-    }
-
     pub fn set(&mut self, signum: SignalNum, action: &SignalAction) -> SysResult<()> {
         let index: usize = signum.into();
         self.actions[index - 1] = *action;
         Ok(())
     }
 
-    pub fn set_stack(&mut self, stack: Option<(usize, usize)>) {
-        self.stack = stack;
+    pub fn reset_for_exec(&mut self) {
+        for action in self.actions.iter_mut() {
+            // POSIX: dispositions set to a handler are reset to default on exec;
+            // dispositions set to SIG_IGN remain ignored.
+            if !action.is_default() && !action.is_ignore() {
+                action.handler = SIG_DFL;
+                action.mask = SignalSet::empty();
+                action.flags = SignalActionFlags::empty();
+            }
+        }
     }
 }

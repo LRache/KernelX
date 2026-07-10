@@ -4,12 +4,10 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
+use crate::arch;
 use crate::driver::char::serial::SerialOps;
 use crate::driver::char::serial::stty::Stty;
-use crate::driver::{DriverMatcher, DriverOps, Device};
-use crate::kernel::mm::page;
-use crate::kernel::mm::MapPerm;
-use crate::arch;
+use crate::driver::{Device, DriverOps, MMIOMatcher as MMIOMatcherTrait};
 
 mod regs {
     pub const RHR: usize = 0; // receive holding register (for input bytes)
@@ -50,7 +48,7 @@ impl Serial {
 
     fn read_reg(&mut self, offset: usize) -> u32 {
         match self.reg_size {
-            RegSize::U8  => unsafe { arch::read_volatile((self.base + (offset << self.shift)) as *const u8 ) as u32 },
+            RegSize::U8 => unsafe { arch::read_volatile((self.base + (offset << self.shift)) as *const u8) as u32 },
             RegSize::U16 => unsafe { arch::read_volatile((self.base + (offset << self.shift)) as *const u16) as u32 },
             RegSize::U32 => unsafe { arch::read_volatile((self.base + (offset << self.shift)) as *const u32) as u32 },
         }
@@ -58,9 +56,15 @@ impl Serial {
 
     fn write_reg(&mut self, offset: usize, value: u32) {
         match self.reg_size {
-            RegSize::U8  => unsafe { arch::write_volatile((self.base + (offset << self.shift)) as *mut u8, value as u8); },
-            RegSize::U16 => unsafe { arch::write_volatile((self.base + (offset << self.shift)) as *mut u16, value as u16); },
-            RegSize::U32 => unsafe { arch::write_volatile((self.base + (offset << self.shift)) as *mut u32, value as u32); },
+            RegSize::U8 => unsafe {
+                arch::write_volatile((self.base + (offset << self.shift)) as *mut u8, value as u8);
+            },
+            RegSize::U16 => unsafe {
+                arch::write_volatile((self.base + (offset << self.shift)) as *mut u16, value as u16);
+            },
+            RegSize::U32 => unsafe {
+                arch::write_volatile((self.base + (offset << self.shift)) as *mut u32, value as u32);
+            },
         }
     }
 
@@ -76,7 +80,7 @@ impl Serial {
             self.write_reg(regs::LSB, bdiv & 0xff);
             self.write_reg(regs::MSB, (bdiv >> 8) & 0xff);
         }
-        
+
         // Leave baud latch mode and configure: 8 bits, no parity.
         self.write_reg(regs::LCR, regs::LCR_EIGHT_BITS);
 
@@ -106,21 +110,24 @@ impl SerialOps for Serial {
     }
 }
 
-pub struct Matcher;
+pub struct MMIOMatcher;
 
-impl DriverMatcher for Matcher {
+impl MMIOMatcherTrait for MMIOMatcher {
     fn try_match(&self, device: &Device) -> Option<Arc<dyn DriverOps>> {
         static SUPPORTED_COMPAT: &[&str] = &["ns16550a", "snps,dw-apb-uart"];
         device.match_compatible(SUPPORTED_COMPAT)?;
 
         let (mmio_base, mmio_size) = device.mmio()?;
-        let kbase = page::alloc_contiguous(arch::page_count(mmio_size));
-        arch::map_kernel_addr(kbase, mmio_base, mmio_size, MapPerm::RW);
+        let kbase = arch::mmio_phys_to_kaddr(mmio_base, mmio_size);
 
-        let io_width = device.fdt_node().property("reg-io-width")
+        let io_width = device
+            .fdt_node()
+            .property("reg-io-width")
             .and_then(|p| p.as_usize())
             .unwrap_or(1);
-        let reg_shift = device.fdt_node().property("reg-shift")
+        let reg_shift = device
+            .fdt_node()
+            .property("reg-shift")
             .and_then(|p| p.as_usize())
             .unwrap_or(0);
 
@@ -131,14 +138,18 @@ impl DriverMatcher for Matcher {
             _ => return None,
         };
 
-        let speed = device.fdt_node().property("current-speed")
+        let speed = device
+            .fdt_node()
+            .property("current-speed")
             .and_then(|p| p.as_usize())
             .unwrap_or(38400);
-        let freq = device.fdt_node().property("clock-frequency")
+        let freq = device
+            .fdt_node()
+            .property("clock-frequency")
             .and_then(|p| p.as_usize())
             .unwrap_or(0);
         let bdiv = (freq + 8 * speed) / (16 * speed);
-            
+
         let mut serial = Serial::new(kbase, reg_shift, reg_size);
         serial.init(bdiv as u32);
         let driver = Stty::new(device.name().into(), Box::new(serial));
@@ -146,7 +157,7 @@ impl DriverMatcher for Matcher {
         if let Some(irq) = device.interrupt_number() {
             arch::enable_device_interrupt_irq(irq);
         }
-            
+
         Some(Arc::new(driver))
     }
 }

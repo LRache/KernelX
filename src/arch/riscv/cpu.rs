@@ -1,11 +1,13 @@
 use alloc::vec::Vec;
 use fdt::node::FdtNode;
 
-use crate::klib::InitedCell;
 use crate::kinfo;
+use crate::klib::InitedCell;
 
 pub struct CPUInfo {
     svadu_enabled: bool,
+    #[allow(dead_code)]
+    zbc_supported: bool,
     float_supported: bool,
     double_supported: bool,
 }
@@ -13,6 +15,11 @@ pub struct CPUInfo {
 impl CPUInfo {
     pub fn svadu_enabled(&self) -> bool {
         self.svadu_enabled
+    }
+
+    #[allow(dead_code)]
+    pub fn zbc_supported(&self) -> bool {
+        self.zbc_supported
     }
 
     pub fn float_supported(&self) -> bool {
@@ -33,20 +40,22 @@ pub fn load_cpu_node(cpus_node: &FdtNode) {
         TIME_FREQ.init(freq as u32);
     }
     kinfo!("Init timebase frequency = {}Hz", *TIME_FREQ);
-    
+
     let mut cpus = Vec::new();
-    for child in cpus_node.children() {        
+    for child in cpus_node.children() {
         let isa_support = child.property("riscv,isa").and_then(|p| p.as_str()).unwrap_or("");
         let extensions: Vec<&str> = isa_support.split('_').collect();
-        
-        let svadu_enabled = extensions.iter().find(|&&ext| ext == "svadu").is_some();
 
-        let base = extensions[0];
-        let float_supported =  base.contains('f'); 
-        let double_supported = base.contains('d');
+        let svadu_enabled = has_extension(child, &extensions, "svadu");
+        let zbc_supported = has_extension(child, &extensions, "zbc");
+
+        let base = extensions.first().copied().unwrap_or("");
+        let float_supported = base.contains('f') || has_extension(child, &extensions, "f");
+        let double_supported = base.contains('d') || has_extension(child, &extensions, "d");
 
         cpus.push(CPUInfo {
             svadu_enabled,
+            zbc_supported,
             float_supported,
             double_supported,
         });
@@ -56,8 +65,19 @@ pub fn load_cpu_node(cpus_node: &FdtNode) {
     kinfo!("Detected {} CPU cores", CPU_INFO.len());
 }
 
+fn has_extension(cpu_node: FdtNode<'_, '_>, isa_extensions: &[&str], extension: &str) -> bool {
+    isa_extensions.iter().any(|&ext| ext == extension)
+        || cpu_node
+            .property("riscv,isa-extensions")
+            .is_some_and(|prop| prop.iter_str().any(|ext| ext == extension))
+}
+
 pub fn time_frequency() -> u32 {
     *TIME_FREQ
+}
+
+pub fn try_time_frequency() -> Option<u32> {
+    TIME_FREQ.try_get().copied()
 }
 
 pub fn core_count() -> usize {

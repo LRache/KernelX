@@ -1,37 +1,76 @@
-use core::time::Duration;
-
+use alloc::boxed::Box;
 use alloc::sync::Arc;
+use core::time::Duration;
+use elf::abi;
 
-use crate::arch::riscv::{csr, load_device_tree, plic, process, sbi_driver};
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
-use crate::arch::{self, Arch, ArchTrait, UserContextTrait};
-use crate::kernel::config;
-use crate::kernel::scheduler::current;
-use crate::kernel::mm::{MapPerm, page};
+use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task};
+use crate::arch::{self, Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
+use crate::kernel::config;
+use crate::kernel::errno::SysResult;
+use crate::kernel::mm::{MapPerm, page};
+use crate::kernel::scheduler::current;
+use crate::klib::{InitedCell, SpinLock};
+use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 use crate::{driver, kinfo, kwarn};
 
-use super::KernelContext;
+use super::csr::{SIE, Sstatus, stvec};
 use super::pagetable::kernelpagetable;
-use super::csr::{Sstatus, SIE, stvec};
-use super::{time_frequency, kernel_switch, core_count};
 use super::sbi_driver::SBIKConsole;
+use super::task::context::KernelContext;
+use super::{core_count, kernel_switch, time_frequency, try_time_frequency};
 
 unsafe extern "C" {
     static __riscv_copied_fdt: *const u8;
     static __riscv_kaddr_offset: usize;
 }
 
+static NEXT_MMIO_KADDR: InitedCell<SpinLock<usize>> = InitedCell::uninit();
+
+impl Arch {
+    pub fn try_uptime() -> Option<Duration> {
+        let freq = try_time_frequency()? as u64;
+        if freq == 0 {
+            return None;
+        }
+        Some(Duration::from_micros(
+            csr::time::read().saturating_mul(1_000_000) / freq,
+        ))
+    }
+}
+
+fn init_mmio_kaddr(memory_top: usize) {
+    NEXT_MMIO_KADDR.init(SpinLock::new(align_up(memory_top, arch::PGSIZE), "NEXT_MMIO_KADDR"));
+}
+
+fn alloc_mmio_kaddr(size: usize) -> usize {
+    let mut next = NEXT_MMIO_KADDR.lock();
+    let kaddr = *next;
+    let new_next = kaddr.checked_add(size).expect("RISC-V MMIO virtual address overflow");
+    if new_next > super::KERNEL_MMIO_END {
+        panic!("RISC-V MMIO virtual address space exhausted");
+    }
+    *next = new_next;
+    kaddr
+}
+
+fn align_up(addr: usize, align: usize) -> usize {
+    debug_assert!(align.is_power_of_two());
+    (addr + align - 1) & !(align - 1)
+}
+
 impl ArchTrait for Arch {
-    fn init() {
+    fn init(memory_top: usize) {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;
         }
-        stvec::write(asm_kerneltrap_entry as usize);
+        init_mmio_kaddr(memory_top);
+        stvec::write(asm_kerneltrap_entry as *const () as usize);
         kernelpagetable::init();
 
-        chosen::kconsole::register(&SBIKConsole);
-        chosen::kpmu::register(&SBIKPMU);
+        chosen::kconsole::register(Box::new(SBIKConsole));
+        chosen::kpmu::register(Arc::new(SBIKPMU));
 
         driver::register_matched_driver(Arc::new(SBIConsoleDriver));
     }
@@ -47,9 +86,9 @@ impl ArchTrait for Arch {
             if hartid != current_core {
                 let stack = page::alloc_contiguous(config::SCHEDULER_KSTACK_PAGE_COUNT);
                 if let Err(error) = sbi_driver::hart_start(
-                    hartid, 
+                    hartid,
                     core::ptr::addr_of!(__riscv_others_entry) as usize,
-                    stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE
+                    stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE,
                 ) {
                     kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
                 } else {
@@ -58,7 +97,11 @@ impl ArchTrait for Arch {
             }
         }
     }
-    
+
+    fn clone_abi() -> CloneABI {
+        CloneABI::Backwards
+    }
+
     #[inline(always)]
     fn set_percpu_data(data: usize) {
         unsafe { core::arch::asm!("mv tp, {data}", data = in(reg) data) };
@@ -77,18 +120,18 @@ impl ArchTrait for Arch {
 
     #[inline(always)]
     fn return_to_user() -> ! {
-        process::traphandle::return_to_user();
+        task::traphandle::return_to_user()
     }
 
     #[inline(always)]
     fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext) {
         kernel_switch(from, to);
     }
-    
+
     fn wait_for_interrupt() {
         unsafe { core::arch::asm!("wfi") };
     }
-    
+
     fn enable_interrupt() {
         Sstatus::read().set_sie(true).write();
     }
@@ -138,6 +181,16 @@ impl ArchTrait for Arch {
         unsafe { kernelpagetable::unmap_kernel_addr(kstart, size) };
     }
 
+    fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize {
+        let offset = paddr & arch::PGMASK;
+        let pbase = paddr - offset;
+        let size = size.checked_add(offset).expect("RISC-V MMIO mapping size overflow");
+        let mapped_size = arch::page_count(size) * arch::PGSIZE;
+        let kbase = alloc_mmio_kaddr(mapped_size);
+        kernelpagetable::map_kernel_addr(kbase, pbase, mapped_size, MapPerm::R | MapPerm::W);
+        kbase + offset
+    }
+
     fn uptime() -> Duration {
         Duration::from_micros(Self::get_time_us())
     }
@@ -147,26 +200,21 @@ impl ArchTrait for Arch {
     }
 
     fn set_next_time_event_us(interval: u64) {
-        sbi_driver::set_timer(csr::time::read() + interval);
+        let ticks = interval.saturating_mul(time_frequency() as u64).saturating_add(999_999) / 1_000_000;
+        sbi_driver::set_timer(csr::time::read().saturating_add(ticks.max(1)));
     }
 
     fn read_volatile<T>(src: *const T) -> T {
-        unsafe { 
+        unsafe {
             let v = core::ptr::read_volatile(src);
-            core::arch::asm!(
-                "fence i, r", 
-                options(nostack, preserves_flags)
-            );
+            core::arch::asm!("fence i, r", options(nostack, preserves_flags));
             v
         }
     }
 
     fn write_volatile<T>(dst: *mut T, val: T) {
         unsafe {
-            core::arch::asm!(
-                "fence w, i",
-                options(nostack, preserves_flags)
-            );
+            core::arch::asm!("fence w, i", options(nostack, preserves_flags));
             core::ptr::write_volatile(dst, val);
         }
     }
@@ -187,5 +235,29 @@ impl ArchTrait for Arch {
     #[inline(always)]
     fn is_kernel_addr(addr: usize) -> bool {
         addr >> 63 != 0
+    }
+
+    fn elf_native_machine() -> u16 {
+        abi::EM_RISCV
+    }
+
+    fn kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction> {
+        super::kmodule::relocation_action(relocation_type)
+    }
+
+    fn apply_kmodule_relocation(
+        relocation_type: u32,
+        place: &mut [u8],
+        value: Option<KModuleRelocationValue>,
+    ) -> SysResult<()> {
+        super::kmodule::apply_relocation(relocation_type, place, value)
+    }
+
+    fn flush_kmodule_icache() {
+        super::kmodule::flush_icache();
+    }
+
+    fn crc32c(seed: u32, buf: &[u8]) -> u32 {
+        super::crc32::crc32c(seed, buf)
     }
 }

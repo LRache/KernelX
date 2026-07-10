@@ -1,12 +1,13 @@
-mod scheduler;
 mod processor;
+mod scheduler;
 mod task;
 
 pub mod current;
 pub mod tid;
+#[cfg(feature = "watchdog")]
 pub mod watchdog;
 
-pub use scheduler::*;
 pub use processor::*;
+pub use scheduler::*;
 pub use task::*;
 pub use tid::Tid;

@@ -1,11 +1,9 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use crate::kernel::syscall::UserStruct;
-
 pub type Tid = i32;
-impl UserStruct for Tid {}
 
 pub const TID_START: Tid = 0;
+pub const PID_MAX: Tid = 1 << 20;
 
 static NEXT_TID: AtomicI32 = AtomicI32::new(TID_START);
 

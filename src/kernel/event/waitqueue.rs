@@ -1,32 +1,27 @@
-use alloc::sync::Arc;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use crate::kernel::scheduler;
-use crate::kernel::scheduler::current;
-use crate::kernel::scheduler::Task;
+use crate::kernel::scheduler::{Task, current};
 
 use super::Event;
 
-struct WaitQueueItem<T: Copy> {
+struct WaitQueueItem<T> {
     task: Arc<dyn Task>,
-    arg:  T,
+    arg: T,
 }
 
-pub struct WaitQueue<T: Copy> {
-    waiters: VecDeque<WaitQueueItem<T>>,
-}
-
-impl<T: Copy> WaitQueueItem<T> {
+impl<T> WaitQueueItem<T> {
     fn new(task: Arc<dyn Task>, arg: T) -> Self {
         Self { task, arg }
     }
-
-    fn wakeup(self, e: Event) {
-        scheduler::wakeup_task(self.task, e);
-    }
 }
 
-impl<T: Copy> WaitQueue<T> {
+pub struct WaitQueue<T> {
+    waiters: VecDeque<WaitQueueItem<T>>,
+}
+
+impl<T> WaitQueue<T> {
     pub fn new() -> Self {
         Self {
             waiters: VecDeque::new(),
@@ -45,14 +40,38 @@ impl<T: Copy> WaitQueue<T> {
 
     pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) {
         self.waiters.drain(..).for_each(|item| {
-            let arg = item.arg;
-            item.wakeup(map_arg_to_event(arg));
+            let _ = scheduler::wakeup_task(item.task, map_arg_to_event(item.arg));
         });
     }
 
-    pub fn remove(&mut self, task: &Arc<dyn Task>) {
-        if let Some(pos) = self.waiters.iter().position(|item| Arc::ptr_eq(&item.task, task)) {
-            self.waiters.remove(pos);
+    pub fn wake_all_by(&mut self, mut predicate: impl FnMut(&T) -> bool, map_arg_to_event: impl Fn(T) -> Event) {
+        let mut i = 0;
+        while i < self.waiters.len() {
+            if predicate(&self.waiters[i].arg) {
+                if let Some(item) = self.waiters.remove(i) {
+                    let _ = scheduler::wakeup_task(item.task, map_arg_to_event(item.arg));
+                }
+            } else {
+                i += 1;
+            }
         }
+    }
+
+    pub fn count_by(&self, mut predicate: impl FnMut(&T) -> bool) -> usize {
+        let mut count = 0;
+        for item in &self.waiters {
+            if predicate(&item.arg) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    pub fn remove(&mut self, task: &Arc<dyn Task>) {
+        self.waiters.retain(|item| !Arc::ptr_eq(&item.task, task));
+    }
+
+    pub fn remove_current(&mut self) {
+        self.remove(current::task());
     }
 }

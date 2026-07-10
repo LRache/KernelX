@@ -37,6 +37,7 @@ asm_save_float:
     sw t0, 224(a0)
     
     ret
+    .size asm_save_float, . - asm_save_float
 
     .global asm_save_double
     .type asm_save_double, @function
@@ -74,6 +75,7 @@ asm_save_double:
     sw t0, 224(a0)
     
     ret
+    .size asm_save_double, . - asm_save_double
 
     .global asm_restore_float
     .type asm_restore_float, @function
@@ -111,6 +113,7 @@ asm_restore_float:
     csrw fcsr, t0
     
     ret
+    .size asm_restore_float, . - asm_restore_float
 
     .global asm_restore_double
     .type asm_restore_double, @function
@@ -148,3 +151,4 @@ asm_restore_double:
     csrw fcsr, t0
     
     ret
+    .size asm_restore_double, . - asm_restore_double

@@ -10,13 +10,8 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/tlsf)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/libfdt)
+add_subdirectory(${CMAKE_SOURCE_DIR}/lib/lwext4)
 
 add_library(kernelx_clib STATIC ${SRCS})
 target_include_directories(kernelx_clib PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(kernelx_clib PRIVATE tlsf libfdt)
-
-# include(${KERNELX_HOME}/scripts/cmake/env.cmake)
-
-# target_compile_options(tlsf PRIVATE ${COMMON_FLAGS})
-# target_compile_options(libfdt PRIVATE ${COMMON_FLAGS})
-# target_compile_options(kernelx_clib PRIVATE ${COMMON_FLAGS})
+target_link_libraries(kernelx_clib PRIVATE tlsf libfdt lwext4)

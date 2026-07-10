@@ -1,17 +1,31 @@
-use alloc::collections::BTreeMap;
-use alloc::collections::LinkedList;
+use alloc::collections::{BTreeMap, LinkedList};
 use alloc::sync::Arc;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::scheduler;
-use crate::kernel::scheduler::Task;
-use crate::kernel::scheduler::current;
+use crate::kernel::scheduler::{Task, current};
 use crate::klib::SpinLock;
 
 struct FutexWaitQueueItem {
     tcb: Arc<dyn Task>,
     bitset: u32,
+    kind: FutexWaitKind,
+}
+
+#[derive(Clone, Copy)]
+enum FutexWaitKind {
+    Wait,
+    Waitv { index: usize },
+}
+
+fn wake_waiter(item: FutexWaitQueueItem) -> bool {
+    let event = match item.kind {
+        FutexWaitKind::Wait => Event::Futex,
+        FutexWaitKind::Waitv { index } => Event::FutexWaitv { index },
+    };
+
+    scheduler::wakeup_task(item.tcb, event).is_ok()
 }
 
 pub struct Futex {
@@ -27,31 +41,36 @@ impl Futex {
         }
     }
 
-    pub fn wait_current(&mut self, expected: i32, bitset: u32) -> SysResult<()> {
+    fn wait_current(&mut self, expected: i32, bitset: u32, kind: FutexWaitKind) -> SysResult<()> {
         if *self.kvalue != expected {
             return Err(Errno::EAGAIN);
         }
-        
+
         self.wait_list.push_back(FutexWaitQueueItem {
             tcb: current::task().clone(),
             bitset,
+            kind,
         });
-        
+
         Ok(())
     }
 
     pub fn wake(&mut self, num: usize, mask: u32) -> SysResult<usize> {
+        if num == 0 {
+            return Ok(0);
+        }
+
         let mut woken = 0;
         let mut cursor = self.wait_list.cursor_front_mut();
         while let Some(item) = cursor.current() {
             if (item.bitset & mask) != 0 {
                 let item = cursor.remove_current().unwrap();
-                
-                scheduler::wakeup_task(item.tcb.clone(), Event::Futex);
-                
-                woken += 1;
-                if woken >= num {
-                    break;
+
+                if wake_waiter(item) {
+                    woken += 1;
+                    if woken >= num {
+                        break;
+                    }
                 }
             } else {
                 cursor.move_next();
@@ -60,18 +79,41 @@ impl Futex {
 
         Ok(woken)
     }
+
+    pub fn remove_waiter(&mut self, task: &Arc<dyn Task>) -> usize {
+        let mut removed = 0;
+        let mut cursor = self.wait_list.cursor_front_mut();
+        while let Some(item) = cursor.current() {
+            if Arc::ptr_eq(&item.tcb, task) {
+                cursor.remove_current();
+                removed += 1;
+            } else {
+                cursor.move_next();
+            }
+        }
+        removed
+    }
 }
 
 static FUTEXES: SpinLock<BTreeMap<usize, SpinLock<Futex>>> = SpinLock::new(BTreeMap::new(), "static::FUTEXES");
 
 pub fn wait_current(kaddr: usize, expected: i32, bitset: u32) -> SysResult<()> {
-    let mut futexes = FUTEXES.lock();
-    let futex = futexes.entry(kaddr).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) }), "Futex"));
-        
-    let mut futex = futex.lock();
-    futex.wait_current(expected, bitset)
+    wait_current_kind(kaddr, expected, bitset, FutexWaitKind::Wait)
 }
 
+pub fn wait_current_waitv(kaddr: usize, expected: i32, bitset: u32, index: usize) -> SysResult<()> {
+    wait_current_kind(kaddr, expected, bitset, FutexWaitKind::Waitv { index })
+}
+
+fn wait_current_kind(kaddr: usize, expected: i32, bitset: u32, kind: FutexWaitKind) -> SysResult<()> {
+    let mut futexes = FUTEXES.lock();
+    let futex = futexes
+        .entry(kaddr)
+        .or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr as *const i32) }), "Futex"));
+
+    let mut futex = futex.lock();
+    futex.wait_current(expected, bitset, kind)
+}
 
 pub fn wake(kaddr: usize, num: usize, mask: u32) -> SysResult<usize> {
     let futexes = FUTEXES.lock();
@@ -83,11 +125,17 @@ pub fn wake(kaddr: usize, num: usize, mask: u32) -> SysResult<usize> {
     }
 }
 
-pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> SysResult<usize> {
+pub fn requeue(
+    kaddr: usize,
+    kaddr2: usize,
+    wake_count: usize,
+    requeue_count: usize,
+    val: Option<i32>,
+) -> SysResult<usize> {
     let mut futexes = FUTEXES.lock();
     let mut pending = LinkedList::new();
 
-    let moved = if let Some(futex_spinlock) = futexes.get(&kaddr) {
+    let (woken, moved) = if let Some(futex_spinlock) = futexes.get(&kaddr) {
         let mut futex = futex_spinlock.lock();
         if let Some(val) = val {
             if *futex.kvalue != val {
@@ -95,23 +143,40 @@ pub fn requeue(kaddr: usize, kaddr2: usize, num: usize, val: Option<i32>) -> Sys
             }
         }
 
+        let woken = futex.wake(wake_count, u32::MAX)?;
         let mut moved = 0;
         let mut cursor = futex.wait_list.cursor_front_mut();
-        while let Some(item) = cursor.remove_current() {
+        while moved < requeue_count {
+            let Some(item) = cursor.remove_current() else {
+                break;
+            };
             pending.push_back(item);
             moved += 1;
-            if moved >= num {
-                break;
-            }
         }
-        moved
+        (woken, moved)
     } else {
+        if let Some(val) = val
+            && unsafe { *(kaddr as *const i32) } != val
+        {
+            return Err(Errno::EAGAIN);
+        }
         return Ok(0);
     };
 
-    let futex2_spinlock = futexes.entry(kaddr2).or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) }), "Futex"));
+    if moved == 0 {
+        return Ok(woken);
+    }
+
+    let futex2_spinlock = futexes
+        .entry(kaddr2)
+        .or_insert_with(|| SpinLock::new(Futex::new(unsafe { &*(kaddr2 as *const i32) }), "Futex"));
     let mut futex2 = futex2_spinlock.lock();
     futex2.wait_list.append(&mut pending);
 
-    Ok(moved)
+    Ok(woken + moved)
+}
+
+pub fn cancel_wait_all(task: &Arc<dyn Task>) -> usize {
+    let futexes = FUTEXES.lock();
+    futexes.values().map(|futex| futex.lock().remove_waiter(task)).sum()
 }

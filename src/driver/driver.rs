@@ -2,10 +2,12 @@ use core::time::Duration;
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{FileEvent, PollEventSet};
+use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
+use crate::net::protocol::MacAddr;
 
 use super::DeviceType;
 
@@ -30,7 +32,7 @@ pub trait DriverOps: Send + Sync {
     fn handle_interrupt(&self) {}
 }
 
-use downcast_rs::{impl_downcast, Downcast};
+use downcast_rs::{Downcast, impl_downcast};
 
 pub trait BlockDriverOps: DriverOps + Downcast {
     fn read_block(&self, block: usize, buf: &mut [u8]) -> Result<(), ()>;
@@ -47,6 +49,10 @@ pub trait BlockDriverOps: DriverOps + Downcast {
     }
 
     fn write_blocks(&self, start_block: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let block_size = self.get_block_size() as usize;
         debug_assert!(block_size <= 512);
         let block_count = buf.len() / block_size;
@@ -59,7 +65,7 @@ pub trait BlockDriverOps: DriverOps + Downcast {
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<(), ()> {
         let block_size = self.get_block_size() as usize;
         debug_assert!(block_size <= 512);
-        
+
         let mut length = buf.len();
         let mut block = offset / block_size;
 
@@ -72,7 +78,7 @@ pub trait BlockDriverOps: DriverOps + Downcast {
 
             let read_size = core::cmp::min(block_size - block_offset, length);
             buf[buf_offset..buf_offset + read_size].copy_from_slice(&block_buf[block_offset..block_offset + read_size]);
-            
+
             buf_offset += read_size;
             length -= read_size;
             block += 1;
@@ -80,10 +86,10 @@ pub trait BlockDriverOps: DriverOps + Downcast {
 
         while length != 0 {
             self.read_block(block, &mut block_buf)?;
-            
+
             let read_size = core::cmp::min(length, block_size);
             buf[buf_offset..buf_offset + read_size].copy_from_slice(&block_buf[..read_size]);
-            
+
             buf_offset += read_size;
             length -= read_size;
             block += 1;
@@ -92,9 +98,13 @@ pub trait BlockDriverOps: DriverOps + Downcast {
         Ok(())
     }
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), ()> {
+        if !buf.is_empty() && self.is_readonly() {
+            return Err(());
+        }
+
         let block_size = self.get_block_size() as usize;
         debug_assert!(block_size <= 512);
-        
+
         let mut length = buf.len();
         let mut block = offset / block_size;
 
@@ -106,7 +116,8 @@ pub trait BlockDriverOps: DriverOps + Downcast {
             self.read_block(block, &mut block_buf)?;
 
             let write_size = core::cmp::min(block_size - block_offset, length);
-            block_buf[block_offset..block_offset + write_size].copy_from_slice(&buf[buf_offset..buf_offset + write_size]);
+            block_buf[block_offset..block_offset + write_size]
+                .copy_from_slice(&buf[buf_offset..buf_offset + write_size]);
             self.write_block(block, &block_buf)?;
 
             buf_offset += write_size;
@@ -133,6 +144,18 @@ pub trait BlockDriverOps: DriverOps + Downcast {
         Ok(())
     }
 
+    fn is_readonly(&self) -> bool {
+        false
+    }
+
+    fn get_readahead(&self) -> usize {
+        0
+    }
+
+    fn set_readahead(&self, readahead: usize) {
+        let _ = readahead;
+    }
+
     fn get_block_size(&self) -> u32;
 
     fn get_block_count(&self) -> u64;
@@ -143,8 +166,15 @@ impl_downcast!(BlockDriverOps);
 pub trait CharDriverOps: DriverOps + Downcast {
     fn write(&self, buf: &[u8]) -> SysResult<usize>;
     fn read(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize>;
-    fn wait_event(&self, waker: usize, event: PollEventSet) -> SysResult<Option<FileEvent>>;
+    fn poll_event(&self, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        let _ = event;
+        Ok(None)
+    }
+    fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>>;
     fn wait_event_cancel(&self);
+    fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
+        None
+    }
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
         Err(Errno::EINVAL)
     }
@@ -152,12 +182,24 @@ pub trait CharDriverOps: DriverOps + Downcast {
 
 impl_downcast!(CharDriverOps);
 
-pub trait PMUDriverOps : Sync + Send {
+pub trait PMUDriverOps: Sync + Send {
     fn shutdown(&self) -> !;
 }
 
-pub trait RTCDriverOps : DriverOps + Downcast + Send + Sync {
+pub trait RTCDriverOps: DriverOps + Downcast + Send + Sync {
     fn now(&self) -> SysResult<Duration>;
+    fn set_time(&self, time: Duration) -> SysResult<()>;
 }
 
 impl_downcast!(RTCDriverOps);
+
+pub trait NetDriverOps: Send + Sync {
+    fn send_packet(&self, packet: &[u8]) -> SysResult<()>;
+
+    /// Acknowledge interrupt and retrieve all received packets from hardware.
+    fn recv_packets(&self) -> Vec<Vec<u8>>;
+
+    fn mac_address(&self) -> MacAddr;
+
+    fn mtu(&self) -> usize;
+}

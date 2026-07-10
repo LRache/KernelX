@@ -1,21 +1,20 @@
-pub trait KPMU : Send + Sync {
+use alloc::sync::Arc;
+
+use crate::klib::RWLock;
+
+pub trait KPMU: Send + Sync {
     fn shutdown(&self) -> !;
 }
 
-struct EmptyKPMU;
+static KPMU_DRIVER: RWLock<Option<Arc<dyn KPMU>>> = RWLock::new(None, "static::KPMU_DRIVER");
 
-impl KPMU for EmptyKPMU {
-    fn shutdown(&self) -> ! {
-        loop {}
-    }
-}
-
-static KPMU_DRIVER: spin::RwLock<&'static dyn KPMU> = spin::RwLock::new(&EmptyKPMU);
-
-pub fn register(kpmu: &'static dyn KPMU) {
-    *KPMU_DRIVER.write() = kpmu;
+pub fn register(kpmu: Arc<dyn KPMU>) {
+    *KPMU_DRIVER.write() = Some(kpmu);
 }
 
 pub fn shutdown() -> ! {
-    KPMU_DRIVER.read().shutdown()
+    if let Some(kpmu) = KPMU_DRIVER.read().as_ref() {
+        kpmu.shutdown();
+    }
+    loop {}
 }

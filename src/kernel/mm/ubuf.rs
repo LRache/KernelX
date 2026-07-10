@@ -1,18 +1,22 @@
 use core::fmt::Debug;
 
 use crate::arch;
-use crate::kernel::errno::SysResult;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::AddrSpace;
 
 pub struct UAddrSpaceBuffer<'a> {
     uaddr: usize,
     length: usize,
-    addrspace: &'a AddrSpace
+    addrspace: &'a AddrSpace,
 }
 
 impl<'a> UAddrSpaceBuffer<'a> {
     pub fn new(uaddr: usize, length: usize, addrspace: &'a AddrSpace) -> Self {
-        Self { uaddr, length, addrspace }
+        Self {
+            uaddr,
+            length,
+            addrspace,
+        }
     }
 
     pub fn write(&self, offset: usize, buf: &[u8]) -> SysResult<()> {
@@ -24,32 +28,50 @@ impl<'a> UAddrSpaceBuffer<'a> {
         self.length
     }
 
-    pub fn iter(&'a self) -> Iter<'a> {
-        Iter {
-            ubuf: self,
-            offset: 0,
+    pub fn with_length(&self, length: usize) -> Self {
+        Self {
+            uaddr: self.uaddr,
+            length,
+            addrspace: self.addrspace,
         }
+    }
+
+    pub fn uaddr(&self) -> usize {
+        self.uaddr
+    }
+
+    pub fn iter(&'a self) -> ReaderIter<'a> {
+        ReaderIter { ubuf: self, offset: 0 }
+    }
+
+    pub fn iter_mut(&'a self) -> WriterIter<'a> {
+        WriterIter { ubuf: self, offset: 0 }
     }
 }
 
-pub struct Iter<'a> {
+pub struct ReaderIter<'a> {
     ubuf: &'a UAddrSpaceBuffer<'a>,
     offset: usize,
 }
 
-impl Iterator for Iter<'_> {
-    type Item = SysResult<&'static mut [u8]>;
+impl Iterator for ReaderIter<'_> {
+    type Item = SysResult<&'static [u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let remaining = self.ubuf.length - self.offset;
         if remaining == 0 {
             return None;
         }
-        
+
         let uaddr = self.ubuf.uaddr + self.offset;
-        let kaddr = self.ubuf.addrspace.with_map_manager_mut(|manager| {
-            manager.translate_write(uaddr, self.ubuf.addrspace)
-        })?;
+        let kaddr = match self
+            .ubuf
+            .addrspace
+            .with_map_manager_mut(|manager| manager.translate_read(uaddr, self.ubuf.addrspace))
+        {
+            Some(kaddr) => kaddr,
+            None => return Some(Err(Errno::EFAULT)),
+        };
 
         let length = core::cmp::min(remaining, arch::PGSIZE - (kaddr % arch::PGSIZE));
         self.offset += length;
@@ -57,7 +79,41 @@ impl Iterator for Iter<'_> {
         debug_assert!(kaddr % arch::PGSIZE + length <= arch::PGSIZE);
         debug_assert!(kaddr != 0);
 
-        Some(Ok(unsafe { core::slice::from_raw_parts_mut(kaddr as *mut u8, length) }) )
+        Some(Ok(unsafe { core::slice::from_raw_parts(kaddr as *const u8, length) }))
+    }
+}
+
+pub struct WriterIter<'a> {
+    ubuf: &'a UAddrSpaceBuffer<'a>,
+    offset: usize,
+}
+
+impl Iterator for WriterIter<'_> {
+    type Item = SysResult<&'static mut [u8]>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let remaining = self.ubuf.length - self.offset;
+        if remaining == 0 {
+            return None;
+        }
+
+        let uaddr = self.ubuf.uaddr + self.offset;
+        let kaddr = match self
+            .ubuf
+            .addrspace
+            .with_map_manager_mut(|manager| manager.translate_write(uaddr, self.ubuf.addrspace))
+        {
+            Some(kaddr) => kaddr,
+            None => return Some(Err(Errno::EFAULT)),
+        };
+
+        let length = core::cmp::min(remaining, arch::PGSIZE - (kaddr % arch::PGSIZE));
+        self.offset += length;
+
+        debug_assert!(kaddr % arch::PGSIZE + length <= arch::PGSIZE);
+        debug_assert!(kaddr != 0);
+
+        Some(Ok(unsafe { core::slice::from_raw_parts_mut(kaddr as *mut u8, length) }))
     }
 }
 

@@ -1,5 +1,5 @@
-use alloc::sync::Arc;
 use crate::kernel::mm::AddrSpace;
+use alloc::sync::Arc;
 
 cfg_if::cfg_if! {
     if #[cfg(feature="swap-memory")] {
@@ -23,7 +23,7 @@ cfg_if::cfg_if! {
             pub fn allocated(uaddr:usize, frame: PhysPageFrame, _addrspace: &AddrSpace) -> Self {
                 Self { frame, uaddr }
             }
-            
+
             pub fn uaddr(&self) -> usize {
                 self.uaddr
             }
@@ -68,20 +68,18 @@ impl FrameState {
     pub fn cow_to_allocated(&mut self, addrspace: &AddrSpace) -> usize {
         let t = core::mem::replace(self, FrameState::Unallocated);
         match t {
-            FrameState::Cow(frame) => {
-                match Arc::try_unwrap(frame) {
-                    Ok(f) => {
-                        let kpage = f.get_page_swap_in();
-                        *self = FrameState::Allocated(Arc::new(f));
-                        kpage
-                    }
-                    Err(f) => {
-                        let (new_frame, kpage) = f.copy(addrspace);
-                        *self = FrameState::Allocated(Arc::new(new_frame));
-                        kpage
-                    }
+            FrameState::Cow(frame) => match Arc::try_unwrap(frame) {
+                Ok(f) => {
+                    let kpage = f.get_page_swap_in();
+                    *self = FrameState::Allocated(Arc::new(f));
+                    kpage
                 }
-            }
+                Err(f) => {
+                    let (new_frame, kpage) = f.copy(addrspace);
+                    *self = FrameState::Allocated(Arc::new(new_frame));
+                    kpage
+                }
+            },
             _ => unreachable!(),
         }
     }

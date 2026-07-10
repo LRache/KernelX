@@ -1,45 +1,33 @@
 use alloc::sync::Arc;
-use alloc::vec::Vec;
+use core::time::Duration;
 
+use crate::fs::filesystem::{FileSystemOps, VfsSuperBlockOps};
+use crate::fs::inode::Index;
 use crate::fs::vfs::vfs::VirtualFileSystem;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
+use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::uapi::Statfs;
-use crate::driver::BlockDriverOps;
+use crate::kernel::scheduler::current;
+use crate::kernel::uapi::{Statfs, StatfsFlags};
 
-use super::vfs;
-use super::Dentry;
+use super::{Dentry, vfs};
+
+pub fn inode_cache_reclaimer() {
+    loop {
+        current::sleep(Duration::from_millis(config::INODE_CACHE_RECLAIM_INTERVAL_MS));
+        vfs().cache.prune_unused();
+    }
+}
 
 impl VirtualFileSystem {
     pub(super) fn register_filesystem(&mut self, name: &'static str, fs: &'static dyn FileSystemOps) {
         self.fstype_map.insert(name, fs);
     }
 
-    fn get_superblock(&self, sno: u32) -> SysResult<Arc<dyn SuperBlockOps>> {
+    fn get_superblock(&self, sno: u32) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         let superblock_table = self.superblock_table.lock();
         let superblock = superblock_table.get(sno).ok_or(Errno::EINVAL)?;
 
         Ok(superblock)
-    }
-
-    fn mount(&self, path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> SysResult<()> {
-        let dentry = self.lookup_dentry(self.get_root(), path)?;
-
-        let fstype = self.fstype_map.get(fstype_name).ok_or(Errno::ENOENT)?;
-
-        let (sno, root_ino) = {
-            let mut superblock_table = self.superblock_table.lock();
-            let sno = superblock_table.mount(*fstype, device)?;
-            (sno, superblock_table.get(sno).unwrap().get_root_ino())
-        };
-
-        let root_inode = self.load_inode(sno, root_ino)?;
-
-        dentry.mount(&root_inode, sno);
-        
-        self.mountpoint.lock().push(dentry);
-        
-        Ok(())
     }
 
     fn sync_all(&self) -> SysResult<()> {
@@ -48,13 +36,13 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    pub fn mountpoint_list(&self) -> Vec<Arc<Dentry>> {
-        self.mountpoint.lock().clone()
+    pub(super) fn is_superblock_readonly(&self, sno: u32) -> SysResult<bool> {
+        self.superblock_table.lock().is_readonly(sno)
     }
 }
 
-pub fn mount(path: &str, fstype_name: &str, device: Option<Arc<dyn BlockDriverOps>>) -> Result<(), Errno> {
-    vfs().mount(path, fstype_name, device)
+pub fn get_fstype(fstype_name: &str) -> Option<&'static dyn FileSystemOps> {
+    vfs().fstype_map.get(fstype_name).cloned()
 }
 
 pub fn get_root_dentry() -> &'static Arc<Dentry> {
@@ -62,18 +50,26 @@ pub fn get_root_dentry() -> &'static Arc<Dentry> {
 }
 
 pub fn statfs(sno: u32) -> SysResult<Statfs> {
-    let superblock = vfs().get_superblock(sno).unwrap();
+    let vfs = vfs();
+    let readonly = vfs.is_superblock_readonly(sno)?;
+    let mut statfs = vfs.get_superblock(sno)?.statfs()?;
 
-    superblock.statfs()
+    if readonly {
+        statfs.f_flag |= StatfsFlags::ST_RDONLY.bits();
+    } else {
+        statfs.f_flag &= !StatfsFlags::ST_RDONLY.bits();
+    }
+    Ok(statfs)
 }
 
 pub fn sync_all() -> Result<(), Errno> {
     vfs().sync_all()
 }
 
-pub fn unmount_all() -> SysResult<()> {
-    let superblock_table = vfs().superblock_table.lock();
-    superblock_table.unmount_all()?;
+pub fn evict_inode(sno: u32, ino: u32) {
+    vfs().cache.remove(&Index { sno, ino });
+}
 
-    Ok(())
+pub fn find_cached_inode(sno: u32, ino: u32) -> Option<Arc<crate::fs::Inode>> {
+    vfs().cache.find(&Index { sno, ino })
 }

@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
-const char *TO_UNLINK = "to_unlink.txt";
+const char *TO_UNLINK = "/tests/basic-glibc/to_unlink.txt";
 
 int main() {
     FILE *fp = fopen(TO_UNLINK, "r");

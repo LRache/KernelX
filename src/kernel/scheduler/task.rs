@@ -1,28 +1,14 @@
+use alloc::vec::Vec;
+
 use crate::arch;
 use crate::kernel::event::Event;
-use crate::kernel::task::TCB;
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
+use crate::kernel::task::TCB;
+
+use crate::kernel::uapi::Uid;
 
 use super::Tid;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    /// The task is currently running on a CPU.
-    Running,
-    
-    /// The task is ready to run and can be scheduled on a CPU.
-    Ready,
-    
-    /// The task is blocked, waiting for an event.
-    Blocked,
-    
-    /// The task is blocked and cannot be interrupted until the event it is waiting for occurs.
-    BlockedUninterruptible,
-    
-    /// The task has exited. This state MUST BE set by the task itself.
-    Exited,
-}
 
 pub struct KernelStack {
     top: usize,
@@ -58,9 +44,28 @@ impl Drop for KernelStack {
 unsafe impl Send for KernelStack {}
 unsafe impl Sync for KernelStack {}
 
+pub enum WakeupFailure {
+    /// The task is not blocked.
+    NotBlocked,
+
+    /// The task is blocked, but the event it is waiting for does not match the given event.
+    BlockedUninterruptible,
+}
+
 pub trait Task: Send + Sync {
     fn tid(&self) -> Tid;
-    fn kcontext(&self) -> &mut arch::KernelContext;
+    fn euid(&self) -> Uid;
+    fn egid(&self) -> Uid;
+    fn fsuid(&self) -> Uid;
+    fn fsgid(&self) -> Uid;
+    fn supplementary_gids(&self) -> Vec<Uid> {
+        Vec::new()
+    }
+
+    /// Raw saved kernel context pointer used by context switching.
+    ///
+    /// Callers must not dereference it unless they own this task's saved context.
+    fn kcontext_ptr(&self) -> *mut arch::KernelContext;
     fn kstack(&self) -> &KernelStack;
 
     fn run_if_ready(&self) -> bool;
@@ -70,14 +75,17 @@ pub trait Task: Send + Sync {
     fn block_uninterruptible(&self, reason: &str) -> bool;
     fn unblock(&self);
 
-    fn wakeup(&self, event: Event) -> bool;
+    fn wakeup(&self, event: Event) -> Result<(), WakeupFailure>;
     fn wakeup_uninterruptible(&self, event: Event) -> bool;
     fn take_wakeup_event(&self) -> Option<Event>;
+
+    fn pause_system_time(&self) {}
+    fn resume_system_time(&self) {}
 
     fn tcb(&self) -> &TCB;
 
     fn set_exited(&self) {}
 
-    #[cfg(feature = "deadlock-detect")]
+    #[cfg(feature = "lockdep")]
     fn lockstate(&self) -> &crate::klib::ksync::LockState;
 }

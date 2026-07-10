@@ -1,5 +1,7 @@
+use alloc::vec::Vec;
 use bitflags::bitflags;
 
+use crate::kernel::scheduler::current;
 use crate::kernel::uapi::Uid;
 
 bitflags! {
@@ -11,15 +13,56 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Perm {
     pub uid: Uid,
     pub gid: Uid,
+    pub supplementary_gids: Vec<Uid>,
     pub flags: PermFlags,
 }
 
 impl Perm {
-    pub fn new(flags: PermFlags) -> Self {
-        Self { uid: 0, gid: 0, flags }
+    pub fn new(uid: Uid, gid: Uid, flags: PermFlags) -> Self {
+        Self {
+            uid,
+            gid,
+            supplementary_gids: Vec::new(),
+            flags,
+        }
+    }
+
+    pub fn current(flags: PermFlags) -> Self {
+        let task = current::task();
+        Self {
+            uid: task.fsuid(),
+            gid: task.fsgid(),
+            supplementary_gids: task.supplementary_gids(),
+            flags,
+        }
+    }
+
+    pub fn access(flags: PermFlags, use_effective_ids: bool) -> Self {
+        let pcb = current::pcb();
+        let (uid, gid) = if use_effective_ids {
+            (pcb.euid(), pcb.egid())
+        } else {
+            (pcb.uid(), pcb.gid())
+        };
+
+        let task = current::task();
+        Self {
+            uid,
+            gid,
+            supplementary_gids: task.supplementary_gids(),
+            flags,
+        }
+    }
+
+    pub fn in_group(&self, gid: Uid) -> bool {
+        self.gid == gid || self.supplementary_gids.contains(&gid)
+    }
+
+    pub fn is_root(&self) -> bool {
+        self.uid == 0
     }
 }

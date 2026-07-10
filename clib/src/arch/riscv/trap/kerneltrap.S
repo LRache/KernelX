@@ -7,6 +7,7 @@
 #endif
 
     .global asm_kerneltrap_entry
+    .type asm_kerneltrap_entry, @function
 
 .align 3
 asm_kerneltrap_entry:
@@ -85,3 +86,5 @@ asm_kerneltrap_entry:
     csrr sp, sscratch
 
     sret
+
+    .size asm_kerneltrap_entry, . - asm_kerneltrap_entry

@@ -1,8 +1,8 @@
-mod superblock;
+pub mod devnode;
 mod inode;
-mod devnode;
+mod superblock;
 
-use inode::{NullInode, ZeroInode, URandomInode};
+use inode::{NullInode, PtmxInode, RtcInode, URandomInode, ZeroInode};
 
-pub use superblock::FileSystem;
-pub use superblock::{init, add_device};
+pub use inode::LoopInode;
+pub use superblock::{FileSystem, add_device, init};

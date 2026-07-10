@@ -8,22 +8,32 @@ BUILD_DIR = build/$(ARCH)
 OUTPUT_DIR = $(BUILD_DIR)/output
 
 CFLAGS += -Wall -Wextra
+LDLIBS ?=
+
+PTHREAD_TESTS = thread_fork_mmap_leak
 
 TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
-TEST_TARGETS = $(addprefix $(OUTPUT_DIR)/, $(TESTS))
+TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
+
+$(addprefix $(BUILD_DIR)/, $(addsuffix .o, $(PTHREAD_TESTS))): CFLAGS += -pthread
+$(foreach test,$(PTHREAD_TESTS),$(OUTPUT_DIR)/$(test)/$(test)): LDLIBS += -pthread
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(info + CC $<)
-	@ mkdir -p $(OUTPUT_DIR)
+	@ mkdir -p $(@D)
 	@ $(CC) $(CFLAGS) -c $< -o $@
 
-$(OUTPUT_DIR)/%: $(BUILD_DIR)/%.o
-	$(info + LD $<)
-	@ mkdir -p $(OUTPUT_DIR)
-	@ $(CC) $(CFLAGS) $< -o $@
+define TEST_TARGET_RULE
+$(OUTPUT_DIR)/$(1)/$(1): $(BUILD_DIR)/$(1).o
+	$$(info + LD $$<)
+	@ mkdir -p $$(@D)
+	@ $$(CC) $$(CFLAGS) $$< -o $$@ $$(LDLIBS)
+endef
+
+$(foreach test,$(TESTS),$(eval $(call TEST_TARGET_RULE,$(test))))
 
 all: $(TEST_TARGETS)
-	@ echo "File to unlink" > $(OUTPUT_DIR)/to_unlink.txt
+	@ echo "File to unlink" > $(OUTPUT_DIR)/unlink/to_unlink.txt
 
 clean:
 	$(info + CLEAN)

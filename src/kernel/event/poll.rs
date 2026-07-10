@@ -1,21 +1,14 @@
 use bitflags::bitflags;
 
 bitflags! {
+    #[allow(dead_code)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct PollEventSet: i16 {
-        const POLLIN   = 0x0001; // There is data to read.
-        const POLLPRI  = 0x0002; // There is urgent data to read.
-        const POLLOUT  = 0x0004; // Writing now will not block.
-        const POLLERR  = 0x0008; // Error condition.
-        const POLLHUP  = 0x0010; // Hung up.
-        const POLLNVAL = 0x0020; // Invalid request: fd not open.
+    pub struct FileEvent: i16 {
+        const READ_READY  = 0x0001;
+        const PRIORITY    = 0x0002;
+        const WRITE_READY = 0x0004;
+        const ERROR       = 0x0008;
+        const HANG_UP     = 0x0010;
+        const INVALID     = 0x0020;
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileEvent {
-    ReadReady,
-    WriteReady,
-    Priority,
-    HangUp,
 }

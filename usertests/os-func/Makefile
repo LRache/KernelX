@@ -10,17 +10,21 @@ OUTPUT_DIR = $(BUILD_DIR)/output
 CFLAGS += -Wall -Wextra
 
 TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
-TEST_TARGETS = $(addprefix $(OUTPUT_DIR)/, $(TESTS))
+TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(info + CC $<)
-	@ mkdir -p $(OUTPUT_DIR)
+	@ mkdir -p $(@D)
 	@ $(CC) $(CFLAGS) -c $< -o $@
 
-$(OUTPUT_DIR)/%: $(BUILD_DIR)/%.o
-	$(info + LD $<)
-	@ mkdir -p $(OUTPUT_DIR)
-	@ $(CC) $(CFLAGS) $< -o $@
+define TEST_TARGET_RULE
+$(OUTPUT_DIR)/$(1)/$(1): $(BUILD_DIR)/$(1).o
+	$$(info + LD $$<)
+	@ mkdir -p $$(@D)
+	@ $$(CC) $$(CFLAGS) $$< -o $$@
+endef
+
+$(foreach test,$(TESTS),$(eval $(call TEST_TARGET_RULE,$(test))))
 
 all: $(TEST_TARGETS)
 

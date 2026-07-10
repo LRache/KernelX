@@ -1,28 +1,19 @@
-use core::sync::atomic::AtomicBool;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::collections::BTreeMap;
 
+use crate::fs::vfs;
 use crate::kernel::event::timer;
-use crate::kernel::config;
-use crate::kernel::mm;
-use crate::kernel::scheduler;
-use crate::kernel::scheduler::Processor;
-use crate::kernel::scheduler::Task;
-use crate::kernel::task;
-use crate::kernel::kthread;
-use crate::arch;
-use crate::fs;
-use crate::driver;
-use crate::klib::{kalloc, InitedCell};
-use crate::kinfo;
-use crate::print;
+use crate::kernel::scheduler::{Processor, Task};
+use crate::kernel::{config, kthread, mm, scheduler, task};
+use crate::klib::{InitedCell, kalloc};
+use crate::{arch, driver, fs, kinfo, net, print};
 
 #[allow(dead_code)]
 fn free_init() {
     unsafe extern "C" {
         static __init_start: u8;
-        static __init_end:   u8;
+        static __init_end: u8;
     }
 
     let kstart = core::ptr::addr_of!(__init_start) as usize;
@@ -45,13 +36,15 @@ fn kinit() {
     timer::init();
 
     mm::vdso::init();
-    
+
     fs::mount_init_fs(
-        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT),
+        BOOT_ARGS.get("root").unwrap_or(&config::DEFAULT_BOOT_ROOT_DEVICE),
         BOOT_ARGS.get("rootfstype").unwrap_or(&config::DEFAULT_BOOT_ROOT_FSTYPE),
     );
 
     driver::chosen::init(&BOOT_ARGS);
+
+    net::configure();
 
     #[cfg(feature = "swap-memory")]
     mm::swappable::init();
@@ -63,7 +56,9 @@ fn kinit() {
         BOOT_ARGS.get("tty").unwrap_or(&config::DEFAULT_INITTTY),
     );
 
+    #[cfg(feature = "watchdog")]
     kthread::spawn(scheduler::watchdog::kwatchdog);
+    kthread::spawn(vfs::inode_cache_reclaimer);
 
     kinfo!("KernelX initialized successfully!");
 
@@ -77,15 +72,55 @@ fn kinit() {
 
 #[unsafe(link_section = ".text.init")]
 pub fn parse_boot_args(bootargs: &'static str) {
+    if bootargs.is_empty() {
+        return parse_boot_args(config::DEFAULT_BOOTARGS);
+    }
     let mut bootargs_map = BTreeMap::new();
-    for arg in bootargs.split_whitespace() {
+
+    let mut insert_arg = |arg: &'static str| {
+        let arg = arg.trim_matches('"');
+        if arg.is_empty() {
+            return;
+        }
         if let Some((key, value)) = arg.split_once('=') {
+            let value = value.trim_matches('"');
             bootargs_map.insert(key, value);
             kinfo!("bootarg: {}={}", key, value);
         } else {
+            let arg = arg.trim_matches('"');
+            if arg.is_empty() {
+                return;
+            }
             bootargs_map.insert(arg, "");
             kinfo!("bootarg: {}", arg);
         }
+    };
+
+    let mut start = None;
+    let mut in_quotes = false;
+    for (i, c) in bootargs.char_indices() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if let Some(begin) = start.take() {
+                    insert_arg(&bootargs[begin..i]);
+                }
+            }
+            _ => {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
+        }
+    }
+
+    if let Some(begin) = start {
+        insert_arg(&bootargs[begin..]);
     }
 
     BOOT_ARGS.init(bootargs_map);
@@ -109,10 +144,11 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     if FIRST_BOOTED.swap(false, Ordering::SeqCst) {
         kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
         mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
-        arch::init();
+        arch::init(memory_top);
         fs::init();
         driver::init();
         arch::scan_device();
+        net::init();
 
         let inittask = kthread::spawn(kinit);
         debug_assert!(inittask.tid() == 0);
@@ -126,7 +162,7 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
     arch::set_next_time_event_us(10000);
     arch::enable_timer_interrupt();
     arch::enable_device_interrupt(hartid);
-    
+
     scheduler::run_tasks(hartid);
 }
 

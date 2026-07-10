@@ -21,11 +21,19 @@ config RISCV64
 	help
 	  Support for RISC-V 64-bit architecture.
 
+config LOONGARCH64
+	bool "LoongArch 64-bit"
+	help
+	  Support for LoongArch 64-bit architecture (LA64).
+	  Runs on QEMU `virt` machine with the bare-metal
+	  `loongarch64-unknown-none` Rust target.
+
 endchoice
 
 config ARCH
 	string
 	default "riscv" if RISCV64
+	default "loongarch" if LOONGARCH64
 	help
 	  Target architecture for the kernel.
 	  Automatically selected based on the chosen platform.
@@ -33,15 +41,22 @@ config ARCH
 config ARCH_BITS
 	int
 	default 64 if RISCV64
+	default 64 if LOONGARCH64
 	help
 	  Architecture bit width (32 or 64).
 	  Automatically selected based on the chosen platform.
 
-config CROSS_COMPILE
-	string "Cross-compiler prefix"
-	default "riscv64-unknown-elf-"
-	help
-	  Prefix for cross-compilation tools (e.g., riscv64-unknown-elf-).
+config OBJCOPY
+	string "objcopy util path"
+	default "objcopy"
+
+config AR
+	string "ar util path"
+	default "ar"
+
+config READELF
+	string "readelf util path"
+	default "readelf"
 
 config SYSROOT
 	string "Sysroot path"
@@ -52,7 +67,8 @@ config SYSROOT
 
 config RUST_TARGET
 	string
-	default "riscv64gc-unknown-none-elf"
+	default "riscv64gc-unknown-none-elf" if RISCV64
+	default "loongarch64-unknown-none"   if LOONGARCH64
 	help
 	  Rust target specification for compilation.
 
@@ -99,8 +115,9 @@ config NOLOCK
 	depends on NO_SMP=y
 	default n
 	help
-	  Disable all locking in SpinLock and SleepLock. Both types become
-	  thin wrappers over UnsafeCell with zero synchronization overhead.
+	  Disable locking in SpinLock and RWLock. Both types become thin
+	  wrappers over UnsafeCell with zero synchronization overhead. SleepLock
+	  keeps its waiting and wakeup semantics.
 	  Only safe on single-CPU (no-smp) systems. Enabling this implicitly
 	  activates the no-smp Cargo feature.
 
@@ -156,6 +173,15 @@ config LOG_SYSCALL
 	help
 	  Enable detailed tracing of all system calls.
 
+config LOG_SYSCALL_CPU_TIME
+	bool "Enable Syscall CPU Time Tracing"
+	default n
+	help
+	  Emit one compact debug-console record after each syscall completes:
+	  syscall number, syscall name, and CPU time in microseconds. The measured
+	  time uses per-thread CPU accounting, so time spent blocked or sleeping
+	  is not included.
+
 config WARN_UNIMPLEMENTED_SYSCALL
 	bool "Warn on Unimplemented Syscalls"
 	default y
@@ -171,13 +197,38 @@ config BACKTRACE
 	  Embeds a symbol table into the kernel image for function name resolution.
 	  Requires force-frame-pointers=yes (set automatically).
 
-config DEADLOCK_DETECT
-	bool "Enable deadlock detection"
+config DWARF
+	bool "Emit DWARF Debug Info"
+	default y if COMPILE_MODE_DEBUG
+	default n if COMPILE_MODE_RELEASE
+	help
+	  Emit DWARF debug information into the kernel ELF.
+	  This passes debuginfo=2 and strip=none to rustc and -gdwarf-4 to clib so
+	  host-side tools such as addr2line and qperf-analyzer can symbolize kernel
+	  addresses.
+
+config LOCKDEP
+	bool "Enable lockdep"
 	default n
 	help
-	  Enable runtime deadlock detection for SpinLock and SleepLock.
-	  Enables the deadlock-detect Cargo feature. Adds overhead; intended
-	  for debug builds only.
+	  Enable runtime lock dependency checking for SpinLock and SleepLock.
+	  Enables the lockdep Cargo feature. Adds overhead; intended for debug
+	  builds only.
+
+config SPINLOCK_CHECK
+	bool "Enable spinlock misuse checks"
+	default n
+	help
+	  Enable lightweight runtime checks for SpinLock. This only detects
+	  recursive acquisition of the same SpinLock and scheduling while
+	  holding SpinLocks. Enables the spinlock-check Cargo feature.
+
+config ENABLE_WATCHDOG
+	bool "Enable scheduler watchdog"
+	default y
+	help
+	  Enable a kernel watchdog thread that periodically reports tasks
+	  stuck in uninterruptible sleep. Enables the watchdog Cargo feature.
 
 endmenu
 
@@ -190,6 +241,37 @@ config ENABLE_SWAP_MEMORY
 	  Enable swap memory support in the kernel.
 	  This feature allows the kernel to swap memory pages to disk when physical memory is low.
 
+config KVM
+	bool "Enable KVM"
+	depends on RISCV64
+	default n
+	help
+	  Enable experimental KVM support.
+	  This option is only available when targeting the RISC-V architecture.
+
+config FANOTIFY
+	bool "Enable fanotify"
+	default y
+	help
+	  Enable fanotify syscalls and filesystem event notifications.
+
+config VIRTIO_BLOCK_PAGE_CACHE
+	bool "Enable virtio block page cache"
+	default n
+	help
+	  Enable a page-sized write-back cache for virtio block devices. Dirty pages
+	  are written back on flush or cache eviction.
+
+endmenu
+
+menu "Boot Configuration"
+
+config DEFAULT_BOOTARGS
+	string "Default kernel boot arguments"
+	default ""
+	help
+	  Boot arguments used by the kernel when /chosen/bootargs is empty.
+
 endmenu
 
 menu "QEMU Configuration"
@@ -199,6 +281,19 @@ config QEMU_MACHINE
 	default "virt"
 	help
 	  QEMU machine type for virtualization.
+
+config QEMU_BIOS
+	string "QEMU -bios firmware (empty = omit the flag)"
+	default ""
+	help
+	  Passed as `-bios <value>` to qemu-system-${ARCH}. Leave empty to omit
+	  the flag entirely.
+
+	  - RISC-V virt: empty lets QEMU fall back to its built-in OpenSBI.
+	  - LoongArch virt: *must* be empty for raw `-kernel` boots. If you pass
+	    anything (even /dev/null), QEMU loads it as firmware and skips the
+	    aux_boot_code shim that hands PC off to our ELF entry, and the CPU
+	    just executes zeros out of reset.
 
 config QEMU_MEMORY
 	string "QEMU memory size"
@@ -213,11 +308,66 @@ config QEMU_CPUS
 	help
 	  Number of CPU cores for QEMU virtual machine.
 
+config QEMU_DEBUG_CONSOLE_DEVICE
+	string "QEMU debug console kernel device"
+	default "/dev/hvc0"
+	help
+	  Kernel /dev character device selected by the kdebug_console bootarg.
+	  QEMU attaches a virtio console for this device by default.
+
+config QEMU_DEBUG_CONSOLE_LOG
+	string "QEMU debug console output file"
+	default "build/riscv64/debug-console.log" if RISCV64
+	default "build/loongarch64/debug-console.log" if LOONGARCH64
+	help
+	  Host file used as the QEMU virtio debug console backend. Kernel debug
+	  output written through kprint_debug! is collected here instead of
+	  sharing the main -nographic serial console.
+
 config DISK_IMAGE
 	string "Disk image path"
-	default "./sdcard-rv.img"
+	default "./sdcard-rv.img" if RISCV64
+	default "./sdcard-la.img" if LOONGARCH64
 	help
 	  Path to the disk image file used as storage.
+
+config QEMU_SNAPSHOT
+	bool "Load disk images in snapshot mode"
+	default n
+	help
+	  Pass snapshot=on for QEMU disk images. Guest writes go to temporary
+	  overlays and are discarded when QEMU exits.
+
+config SECOND_DISK_IMAGE
+	string "Second disk image path"
+	default ""
+	help
+	  Path to the optional second disk image file used as storage.
+	  If empty, QEMU uses a temporary raw disk as the second disk.
+
+config SECOND_DEVICE
+	string "Second disk device name to mount"
+	default ""
+	help
+	  Kernel block device name for the second disk. Leave empty to attach
+	  the second disk without mounting it automatically.
+
+	  Typical values:
+	  - RISC-V virtio-mmio: virtio_mmio@10002000
+	  - LoongArch virtio-pci: virtio_block1
+
+config SECOND_FSTYPE
+	string "Second disk filesystem type"
+	default "ext4"
+	help
+	  Filesystem type used when mounting SECOND_DEVICE.
+
+config SECOND_MOUNTPOINT
+	string "Second disk mount point"
+	default "/mnt"
+	help
+	  Absolute path where SECOND_DEVICE is mounted. The kernel creates this
+	  single-level directory during boot when it does not already exist.
 
 config INITPATH
 	string "Init process path"
@@ -237,17 +387,17 @@ config INITCWD
 	help
 	  Working directory for the init process.
 
-config ROOT_FS_TYPE
-	string "Root filesystem type"
-	default "ext4"
-	help
-	  Filesystem type for the root filesystem.
-
 config ROOT_DEVICE
 	string "Root device name"
 	default "virtio_block0"
 	help
 	  Device path for the root filesystem.
+
+config ROOT_FSTYPE
+	string "Root filesystem type"
+	default "ext4"
+	help
+	  Filesystem type for the root filesystem (bootarg name rootfstype).
 
 config BOOTARGS
 	string "Additional boot arguments"

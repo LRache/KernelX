@@ -1,10 +1,10 @@
 use alloc::sync::Arc;
 
-use crate::fs::Dentry;
-use crate::kernel::uapi::FileStat;
+use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
+use crate::fs::inode::{InodeOps, Mode};
+use crate::fs::{Dentry, Inode};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::fs::inode::{Mode, InodeOps};
-use crate::fs::file::{DirResult, File, FileFlags, FileOps};
+use crate::kernel::uapi::FileStat;
 
 pub struct ZeroInode {
     ino: u32,
@@ -25,7 +25,7 @@ impl InodeOps for ZeroInode {
         "devfs"
     }
 
-    fn readat(&self, buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         buf.fill(0);
         Ok(buf.len())
     }
@@ -57,7 +57,7 @@ impl InodeOps for ZeroInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

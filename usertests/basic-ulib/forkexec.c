@@ -5,7 +5,7 @@
 int main() {
     int pid = fork();
     if (pid == 0) {
-        execve("/basic-ulib/forkexec-child", NULL, NULL);
+        execve("/tests/basic-ulib/forkexec-child", NULL, NULL);
         puts("Failed to execute child process!");
         return 0;
     } else {

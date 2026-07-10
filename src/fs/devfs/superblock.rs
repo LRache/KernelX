@@ -1,13 +1,19 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
+
 use crate::driver::{DeviceType, DriverOps};
 use crate::fs::devfs::devnode::CharDevInode;
-use crate::fs::{filesystem::FileSystemOps, memtreefs};
+use crate::fs::filesystem::{FileSystemOps, MountOptions, VfsSuperBlockOps};
+use crate::fs::{Mode, Owner, memtreefs};
+use crate::kernel::errno::SysResult;
 use crate::klib::InitedCell;
 
-use super::{NullInode, ZeroInode,URandomInode};
+#[cfg(feature = "kvm")]
+use super::inode::KvmInode;
+use super::{LoopInode, NullInode, PtmxInode, RtcInode, URandomInode, ZeroInode};
 
-struct DevfsInfo;
+pub struct DevfsInfo;
 impl memtreefs::StaticFsInfo for DevfsInfo {
     fn type_name() -> &'static str {
         "devfs"
@@ -23,19 +29,79 @@ static DEV_SUPERBLOCK: InitedCell<Arc<memtreefs::SuperBlock<DevfsInfo>>> = Inite
 pub struct FileSystem;
 
 impl FileSystemOps for FileSystem {
-    fn create(&self, _sno: u32, _driver: Option<Arc<dyn crate::driver::BlockDriverOps>>) -> crate::kernel::errno::SysResult<Arc<dyn crate::fs::filesystem::SuperBlockOps>> {
+    fn create(
+        &self,
+        _sno: u32,
+        _driver: Option<Arc<dyn crate::driver::BlockDriverOps>>,
+        _options: MountOptions,
+    ) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
         Ok(DEV_SUPERBLOCK.clone())
     }
 }
 
 pub fn init() {
-    let superblock = memtreefs::SuperBlock::new();
+    let superblock = Arc::new(memtreefs::SuperBlock::new(false));
     let root = superblock.root_inode();
-    root.add_child("null".into(), Arc::new(NullInode::new(superblock.alloc_inode_number()))).unwrap();
-    root.add_child("zero".into(), Arc::new(ZeroInode::new(superblock.alloc_inode_number()))).unwrap();
-    root.add_child("urandom".into(), Arc::new(URandomInode::new(superblock.alloc_inode_number()))).unwrap();
+    root.as_ref()
+        .add_child("null".into(), Arc::new(NullInode::new(superblock.alloc_inode_number())))
+        .unwrap();
+    root.as_ref()
+        .add_child("zero".into(), Arc::new(ZeroInode::new(superblock.alloc_inode_number())))
+        .unwrap();
+    root.as_ref()
+        .add_child(
+            "urandom".into(),
+            Arc::new(URandomInode::new(superblock.alloc_inode_number())),
+        )
+        .unwrap();
+    #[cfg(feature = "kvm")]
+    root.as_ref()
+        .add_child("kvm".into(), Arc::new(KvmInode::new(superblock.alloc_inode_number())))
+        .unwrap();
+    let pts_dir = root
+        .as_ref()
+        .create(
+            "pts",
+            Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap(),
+            Owner::root(),
+        )
+        .unwrap();
+    root.as_ref()
+        .add_child(
+            "ptmx".into(),
+            Arc::new(PtmxInode::new(
+                superblock.alloc_inode_number(),
+                superblock.clone(),
+                pts_dir.clone(),
+            )),
+        )
+        .unwrap();
 
-    DEV_SUPERBLOCK.init(Arc::new(superblock));
+    // Create /dev/misc/ directory and add rtc
+    let misc_dir = root
+        .as_ref()
+        .create(
+            "misc",
+            Mode::from_bits(Mode::S_IFDIR.bits() | 0o755).unwrap(),
+            Owner::root(),
+        )
+        .unwrap();
+    misc_dir
+        .as_ref()
+        .add_child("rtc".into(), Arc::new(RtcInode::new(superblock.alloc_inode_number())))
+        .unwrap();
+
+    // Create /dev/loop0 .. /dev/loop15
+    for i in 0..16 {
+        root.as_ref()
+            .add_child(
+                format!("loop{}", i),
+                Arc::new(LoopInode::new(superblock.alloc_inode_number(), i)),
+            )
+            .unwrap();
+    }
+
+    DEV_SUPERBLOCK.init(superblock);
 }
 
 pub fn add_device(name: String, driver: Arc<dyn DriverOps>) {
@@ -44,12 +110,12 @@ pub fn add_device(name: String, driver: Arc<dyn DriverOps>) {
         DeviceType::Char => {
             let ino = DEV_SUPERBLOCK.alloc_inode_number();
             let cdev_inode = CharDevInode::new(ino, driver.as_char_driver().unwrap());
-            root.add_child(name, Arc::new(cdev_inode)).unwrap();
+            root.as_ref().add_child(name, Arc::new(cdev_inode)).unwrap();
         }
         DeviceType::Block => {
             let ino = DEV_SUPERBLOCK.alloc_inode_number();
             let bdev_inode = super::devnode::BlockDevInode::new(ino, driver.as_block_driver().unwrap());
-            root.add_child(name, Arc::new(bdev_inode)).unwrap();
+            root.as_ref().add_child(name, Arc::new(bdev_inode)).unwrap();
         }
         _ => {}
     }

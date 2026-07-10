@@ -1,0 +1,295 @@
+use alloc::collections::BTreeMap;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+
+type Link<K, V> = Option<Arc<Node<K, V>>>;
+
+#[derive(Debug)]
+pub struct Node<K, V> {
+    pub key: K,
+    pub value: V,
+    prev: Weak<Node<K, V>>,
+    next: Link<K, V>,
+}
+
+impl<K, V> Node<K, V> {
+    pub fn new(key: K, value: V) -> Arc<Self> {
+        Arc::new(Self {
+            key,
+            value,
+            prev: Weak::new(),
+            next: None,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct LruList<K, V> {
+    head: Link<K, V>,
+    tail: Link<K, V>,
+}
+
+impl<K, V> LruList<K, V> {
+    pub fn new() -> Self {
+        Self { head: None, tail: None }
+    }
+
+    pub fn push_front_node(&mut self, node: Arc<Node<K, V>>) {
+        unsafe {
+            let n = &mut *(Arc::as_ptr(&node) as *mut Node<K, V>);
+            n.prev = Weak::new();
+            n.next = None;
+        }
+
+        match self.head.take() {
+            Some(old_head) => {
+                unsafe {
+                    let oh = &mut *(Arc::as_ptr(&old_head) as *mut Node<K, V>);
+                    oh.prev = Arc::downgrade(&node);
+                }
+                unsafe {
+                    let n = &mut *(Arc::as_ptr(&node) as *mut Node<K, V>);
+                    n.next = Some(old_head.clone());
+                }
+                self.head = Some(node);
+                if self.tail.is_none() {
+                    self.tail = Some(old_head);
+                }
+            }
+            None => {
+                self.tail = Some(node.clone());
+                self.head = Some(node);
+            }
+        }
+    }
+
+    pub fn move_to_front(&mut self, node: Arc<Node<K, V>>) {
+        if let Some(head) = &self.head {
+            if Arc::ptr_eq(head, &node) {
+                return;
+            }
+        }
+
+        let (prev, next) = unsafe {
+            let n = &mut *(Arc::as_ptr(&node) as *mut Node<K, V>);
+            (n.prev.upgrade(), n.next.clone())
+        };
+
+        if let Some(prev_node) = &prev {
+            unsafe {
+                let p = &mut *(Arc::as_ptr(prev_node) as *mut Node<K, V>);
+                p.next = next.clone();
+            }
+        }
+
+        if let Some(next_node) = &next {
+            unsafe {
+                let nx = &mut *(Arc::as_ptr(&next_node) as *mut Node<K, V>);
+                nx.prev = node.prev.clone();
+            }
+        }
+
+        if let Some(tail) = &self.tail {
+            if Arc::ptr_eq(tail, &node) {
+                self.tail = prev;
+            }
+        }
+
+        self.push_front_node(node);
+    }
+
+    pub fn pop_back(&mut self) -> Option<Arc<Node<K, V>>> {
+        self.tail.take().map(|old_tail| {
+            let prev = unsafe {
+                let t = &mut *(Arc::as_ptr(&old_tail) as *mut Node<K, V>);
+                t.prev.upgrade()
+            };
+
+            match prev {
+                Some(prev_node) => unsafe {
+                    let p = &mut *(Arc::as_ptr(&prev_node) as *mut Node<K, V>);
+                    p.next = None;
+                    self.tail = Some(prev_node);
+                },
+                None => {
+                    self.head = None;
+                }
+            }
+
+            old_tail
+        })
+    }
+}
+
+pub struct LRUCache<K: Ord + Copy, V> {
+    list: LruList<K, V>,
+    map: BTreeMap<K, Arc<Node<K, V>>>,
+}
+
+impl<K: Ord + Copy, V> LRUCache<K, V> {
+    pub fn new() -> Self {
+        Self {
+            list: LruList::new(),
+            map: BTreeMap::new(),
+        }
+    }
+
+    pub fn put(&mut self, key: K, value: V) {
+        if let Some(node) = self.map.get(&key) {
+            unsafe {
+                let n = &mut *(Arc::as_ptr(node) as *mut Node<K, V>);
+                n.value = value;
+            }
+            self.list.move_to_front(node.clone());
+            return;
+        }
+
+        let new_node = Node::new(key, value);
+        self.list.push_front_node(new_node.clone());
+        self.map.insert(key, new_node);
+    }
+
+    pub fn access(&mut self, key: &K) -> bool {
+        if let Some(node) = self.map.get(key) {
+            self.list.move_to_front(node.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get(&mut self, key: &K) -> Option<&V> {
+        if self.access(key) {
+            self.map.get(key).map(|node| &node.value)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        if self.access(key) {
+            self.map.get(key).map(|node| unsafe {
+                // SAFETY: We have `&mut self`, so the cache has exclusive logical access
+                // to the node value while this mutable reference is alive.
+                let n = &mut *(Arc::as_ptr(node) as *mut Node<K, V>);
+                &mut n.value
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn pop_lru(&mut self) -> Option<K> {
+        if let Some(lru_node) = self.list.pop_back() {
+            self.map.remove(&lru_node.key);
+            Some(lru_node.key)
+        } else {
+            None
+        }
+    }
+
+    pub fn pop_lru_entry(&mut self) -> Option<(K, V)> {
+        if let Some(lru_node) = self.list.pop_back() {
+            self.map.remove(&lru_node.key);
+            match Arc::try_unwrap(lru_node) {
+                Ok(node) => Some((node.key, node.value)),
+                Err(_) => unreachable!("LRUCache node has unexpected strong references"),
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn clear(&mut self) {
+        while self.pop_lru().is_some() {}
+    }
+
+    pub fn drain(&mut self) -> Vec<V> {
+        let mut drained = Vec::new();
+        while let Some((_, value)) = self.pop_lru_entry() {
+            drained.push(value);
+        }
+        drained
+    }
+
+    pub fn try_for_each_mut<E, F>(&mut self, mut f: F) -> Result<(), E>
+    where
+        F: FnMut(K, &mut V) -> Result<(), E>,
+    {
+        for node in self.map.values() {
+            unsafe {
+                // SAFETY: We have `&mut self`, so no other cache operation can access
+                // these values while the callback runs.
+                let n = &mut *(Arc::as_ptr(node) as *mut Node<K, V>);
+                f(n.key, &mut n.value)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn tail(&mut self) -> Option<(K, &mut V)> {
+        self.list.tail.as_ref().map(|node| unsafe {
+            // SAFETY: We have `&mut self`, which guarantees exclusive access to the `LRUCache`.
+            // Although the nodes are stored in `Arc`s (which normally implies shared ownership and immutability),
+            // the `LRUCache` maintains the invariant that it is the sole logical owner of the data.
+            // No references to the internal nodes or values are leaked outside the cache.
+            // Therefore, it is safe to cast the pointer to mutable and modify the value,
+            // as no other references to this value can exist while we hold `&mut self`.
+            let n = &mut *(Arc::as_ptr(node) as *mut Node<K, V>);
+            (n.key, &mut n.value)
+        })
+    }
+
+    pub fn remove(&mut self, key: &K) -> bool {
+        if let Some(node) = self.map.remove(key) {
+            let (prev, next) = unsafe {
+                let n = &mut *(Arc::as_ptr(&node) as *mut Node<K, V>);
+                (n.prev.upgrade(), n.next.clone())
+            };
+
+            if let Some(prev_node) = &prev {
+                unsafe {
+                    let p = &mut *(Arc::as_ptr(prev_node) as *mut Node<K, V>);
+                    p.next = next.clone();
+                }
+            }
+
+            if let Some(next_node) = &next {
+                unsafe {
+                    let nx = &mut *(Arc::as_ptr(&next_node) as *mut Node<K, V>);
+                    nx.prev = node.prev.clone();
+                }
+            }
+
+            if let Some(tail) = &self.list.tail {
+                if Arc::ptr_eq(tail, &node) {
+                    self.list.tail = prev;
+                }
+            }
+
+            if let Some(head) = &self.list.head {
+                if Arc::ptr_eq(head, &node) {
+                    self.list.head = next;
+                }
+            }
+
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<K: Ord + Copy, V> Drop for LRUCache<K, V> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}

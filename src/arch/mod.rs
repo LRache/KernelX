@@ -1,7 +1,7 @@
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "riscv64")] {
         mod riscv;
-        use riscv as arch_impl;  
+        use riscv as arch_impl;
     } else if #[cfg(target_arch = "loongarch64")] {
         mod loongarch;
         use loongarch as arch_impl;
@@ -16,13 +16,19 @@ pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
 // pub type MappedPage<'a> = arch_impl::MappedPage<'a>;
 
-pub const PGSIZE: usize = arch_impl::PGSIZE;  
+cfg_if::cfg_if! {
+    if #[cfg(feature = "kvm")] {
+        pub use arch_impl::{KvmPageFault, KvmPageTable, KvmRegs, KvmSRegs, VCpu};
+    }
+}
+
+pub const PGSIZE: usize = arch_impl::PGSIZE;
 pub const PGMASK: usize = arch_impl::PGMASK;
-pub const TRAMPOLINE_BASE: usize = arch_impl::TRAMPOLINE_BASE;
+pub const USEREND: usize = arch_impl::USEREND;
 
 mod arch;
-pub use arch::{PageTableTrait, UserContextTrait};
 use arch::{Arch, ArchTrait};
+pub use arch::{CloneABI, PageTableTrait, UserContextTrait};
 
 macro_rules! arch_export {
     ($($func:ident($($arg:ident: $type:ty),*) -> $ret:ty);* $(;)?) => {
@@ -34,13 +40,16 @@ macro_rules! arch_export {
     };
 }
 
-use core::time::Duration;
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::MapPerm;
+use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
+use core::time::Duration;
 
 arch_export! {
-    init() -> ();
+    init(memory_top: usize) -> ();
     setup_all_cores(current_core: usize) -> ();
-    
+    clone_abi() -> CloneABI;
+
     /* ----- Per-CPU Data ----- */
     set_percpu_data(data: usize) -> ();
     get_percpu_data() -> usize;
@@ -49,7 +58,7 @@ arch_export! {
     kernel_switch(from: *mut KernelContext, to: *mut KernelContext) -> ();
     get_user_pc() -> usize;
     return_to_user() -> !;
-    
+
     /* ----- Interrupt ------ */
     wait_for_interrupt() -> ();
     enable_interrupt  () -> ();
@@ -60,10 +69,10 @@ arch_export! {
 
     get_kernel_stack_top() -> usize;
 
-    // kaddr_offset() -> usize;
     kaddr_to_paddr(kaddr: usize) -> usize;
     paddr_to_kaddr(paddr: usize) -> usize;
     map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
+    mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
 
     get_time_us() -> u64;
     uptime() -> Duration;
@@ -72,13 +81,24 @@ arch_export! {
     scan_device() -> ();
 
     is_kernel_addr(addr: usize) -> bool;
+    elf_native_machine() -> u16;
+    kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction>;
+    apply_kmodule_relocation(relocation_type: u32, place: &mut [u8], value: Option<KModuleRelocationValue>) -> SysResult<()>;
+    flush_kmodule_icache() -> ();
+    crc32c(seed: u32, buf: &[u8]) -> u32;
 }
 
+pub fn try_uptime() -> Option<Duration> {
+    Arch::try_uptime()
+}
+
+#[allow(dead_code)]
 #[inline(always)]
 pub fn get_frame_pointer() -> usize {
     Arch::get_frame_pointer()
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 pub unsafe fn frame_info(fp: usize) -> (usize, usize) {
     unsafe { Arch::frame_info(fp) }

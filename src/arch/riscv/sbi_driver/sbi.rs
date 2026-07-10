@@ -1,9 +1,18 @@
 type SBIRet = Result<usize, isize>;
 
-fn sbi_call(fid: usize, eid: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SBIRet {
+fn sbi_call(
+    fid: usize,
+    eid: usize,
+    arg0: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
+) -> SBIRet {
     let mut error;
     let mut value;
-    
+
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -18,16 +27,12 @@ fn sbi_call(fid: usize, eid: usize, arg0: usize, arg1: usize, arg2: usize, arg3:
             options(nostack, preserves_flags)
         );
     }
-    if error == 0 {
-        Ok(value)
-    } else {
-        Err(error)
-    }
+    if error == 0 { Ok(value) } else { Err(error) }
 }
 
 pub fn shutdown() -> ! {
     let _ = sbi_call(0x0, 0x8, 0, 0, 0, 0, 0, 0);
-    
+
     loop {
         unsafe {
             core::arch::asm!("wfi");

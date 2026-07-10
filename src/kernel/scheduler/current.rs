@@ -2,25 +2,25 @@ use core::time::Duration;
 
 use alloc::sync::Arc;
 
+use crate::arch;
+use crate::fs::Dentry;
 use crate::kernel::event::{Event, timer};
 use crate::kernel::ipc::SignalActionTable;
 use crate::kernel::mm::AddrSpace;
-use crate::kernel::scheduler::task::Task;
-use crate::kernel::task::{PCB, TCB};
-use crate::kernel::task::fdtable::FDTable;
 use crate::kernel::scheduler::Processor;
+use crate::kernel::scheduler::task::Task;
+use crate::kernel::task::fdtable::FDTable;
+use crate::kernel::task::{CapabilitySet, PCB, TCB};
 use crate::kernel::uapi::Uid;
-use crate::arch;
-use crate::fs::Dentry;
-use crate::klib::SpinLock;
+use crate::klib::{SleepLock, SpinLock};
 
 use super::Tid;
 
 pub fn processor() -> &'static mut Processor {
     let p = arch::get_percpu_data() as *mut Processor;
-    
+
     debug_assert!(!p.is_null());
-    
+
     unsafe { &mut *p }
 }
 
@@ -28,8 +28,12 @@ pub fn set(p: &Processor) {
     arch::set_percpu_data(p as *const Processor as usize);
 }
 
+pub fn has_processor() -> bool {
+    arch::get_percpu_data() != 0
+}
+
 pub fn has_task() -> bool {
-    arch::get_percpu_data() != 0 && processor().has_task()
+    has_processor() && processor().has_task()
 }
 
 pub fn hart_id() -> usize {
@@ -47,27 +51,39 @@ pub fn tcb() -> &'static TCB {
 }
 
 pub fn tid() -> Tid {
-    if !has_task() {
-        -1
-    } else {
-        task().tid()
-    }
+    if !has_task() { -1 } else { task().tid() }
 }
 
 pub fn pid() -> Tid {
-    if !has_task() {
-        -1
-    } else {
-        pcb().pid()
-    }
+    if !has_task() { -1 } else { pcb().pid() }
+}
+
+pub fn euid() -> Uid {
+    task().euid()
+}
+
+pub fn egid() -> Uid {
+    task().egid()
+}
+
+pub fn fsuid() -> Uid {
+    task().fsuid()
+}
+
+pub fn fsgid() -> Uid {
+    task().fsgid()
 }
 
 pub fn uid() -> Uid {
-    0
+    pcb().uid()
 }
 
 pub fn pcb() -> &'static Arc<PCB> {
     tcb().parent()
+}
+
+pub fn capable(capability: CapabilitySet) -> bool {
+    pcb().capabilities().effective.contains(capability)
 }
 
 pub fn signal_actions() -> &'static SpinLock<SignalActionTable> {
@@ -80,20 +96,37 @@ pub fn addrspace() -> &'static Arc<AddrSpace> {
     tcb.get_addrspace()
 }
 
-pub fn fdtable() -> &'static SpinLock<FDTable> {
-    let tcb = tcb();
-    tcb.fdtable()
+pub fn fdtable() -> Arc<SleepLock<FDTable>> {
+    tcb().fdtable()
 }
 
-pub fn with_cwd<F, R>(f: F) -> R 
-where F: FnOnce(Arc<Dentry>) -> R {
+pub fn with_cwd<F, R>(f: F) -> R
+where
+    F: FnOnce(Arc<Dentry>) -> R,
+{
     let pcb = pcb();
     f(pcb.cwd())
 }
 
+pub fn with_root<F, R>(f: F) -> R
+where
+    F: FnOnce(Arc<Dentry>) -> R,
+{
+    let pcb = pcb();
+    f(pcb.root())
+}
+
+pub fn with_root_cwd<F, R>(f: F) -> R
+where
+    F: FnOnce(Arc<Dentry>, Arc<Dentry>) -> R,
+{
+    let pcb = pcb();
+    f(pcb.root(), pcb.cwd())
+}
+
 pub mod copy_to_user {
-    use crate::kernel::errno::SysResult;
     use super::addrspace;
+    use crate::kernel::errno::{Errno, SysResult};
 
     pub fn buffer(uaddr: usize, buf: &[u8]) -> SysResult<()> {
         addrspace().copy_to_user_buffer(uaddr, buf)
@@ -109,6 +142,9 @@ pub mod copy_to_user {
 
     pub fn string(uaddr: usize, s: &str, max_size: usize) -> SysResult<usize> {
         let bytes = s.as_bytes();
+        if max_size < s.len() + 1 {
+            return Err(Errno::ERANGE);
+        }
         let len = core::cmp::min(bytes.len(), max_size - 1);
         addrspace().copy_to_user_buffer(uaddr, &bytes[..len])?;
         addrspace().copy_to_user_buffer(uaddr + len, &[0u8])?;
@@ -117,9 +153,10 @@ pub mod copy_to_user {
 }
 
 pub mod copy_from_user {
-    use alloc::string::String;
-    use crate::kernel::errno::SysResult;
     use super::addrspace;
+    use crate::kernel::errno::SysResult;
+    use alloc::string::String;
+    use fixedstr::tstr;
 
     pub fn buffer(uaddr: usize, buf: &mut [u8]) -> SysResult<()> {
         addrspace().copy_from_user_buffer(uaddr, buf)
@@ -129,8 +166,16 @@ pub mod copy_from_user {
         addrspace().copy_from_user::<T>(uaddr)
     }
 
-    pub fn string(uaddr: usize) -> SysResult<String> {
+    pub fn string(uaddr: usize) -> SysResult<tstr<255>> {
         addrspace().get_user_string(uaddr)
+    }
+
+    pub fn string_fixed<const N: usize>(uaddr: usize) -> SysResult<tstr<N>> {
+        addrspace().get_user_string_fixed::<N>(uaddr)
+    }
+
+    pub fn path_string(uaddr: usize) -> SysResult<String> {
+        addrspace().get_user_path_string(uaddr)
     }
 
     pub fn slice<T: Copy>(uaddr: usize, slice: &mut [T]) -> SysResult<()> {

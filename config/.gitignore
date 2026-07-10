@@ -2,5 +2,5 @@
 *.*
 
 !.gitignore
-!.config.mk
+!config.mk
 !Kconfig

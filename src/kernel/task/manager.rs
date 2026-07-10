@@ -2,20 +2,22 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::kernel::scheduler::Tid;
 use crate::kernel::scheduler;
+use crate::kernel::scheduler::Tid;
 use crate::kernel::task::TCB;
-use crate::klib::SpinLock;
 use crate::kinfo;
+use crate::klib::SpinLock;
 
 use super::PCB;
 
 pub const INIT_UTASK_TID: Tid = 1;
 
-fn split_with_quotes(input: &str) -> Vec<&str> {
+fn split_argv<'a>(initpath: &'a str, input: &'a str) -> Vec<&'a str> {
     let mut result = Vec::new();
     let mut in_quotes = false;
     let mut start = None;
+
+    result.push(initpath);
 
     for (i, c) in input.char_indices() {
         match c {
@@ -52,15 +54,27 @@ fn split_with_quotes(input: &str) -> Vec<&str> {
 
 static TCBS: SpinLock<BTreeMap<Tid, Arc<TCB>>> = SpinLock::new(BTreeMap::new(), "static::TCBS");
 
-pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &str) -> Arc<TCB>{
-    let initargv = split_with_quotes(initargs);
+pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &str) -> Arc<TCB> {
+    let initargv = split_argv(initpath, initargs);
     let initenvp: &[&str] = &[];
 
-    kinfo!("Creating init process: \npath='{}', \ncwd='{}', \nargv={:?}, \nenvp={:?}", initpath, initcwd, initargv, initenvp);
+    kinfo!(
+        "Creating init process: \npath='{}', \ncwd='{}', \nargv={:?}, \nenvp={:?}",
+        initpath,
+        initcwd,
+        initargv,
+        initenvp
+    );
 
-    let (pcb, tcb) = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp, tty).expect("Failed to initialize init process from ELF");
+    let (pcb, tcb) = PCB::new_initprocess(initpath, initcwd, initargv.as_slice(), initenvp, tty)
+        .expect("Failed to initialize init process from ELF");
 
-    debug_assert!(pcb.pid() == INIT_UTASK_TID, "Init process must have PID {}, got {}", INIT_UTASK_TID, pcb.pid());
+    debug_assert!(
+        pcb.pid() == INIT_UTASK_TID,
+        "Init process must have PID {}, got {}",
+        INIT_UTASK_TID,
+        pcb.pid()
+    );
 
     TCBS.lock().insert(tcb.tid(), tcb.clone());
     scheduler::push_task(tcb.clone());

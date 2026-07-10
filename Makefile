@@ -10,7 +10,6 @@ include config/config.mk
 init:
 	@ git submodule init
 	@ git submodule update --remote
-	# @ make -C ./lib/opensbi CROSS_COMPILE=riscv64-linux-gnu- PLATFORM=generic FW_JUMP=y FW_JUMP_ADDR=0x80200000
 
 kernel:
 	@ $(MAKE) -f build.mk kernel $(KERNEL_CONFIG)
@@ -29,6 +28,10 @@ check:
 
 run: kernel
 	@ make -f scripts/qemu.mk qemu-run $(QEMU_ARGS)
+
+run-qperf:
+	@ $(MAKE) -f build.mk kernel $(KERNEL_CONFIG) CONFIG_BACKTRACE=y CONFIG_DWARF=y CONFIG_LOG_SYSCALL_CPU_TIME=
+	@ make -f scripts/qemu.mk qemu-run-qperf $(QEMU_ARGS)
 
 run-bt: kernel
 	@ make -f scripts/qemu.mk qemu-run-bt $(QEMU_ARGS)
@@ -53,4 +56,4 @@ package: kernel
 count:
 	@ find src clib/src -type f -name "*.rs" -o -name "*.c" -o -name "*.h" -o -name "*.S" | xargs wc -l
 
-.PHONY: all init run run-bt gdb clean count check menuconfig objdump kernel vdso clib
+.PHONY: all init run run-qperf run-bt gdb clean count check defconfig savedefconfig exportconfig importconfig menuconfig objdump kernel vdso clib

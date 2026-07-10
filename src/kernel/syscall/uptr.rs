@@ -1,11 +1,13 @@
 use alloc::string::String;
 use core::fmt::Debug;
 use core::mem::size_of;
+use fixedstr::tstr;
 
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
-use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::current;
-use crate::kernel::errno::{SysResult, Errno};
+use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
+pub use kernelx_derive::UserStruct;
 
 /// Macro to implement From<usize> for user pointer types
 macro_rules! impl_from_usize {
@@ -25,6 +27,7 @@ pub trait UserStruct: Sized + Copy {}
 
 impl UserStruct for u8 {}
 impl UserStruct for u32 {}
+impl UserStruct for i32 {}
 impl UserStruct for usize {}
 impl UserStruct for () {}
 
@@ -32,17 +35,13 @@ pub trait UserPointer<T: UserStruct> {
     fn from_uaddr(uaddr: usize) -> Self;
 
     fn uaddr(&self) -> usize;
-    
+
     fn is_null(&self) -> bool {
         self.uaddr() == 0
     }
-    
-    fn should_not_null(&self) -> SysResult<()> {
-        if self.is_null() {
-            Err(Errno::EINVAL)
-        } else {
-            Ok(())
-        }
+
+    fn should_not_null(&self) -> SysResult<&Self> {
+        if self.is_null() { Err(Errno::EINVAL) } else { Ok(self) }
     }
 
     fn kaddr(&self) -> SysResult<usize> {
@@ -95,7 +94,7 @@ impl<T: UserStruct> UserPointer<T> for UPtr<T> {
     }
 }
 
-impl <T: UserStruct> Debug for UPtr<T> {
+impl<T: UserStruct> Debug for UPtr<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "UPtr({:#x})", self.uaddr)
     }
@@ -153,15 +152,23 @@ impl UBuffer {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, UserStruct)]
 pub struct UString {
     uaddr: usize,
 }
 
 impl UString {
-    pub fn read(&self) -> SysResult<String> {
+    pub fn read_string(&self) -> SysResult<tstr<255>> {
         debug_assert!(!self.is_null());
         copy_from_user::string(self.uaddr)
+    }
+
+    pub fn read_string_fixed<const N: usize>(&self) -> SysResult<tstr<N>> {
+        copy_from_user::string_fixed::<N>(self.uaddr)
+    }
+
+    pub fn read_path(&self) -> SysResult<String> {
+        copy_from_user::path_string(self.uaddr)
     }
 
     pub fn write(&self, s: &str, max_size: usize) -> SysResult<usize> {
@@ -173,16 +180,10 @@ impl UString {
         self.uaddr == 0
     }
 
-    pub fn should_not_null(&self) -> SysResult<()> {
-        if self.is_null() {
-            Err(Errno::EINVAL)
-        } else {
-            Ok(())
-        }
+    pub fn should_not_null(&self) -> SysResult<&Self> {
+        if self.is_null() { Err(Errno::EINVAL) } else { Ok(self) }
     }
 }
-
-impl UserStruct for UString {}
 
 impl From<usize> for UString {
     fn from(uaddr: usize) -> Self {

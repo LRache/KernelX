@@ -1,0 +1,30 @@
+[package]
+name = "tokio-async-fd-await"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "async_fd_await"
+path = "src/main.rs"
+
+[[bin]]
+name = "stdin_interval"
+path = "src/stdin_interval.rs"
+
+[[bin]]
+name = "tick_interval"
+path = "src/tick_interval.rs"
+
+[[bin]]
+name = "file_rw"
+path = "src/file_rw.rs"
+
+[dependencies]
+libc = "0.2"
+tokio = { version = "1", default-features = false, features = ["fs", "io-util", "macros", "net", "rt", "time"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

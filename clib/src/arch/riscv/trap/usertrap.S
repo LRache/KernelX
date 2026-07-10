@@ -6,7 +6,7 @@
     #define STORE(src, n)  sw src , (n*4)(a0)
 #endif
     
-    .section .trampoline.text
+    .section .text
     .global asm_usertrap_entry
     .type   asm_usertrap_entry, @function
     .global asm_usertrap_return
@@ -59,16 +59,11 @@ asm_usertrap_entry:
     LOAD(sp, 33)
 
     # load the usertrap handler
-    LOAD(t0, 36)
-    
-    # load the kernel page table
-    LOAD(t1, 35)
-    sfence.vma
-    csrw satp, t1
-    sfence.vma
+    LOAD(t0, 35)
 
     # call the usertrap handler:
     jr t0
+    .size asm_usertrap_entry, . - asm_usertrap_entry
 
 asm_usertrap_return:     
     STORE(tp, 32)
@@ -106,7 +101,7 @@ asm_usertrap_return:
     LOAD(t5, 30)
     LOAD(t6, 31)
 
-    # load the user page table
+    # load the target user page table
     LOAD(a0, 34)
     sfence.vma
     csrw satp, a0
@@ -117,3 +112,4 @@ asm_usertrap_return:
     LOAD(a0, 10)
 
     sret
+    .size asm_usertrap_return, . - asm_usertrap_return

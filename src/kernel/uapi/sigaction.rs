@@ -1,12 +1,9 @@
-use crate::kernel::errno::Errno;
-use crate::kernel::errno::SysResult;
-use crate::kernel::ipc::SignalAction;
-use crate::kernel::ipc::SignalActionFlags;
-use crate::kernel::ipc::SignalSet;
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::ipc::{SignalAction, SignalActionFlags, SignalSet};
 use crate::kernel::syscall::UserStruct;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, UserStruct)]
 pub struct Sigaction {
     pub sa_handler: usize,
     pub sa_flags: u32,
@@ -33,5 +30,3 @@ impl From<SignalAction> for Sigaction {
         }
     }
 }
-
-impl UserStruct for Sigaction {}

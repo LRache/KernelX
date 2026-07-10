@@ -1,6 +1,7 @@
 use core::ops::{BitAnd, BitOr, BitOrAssign, Not};
 
-use crate::kernel::{errno::{Errno, SysResult}, syscall::UserStruct};
+use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::syscall::UserStruct;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalDefaultAction {
@@ -11,9 +12,10 @@ pub enum SignalDefaultAction {
     Stop, // Stop the process
 }
 
+#[allow(dead_code)]
 pub mod signum {
     use super::SignalNum;
-    
+
     pub const SIGHUP: SignalNum = SignalNum(1);
     pub const SIGINT: SignalNum = SignalNum(2);
     pub const SIGQUIT: SignalNum = SignalNum(3);
@@ -47,7 +49,6 @@ pub mod signum {
     pub const SIGSYS: SignalNum = SignalNum(31);
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalNum(u32);
 
@@ -59,11 +60,15 @@ impl SignalNum {
     }
 
     pub fn is_kill(&self) -> bool {
-        *self == SIGKILL || *self == SIGSTOP
+        *self == SIGKILL
     }
 
     pub fn is_unignorable(&self) -> bool {
         *self == SIGKILL || *self == SIGSTOP
+    }
+
+    pub fn is_continue(&self) -> bool {
+        *self == SIGCONT
     }
 
     pub fn to_mask(&self) -> usize {
@@ -72,7 +77,7 @@ impl SignalNum {
         }
         1usize << (self.0 - 1)
     }
-    
+
     pub fn to_mask_set(&self) -> SignalSet {
         SignalSet(self.to_mask())
     }
@@ -83,15 +88,16 @@ impl SignalNum {
 
     pub fn default_action(&self) -> SignalDefaultAction {
         match *self {
-            SIGQUIT | SIGILL | SIGABRT | SIGFPE  | SIGSEGV |
-            SIGBUS | SIGSYS  | SIGTRAP | SIGXCPU | SIGXFSZ => SignalDefaultAction::Core,
+            SIGQUIT | SIGILL | SIGABRT | SIGFPE | SIGSEGV | SIGBUS | SIGSYS | SIGTRAP | SIGXCPU | SIGXFSZ => {
+                SignalDefaultAction::Core
+            }
 
             SIGSTOP | SIGTSTP | SIGTTIN | SIGTTOU => SignalDefaultAction::Stop,
-            
+
             SIGCONT => SignalDefaultAction::Cont,
-            
+
             SIGCHLD | SIGURG | SIGWINCH => SignalDefaultAction::Ign,
-            
+
             _ => SignalDefaultAction::Term,
         }
     }
@@ -110,7 +116,7 @@ impl Into<u32> for SignalNum {
 impl TryFrom<u32> for SignalNum {
     type Error = Errno;
     fn try_from(value: u32) -> SysResult<Self> {
-        if value > 63 {
+        if value > 64 {
             Err(Errno::EINVAL)
         } else {
             Ok(SignalNum(value))
@@ -124,7 +130,7 @@ impl Into<usize> for SignalNum {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, UserStruct)]
 #[repr(C)]
 pub struct SignalSet(usize);
 
@@ -132,13 +138,13 @@ impl SignalSet {
     pub const fn empty() -> Self {
         SignalSet(0)
     }
-    
-    pub fn contains(&self, num: SignalNum) -> bool {
-        num.is_masked(*self)
+
+    pub fn without_unblockable(self) -> Self {
+        SignalSet(self.0 & !(SIGKILL.to_mask() | SIGSTOP.to_mask()))
     }
 
-    pub fn bits(&self) -> usize {
-        self.0
+    pub fn contains(&self, num: SignalNum) -> bool {
+        num.is_masked(*self)
     }
 }
 
@@ -177,5 +183,3 @@ impl Into<usize> for SignalSet {
         self.0
     }
 }
-
-impl UserStruct for SignalSet {}

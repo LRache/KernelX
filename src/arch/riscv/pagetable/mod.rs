@@ -1,7 +1,10 @@
-mod pte;
-mod pagetable;
 pub mod kernelpagetable;
+mod pagetable;
+mod pte;
 
-// pub use pagetable::{PageTable, MappedPage};
 pub use pagetable::PageTable;
-pub use kernelpagetable::get_kernel_satp;
+
+#[cfg(feature = "kvm")]
+mod sv39x4;
+#[cfg(feature = "kvm")]
+pub use sv39x4::Sv39x4PageTable;

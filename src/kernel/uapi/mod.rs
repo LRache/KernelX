@@ -1,17 +1,18 @@
 #![allow(non_camel_case_types)]
 
-mod openflags;
 mod dirent;
+mod fallocate;
 mod filestat;
-mod timespec;
+mod memfd;
+mod openflags;
 mod sigaction;
 mod statfs;
-pub mod termios;
 
-pub use openflags::*;
 pub use dirent::*;
+pub use fallocate::*;
 pub use filestat::*;
-pub use timespec::*;
+pub use memfd::*;
+pub use openflags::*;
 pub use sigaction::*;
 pub use statfs::*;
 

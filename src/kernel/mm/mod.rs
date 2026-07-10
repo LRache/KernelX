@@ -1,13 +1,13 @@
-pub mod page;
 pub mod elf;
+pub mod page;
 // mod frame;
 mod addrspace;
-pub mod vdso;
 pub mod maparea;
 pub mod ubuf;
+pub mod vdso;
 
 pub use addrspace::*;
-pub use page::PhysPageFrame;
+pub use page::*;
 
 #[cfg(feature = "swap-memory")]
 pub mod swappable;

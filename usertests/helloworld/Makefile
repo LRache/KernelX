@@ -5,7 +5,7 @@ BUILD_DIR ?= build/$(ISA)
 OUTPUT_DIR = $(BUILD_DIR)/output
 
 TARGET = $(BUILD_DIR)/helloworld.elf
-OUTPUT_TARGET = $(OUTPUT_DIR)/helloworld.elf
+OUTPUT_TARGET = $(OUTPUT_DIR)/helloworld/helloworld.elf
 
 SRC = helloworld.S
 
@@ -17,7 +17,7 @@ $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRC)
 
 $(OUTPUT_TARGET): $(TARGET)
-	@mkdir -p $(OUTPUT_DIR)
+	@mkdir -p $(@D)
 	cp $(TARGET) $(OUTPUT_TARGET)
 
 all: $(OUTPUT_TARGET)

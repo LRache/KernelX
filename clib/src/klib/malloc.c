@@ -1,4 +1,5 @@
 #include "tlsf.h"
+#include <kmodule/export.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -11,6 +12,8 @@ void init_heap(void *start, size_t size) {
 void *malloc(size_t size) {
     return tlsf_malloc(tlsf, size);
 }
+
+KMODULE_EXPORT("malloc", malloc);
 
 void *malloc_aligned(size_t align, size_t size) {
     if (__builtin_expect(align <= sizeof(void*), 1)) {
@@ -28,6 +31,8 @@ void *calloc(size_t count, size_t size) {
     return ptr;
 }
 
-void free(void* ptr) {
+void free(void *ptr) {
     tlsf_free(tlsf, ptr);
 }
+
+KMODULE_EXPORT("free", free);

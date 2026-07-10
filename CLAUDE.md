@@ -68,7 +68,7 @@ Arch-specific early boot (assembly + early mapping) → `kernel::main::main(hart
 
 ### Filesystem (`src/fs/`)
 
-VFS layer: `Inode` + `Dentry` (with dentry cache) + `File` + `Superblock` abstractions in `src/fs/vfs/` and `src/fs/inode/`. Concrete filesystems: ext4 (via `lwext4_rust`), devfs, tmpfs, procfs, memfs/memtreefs, rootfs.
+VFS layer: `Inode` + `Dentry` (with dentry cache) + `File` + `Superblock` abstractions in `src/fs/vfs/` and `src/fs/inode/`. Concrete filesystems: ext4 (via `clib`-integrated `lwext4` and local Rust FFI), devfs, tmpfs, procfs, memfs/memtreefs, rootfs.
 
 ### Syscall Dispatch (`src/kernel/syscall/`)
 
@@ -85,3 +85,7 @@ Pipe, POSIX signals (with sigaction, siginfo, pending queue), shared memory (shm
 ### Driver Framework (`src/driver/`)
 
 Device discovery is FDT/device-tree driven (`driver/fdt.rs`). Drivers register compatible strings; `arch::scan_device` walks the tree and binds drivers. The `chosen` submodule provides system-wide singletons: default TTY (`kconsole`), RTC (`kclock`), power management (`kpmu`).
+
+## Working Preferences
+
+- 尽量使用 LSP 工具（如 go-to-definition、find-references、hover 等）来理解和导航代码，优先于纯文本搜索。

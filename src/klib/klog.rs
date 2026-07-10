@@ -15,7 +15,7 @@ pub const COLOR_BOLD: &str = "\x1b[1m";
 #[macro_export]
 macro_rules! kwarn {
     ($($arg:tt)*) => {
-        $crate::println!(
+        $crate::klogln!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_YELLOW,
@@ -42,7 +42,7 @@ macro_rules! kwarn {
 #[macro_export]
 macro_rules! kinfo {
     ($($arg:tt)*) => {
-        $crate::println!(
+        $crate::klogln!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_BLUE,
@@ -69,19 +69,22 @@ macro_rules! kinfo {
 #[macro_export]
 macro_rules! kdebug {
     ($($arg:tt)*) => {
-        $crate::println!(
-            "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
-            $crate::klib::klog::COLOR_BOLD,
-            $crate::klib::klog::COLOR_CYAN,
-            "DEBUG",
-            $crate::klib::klog::COLOR_RESET,
-            format_args!($($arg)*),
-            $crate::kernel::scheduler::current::tid(),
-            file!(),
-            line!(),
-            column!(),
-            $crate::klib::klog::COLOR_RESET
-        );
+        {
+            const COLOR_CYAN: &str = "\x1b[36m";
+            $crate::klogln!(
+                "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
+                $crate::klib::klog::COLOR_BOLD,
+                COLOR_CYAN,
+                "DEBUG",
+                $crate::klib::klog::COLOR_RESET,
+                format_args!($($arg)*),
+                $crate::kernel::scheduler::current::tid(),
+                file!(),
+                line!(),
+                column!(),
+                $crate::klib::klog::COLOR_RESET
+            );
+        }
     }
 }
 
@@ -95,7 +98,7 @@ macro_rules! kdebug {
 #[macro_export]
 macro_rules! ktrace {
     ($($arg:tt)*) => {
-        $crate::println!(
+        $crate::klogln!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}:{}{}",
             $crate::klib::klog::COLOR_BOLD,
             $crate::klib::klog::COLOR_GREEN,
@@ -143,7 +146,7 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
             COLOR_RESET
         );
     }
-    
+
     backtrace::print_backtrace();
 
     exit();
@@ -155,17 +158,16 @@ pub extern "C" fn rust_kpanic(file: *const u8, line: u32, msg: *const u8) -> ! {
     // SAFETY: C 传入的字符串在 panic 路径上保证有效
     let (file_str, msg_str) = unsafe {
         let file_len = (0..).take_while(|&i| *file.add(i) != 0).count();
-        let msg_len  = (0..).take_while(|&i| *msg.add(i) != 0).count();
+        let msg_len = (0..).take_while(|&i| *msg.add(i) != 0).count();
         (
             core::str::from_utf8_unchecked(core::slice::from_raw_parts(file, file_len)),
-            core::str::from_utf8_unchecked(core::slice::from_raw_parts(msg,  msg_len)),
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(msg, msg_len)),
         )
     };
 
     println!(
         "{}{}[{}]{} {} @ {}:{}{}",
-        COLOR_BOLD, COLOR_RED, "PANIC", COLOR_RESET,
-        msg_str, file_str, line, COLOR_RESET
+        COLOR_BOLD, COLOR_RED, "PANIC", COLOR_RESET, msg_str, file_str, line, COLOR_RESET
     );
 
     backtrace::print_backtrace();

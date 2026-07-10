@@ -1,0 +1,36 @@
+#!/bin/sh
+
+/bin/mount -t proc proc /proc
+/bin/mount -t sysfs sys /sys
+/bin/mount -t devtmpfs dev /dev
+/bin/mount -t tmpfs tmp /tmp
+
+if [ ! -e /dev/console ]; then
+    /bin/mknod /dev/console c 5 1
+fi
+exec </dev/console >/dev/console 2>&1
+
+/bin/echo "Hello, world! from Busybox"
+
+/bin/echo "$ /bin/ls -al"
+/bin/ls -al
+
+/bin/echo "$ /bin/ls -al | /bin/grep 'init'"
+/bin/ls -al | /bin/grep "init"
+
+/bin/echo "$ /bin/ps"
+/bin/ps
+
+/bin/echo "$ /bin/uname -a"
+/bin/uname -a
+
+/bin/echo "$ /bin/cat /proc/cpuinfo"
+/bin/cat /proc/cpuinfo
+
+/bin/echo "$ /bin/sleep 1s"
+/bin/sleep 1s
+
+/bin/sh
+
+/bin/echo -e "Goodbye, world! from Busybox\nexit with code 10"
+exit 10

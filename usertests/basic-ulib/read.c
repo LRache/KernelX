@@ -4,7 +4,7 @@
 #include <sys/fcntl.h>
 
 int main() {
-    int fd = open("/basic-ulib/test.txt", O_RDONLY);
+    int fd = open("/tests/basic-ulib/test.txt", O_RDONLY);
     if (fd < 0) {
         puts("Failed to open file");
         return 1;

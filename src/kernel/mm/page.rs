@@ -1,12 +1,12 @@
 use core::alloc::Layout;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::mutex::SpinMutex;
 
-use crate::klib::InitedCell;
 use crate::arch;
+use crate::klib::InitedCell;
 
 struct FrameAllocator {
     allocator: buddy_system_allocator::FrameAllocator,
-    allocated: usize,
     #[cfg(feature = "swap-memory")]
     waterlevel_high: usize,
     #[cfg(feature = "swap-memory")]
@@ -18,42 +18,51 @@ impl FrameAllocator {
     fn new(allocator: buddy_system_allocator::FrameAllocator, total: usize) -> Self {
         Self {
             allocator,
-            allocated: 0,
             #[cfg(feature = "swap-memory")]
             waterlevel_high: total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH / 100,
             #[cfg(feature = "swap-memory")]
-            waterlevel_low:  total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_LOW / 100,
+            waterlevel_low: total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_LOW / 100,
         }
     }
 
     fn alloc(&mut self) -> Option<usize> {
         let layout = Layout::from_size_align(arch::PGSIZE, arch::PGSIZE).unwrap();
         let addr = self.allocator.alloc_aligned(layout)?;
-        self.allocated += 1;
+        ALLOCATED_PAGES.fetch_add(1, Ordering::Relaxed);
         Some(addr)
     }
 
     fn alloc_contiguous(&mut self, pages: usize) -> Option<usize> {
-        let layout = Layout::from_size_align(pages * arch::PGSIZE, arch::PGSIZE).unwrap();
+        self.alloc_contiguous_aligned(pages, arch::PGSIZE)
+    }
+
+    fn alloc_contiguous_aligned(&mut self, pages: usize, align: usize) -> Option<usize> {
+        let layout = Layout::from_size_align(pages * arch::PGSIZE, align).unwrap();
         let addr = self.allocator.alloc_aligned(layout)?;
-        self.allocated += pages;
+        ALLOCATED_PAGES.fetch_add(pages, Ordering::Relaxed);
         Some(addr)
     }
 
     fn free(&mut self, addr: usize) {
         let layout = Layout::from_size_align(arch::PGSIZE, arch::PGSIZE).unwrap();
         self.allocator.dealloc_aligned(addr, layout);
-        self.allocated -= 1;
+        ALLOCATED_PAGES.fetch_sub(1, Ordering::Relaxed);
     }
 
     fn free_contiguous(&mut self, addr: usize, pages: usize) {
-        let layout = Layout::from_size_align(pages * arch::PGSIZE, arch::PGSIZE).unwrap();
+        self.free_contiguous_aligned(addr, pages, arch::PGSIZE);
+    }
+
+    fn free_contiguous_aligned(&mut self, addr: usize, pages: usize, align: usize) {
+        let layout = Layout::from_size_align(pages * arch::PGSIZE, align).unwrap();
         self.allocator.dealloc_aligned(addr, layout);
-        self.allocated -= pages;
+        ALLOCATED_PAGES.fetch_sub(pages, Ordering::Relaxed);
     }
 }
 
 static FRAME_ALLOCATOR: InitedCell<SpinMutex<FrameAllocator>> = InitedCell::uninit();
+static TOTAL_PAGES: InitedCell<usize> = InitedCell::uninit();
+static ALLOCATED_PAGES: AtomicUsize = AtomicUsize::new(0);
 // static META_PTR_BASE: InitedCell<usize> = InitedCell::uninit();
 // static FRAME_BASE: InitedCell<usize> = InitedCell::uninit();
 
@@ -62,15 +71,17 @@ pub fn init(frame_start: usize, frame_end: usize) {
     // let zone_size = frame_end - frame_start;
     // let ptr_zone_size = zone_size / (arch::PGSIZE + core::mem::size_of::<*const u8>()) * core::mem::size_of::<*const u8>();
     // META_PTR_BASE.init(frame_start);
-    
+
     // let frame_base = (frame_start + ptr_zone_size + arch::PGSIZE - 1) & !(arch::PGSIZE - 1);
     // FRAME_BASE.init(frame_base);
 
     let frame_base = frame_start;
     let total = (frame_end - frame_start) / arch::PGSIZE;
-    
+
     let mut allocator = buddy_system_allocator::FrameAllocator::new();
     allocator.add_frame(frame_base, frame_end);
+    TOTAL_PAGES.init(total);
+    ALLOCATED_PAGES.store(0, Ordering::Relaxed);
     FRAME_ALLOCATOR.init(SpinMutex::new(FrameAllocator::new(allocator, total)));
 }
 
@@ -80,10 +91,22 @@ pub fn init(frame_start: usize, frame_end: usize) {
 //     unsafe { &mut *(meta_ptr_addr as *mut *const ()) }
 // }
 
+pub fn total_pages() -> usize {
+    *TOTAL_PAGES
+}
+
+pub fn free_pages() -> usize {
+    *TOTAL_PAGES - allocated_pages()
+}
+
+pub fn allocated_pages() -> usize {
+    ALLOCATED_PAGES.load(Ordering::Relaxed)
+}
+
 #[cfg(feature = "swap-memory")]
 pub fn need_to_shrink() -> bool {
     let allocator = FRAME_ALLOCATOR.lock();
-    allocator.allocated >= allocator.waterlevel_high
+    allocated_pages() >= allocator.waterlevel_high
 }
 
 pub fn alloc() -> usize {
@@ -97,17 +120,18 @@ pub fn alloc() -> usize {
 #[cfg(feature = "swap-memory")]
 pub fn alloc_with_shrink() -> usize {
     let mut allocator = FRAME_ALLOCATOR.lock();
+    let allocated = allocated_pages();
 
-    if allocator.allocated >= allocator.waterlevel_high {
-        let to_shrink = allocator.allocated - allocator.waterlevel_low + 1;
+    if allocated >= allocator.waterlevel_high {
+        let to_shrink = allocated - allocator.waterlevel_low + 1;
         let min_to_shrink = to_shrink / 4 + 1;
         drop(allocator);
-        
+
         crate::kernel::mm::swappable::shrink(to_shrink, min_to_shrink);
-        
-        return FRAME_ALLOCATOR.lock().alloc().unwrap()
+
+        return FRAME_ALLOCATOR.lock().alloc().unwrap();
     }
-        
+
     allocator.alloc().unwrap()
 }
 
@@ -129,9 +153,13 @@ pub fn alloc_contiguous(pages: usize) -> usize {
     page
 }
 
+pub fn alloc_contiguous_aligned(pages: usize, align: usize) -> usize {
+    FRAME_ALLOCATOR.lock().alloc_contiguous_aligned(pages, align).unwrap()
+}
+
 // pub fn alloc_with_meta<T>(meta: T) -> usize {
 //     let page = alloc();
-//     let meta_ptr = page_meta_ref(page);   
+//     let meta_ptr = page_meta_ref(page);
 //     unsafe {
 //         let ptr = alloc::alloc::alloc(Layout::new::<T>()) as *mut T;
 //         if ptr.is_null() {
@@ -149,6 +177,10 @@ pub fn free(page: usize) {
 
 pub fn free_contiguous(addr: usize, pages: usize) {
     FRAME_ALLOCATOR.lock().free_contiguous(addr, pages);
+}
+
+pub fn free_contiguous_aligned(addr: usize, pages: usize, align: usize) {
+    FRAME_ALLOCATOR.lock().free_contiguous_aligned(addr, pages, align);
 }
 
 // fn free_with_meta<T>(page: usize) {
@@ -173,12 +205,28 @@ pub fn free_contiguous(addr: usize, pages: usize) {
 // }
 
 pub fn copy(src: usize, dst: usize) {
-    debug_assert!(src % arch::PGSIZE == 0, "Source address must be page-aligned: {:#x}", src);
-    debug_assert!(dst % arch::PGSIZE == 0, "Destination address must be page-aligned: {:#x}", dst);
-    debug_assert!(src != dst, "Source and destination addresses must be different: {:#x}", src);
-    
+    debug_assert!(
+        src % arch::PGSIZE == 0,
+        "Source address must be page-aligned: {:#x}",
+        src
+    );
+    debug_assert!(
+        dst % arch::PGSIZE == 0,
+        "Destination address must be page-aligned: {:#x}",
+        dst
+    );
+    debug_assert!(
+        src != dst,
+        "Source and destination addresses must be different: {:#x}",
+        src
+    );
+
     unsafe {
-        core::ptr::copy_nonoverlapping(src as *const usize, dst as *mut usize, arch::PGSIZE / core::mem::size_of::<usize>());
+        core::ptr::copy_nonoverlapping(
+            src as *const usize,
+            dst as *mut usize,
+            arch::PGSIZE / core::mem::size_of::<usize>(),
+        );
     }
 }
 
@@ -193,31 +241,28 @@ pub fn zero(kpage: usize) {
 
 #[macro_export]
 macro_rules! safe_page_write {
-    ($addr:expr, $buffer:expr) => {
-        {
-            let addr = $addr;
-            let buffer = $buffer;
-            
-            // Only perform bounds checking in debug mode
-            if cfg!(debug_assertions) {
-                if (addr & $crate::arch::PGMASK) + buffer.len() > $crate::arch::PGSIZE {
-                    panic!(
-                        "Buffer exceeds page size at {}:{}:{}\n  addr = {:#x}, len = {:#x}",
-                        file!(),
-                        line!(),
-                        column!(),
-                        addr,
-                        buffer.len()
-                    );
-                }
-            }
+    ($addr:expr, $buffer:expr) => {{
+        let addr = $addr;
+        let buffer = $buffer;
 
-            unsafe {
-                core::slice::from_raw_parts_mut(addr as *mut u8, buffer.len())
-                    .copy_from_slice(buffer);
+        // Only perform bounds checking in debug mode
+        if cfg!(debug_assertions) {
+            if (addr & $crate::arch::PGMASK) + buffer.len() > $crate::arch::PGSIZE {
+                panic!(
+                    "Buffer exceeds page size at {}:{}:{}\n  addr = {:#x}, len = {:#x}",
+                    file!(),
+                    line!(),
+                    column!(),
+                    addr,
+                    buffer.len()
+                );
             }
         }
-    };
+
+        unsafe {
+            core::slice::from_raw_parts_mut(addr as *mut u8, buffer.len()).copy_from_slice(buffer);
+        }
+    }};
 }
 
 #[derive(Debug)]
@@ -278,6 +323,80 @@ impl PhysPageFrame {
 impl Drop for PhysPageFrame {
     fn drop(&mut self) {
         free(self.page);
+    }
+}
+
+#[derive(Debug)]
+pub struct ContiguousPhysPageFrame {
+    page: usize,
+    n: usize,
+}
+
+impl ContiguousPhysPageFrame {
+    pub fn new(page: usize, n: usize) -> Self {
+        debug_assert!(n > 0, "Page count must be greater than zero");
+        Self { page, n }
+    }
+
+    pub fn alloc(n: usize) -> Self {
+        Self::new(alloc_contiguous(n), n)
+    }
+
+    pub fn size(&self) -> usize {
+        self.n * arch::PGSIZE
+    }
+
+    pub fn slice(&self) -> &mut [u8] {
+        // SAFETY: `page` points to `n` contiguous page frames owned by this object until Drop.
+        unsafe { core::slice::from_raw_parts_mut(self.page as *mut u8, self.size()) }
+    }
+
+    pub fn get_page(&self) -> usize {
+        self.page
+    }
+
+    pub fn ptr(&self) -> *mut u8 {
+        self.get_page() as *mut u8
+    }
+}
+
+impl Drop for ContiguousPhysPageFrame {
+    fn drop(&mut self) {
+        free_contiguous(self.page, self.n);
+    }
+}
+
+#[derive(Debug)]
+pub struct FixedContiguousPhysPageFrame<const N: usize> {
+    page: usize,
+}
+
+impl<const N: usize> FixedContiguousPhysPageFrame<N> {
+    pub fn new(page: usize) -> Self {
+        debug_assert!(N > 0, "Page count must be greater than zero");
+        Self { page }
+    }
+
+    pub fn alloc() -> Self {
+        Self::new(alloc_contiguous(N))
+    }
+
+    pub fn slice(&self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.page as *mut u8, N * arch::PGSIZE) }
+    }
+
+    pub fn get_page(&self) -> usize {
+        self.page
+    }
+
+    pub fn ptr(&self) -> *mut u8 {
+        self.get_page() as *mut u8
+    }
+}
+
+impl<const N: usize> Drop for FixedContiguousPhysPageFrame<N> {
+    fn drop(&mut self) {
+        free_contiguous(self.page, N);
     }
 }
 

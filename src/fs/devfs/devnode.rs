@@ -1,19 +1,25 @@
 use alloc::sync::Arc;
+use num_enum::TryFromPrimitive;
 
 use crate::driver::{BlockDriverOps, CharDriverOps};
-use crate::fs::file::{CharFile, File, FileFlags, FileOps};
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::file::{CharFile, FileFlags, FileOps, RandomAccessFile};
+use crate::fs::{Dentry, Inode, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::uapi::FileStat;
 
 pub struct CharDevInode {
     ino: u32,
-    driver: Arc<dyn CharDriverOps>
+    driver: Arc<dyn CharDriverOps>,
 }
 
 impl CharDevInode {
     pub fn new(ino: u32, driver: Arc<dyn CharDriverOps>) -> Self {
         Self { ino, driver }
+    }
+
+    pub fn driver(&self) -> &Arc<dyn CharDriverOps> {
+        &self.driver
     }
 }
 
@@ -22,7 +28,7 @@ impl InodeOps for CharDevInode {
         self.ino
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         // self.driver.read(buf)
         unreachable!()
     }
@@ -54,14 +60,14 @@ impl InodeOps for CharDevInode {
         "devfs"
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(CharFile::new(self.driver.clone(), self, dentry, flags))
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(CharFile::new(self.driver.clone(), inode, dentry, flags))
     }
 }
 
 pub struct BlockDevInode {
     ino: u32,
-    driver: Arc<dyn BlockDriverOps>
+    driver: Arc<dyn BlockDriverOps>,
 }
 
 impl BlockDevInode {
@@ -75,14 +81,24 @@ impl InodeOps for BlockDevInode {
         self.ino
     }
 
-    fn readat(&self, buf: &mut [u8], offset: usize) -> SysResult<usize> {
-        self.driver.read_at(offset, buf)
+    fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(Some(self.driver.clone()))
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
+        self.driver
+            .read_at(offset, buf)
             .map(|_| buf.len())
             .map_err(|_| Errno::EIO)
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
-        self.driver.write_at(offset, buf)
+        if self.driver.is_readonly() {
+            return Err(Errno::EROFS);
+        }
+
+        self.driver
+            .write_at(offset, buf)
             .map(|_| buf.len())
             .map_err(|_| Errno::EIO)
     }
@@ -106,11 +122,33 @@ impl InodeOps for BlockDevInode {
         Ok(self.driver.get_block_size() as u64 * self.driver.get_block_count())
     }
 
+    fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
+        #[derive(TryFromPrimitive)]
+        #[allow(non_camel_case_types)]
+        #[repr(u32)]
+        enum Request {
+            BLKRASET = 0x1262,
+            BLKRAGET = 0x1263,
+        }
+
+        let request = Request::try_from_primitive(request as u32).map_err(|_| Errno::ENOTTY)?;
+        match request {
+            Request::BLKRASET => {
+                self.driver.set_readahead(arg);
+                Ok(0)
+            }
+            Request::BLKRAGET => {
+                addrspace.copy_to_user(arg, self.driver.get_readahead())?;
+                Ok(0)
+            }
+        }
+    }
+
     fn type_name(&self) -> &'static str {
         "devfs"
     }
-    
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 }

@@ -21,15 +21,17 @@ SECTIONS {
         *(.text*)
         . = ALIGN(4K);
         __text_end = .;
-        __trampoline_start = .;
-        KEEP(*(.trampoline.text))
-        . = ALIGN(4K);
-        __trampoline_end = .;
     }
 
     .rodata : {
         __rodata_start = .;
         *(.got*)
+        . = ALIGN(8);
+        __kmodule_exports_start = .;
+        KEEP(*(.kmodule.exports))
+        KEEP(*(.kmodule.exports.*))
+        __kmodule_exports_end = .;
+        . = ALIGN(8);
         *(.rodata*)
         *(.srodata*)
         . = ALIGN(4K);

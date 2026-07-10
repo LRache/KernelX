@@ -1,13 +1,52 @@
 use core::fmt::Write;
 
-use crate::driver::chosen::kconsole::kputs;
+use crate::arch;
+use crate::driver::chosen::{kconsole, kdebug_console};
+use crate::klib::dmesg;
 
 pub struct Writer;
 impl Write for Writer {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        kputs(s);
+        kconsole::kputs(s);
         Ok(())
     }
+}
+
+/// 同时输出到控制台和 dmesg 缓冲区，仅供 kinfo!/kwarn!/kdebug!/ktrace! 使用
+pub struct KlogWriter;
+impl Write for KlogWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        kconsole::kputs(s);
+        dmesg::dmesg_write(s);
+        Ok(())
+    }
+}
+
+pub fn _klog_print(args: core::fmt::Arguments) {
+    let mut writer = KlogWriter;
+    write_uptime_prefix(&mut writer);
+    writer.write_fmt(args).unwrap();
+}
+
+fn write_uptime_prefix(writer: &mut impl Write) {
+    let uptime = arch::try_uptime().unwrap_or_else(|| core::time::Duration::from_micros(0));
+    writer
+        .write_fmt(format_args!("[{:>5}.{:06}] ", uptime.as_secs(), uptime.subsec_micros()))
+        .unwrap();
+}
+
+pub fn _kprint_debug(args: core::fmt::Arguments) {
+    struct KPrintDebugWriter;
+    impl Write for KPrintDebugWriter {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            kdebug_console::kputs(s);
+            Ok(())
+        }
+    }
+
+    let mut writer = KPrintDebugWriter;
+    write_uptime_prefix(&mut writer);
+    writer.write_fmt(args).unwrap();
 }
 
 pub fn _print(args: core::fmt::Arguments) {
@@ -29,5 +68,19 @@ macro_rules! println {
     };
     ($($arg:tt)*) => {
         $crate::print!("{}\n", format_args!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! kprint_debug {
+    ($($arg:tt)*) => {
+        $crate::klib::print::_kprint_debug(format_args!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! klogln {
+    ($($arg:tt)*) => {
+        $crate::klib::print::_klog_print(format_args!("{}\n", format_args!($($arg)*)))
     };
 }

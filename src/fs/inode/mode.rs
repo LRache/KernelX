@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 
-use crate::{fs::perm::{Perm, PermFlags}, kernel::uapi::Uid};
+use crate::fs::perm::{Perm, PermFlags};
+use crate::kernel::uapi::Uid;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,18 +36,28 @@ bitflags! {
 
 impl Mode {
     pub fn check_perm(&self, perm: &Perm, uid: Uid, gid: Uid) -> bool {
+        if perm.is_root() {
+            // Root bypasses DAC checks except that executing a regular file still
+            // requires at least one execute bit, matching Linux access/open semantics.
+            if perm.flags.contains(PermFlags::X) && (*self & Mode::S_IFMT) == Mode::S_IFREG {
+                return self.contains(Mode::S_IXUSR) || self.contains(Mode::S_IXGRP) || self.contains(Mode::S_IXOTH);
+            } else {
+                return true;
+            }
+        }
+
         let (read_bit, write_bit, exec_bit) = if perm.uid == uid {
             (Mode::S_IRUSR, Mode::S_IWUSR, Mode::S_IXUSR)
-        } else if perm.gid == gid {
+        } else if perm.in_group(gid) {
             (Mode::S_IRGRP, Mode::S_IWGRP, Mode::S_IXGRP)
         } else {
             (Mode::S_IROTH, Mode::S_IWOTH, Mode::S_IXOTH)
         };
 
         // (a & b) | ~a = ~a | b
-        (!perm.flags.contains(PermFlags::R) || self.contains(read_bit)) &&
-        (!perm.flags.contains(PermFlags::W) || self.contains(write_bit)) &&
-        (!perm.flags.contains(PermFlags::X) || self.contains(exec_bit))
+        (!perm.flags.contains(PermFlags::R) || self.contains(read_bit))
+            && (!perm.flags.contains(PermFlags::W) || self.contains(write_bit))
+            && (!perm.flags.contains(PermFlags::X) || self.contains(exec_bit))
     }
 }
 
@@ -65,14 +76,14 @@ pub enum FileType {
 impl Into<FileType> for Mode {
     fn into(self) -> FileType {
         match self & Mode::S_IFMT {
-            Mode::S_IFREG  => FileType::Regular,
-            Mode::S_IFDIR  => FileType::Directory,
-            Mode::S_IFLNK  => FileType::Symlink,
-            Mode::S_IFCHR  => FileType::CharDevice,
-            Mode::S_IFBLK  => FileType::BlockDevice,
-            Mode::S_IFIFO  => FileType::FIFO,
+            Mode::S_IFREG => FileType::Regular,
+            Mode::S_IFDIR => FileType::Directory,
+            Mode::S_IFLNK => FileType::Symlink,
+            Mode::S_IFCHR => FileType::CharDevice,
+            Mode::S_IFBLK => FileType::BlockDevice,
+            Mode::S_IFIFO => FileType::FIFO,
             Mode::S_IFSOCK => FileType::Socket,
-            _              => FileType::Unknown,
+            _ => FileType::Unknown,
         }
     }
 }

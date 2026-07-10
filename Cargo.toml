@@ -5,20 +5,27 @@ edition = "2024"
 build = "scripts/build.rs"
 
 [features]
-# default = ["deadlock-detect", "log-info", "no-smp"]
+# default = ["lockdep", "log-info", "no-smp"]
 
 log-warn  = []
 log-info  = ["log-warn"]
 log-debug = ["log-info"]
 log-trace = ["log-debug"]
 log-trace-syscall = []
+log-syscall-cpu-time = []
 warn-unimplemented-syscall = []
 
-deadlock-detect = []
+lockdep = []
+spinlock-check = []
 no-smp = []
 nolock = ["no-smp"]
 swap-memory = []
 backtrace = []
+watchdog = []
+fanotify = []
+virtio-block-page-cache = []
+
+kvm=[]
 
 [profile.dev]
 panic = "abort"
@@ -33,14 +40,20 @@ spin = "0.9"
 bitflags = "2.0"
 virtio-drivers = "0.7.5"
 cfg-if = "1.0"
+fixedstr = {version="0.5", features=["no-alloc", "pub-tstr"]}
 num_enum = { version = "0.5", default-features = false}
 downcast-rs = { version = "2.0.1", default-features = false , features = ["sync"]}
 device_tree_parser = "0.4.0"
 fdt = { git = "https://github.com/LRache/fdt-rust.git"}
 bitfield-struct = "0.8.0" 
 bitvec = { version = "1.0.1" , default-features = false, features = ["alloc"] }
+elf = { version = "0.8.0", default-features = false }
 visionfive2-sd = { git = "https://github.com/os-module/visionfive2-sd.git", rev = "af75139" }
-lwext4_rust = { path = "./lib/lwext4_rust" }
+kernelx-derive = { path = "crates/kernelx-derive" }
 
 [build-dependencies]
+bindgen = "0.72.1"
 cc = "1.0"
+
+[lints.rust]
+unused_must_use = "deny"

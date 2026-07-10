@@ -3,16 +3,32 @@ use crate::kernel::scheduler::Tid;
 
 use super::FileEvent;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    Poll { event: FileEvent, waker: usize },
+    Poll {
+        event: FileEvent,
+        waker: usize,
+    },
+    Epoll,
     ReadReady,
     WriteReady,
     Timeout,
-    Futex, 
-    Process { child: Tid },
-    WaitSignal { signum: SignalNum },
+    Futex,
+    FutexWaitv {
+        index: usize,
+    },
+    Sem,
+    Msg,
+    Process {
+        child: Tid,
+    },
+    WaitSignal {
+        signum: SignalNum,
+    },
     Signal,
+    Ptrace,
+    #[cfg(feature = "fanotify")]
+    FanotifyPermission,
     VFork,
     IOComplete,
     SleepLock,

@@ -1,5 +1,8 @@
+mod blockdev;
+mod ffi;
 mod filesystem;
-mod superblock;
 mod inode;
+mod superblock;
+mod util;
 
 pub use filesystem::Ext4FileSystem;

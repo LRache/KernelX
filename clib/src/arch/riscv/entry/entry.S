@@ -1,4 +1,5 @@
     .global _entry
+    .type _entry, @function
     .section .text.entry
 
 _entry:
@@ -42,7 +43,10 @@ _entry:
     wfi
     j .spin
 
+    .size _entry, . - _entry
+
     .global __riscv_others_entry
+    .type __riscv_others_entry, @function
 __riscv_others_entry:
     auipc t0, 0
     auipc   t1, %got_pcrel_hi(__riscv_others_entry)
@@ -72,3 +76,5 @@ __riscv_others_entry:
 
     mv a0, s0 // hartid
     jalr t0
+
+    .size __riscv_others_entry, . - __riscv_others_entry

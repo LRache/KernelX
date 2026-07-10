@@ -1,14 +1,23 @@
 use alloc::sync::Arc;
 
-use crate::kernel::errno::Errno;
-use crate::driver::BlockDriverOps;
-use crate::fs::filesystem::{FileSystemOps, SuperBlockOps};
 use super::superblock::Ext4SuperBlock;
+use crate::driver::BlockDriverOps;
+use crate::fs::filesystem::{FileSystemOps, MountOptions, VfsSuperBlock, VfsSuperBlockOps};
+use crate::kernel::errno::Errno;
 
 pub struct Ext4FileSystem;
 
 impl FileSystemOps for Ext4FileSystem {
-    fn create(&self, _: u32, driver: Option<Arc<dyn BlockDriverOps>>) -> Result<Arc<dyn SuperBlockOps>, Errno> {
-        Ok(Ext4SuperBlock::new(driver.unwrap())?)
+    fn create(
+        &self,
+        _: u32,
+        driver: Option<Arc<dyn BlockDriverOps>>,
+        options: MountOptions,
+    ) -> Result<Arc<dyn VfsSuperBlockOps>, Errno> {
+        let driver = driver.unwrap();
+        if driver.is_readonly() && !options.read_only {
+            return Err(Errno::EACCES);
+        }
+        Ok(VfsSuperBlock::new(Ext4SuperBlock::new(driver, options.read_only)?))
     }
 }

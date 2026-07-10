@@ -1,10 +1,10 @@
-use core::cmp::min;
 use alloc::string::ToString;
 use alloc::sync::Arc;
+use core::cmp::min;
 
-use crate::fs::file::{File, FileFlags, FileOps};
+use crate::fs::file::{FileFlags, FileOps, RandomAccessFile};
 use crate::fs::procfs::inode::fill_kstat_common;
-use crate::fs::{Dentry, InodeOps, Mode};
+use crate::fs::{Dentry, Inode, InodeOps, Mode};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::scheduler::current;
 use crate::kernel::uapi::FileStat;
@@ -22,7 +22,7 @@ impl InodeOps for TaskDirSelfInode {
         Self::INO
     }
 
-    fn readat(&self, _buf: &mut [u8], _offset: usize) -> SysResult<usize> {
+    fn readat(&self, _buf: &mut [u8], _offset: usize, _direct: bool) -> SysResult<usize> {
         Err(Errno::EISDIR)
     }
 
@@ -39,20 +39,20 @@ impl InodeOps for TaskDirSelfInode {
     }
 
     fn readlink(&self, buffer: &mut [u8]) -> SysResult<Option<usize>> {
-        let link_name = current::tid().to_string();
+        let link_name = current::pid().to_string();
         let bytes = link_name.as_bytes();
         let len = min(buffer.len(), bytes.len());
         buffer[..len].copy_from_slice(&bytes[..len]);
         Ok(Some(len))
     }
 
-    fn fstat(&self) -> SysResult<FileStat> {        
+    fn fstat(&self) -> SysResult<FileStat> {
         let mut kstat = FileStat::default();
         kstat.st_ino = self.get_ino() as u64;
         kstat.st_mode = self.mode()?.bits();
-        
+
         fill_kstat_common(&mut kstat, current::tcb());
-        
+
         Ok(kstat)
     }
 
@@ -61,7 +61,7 @@ impl InodeOps for TaskDirSelfInode {
             | Mode::S_IRUSR
             | Mode::S_IXUSR
             | Mode::S_IRGRP
-            | Mode::S_IXGRP  
+            | Mode::S_IXGRP
             | Mode::S_IROTH
             | Mode::S_IXOTH)
     }
@@ -70,8 +70,8 @@ impl InodeOps for TaskDirSelfInode {
         Ok(0)
     }
 
-    fn wrap_file(self: Arc<Self>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
-        Arc::new(File::new(self, dentry.unwrap(), flags))
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
     }
 
     fn type_name(&self) -> &'static str {
