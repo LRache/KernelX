@@ -20,7 +20,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             curl wget gnupg ca-certificates lsb-release software-properties-common \
-            make cmake ninja-build gcc g++ git python3 xz-utils file guestfish linux-image-amd64 \
+            make cmake ninja-build gcc g++ git python3 xz-utils file e2fsprogs guestfish linux-image-amd64 \
             gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu \
             qemu-system-misc \
           && rm -rf /var/lib/apt/lists/*
@@ -66,6 +66,45 @@ jobs:
             SYSROOT=/usr/riscv64-linux-gnu \
             CONFIG_VIRTIO_BLOCK_PAGE_CACHE=n \
             OBJCOPY=llvm-objcopy-21
+
+      - name: Build riscv64 kmodule usertest image
+        run: |
+          IMG_SIZE=128 ./usertests/build.sh riscv64 kmodule
+          test -x usertests/build/riscv64/tests/kmodule/hello
+          test -f usertests/build/riscv64/tests/kmodule/hello.ko
+
+      - name: Test riscv64 kmodule usertest
+        timeout-minutes: 10
+        run: |
+          qemu_artifacts="qemu-artifacts/riscv64/kmodule"
+          qemu_log="$qemu_artifacts/qemu_output.log"
+          qemu_monitor_sock="$qemu_artifacts/qemu-monitor.sock"
+          qemu_monitor_log="$qemu_artifacts/qemu_monitor.log"
+          qemu_memory_dump="$qemu_artifacts/qemu-memory.vmcore"
+          success_marker="Init process exited with status Normal(0), system will halt."
+          mkdir -p "$qemu_artifacts"
+
+          python3 scripts/ci_qemu_watchdog.py \
+            --idle-timeout 60 \
+            --log "$qemu_log" \
+            --monitor-socket "$qemu_monitor_sock" \
+            --monitor-log "$qemu_monitor_log" \
+            --memory-dump "$qemu_memory_dump" \
+            --success-marker "$success_marker" \
+            --exit-on-success \
+            -- \
+          qemu-system-riscv64 \
+            -M virt \
+            -m 1G \
+            -nographic \
+            -no-shutdown \
+            -chardev socket,id=ci_monitor,path="$qemu_monitor_sock",server=on,wait=off \
+            -mon chardev=ci_monitor,mode=readline \
+            -kernel build/riscv64/Image \
+            -drive file=usertests/build/riscv64.ext4,if=none,id=x0,format=raw \
+            -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+            -smp 1 \
+            -append "rtc=rtc@101000 init=/init initcwd=/ root=virtio_mmio@10001000 rootfstype=ext4"
 
       - name: Test testsuits-for-oskernel-riscv64
         timeout-minutes: 180
@@ -135,6 +174,7 @@ jobs:
             build/riscv64/
             clib/build/riscv64/
             vdso/build/riscv64/
+            usertests/build/riscv64.ext4
             KernelX-testsuit/testsuit-for-oskernel/sdcard-rv.img
 
   test-loongarch64:
@@ -152,7 +192,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             curl wget gnupg ca-certificates lsb-release \
-            make cmake ninja-build gcc g++ git python3 xz-utils file guestfish linux-image-amd64 \
+            make cmake ninja-build gcc g++ git python3 xz-utils file e2fsprogs guestfish linux-image-amd64 \
             gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu binutils-loongarch64-linux-gnu libc6-dev-loong64-cross \
             qemu-system-misc \
           && rm -rf /var/lib/apt/lists/*
@@ -195,6 +235,45 @@ jobs:
             OBJCOPY=llvm-objcopy-21 \
             CONFIG_VIRTIO_BLOCK_PAGE_CACHE=n \
             SYSROOT=/usr/loongarch64-linux-gnu
+
+      - name: Build loongarch64 kmodule usertest image
+        run: |
+          IMG_SIZE=128 ./usertests/build.sh loongarch64 kmodule
+          test -x usertests/build/loongarch64/tests/kmodule/hello
+          test -f usertests/build/loongarch64/tests/kmodule/hello.ko
+
+      - name: Test loongarch64 kmodule usertest
+        timeout-minutes: 10
+        run: |
+          qemu_artifacts="qemu-artifacts/loongarch64/kmodule"
+          qemu_log="$qemu_artifacts/qemu_output.log"
+          qemu_monitor_sock="$qemu_artifacts/qemu-monitor.sock"
+          qemu_monitor_log="$qemu_artifacts/qemu_monitor.log"
+          qemu_memory_dump="$qemu_artifacts/qemu-memory.vmcore"
+          success_marker="Init process exited with status Normal(0), system will halt."
+          mkdir -p "$qemu_artifacts"
+
+          python3 scripts/ci_qemu_watchdog.py \
+            --idle-timeout 60 \
+            --log "$qemu_log" \
+            --monitor-socket "$qemu_monitor_sock" \
+            --monitor-log "$qemu_monitor_log" \
+            --memory-dump "$qemu_memory_dump" \
+            --success-marker "$success_marker" \
+            --exit-on-success \
+            -- \
+          qemu-system-loongarch64 \
+            -M virt \
+            -m 1G \
+            -nographic \
+            -no-shutdown \
+            -chardev socket,id=ci_monitor,path="$qemu_monitor_sock",server=on,wait=off \
+            -mon chardev=ci_monitor,mode=readline \
+            -kernel build/loongarch64/vmkernelx \
+            -drive file=usertests/build/loongarch64.ext4,if=none,id=x0,format=raw \
+            -device virtio-blk-pci,drive=x0 \
+            -smp 1 \
+            -append "init=/init initcwd=/ root=virtio_block0 rootfstype=ext4 rtc=rtc@100d0100 tty=/dev/serial@1fe001e0"
 
       - name: Test testsuits-for-oskernel-loongarch64
         timeout-minutes: 120
@@ -254,4 +333,5 @@ jobs:
             build/loongarch64/
             clib/build/loongarch64/
             vdso/build/loongarch64/
+            usertests/build/loongarch64.ext4
             KernelX-testsuit/testsuit-for-oskernel/sdcard-la.img
