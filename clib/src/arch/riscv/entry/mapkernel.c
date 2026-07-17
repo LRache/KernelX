@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 const unsigned int LEVEL = 2;
-const unsigned int PGSIZE = 4096;
+const uintptr_t PGSIZE = 4096;
 
 enum {
     PTE_V = 1 << 0,
