@@ -9,12 +9,10 @@ pub mod tcp;
 pub mod udp;
 
 pub use arp::{ARPBuilder, ARPPacket, ArpOperation};
-pub use dhcp::{DHCPBuilder, DHCPPacket};
 pub use ethernet::{EthernetBuilder, EthernetFrame, EthernetFramePayload, MacAddr};
-pub use icmp::{ICMPBuilder, ICMPPacket};
 pub use ipv4::{IPv4Builder, IPv4Packet, IPv4PacketPayload};
 pub use tcp::{TCPBuilder, TCPPacket, TcpFlags};
-pub use udp::{UDPBuilder, UDPPacket, UDPPacketPayload};
+pub use udp::UDPBuilder;
 
 pub trait ProtocolBuilder {
     fn build(&self, data: &mut [u8]) -> SysResult<usize>;

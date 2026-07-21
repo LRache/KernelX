@@ -1,5 +1,5 @@
-use crate::arch::PageTableTrait;
-use crate::arch::riscv::PGSIZE;
+use crate::arch::flush_tlb_all;
+use crate::arch::riscv::{KERNEL_MMIO_START, KERNEL_STACK_ARENA_END, PGSIZE};
 use crate::kernel::mm::MapPerm;
 use crate::klib::{InitedCell, SpinLock};
 
@@ -19,8 +19,13 @@ pub(super) fn is_shared_kernel_root(index: usize) -> bool {
 }
 
 fn prepare_shared_kernel_root_entries(pagetable: &mut PageTable) {
-    for index in USER_ROOT_ENTRIES..ENTRIES_PER_TABLE {
+    const ROOT_ENTRY_SIZE: usize = 1 << 30;
+
+    let mut addr = KERNEL_MMIO_START;
+    while addr < KERNEL_STACK_ARENA_END {
+        let index = (addr / ROOT_ENTRY_SIZE) & (ENTRIES_PER_TABLE - 1);
         pagetable.ensure_root_entry(index);
+        addr += ROOT_ENTRY_SIZE;
     }
 }
 
@@ -55,18 +60,22 @@ pub(super) fn install_shared_kernel_mappings(pagetable: &mut PageTable) {
 }
 
 pub fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) {
-    let mut kaddr = kstart;
-    let kend = kstart + size;
+    map_kernel_pages(kstart, (0..size).step_by(PGSIZE).map(|offset| pstart + offset), perm);
+}
 
+pub fn map_kernel_pages(kstart: usize, pstarts: impl IntoIterator<Item = usize>, perm: MapPerm) {
     let mut pagetable = KERNEL_PAGETABLE.lock();
-    let mut paddr = pstart;
-    while kaddr < kend {
+    let mut kaddr = kstart;
+    let mut mapped = false;
+    for paddr in pstarts {
         pagetable.mmap_kernel(kaddr, paddr, perm);
         kaddr += PGSIZE;
-        paddr += PGSIZE;
+        mapped = true;
     }
 
-    unsafe { core::arch::asm!("sfence.vma zero, zero") }
+    if mapped {
+        flush_tlb_all();
+    }
 }
 
 pub fn get_kernel_satp() -> usize {
@@ -79,9 +88,9 @@ pub unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
 
     let mut pagetable = KERNEL_PAGETABLE.lock();
     while kaddr < kend {
-        pagetable.munmap_raw(kaddr).expect("page must be mapped");
+        pagetable.munmap_no_flush(kaddr).expect("page must be mapped");
         kaddr += PGSIZE;
     }
 
-    unsafe { core::arch::asm!("sfence.vma zero, zero") }
+    flush_tlb_all();
 }

@@ -29,5 +29,8 @@ use cpu::{core_count, time_frequency, try_time_frequency};
 pub const PGBITS: usize = 12; // 4KB page size
 pub const PGSIZE: usize = 1 << PGBITS; // 4096 bytes
 pub const PGMASK: usize = PGSIZE - 1; // 0xfff
-pub const KERNEL_MMIO_END: usize = 0xffff_ffff_ffff_f000;
+pub const KERNEL_MMIO_START: usize = 0xffff_fffe_8000_0000;
+pub const KERNEL_STACK_ARENA_START: usize = 0xffff_ffff_8000_0000;
+pub const KERNEL_STACK_ARENA_END: usize = 0xffff_ffff_c000_0000;
+pub const KERNEL_MMIO_END: usize = KERNEL_STACK_ARENA_START;
 pub const USEREND: usize = 0x7fff_ffff_ffff; // 128TB user space limit

@@ -243,7 +243,7 @@ impl MessagePipeInner {
         let mut msg = Vec::with_capacity(ubuf.length());
         for kbuf in ubuf.iter() {
             let kbuf = kbuf?;
-            msg.extend_from_slice(kbuf);
+            msg.extend_from_slice(&kbuf);
         }
 
         loop {

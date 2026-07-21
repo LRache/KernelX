@@ -1,29 +1,33 @@
+#[cfg(all(feature = "swap-memory", not(feature = "no-smp"), target_arch = "loongarch64"))]
+compile_error!("LoongArch swap-memory currently requires the no-smp feature for complete user-TLB invalidation");
+#[cfg(all(feature = "swap-memory", feature = "kvm"))]
+compile_error!("swap-memory cannot be combined with kvm until G-stage mappings participate in swap invalidation");
+
+mod file;
 mod kswapd;
 mod nofile;
 mod swappable;
 mod swapper;
 
+pub use file::{FileBackend, FileMapRegistration, FileMapping, FilePageIdentityPin, SharedFilePage};
 pub use kswapd::spawn_kswapd;
-pub use nofile::SwappableNoFileFrame;
-pub use swapper::shrink;
-
-use swappable::SwappableFrame;
-
-use alloc::collections::LinkedList;
-use alloc::sync::{Arc, Weak};
-
-use crate::kernel::mm::AddrSpace;
-use crate::klib::SpinLock;
-
-pub type AddrSpaceFamilyChain = Arc<SpinLock<LinkedList<Weak<AddrSpace>>>>;
-
-use crate::driver::get_block_driver;
+pub use nofile::{AnonMapFamilyRegistration, AnonymousBackend, AnonymousSwappableFrame};
+#[cfg(feature = "swap-memory")]
+pub(crate) use swappable::SwapError;
+pub(crate) use swappable::{
+    AccessDirty, SwappableBackendOps, SwappableFrameGuard, SwappableFramePin, TlbInvalidationToken,
+};
+pub use swapper::{print_perf_info, shrink};
 
 #[unsafe(link_section = ".text.init")]
 pub fn init() {
-    let driver = get_block_driver("virtio_mmio@10002000").expect("Swap driver not found");
-    nofile::init_swapper(driver);
     swapper::init_swapper();
+}
+
+#[cfg(feature = "swap-memory")]
+#[unsafe(link_section = ".text.init")]
+pub fn init_anonymous_swap(driver: Option<alloc::sync::Arc<dyn crate::driver::BlockDriverOps>>) {
+    nofile::init_swap_space(driver);
 }
 
 pub fn fini() {

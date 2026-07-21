@@ -5,7 +5,9 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::{FileOps, RandomAccessFile};
-use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal};
+use crate::kernel::mm::maparea::{
+    Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal, PinPageFrame,
+};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -79,7 +81,7 @@ impl ELFArea {
         page_index: usize,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> usize {
+    ) {
         assert!(page_index < self.frames.len());
         assert!(self.frames[page_index].is_cow());
 
@@ -101,12 +103,9 @@ impl ELFArea {
         };
 
         let new_frame = Arc::new(new_frame);
-        let page = new_frame.get_page();
 
         addrspace.pagetable().lock().mmap_replace(uaddr, &new_frame, self.perm);
         self.frames[page_index] = Frame::Allocated(new_frame);
-
-        page
     }
 
     fn map_cow_page(&self, page_index: usize, frame: &Arc<PhysPageFrame>, addrspace: &AddrSpace) -> usize {
@@ -123,22 +122,19 @@ impl ELFArea {
 }
 
 impl Area for ELFArea {
-    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
-        let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-
-        if let Some(page_frame) = self.frames.get(page_index) {
-            let page = match page_frame {
-                Frame::Unallocated => self.load_page(page_index, addrspace.pagetable()),
-                Frame::Allocated(frame) => frame.get_page(),
-                Frame::Cow(frame) => frame.get_page(),
-            };
-
-            Some(page + page_offset)
-        } else {
-            None
+        if page_index >= self.frames.len() {
+            return None;
+        }
+        if self.frames[page_index].is_unallocated() {
+            self.load_page(page_index, addrspace.pagetable());
+        }
+        match &self.frames[page_index] {
+            Frame::Allocated(frame) | Frame::Cow(frame) => Some(PinPageFrame::stable(frame.clone())),
+            Frame::Unallocated => unreachable!(),
         }
     }
 
@@ -147,23 +143,27 @@ impl Area for ELFArea {
         uaddr: usize,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Option<usize> {
+    ) -> Option<PinPageFrame> {
         assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
-        let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
 
-        if let Some(page_frame) = self.frames.get(page_index) {
-            let page = match page_frame {
-                Frame::Unallocated => self.load_page(page_index, addrspace.pagetable()),
-                Frame::Allocated(frame) => frame.get_page(),
-                Frame::Cow(_) => self.copy_on_write_page(page_index, addrspace, map_change_notifier),
-            };
-
-            Some(page + page_offset)
-        } else {
-            None
+        if page_index >= self.frames.len() {
+            return None;
         }
+
+        if self.frames[page_index].is_unallocated() {
+            self.load_page(page_index, addrspace.pagetable());
+        } else {
+            if self.frames[page_index].is_cow() {
+                self.copy_on_write_page(page_index, addrspace, map_change_notifier);
+            }
+        }
+
+        let Frame::Allocated(frame) = &self.frames[page_index] else {
+            unreachable!();
+        };
+        Some(PinPageFrame::stable(frame.clone()))
     }
 
     fn get_frame(
@@ -171,21 +171,20 @@ impl Area for ELFArea {
         uaddr: usize,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Option<Arc<PhysPageFrame>> {
-        self.translate_write(uaddr, addrspace, map_change_notifier)?;
-
-        let page_index = (uaddr - self.ubase) / arch::PGSIZE;
-        match self.frames.get(page_index)? {
-            Frame::Allocated(frame) | Frame::Cow(frame) => Some(frame.clone()),
-            Frame::Unallocated => None,
-        }
+    ) -> Option<PinPageFrame> {
+        self.translate_write(uaddr, addrspace, map_change_notifier)
     }
 
     fn perm(&self) -> MapPerm {
         self.perm
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
+    fn fork(
+        &mut self,
+        self_pagetable: &SpinLock<PageTable>,
+        tlb_changed: &mut bool,
+        _addrspace: &Arc<AddrSpace>,
+    ) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
         let frames = self
             .frames
@@ -196,15 +195,12 @@ impl Area for ELFArea {
             })
             .collect();
 
-        let mut self_pagetable = self_pagetable.lock();
         self.frames.iter_mut().enumerate().for_each(|(page_index, frame)| {
             *frame = match frame {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
                     let uaddr = self.ubase + page_index * arch::PGSIZE;
-                    if self_pagetable.mapped_flag(uaddr).is_some() {
-                        self_pagetable.mmap_replace_perm(uaddr, cow_perm);
-                    }
+                    *tlb_changed |= self_pagetable.lock().mmap_replace_perm_no_flush(uaddr, cow_perm);
                     Frame::Cow(frame.clone())
                 }
             };
@@ -229,7 +225,7 @@ impl Area for ELFArea {
         access_type: MemAccessType,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<usize, MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultSignal> {
         assert!(uaddr >= self.ubase);
 
         if access_type == MemAccessType::Execute && !self.perm.contains(MapPerm::X) {
@@ -241,22 +237,22 @@ impl Area for ELFArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index < self.frames.len() {
-            let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
-            let page = match &self.frames[page_index] {
-                Frame::Unallocated => self.load_page(page_index, addrspace.pagetable()),
-                Frame::Allocated(frame) => {
+            match &self.frames[page_index] {
+                Frame::Unallocated => {
+                    self.load_page(page_index, addrspace.pagetable());
+                }
+                Frame::Allocated(_) => {
                     // Maybe the page is allocated and mapped by the other task.
-                    frame.get_page()
                 }
                 Frame::Cow(frame) => {
                     if access_type == MemAccessType::Write {
-                        self.copy_on_write_page(page_index, addrspace, map_change_notifier)
+                        self.copy_on_write_page(page_index, addrspace, map_change_notifier);
                     } else {
-                        self.map_cow_page(page_index, frame, addrspace)
+                        self.map_cow_page(page_index, frame, addrspace);
                     }
                 }
-            };
-            Ok(page + page_offset)
+            }
+            Ok(())
         } else {
             Err(MemoryFaultSignal::Segv)
         }
@@ -308,29 +304,36 @@ impl Area for ELFArea {
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let mut pagetable = pagetable.lock();
-        for (page_index, frame) in self.frames.iter_mut().enumerate() {
+        let mut tlb_changed = false;
+        for (page_index, frame) in self.frames.iter().enumerate() {
             if let Frame::Allocated(frame) | Frame::Cow(frame) = frame {
                 // The page may not be mapped to the page table if it was loaded by
                 // `translate_read` or `translate_write` but never accessed afterwards.
-                let _ = pagetable.munmap(self.ubase + page_index * arch::PGSIZE, frame);
+                tlb_changed |= pagetable
+                    .lock()
+                    .munmap_with_check_no_flush(self.ubase + page_index * arch::PGSIZE, frame.get_page());
             }
+        }
+        if tlb_changed {
+            arch::flush_tlb_all();
+        }
+        for frame in &mut self.frames {
             *frame = Frame::Unallocated;
         }
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_changed: &mut bool) {
         self.perm = perm;
         let cow_perm = perm - MapPerm::W;
-        let mut pagetable = pagetable.lock();
         self.frames.iter().enumerate().for_each(|(page_index, frame)| {
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match frame {
-                Frame::Allocated(_) if pagetable.mapped_flag(uaddr).is_some() => {
-                    pagetable.mmap_replace_perm(uaddr, perm)
+                Frame::Allocated(_) => {
+                    *tlb_changed |= pagetable.lock().mmap_replace_perm_no_flush(uaddr, perm);
                 }
-                Frame::Cow(_) if pagetable.mapped_flag(uaddr).is_some() => pagetable.mmap_replace_perm(uaddr, cow_perm),
-                Frame::Allocated(_) | Frame::Cow(_) => {}
+                Frame::Cow(_) => {
+                    *tlb_changed |= pagetable.lock().mmap_replace_perm_no_flush(uaddr, cow_perm);
+                }
                 Frame::Unallocated => {}
             }
         });

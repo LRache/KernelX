@@ -179,10 +179,6 @@ impl<T: StaticFsInfo> MemInodeOps<T> for RegularInode<T> {
         RegularInode::<T>::writeback_mmap_shared_page(self, file_page_index, frame)
     }
 
-    fn release_mmap_shared_page(&self, file_page_index: usize) {
-        let _ = file_page_index;
-    }
-
     fn mode(&self) -> SysResult<Mode> {
         RegularInode::<T>::mode(self)
     }
@@ -353,8 +349,8 @@ impl<T: StaticFsInfo> RegularInode<T> {
         let mut total_read = 0;
         let mut current_offset = offset;
         for kbuf in ubuf.iter_mut() {
-            let kbuf = kbuf?;
-            let n = self.readat(kbuf, current_offset, direct)?;
+            let mut kbuf = kbuf?;
+            let n = self.readat(&mut kbuf, current_offset, direct)?;
             total_read += n;
             current_offset += n;
             if n < kbuf.len() {
@@ -413,7 +409,7 @@ impl<T: StaticFsInfo> RegularInode<T> {
         let mut current_offset = offset;
         for kbuf in ubuf.iter() {
             let kbuf = kbuf?;
-            let n = self.writeat(kbuf, current_offset)?;
+            let n = self.writeat(&kbuf, current_offset)?;
             written_bytes += n;
             current_offset += n;
             if n < kbuf.len() {

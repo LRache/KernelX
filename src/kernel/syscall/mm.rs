@@ -7,13 +7,12 @@ use crate::arch;
 use crate::fs::file::FileMmapRequest;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Area, PrivateAnonymousArea, SharedAnonymousArea};
-use crate::kernel::mm::{AddrSpace, MapPerm};
+use crate::kernel::mm::{AddrSpace, MapPerm, MmapPlacement};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::task;
 
-use super::common::{IOVec, IOVecCursor};
-use super::def::BUFFER_SIZE;
+use super::common::{BUFFER_SIZE, IOVec, IOVecCursor};
 use super::uptr::{UPtr, UserPointer};
 
 const PROCESS_VM_IOV_MAX: usize = 1024;
@@ -282,13 +281,7 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
         return Err(Errno::EINVAL);
     };
 
-    let mut area: Box<dyn Area> = if flags.contains(MMapFlags::ANONYMOUS) {
-        if fixed_noreplace
-            && current::addrspace().with_map_manager_mut(|map_manager| map_manager.is_range_mapped(addr, map_size))
-        {
-            return Err(Errno::EEXIST);
-        }
-
+    let area: Box<dyn Area> = if flags.contains(MMapFlags::ANONYMOUS) {
         if shared {
             Box::new(SharedAnonymousArea::new(0, perm, page_count))
         } else {
@@ -301,12 +294,6 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
             return Err(Errno::EINVAL);
         }
 
-        if fixed_noreplace
-            && current::addrspace().with_map_manager_mut(|map_manager| map_manager.is_range_mapped(addr, map_size))
-        {
-            return Err(Errno::EEXIST);
-        }
-
         file.mmap_area(FileMmapRequest {
             shared,
             perm,
@@ -316,27 +303,14 @@ pub fn mmap(addr: usize, length: usize, prot: usize, flags: usize, fd: usize, of
     };
 
     let addrspace = current::addrspace();
-    let ubase = addrspace.with_map_manager_mut(|map_manager| {
-        if fixed_noreplace {
-            if map_manager.is_range_mapped(addr, map_size) {
-                return Err(Errno::EEXIST);
-            }
-            Ok(addr)
-        } else if fixed {
-            Ok(addr)
-        } else if addr == 0 || map_manager.is_range_mapped(addr, map_size) {
-            map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)
-        } else {
-            Ok(addr)
-        }
-    })?;
-
-    area.set_ubase(ubase);
-    if fixed && !fixed_noreplace {
-        addrspace.map_area_fixed(ubase, area)?;
+    let placement = if fixed_noreplace {
+        MmapPlacement::FixedNoReplace(addr)
+    } else if fixed {
+        MmapPlacement::Fixed(addr)
     } else {
-        addrspace.map_area(ubase, area)?;
-    }
+        MmapPlacement::Hint(addr)
+    };
+    let ubase = addrspace.mmap_area(placement, area)?;
 
     Ok(ubase)
 }

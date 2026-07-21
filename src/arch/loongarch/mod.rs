@@ -15,6 +15,7 @@ pub mod trap;
 
 pub use context::{KernelContext, SigContext, UserContext};
 pub use pagetable::PageTable;
+pub use task::KernelStack;
 
 /// 4 KiB base page, matching Linux's default LoongArch configuration.
 pub const PGBITS: usize = 12;

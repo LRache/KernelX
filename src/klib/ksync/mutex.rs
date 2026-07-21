@@ -113,12 +113,8 @@ impl<T, R: LockerTrait> Mutex<T, R> {
                     .lockstate()
                     .set_waiting(Some((self.name(), self.acquire_bt.lock().clone().unwrap())));
             }
-            while !self.locker.try_lock(&self.name()) {
-                self.locker.spin();
-            }
+            self.locker.lock(self.name());
         }
-
-        // self.locker.lock(self.name);
 
         #[cfg(feature = "lockdep")]
         if current::has_task() {
@@ -152,10 +148,6 @@ impl<T, R: LockerTrait> Mutex<T, R> {
         }
 
         self.locker.unlock(self.name());
-    }
-
-    pub fn is_locked(&self) -> bool {
-        self.locker.is_locked()
     }
 
     /// Returns the TID of the task currently holding this lock, or -1 if free.

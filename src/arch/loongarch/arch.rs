@@ -18,6 +18,11 @@ use super::{csr, eiointc, fdt, pch_pic, task, trap};
 const DMW1_MASK: usize = 0x9000_0000_0000_0000;
 const PA_MASK: usize = (1 << 48) - 1;
 
+unsafe extern "C" {
+    static __kernel_start: u8;
+}
+
+static DIRECT_MAP_END: InitedCell<usize> = InitedCell::uninit();
 static STABLE_COUNTER_FREQ_HZ: InitedCell<u64> = InitedCell::uninit();
 
 impl Arch {
@@ -31,7 +36,8 @@ impl Arch {
 }
 
 impl ArchTrait for Arch {
-    fn init(_memory_top: usize) {
+    fn init(memory_top: usize) {
+        DIRECT_MAP_END.init(memory_top);
         chosen::kconsole::register(Box::new(EarlyUart));
 
         trap::install_trap_entry();
@@ -123,9 +129,32 @@ impl ArchTrait for Arch {
         paddr | DMW1_MASK
     }
 
+    fn dma_direct_paddr(kaddr: usize, len: usize) -> Option<usize> {
+        let end = kaddr.checked_add(len)?;
+        let direct_map_start = core::ptr::addr_of!(__kernel_start) as usize;
+        if len == 0 || kaddr & !PA_MASK != DMW1_MASK || kaddr < direct_map_start || end > *DIRECT_MAP_END {
+            return None;
+        }
+        Some(Self::kaddr_to_paddr(kaddr))
+    }
+
     fn map_kernel_addr(_kstart: usize, _pstart: usize, _size: usize, _perm: MapPerm) {}
 
     unsafe fn unmap_kernel_addr(_kstart: usize, _size: usize) {}
+
+    fn flush_tlb_all() {
+        // SAFETY: The caller has completed the page-table update. The barriers
+        // publish those writes before invalidating all local translations.
+        unsafe {
+            core::arch::asm!(
+                "dbar 0",
+                "invtlb 0x00, $zero, $zero",
+                "dbar 0",
+                "ibar 0",
+                options(nostack, preserves_flags)
+            );
+        }
+    }
 
     fn mmio_phys_to_kaddr(paddr: usize, _size: usize) -> usize {
         const DMW0_MASK: usize = 0x8000_0000_0000_0000;

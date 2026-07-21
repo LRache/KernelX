@@ -402,6 +402,75 @@ impl PageTable {
 
         ptetable.free();
     }
+
+    pub(crate) fn mmap_replace_perm_no_flush(&mut self, uaddr: usize, perm: MapPerm) -> bool {
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::P;
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::D;
+        }
+
+        let Some(mut pte) = self.find_pte(uaddr) else {
+            return false;
+        };
+        pte.set_flags(flags);
+        pte.write_back().expect("Failed to write back PTE on mmap_replace_perm");
+        true
+    }
+
+    pub(crate) fn mmap_replace_perm_with_check_and_ad_no_flush(
+        &mut self,
+        uaddr: usize,
+        expected_kaddr: usize,
+        perm: MapPerm,
+    ) -> Option<(bool, bool)> {
+        let mut pte = self.find_pte(uaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let old_flags = pte.flags();
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::P;
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::D;
+        }
+        pte.set_flags(flags)
+            .write_back()
+            .expect("Failed to write back PTE on checked mmap_replace_perm");
+        Some((old_flags.contains(PTEFlags::P), old_flags.contains(PTEFlags::D)))
+    }
+
+    pub(crate) fn munmap_with_check_no_flush(&mut self, uaddr: usize, expected_kaddr: usize) -> bool {
+        let Some(mut pte) = self.find_pte(uaddr) else {
+            return false;
+        };
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return false;
+        }
+
+        pte.set_flags(PTEFlags::empty())
+            .write_back()
+            .expect("Failed to write back PTE on munmap_with_check");
+        true
+    }
+
+    pub(crate) fn munmap_with_check_and_ad_no_flush(
+        &mut self,
+        uaddr: usize,
+        expected_kaddr: usize,
+    ) -> Option<(bool, bool)> {
+        let mut pte = self.find_pte(uaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let flags = pte.flags();
+        pte.set_flags(PTEFlags::empty())
+            .write_back()
+            .expect("Failed to write back PTE on munmap_with_check_and_ad");
+        Some((flags.contains(PTEFlags::P), flags.contains(PTEFlags::D)))
+    }
 }
 
 impl Drop for PageTable {
@@ -465,17 +534,42 @@ impl PageTableTrait for PageTable {
         pte.write_back().expect("Failed to write back PTE on mmap_replace");
     }
 
-    fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {
+    fn mmap_replace_with_check_and_ad(
+        &mut self,
+        uaddr: usize,
+        expected_kaddr: usize,
+        replacement_kaddr: usize,
+        perm: MapPerm,
+    ) -> Option<(bool, bool)> {
+        let mut pte = self.find_pte(uaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let old_flags = pte.flags();
         let mut flags: PTEFlags = perm.into();
         flags |= PTEFlags::P;
         if perm.contains(MapPerm::W) {
             flags |= PTEFlags::D;
         }
+        pte.set_flags(flags);
+        pte.set_ppn(Addr::from_kaddr(replacement_kaddr).ppn());
+        pte.write_back()
+            .expect("Failed to write back PTE on checked mmap_replace");
+        Some((old_flags.contains(PTEFlags::P), old_flags.contains(PTEFlags::D)))
+    }
 
-        if let Some(mut pte) = self.find_pte(uaddr) {
-            pte.set_flags(flags);
-            pte.write_back().expect("Failed to write back PTE on mmap_replace_perm");
-        }
+    fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {
+        self.mmap_replace_perm_no_flush(uaddr, perm);
+    }
+
+    fn mmap_replace_perm_with_check_and_ad(
+        &mut self,
+        uaddr: usize,
+        expected_kaddr: usize,
+        perm: MapPerm,
+    ) -> Option<(bool, bool)> {
+        self.mmap_replace_perm_with_check_and_ad_no_flush(uaddr, expected_kaddr, perm)
     }
 
     fn munmap_raw(&mut self, uaddr: usize) -> Result<(), ()> {
@@ -489,18 +583,11 @@ impl PageTableTrait for PageTable {
     }
 
     fn munmap_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> bool {
-        if let Some(mut pte) = self.find_pte(uaddr) {
-            if pte.ppn().to_addr().kaddr() == expected_kaddr {
-                pte.set_flags(PTEFlags::empty())
-                    .write_back()
-                    .expect("Failed to write back PTE on munmap_with_check");
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        self.munmap_with_check_no_flush(uaddr, expected_kaddr)
+    }
+
+    fn munmap_with_check_and_ad(&mut self, uaddr: usize, expected_kaddr: usize) -> Option<(bool, bool)> {
+        self.munmap_with_check_and_ad_no_flush(uaddr, expected_kaddr)
     }
 
     fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)> {
@@ -513,5 +600,27 @@ impl PageTableTrait for PageTable {
                 .expect("Failed to write back PTE on take_access_dirty_bit");
             (accessed, dirty)
         })
+    }
+
+    fn take_access_dirty_bit_with_check_no_flush(
+        &mut self,
+        uaddr: usize,
+        expected_kaddr: usize,
+    ) -> Option<(bool, bool)> {
+        let mut pte = self.find_pte(uaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let flags = pte.flags();
+        let accessed = flags.contains(PTEFlags::P);
+        let dirty = flags.contains(PTEFlags::D);
+        // `P` is software-only on LoongArch, so clearing it alone would not
+        // make the next access observable. Clear `V` as well; the caller must
+        // flush the TLB before it relies on the collected A/D state.
+        pte.set_flags(flags.difference(PTEFlags::V | PTEFlags::P | PTEFlags::D))
+            .write_back()
+            .expect("Failed to write back PTE when taking checked access and dirty bits");
+        Some((accessed, dirty))
     }
 }

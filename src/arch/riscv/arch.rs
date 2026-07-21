@@ -9,7 +9,7 @@ use crate::arch::{self, Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
-use crate::kernel::mm::{MapPerm, page};
+use crate::kernel::mm::MapPerm;
 use crate::kernel::scheduler::current;
 use crate::klib::{InitedCell, SpinLock};
 use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
@@ -22,10 +22,12 @@ use super::task::context::KernelContext;
 use super::{core_count, kernel_switch, time_frequency, try_time_frequency};
 
 unsafe extern "C" {
+    static __kernel_start: u8;
     static __riscv_copied_fdt: *const u8;
     static __riscv_kaddr_offset: usize;
 }
 
+static DIRECT_MAP_END: InitedCell<usize> = InitedCell::uninit();
 static NEXT_MMIO_KADDR: InitedCell<SpinLock<usize>> = InitedCell::uninit();
 
 impl Arch {
@@ -41,7 +43,13 @@ impl Arch {
 }
 
 fn init_mmio_kaddr(memory_top: usize) {
-    NEXT_MMIO_KADDR.init(SpinLock::new(align_up(memory_top, arch::PGSIZE), "NEXT_MMIO_KADDR"));
+    let direct_map_end = align_up(memory_top, arch::PGSIZE);
+    assert!(
+        direct_map_end <= super::KERNEL_MMIO_START,
+        "RISC-V direct map overlaps the dynamic kernel address space"
+    );
+    DIRECT_MAP_END.init(direct_map_end);
+    NEXT_MMIO_KADDR.init(SpinLock::new(super::KERNEL_MMIO_START, "NEXT_MMIO_KADDR"));
 }
 
 fn alloc_mmio_kaddr(size: usize) -> usize {
@@ -68,6 +76,7 @@ impl ArchTrait for Arch {
         init_mmio_kaddr(memory_top);
         stvec::write(asm_kerneltrap_entry as *const () as usize);
         kernelpagetable::init();
+        task::init_kernel_stack_allocator();
 
         chosen::kconsole::register(Box::new(SBIKConsole));
         chosen::kpmu::register(Arc::new(SBIKPMU));
@@ -84,15 +93,18 @@ impl ArchTrait for Arch {
 
         for hartid in 0..core_count() {
             if hartid != current_core {
-                let stack = page::alloc_contiguous(config::SCHEDULER_KSTACK_PAGE_COUNT);
+                let stack = task::KernelStack::<{ config::SCHEDULER_KSTACK_PAGE_COUNT - 1 }>::new();
                 if let Err(error) = sbi_driver::hart_start(
                     hartid,
                     core::ptr::addr_of!(__riscv_others_entry) as usize,
-                    stack + config::SCHEDULER_KSTACK_PAGE_COUNT * arch::PGSIZE,
+                    stack.get_top(),
                 ) {
                     kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
                 } else {
                     kinfo!("Hart {} started successfully", hartid);
+                    // The secondary hart uses this bootstrap stack for the
+                    // lifetime of the kernel, so its mapping must remain live.
+                    core::mem::forget(stack);
                 }
             }
         }
@@ -173,12 +185,37 @@ impl ArchTrait for Arch {
         paddr + unsafe { __riscv_kaddr_offset }
     }
 
+    fn dma_direct_paddr(kaddr: usize, len: usize) -> Option<usize> {
+        let end = kaddr.checked_add(len)?;
+        let direct_map_start = core::ptr::addr_of!(__kernel_start) as usize;
+        if len == 0 || kaddr < direct_map_start || end > *DIRECT_MAP_END {
+            return None;
+        }
+        Some(Self::kaddr_to_paddr(kaddr))
+    }
+
     fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) {
         kernelpagetable::map_kernel_addr(kstart, pstart, size, perm);
     }
 
     unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
         unsafe { kernelpagetable::unmap_kernel_addr(kstart, size) };
+    }
+
+    fn flush_tlb_all() {
+        // SAFETY: The caller has completed the page-table update before
+        // invoking this function. The fence publishes those writes before
+        // invalidating all local address translations.
+        unsafe {
+            core::arch::asm!(
+                "fence rw, rw",
+                "sfence.vma zero, zero",
+                options(nostack, preserves_flags)
+            )
+        };
+
+        #[cfg(not(feature = "no-smp"))]
+        sbi_driver::remote_sfence_vma_all().unwrap_or_else(|error| panic!("SBI remote SFENCE.VMA failed: {error}"));
     }
 
     fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize {

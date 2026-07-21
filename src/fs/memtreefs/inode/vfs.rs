@@ -98,10 +98,6 @@ impl<T: StaticFsInfo> InodeOps for Arc<dyn MemInodeOps<T>> {
         self.as_ref().writeback_mmap_shared_page(file_page_index, frame)
     }
 
-    fn release_mmap_shared_page(&self, file_page_index: usize) {
-        self.as_ref().release_mmap_shared_page(file_page_index)
-    }
-
     fn mode(&self) -> SysResult<Mode> {
         self.as_ref().mode()
     }

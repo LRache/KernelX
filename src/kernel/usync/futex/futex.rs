@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
-use crate::kernel::mm::{AddrSpace, PhysPageFrame};
+use crate::kernel::mm::AddrSpace;
 use crate::kernel::scheduler;
 use crate::kernel::scheduler::{Task, current};
 use crate::klib::SleepLock;
@@ -107,9 +107,9 @@ impl FutexKey {
         }
     }
 
-    pub fn shared(frame: &Arc<PhysPageFrame>, offset: usize) -> Self {
+    pub fn shared(frame: &crate::kernel::mm::maparea::PinPageFrame, offset: usize) -> Self {
         Self::Shared {
-            page: Arc::as_ptr(frame) as usize,
+            page: frame.kpage(),
             offset,
         }
     }

@@ -29,8 +29,7 @@ use crate::kernel::uapi::{
     Dirent, DirentType, FileFallocateFlags, FileSealFlags, FileStat, MemFdCreateFlags, OpenFlags, Statfs, Statx, Uid,
 };
 
-use super::common::{IOVec, Timespec};
-use super::def::*;
+use super::common::*;
 
 pub fn dup(oldfd: usize) -> SyscallRet {
     let fdtable = current::fdtable();
@@ -988,12 +987,12 @@ fn check_positional_io(file: &Arc<dyn FileOps>) -> SysResult<()> {
 fn read_file_to_user(file: &dyn FileOps, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
     let mut total_read = 0;
     for kbuf in ubuf.iter_mut() {
-        let kbuf = match kbuf {
+        let mut kbuf = match kbuf {
             Ok(kbuf) => kbuf,
             Err(_) if total_read > 0 => return Ok(total_read),
             Err(err) => return Err(err),
         };
-        let n = match file.read(kbuf) {
+        let n = match file.read(&mut kbuf) {
             Ok(n) => n,
             Err(_) if total_read > 0 => return Ok(total_read),
             Err(err) => return Err(err),
@@ -1014,7 +1013,7 @@ fn write_file_from_user(file: &dyn FileOps, ubuf: &UAddrSpaceBuffer) -> SysResul
             Err(_) if total_written > 0 => return Ok(total_written),
             Err(err) => return Err(err),
         };
-        let n = match file.write(kbuf) {
+        let n = match file.write(&kbuf) {
             Ok(n) => n,
             Err(_) if total_written > 0 => return Ok(total_written),
             Err(err) => return Err(err),

@@ -230,8 +230,7 @@ pub fn kerneltrap_handler() {
                 let stval = stval::read();
                 if current::has_task() {
                     let task = current::task();
-                    let kstack = task.kstack();
-                    if kstack.check_stack_overflow(stval) {
+                    if task.check_kernel_stack_overflow(stval) {
                         panic!(
                             "Kernel stack overflow detected at address: {:#x}, pc={:#x}, tid={}",
                             stval,

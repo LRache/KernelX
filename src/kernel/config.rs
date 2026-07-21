@@ -15,23 +15,18 @@ pub const USER_RANDOM_ADDR_BASE: usize = 0x1000;
 pub const VDSO_BASE: usize = 0x20_0000_0000; // Base address for vDSO mapping
 
 #[cfg(debug_assertions)]
-pub const UTASK_KSTACK_PAGE_COUNT: usize = 64; // Kernel stack page count for user tasks
+pub const UTASK_KSTACK_PAGE_COUNT: usize = 64; // Total slot pages; page 0 is the guard page
 #[cfg(not(debug_assertions))]
-pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Kernel stack page count for user tasks
-pub const KTASK_KSTACK_PAGE_COUNT: usize = 32; // Kernel stack page count for kernel tasks
+pub const UTASK_KSTACK_PAGE_COUNT: usize = 8; // Total slot pages; page 0 is the guard page
+pub const KTASK_KSTACK_PAGE_COUNT: usize = 32; // Total slot pages; page 0 is the guard page
 pub const KERNEL_HEAP_SIZE: usize = 128 * 1024 * 1024; // Kernel heap size (128 MiB)
-pub const SCHEDULER_KSTACK_PAGE_COUNT: usize = 4; // Scheduler kernel stack size
+pub const SCHEDULER_KSTACK_PAGE_COUNT: usize = 4; // Total slot pages; page 0 is the guard page
 
-cfg_if::cfg_if!(
-    if #[cfg(feature = "swap-memory")] {
-        pub const KERNEL_PAGE_SHRINK_WATERLEVEL_LOW : usize = 70; // LOW Threshold% for kernel page shrinker
-        pub const KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH: usize = 85; // HIGH Threshold% for kernel page shrinker
-    }
-);
+pub const KERNEL_PAGE_SHRINK_WATERLEVEL_LOW: usize = 70; // LOW Threshold% for kernel page shrinker
+pub const KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH: usize = 85; // HIGH Threshold% for kernel page shrinker
 
 pub const INODE_CACHE_HIGH_WATERMARK: usize = 512; // Start reclaiming when inode cache reaches this size
 pub const INODE_CACHE_LOW_WATERMARK: usize = INODE_CACHE_HIGH_WATERMARK / 4 * 3; // Reclaim idle inodes down to this size
-pub const EXT4_INODE_PAGE_CACHE_SIZE: usize = 512; // Ext4 inode page cache size
 pub const INODE_CACHE_RECLAIM_INTERVAL_MS: u64 = 500; // Background inode cache reclaim interval
 
 pub const MAX_FD: usize = 1024; // Maximum number of file descriptors per process

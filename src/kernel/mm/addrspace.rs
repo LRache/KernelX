@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use fixedstr::tstr;
 use spin::Lazy;
 
@@ -8,17 +9,12 @@ use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::config::{MAX_PATH_LEN, USER_RANDOM_ADDR_BASE};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::{Auxv, MapManagerWatcher};
+use crate::kernel::mm::maparea::{Auxv, MapManagerWatcher, PinPageFrame, ReadChunk, WriteChunk};
 use crate::kernel::mm::{PhysPageFrame, maparea};
 use crate::klib::{SleepLock, SpinLock};
 
+use super::swappable::AccessDirty;
 use super::{MapPerm, MemAccessType, vdso};
-
-cfg_if::cfg_if! {
-    if #[cfg(feature="swap-memory")] {
-        use alloc::collections::LinkedList;
-    }
-}
 
 static RANDOM_PAGE: Lazy<Arc<PhysPageFrame>> = Lazy::new(|| Arc::new(PhysPageFrame::alloc()));
 
@@ -31,15 +27,17 @@ fn create_pagetable() -> PageTable {
     pagetable
 }
 
-#[cfg(feature = "swap-memory")]
-use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
-
 pub struct AddrSpace {
+    /// Number of TCBs still using this address space, excluding temporary `Arc`s.
+    task_users: AtomicUsize,
     map_manager: SleepLock<maparea::Manager>,
     pagetable: SpinLock<PageTable>,
+}
 
-    #[cfg(feature = "swap-memory")]
-    family_chain: AddrSpaceFamilyChain,
+pub enum MmapPlacement {
+    Hint(usize),
+    Fixed(usize),
+    FixedNoReplace(usize),
 }
 
 impl AddrSpace {
@@ -49,48 +47,39 @@ impl AddrSpace {
 
     pub fn new_with_pagetable(pagetable: PageTable) -> Arc<Self> {
         let addrspace = Arc::new(AddrSpace {
+            task_users: AtomicUsize::new(0),
             map_manager: SleepLock::new(maparea::Manager::new(), "AddrSpace::map_manager"),
             pagetable: SpinLock::new(pagetable, "AddrSpace::pagetable"),
-
-            #[cfg(feature = "swap-memory")]
-            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new(), "AddrSpace::family_chain")),
         });
 
-        #[cfg(feature = "swap-memory")]
-        addrspace.family_chain.lock().push_back(Arc::downgrade(&addrspace));
-
         addrspace
+    }
+
+    pub(crate) fn acquire_task_user(&self) {
+        let previous = self.task_users.fetch_add(1, Ordering::Relaxed);
+        assert!(previous != usize::MAX, "AddrSpace::task_users overflow");
+    }
+
+    /// Releases one logical TCB user and cleans up the last user's mappings.
+    ///
+    /// This may sleep and must be called before the task becomes unschedulable.
+    pub(crate) fn release_task_user(&self) {
+        let previous = self.task_users.fetch_sub(1, Ordering::AcqRel);
+        assert!(previous > 0, "AddrSpace::task_users underflow");
+        if previous == 1 {
+            self.cleanup();
+        }
     }
 
     pub fn fork(self: &Arc<Self>) -> Arc<AddrSpace> {
-        let new_pagetable = create_pagetable();
-
-        let new_map_manager = self.map_manager.lock().fork(&self.pagetable);
-
-        let addrspace = Arc::new(AddrSpace {
-            map_manager: SleepLock::new(new_map_manager, "AddrSpace::map_manager"),
-            pagetable: SpinLock::new(new_pagetable, "AddrSpace::pagetable"),
-
-            #[cfg(feature = "swap-memory")]
-            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new(), "AddrSpace::family_chain")),
-        });
-
-        #[cfg(feature = "swap-memory")]
-        {
-            let weak = Arc::downgrade(&addrspace);
-            addrspace.family_chain.lock().push_back(weak.clone());
-            self.family_chain.lock().push_back(weak);
-        }
+        let addrspace = Self::new_with_pagetable(create_pagetable());
+        let new_map_manager = self.map_manager.lock().fork(&self.pagetable, &addrspace);
+        *addrspace.map_manager.lock() = new_map_manager;
 
         addrspace
     }
 
-    #[cfg(feature = "swap-memory")]
-    pub fn family_chain(&self) -> &AddrSpaceFamilyChain {
-        &self.family_chain
-    }
-
-    pub fn create_user_stack(&self, argv: &[&str], envp: &[&str], auxv: &Auxv) -> Result<usize, Errno> {
+    pub fn create_user_stack(self: &Arc<Self>, argv: &[&str], envp: &[&str], auxv: &Auxv) -> Result<usize, Errno> {
         let mut map_manager = self.map_manager.lock();
         map_manager.create_user_stack(argv, envp, auxv, self)
     }
@@ -102,11 +91,35 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn map_area_fixed(&self, uaddr: usize, area: Box<dyn maparea::Area>) -> Result<(), Errno> {
+    pub fn mmap_area(self: &Arc<Self>, placement: MmapPlacement, mut area: Box<dyn maparea::Area>) -> SysResult<usize> {
         let mut map_manager = self.map_manager.lock();
-        map_manager.map_area_fixed(uaddr, area, &self.pagetable);
+        let page_count = area.page_count();
+        let (ubase, replace) = match placement {
+            MmapPlacement::Hint(addr) => {
+                if addr == 0 || map_manager.is_map_range_overlapped(addr, page_count) {
+                    (map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)?, false)
+                } else {
+                    (addr, false)
+                }
+            }
+            MmapPlacement::Fixed(addr) => (addr, true),
+            MmapPlacement::FixedNoReplace(addr) => {
+                if map_manager.is_map_range_overlapped(addr, page_count) {
+                    return Err(Errno::EEXIST);
+                }
+                (addr, false)
+            }
+        };
 
-        Ok(())
+        area.set_ubase(ubase);
+        area.bind_addrspace(self);
+        if replace {
+            map_manager.map_area_fixed(ubase, area, &self.pagetable);
+        } else {
+            map_manager.map_area(ubase, area);
+        }
+
+        Ok(ubase)
     }
 
     pub fn unmap_area(&self, uaddr: usize, page_count: usize) -> Result<(), Errno> {
@@ -123,23 +136,38 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn increase_userbrk(&self, ubrk: usize) -> Result<usize, Errno> {
+    pub fn increase_userbrk(self: &Arc<Self>, ubrk: usize) -> Result<usize, Errno> {
         let mut map_manager = self.map_manager.lock();
-        map_manager.increase_userbrk(ubrk, &self.pagetable)
+        map_manager.increase_userbrk(ubrk, &self.pagetable, self)
     }
 
-    pub fn translate_write(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
-        self.map_manager
+    pub fn translate_write(&self, uaddr: usize, len: usize) -> SysResult<WriteChunk> {
+        let offset = uaddr & arch::PGMASK;
+        if len == 0 || len > arch::PGSIZE - offset {
+            return Err(Errno::EFAULT);
+        }
+        let frame = self
+            .map_manager
             .lock()
             .translate_write(uaddr, self)
-            .ok_or(Errno::EFAULT)
+            .ok_or(Errno::EFAULT)?;
+        Ok(WriteChunk::new(frame, offset, len))
     }
 
-    pub fn translate_read(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
-        self.map_manager.lock().translate_read(uaddr, self).ok_or(Errno::EFAULT)
+    pub fn translate_read(&self, uaddr: usize, len: usize) -> SysResult<ReadChunk> {
+        let offset = uaddr & arch::PGMASK;
+        if len == 0 || len > arch::PGSIZE - offset {
+            return Err(Errno::EFAULT);
+        }
+        let frame = self
+            .map_manager
+            .lock()
+            .translate_read(uaddr, self)
+            .ok_or(Errno::EFAULT)?;
+        Ok(ReadChunk::new(frame, offset, len))
     }
 
-    pub fn get_frame(self: &Arc<Self>, uaddr: usize) -> SysResult<Arc<PhysPageFrame>> {
+    pub fn get_frame(self: &Arc<Self>, uaddr: usize) -> SysResult<PinPageFrame> {
         self.map_manager.lock().get_frame(uaddr, self).ok_or(Errno::EFAULT)
     }
 
@@ -150,21 +178,8 @@ impl AddrSpace {
         if len == 0 {
             return Ok(f(&[]));
         }
-        if len > arch::PGSIZE - (uaddr & arch::PGMASK) {
-            return Err(Errno::EFAULT);
-        }
-
-        let mut map_manager = self.map_manager.lock();
-        let kaddr = map_manager.translate_read(uaddr, self).ok_or(Errno::EFAULT)?;
-        if len > arch::PGSIZE - (kaddr & arch::PGMASK) {
-            return Err(Errno::EFAULT);
-        }
-
-        // SAFETY: The translated range is confined to one page, and the
-        // MapManager lock keeps the backing MapArea/PageFrame alive while
-        // the slice is consumed by the closure.
-        let slice = unsafe { core::slice::from_raw_parts(kaddr as *const u8, len) };
-        Ok(f(slice))
+        let chunk = self.translate_read(uaddr, len)?;
+        Ok(f(&chunk))
     }
 
     pub fn with_translated_write<F, R>(&self, uaddr: usize, len: usize, f: F) -> SysResult<R>
@@ -174,21 +189,8 @@ impl AddrSpace {
         if len == 0 {
             return Ok(f(&mut []));
         }
-        if len > arch::PGSIZE - (uaddr & arch::PGMASK) {
-            return Err(Errno::EFAULT);
-        }
-
-        let mut map_manager = self.map_manager.lock();
-        let kaddr = map_manager.translate_write(uaddr, self).ok_or(Errno::EFAULT)?;
-        if len > arch::PGSIZE - (kaddr & arch::PGMASK) {
-            return Err(Errno::EFAULT);
-        }
-
-        // SAFETY: The translated range is confined to one page, and the
-        // MapManager lock keeps the backing MapArea/PageFrame alive while
-        // the mutable slice is consumed by the closure.
-        let slice = unsafe { core::slice::from_raw_parts_mut(kaddr as *mut u8, len) };
-        Ok(f(slice))
+        let mut chunk = self.translate_write(uaddr, len)?;
+        Ok(f(&mut chunk))
     }
 
     pub fn with_translated_read_write<F, R>(
@@ -208,27 +210,15 @@ impl AddrSpace {
             return Err(Errno::EFAULT);
         }
 
-        let mut map_manager = self.map_manager.lock();
-        let read_kaddr = map_manager.translate_read(read_uaddr, self).ok_or(Errno::EFAULT)?;
-        let write_kaddr = map_manager.translate_write(write_uaddr, self).ok_or(Errno::EFAULT)?;
-        if len > arch::PGSIZE - (read_kaddr & arch::PGMASK) || len > arch::PGSIZE - (write_kaddr & arch::PGMASK) {
-            return Err(Errno::EFAULT);
-        }
-        let read_end = read_kaddr.checked_add(len).ok_or(Errno::EFAULT)?;
-        let write_end = write_kaddr.checked_add(len).ok_or(Errno::EFAULT)?;
-        if read_kaddr < write_end && write_kaddr < read_end {
+        let read_end = read_uaddr.checked_add(len).ok_or(Errno::EFAULT)?;
+        let write_end = write_uaddr.checked_add(len).ok_or(Errno::EFAULT)?;
+        if read_uaddr < write_end && write_uaddr < read_end {
             return Err(Errno::EFAULT);
         }
 
-        // SAFETY: Both translated ranges are confined to one page, and the
-        // MapManager lock keeps their backing MapArea/PageFrame objects alive.
-        // The ranges were also checked to be non-overlapping, so creating a
-        // shared source slice and a mutable destination slice is sound here.
-        let read_slice = unsafe { core::slice::from_raw_parts(read_kaddr as *const u8, len) };
-        // SAFETY: See the safety note above; the destination range is checked
-        // to stay inside one translated page and is consumed before unlock.
-        let write_slice = unsafe { core::slice::from_raw_parts_mut(write_kaddr as *mut u8, len) };
-        Ok(f(read_slice, write_slice))
+        let mut source = alloc::vec![0u8; len];
+        self.with_translated_read(read_uaddr, len, |slice| source.copy_from_slice(slice))?;
+        self.with_translated_write(write_uaddr, len, |destination| f(&source, destination))
     }
 
     pub fn copy_to_user_buffer(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
@@ -433,7 +423,7 @@ impl AddrSpace {
         self: &Arc<Self>,
         uaddr: usize,
         access_type: MemAccessType,
-    ) -> Result<usize, maparea::MemoryFaultSignal> {
+    ) -> Result<(), maparea::MemoryFaultSignal> {
         let map_manager = &mut self.map_manager.lock();
         map_manager.try_to_fix_memory_fault(uaddr, access_type, self)
     }
@@ -444,13 +434,77 @@ impl AddrSpace {
         map_manager.cleanup(&self.pagetable);
     }
 
-    #[cfg(feature = "swap-memory")]
-    pub fn unmap_swap_page(&self, uaddr: usize, kaddr: usize) {
-        self.pagetable.write().munmap_with_check(uaddr, kaddr);
+    pub fn take_access_dirty_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<AccessDirty> {
+        self.pagetable
+            .lock()
+            .take_access_dirty_bit_with_check_no_flush(uaddr, expected_kpage)
+            .map(AccessDirty::from)
     }
 
-    #[cfg(feature = "swap-memory")]
-    pub fn take_page_access_dirty_bit(&self, uaddr: usize) -> Option<(bool, bool)> {
-        self.pagetable.write().take_access_dirty_bit(uaddr)
+    pub fn unmap_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<AccessDirty> {
+        self.pagetable
+            .lock()
+            .munmap_with_check_and_ad_no_flush(uaddr, expected_kpage)
+            .map(AccessDirty::from)
+    }
+
+    pub fn mmap_swappable<B>(
+        &self,
+        uaddr: usize,
+        guard: &crate::kernel::mm::swappable::SwappableFrameGuard<'_, B>,
+        perm: MapPerm,
+    ) where
+        B: crate::kernel::mm::swappable::SwappableBackendOps,
+    {
+        // SAFETY: The guard keeps the logical page resident and its page lock
+        // held until after the PTE is installed. The owning Area already
+        // registered this address range before acquiring the guard.
+        unsafe { self.pagetable.lock().mmap_raw(uaddr, guard.frame().get_page(), perm) };
+    }
+
+    pub fn mmap_replace_swappable<B>(
+        &self,
+        uaddr: usize,
+        guard: &crate::kernel::mm::swappable::SwappableFrameGuard<'_, B>,
+        perm: MapPerm,
+    ) where
+        B: crate::kernel::mm::swappable::SwappableBackendOps,
+    {
+        // SAFETY: The guard keeps the replacement frame resident for the
+        // complete PTE update, and the Area retains the logical page owner.
+        unsafe {
+            self.pagetable
+                .lock()
+                .mmap_replace_raw(uaddr, guard.frame().get_page(), perm)
+        };
+    }
+
+    pub fn mmap_replace_swappable_if_maps<B>(
+        &self,
+        uaddr: usize,
+        expected: &crate::kernel::mm::swappable::SwappableFrameGuard<'_, B>,
+        replacement: &crate::kernel::mm::swappable::SwappableFrameGuard<'_, B>,
+        perm: MapPerm,
+    ) -> Option<AccessDirty>
+    where
+        B: crate::kernel::mm::swappable::SwappableBackendOps,
+    {
+        let mut pagetable = self.pagetable.lock();
+        let access_dirty = match pagetable.mmap_replace_with_check_and_ad(
+            uaddr,
+            expected.frame().get_page(),
+            replacement.frame().get_page(),
+            perm,
+        ) {
+            Some(access_dirty) => AccessDirty::from(access_dirty),
+            None if pagetable.mapped_flag(uaddr).is_none() => {
+                // SAFETY: Both page guards remain live while the same page-table
+                // lock verifies that the slot is empty and installs the frame.
+                unsafe { pagetable.mmap_raw(uaddr, replacement.frame().get_page(), perm) };
+                return Some(AccessDirty::default());
+            }
+            None => return None,
+        };
+        Some(access_dirty)
     }
 }

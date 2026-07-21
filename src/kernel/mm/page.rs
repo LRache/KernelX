@@ -7,20 +7,15 @@ use crate::klib::InitedCell;
 
 struct FrameAllocator {
     allocator: buddy_system_allocator::FrameAllocator,
-    #[cfg(feature = "swap-memory")]
     waterlevel_high: usize,
-    #[cfg(feature = "swap-memory")]
     waterlevel_low: usize,
 }
 
 impl FrameAllocator {
-    #[allow(unused_variables)]
     fn new(allocator: buddy_system_allocator::FrameAllocator, total: usize) -> Self {
         Self {
             allocator,
-            #[cfg(feature = "swap-memory")]
             waterlevel_high: total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH / 100,
-            #[cfg(feature = "swap-memory")]
             waterlevel_low: total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_LOW / 100,
         }
     }
@@ -103,7 +98,19 @@ pub fn allocated_pages() -> usize {
     ALLOCATED_PAGES.load(Ordering::Relaxed)
 }
 
-#[cfg(feature = "swap-memory")]
+fn allocation_failed(kind: &str, requested_pages: usize) -> ! {
+    crate::kwarn!(
+        "OOM: {} allocation failed: requested_pages={}, allocated_pages={}, free_pages={}, total_pages={}",
+        kind,
+        requested_pages,
+        allocated_pages(),
+        free_pages(),
+        total_pages(),
+    );
+    crate::kernel::mm::swappable::print_perf_info();
+    panic!("Out of physical memory");
+}
+
 pub fn need_to_shrink() -> bool {
     let allocator = FRAME_ALLOCATOR.lock();
     allocated_pages() >= allocator.waterlevel_high
@@ -117,7 +124,6 @@ pub fn alloc() -> usize {
     }
 }
 
-#[cfg(feature = "swap-memory")]
 pub fn alloc_with_shrink() -> usize {
     let mut allocator = FRAME_ALLOCATOR.lock();
     let allocated = allocated_pages();
@@ -129,19 +135,26 @@ pub fn alloc_with_shrink() -> usize {
 
         crate::kernel::mm::swappable::shrink(to_shrink, min_to_shrink);
 
-        return FRAME_ALLOCATOR.lock().alloc().unwrap();
+        return FRAME_ALLOCATOR
+            .lock()
+            .alloc()
+            .unwrap_or_else(|| allocation_failed("shrink-aware", 1));
     }
 
-    allocator.alloc().unwrap()
+    allocator
+        .alloc()
+        .unwrap_or_else(|| allocation_failed("shrink-aware", 1))
 }
 
 pub fn alloc_zero() -> usize {
-    let page = FRAME_ALLOCATOR.lock().alloc().unwrap();
+    let page = FRAME_ALLOCATOR
+        .lock()
+        .alloc()
+        .unwrap_or_else(|| allocation_failed("single-page", 1));
     zero(page);
     page
 }
 
-#[cfg(feature = "swap-memory")]
 pub fn alloc_with_shrink_zero() -> usize {
     let page = alloc_with_shrink();
     zero(page);
@@ -153,8 +166,21 @@ pub fn alloc_contiguous(pages: usize) -> usize {
     page
 }
 
-pub fn alloc_contiguous_aligned(pages: usize, align: usize) -> usize {
-    FRAME_ALLOCATOR.lock().alloc_contiguous_aligned(pages, align).unwrap()
+pub fn alloc_contiguous_zero(pages: usize) -> usize {
+    let page = FRAME_ALLOCATOR
+        .lock()
+        .alloc_contiguous(pages)
+        .unwrap_or_else(|| allocation_failed("contiguous", pages));
+    // SAFETY: `page` is an exclusive allocation of `pages` contiguous, writable pages,
+    // and `pages * arch::PGSIZE` is exactly the allocation size.
+    unsafe {
+        core::ptr::write_bytes(
+            page as *mut usize,
+            0,
+            pages * arch::PGSIZE / core::mem::size_of::<usize>(),
+        );
+    }
+    page
 }
 
 // pub fn alloc_with_meta<T>(meta: T) -> usize {
@@ -178,31 +204,6 @@ pub fn free(page: usize) {
 pub fn free_contiguous(addr: usize, pages: usize) {
     FRAME_ALLOCATOR.lock().free_contiguous(addr, pages);
 }
-
-pub fn free_contiguous_aligned(addr: usize, pages: usize, align: usize) {
-    FRAME_ALLOCATOR.lock().free_contiguous_aligned(addr, pages, align);
-}
-
-// fn free_with_meta<T>(page: usize) {
-//     let meta_ptr = page_meta_ref(page);
-//     unsafe {
-//         let ptr = *meta_ptr as *mut T;
-//         if !ptr.is_null() {
-//             core::ptr::drop_in_place(ptr);
-//             alloc::alloc::dealloc(ptr as *mut u8, Layout::new::<T>());
-//         }
-//     }
-//     free(page);
-// }
-
-// fn meta_of<T>(page: usize) -> &'static mut T {
-//     let meta_ptr = page_meta_ref(page);
-//     unsafe {
-//         let ptr = *meta_ptr as *mut T;
-//         debug_assert!(!ptr.is_null(), "No meta data found for page {:#x}", page);
-//         &mut *ptr
-//     }
-// }
 
 pub fn copy(src: usize, dst: usize) {
     debug_assert!(
@@ -283,7 +284,6 @@ impl PhysPageFrame {
         Self::new(alloc_zero())
     }
 
-    #[cfg(feature = "swap-memory")]
     pub fn alloc_with_shrink_zeroed() -> Self {
         Self::new(alloc_with_shrink_zero())
     }
@@ -313,10 +313,6 @@ impl PhysPageFrame {
 
     pub fn get_page(&self) -> usize {
         self.page
-    }
-
-    pub fn ptr(&self) -> *mut u8 {
-        self.page as *mut u8
     }
 }
 
@@ -399,27 +395,3 @@ impl<const N: usize> Drop for FixedContiguousPhysPageFrame<N> {
         free_contiguous(self.page, N);
     }
 }
-
-// pub struct PageFrameWithMeta<T> {
-//     page: usize,
-//     _marker: core::marker::PhantomData<T>,
-// }
-
-// impl<T> PageFrameWithMeta<T> {
-//     pub fn new(page: usize) -> Self {
-//         Self { page, _marker: core::marker::PhantomData }
-//     }
-
-//     pub fn alloc(meta: T) -> Self {
-//         let page = alloc_with_meta(meta);
-//         Self::new(page)
-//     }
-
-//     pub fn meta(&self) -> &'static mut T {
-//         meta_of::<T>(self.page)
-//     }
-
-//     pub fn get_page(&self) -> usize {
-//         self.page
-//     }
-// }

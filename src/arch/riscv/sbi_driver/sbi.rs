@@ -3,11 +3,19 @@ type SBIRet = Result<usize, isize>;
 #[repr(usize)]
 enum SBIExtension {
     Hsm = 0x48534d,
+    #[cfg(not(feature = "no-smp"))]
+    Rfence = 0x52464e43,
 }
 
 #[repr(usize)]
 enum HsmFunction {
     HartStart = 0,
+}
+
+#[cfg(not(feature = "no-smp"))]
+#[repr(usize)]
+enum RfenceFunction {
+    RemoteSfenceVma = 1,
 }
 
 fn sbi_call(
@@ -65,6 +73,22 @@ pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> SBIRet {
         hartid,
         start_addr,
         opaque,
+        0,
+        0,
+        0,
+    )
+}
+
+#[cfg(not(feature = "no-smp"))]
+pub fn remote_sfence_vma_all() -> SBIRet {
+    // A hart-mask base of -1 selects every SBI-available hart. A zero start
+    // address and zero size request invalidation of the entire address space.
+    sbi_call(
+        RfenceFunction::RemoteSfenceVma as usize,
+        SBIExtension::Rfence as usize,
+        0,
+        usize::MAX,
+        0,
         0,
         0,
         0,

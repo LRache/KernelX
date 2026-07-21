@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::arch::{self, KvmPageTable, PageTableTrait};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::{Manager, MapChange, MapChangeEvent, MapManagerWatcher};
+use crate::kernel::mm::maparea::{Manager, MapChange, MapChangeEvent, MapManagerWatcher, PinPageFrame};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::{SleepLock, SpinLock};
 
@@ -58,13 +58,13 @@ impl KvmUserMemoryFault {
         }
     }
 
-    fn translate(&self, map_manager: &mut Manager, access_type: MemAccessType) -> Option<(usize, MapPerm)> {
-        let kaddr = match access_type {
+    fn translate(&self, map_manager: &mut Manager, access_type: MemAccessType) -> Option<(PinPageFrame, MapPerm)> {
+        let frame = match access_type {
             MemAccessType::Read | MemAccessType::Execute => map_manager.translate_read(self.uaddr, &self.owner)?,
             MemAccessType::Write => map_manager.translate_write(self.uaddr, &self.owner)?,
         };
 
-        Some((kaddr & !arch::PGMASK, Self::stage2_perm(access_type)))
+        Some((frame, Self::stage2_perm(access_type)))
     }
 }
 
@@ -255,7 +255,8 @@ impl KvmAddrSpace {
         user_fault
             .owner
             .with_map_manager_mut(|map_manager| {
-                let (kpage, requested_perm) = user_fault.translate(map_manager, access_type)?;
+                let (frame, requested_perm) = user_fault.translate(map_manager, access_type)?;
+                let kpage = frame.kpage();
                 let mut pagetable = self.pagetable.lock();
                 let perm = pagetable
                     .mapped_perm(user_fault.gpage)

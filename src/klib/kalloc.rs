@@ -29,18 +29,33 @@ impl HeapAllocator {
 
 unsafe impl GlobalAlloc for HeapAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = self.mutex.lock();
         if layout.size() >= 1 * 1024 * 1024 {
             // 1 MiB threshold for large allocations
             crate::kwarn!("Large allocation: {} bytes", layout.size());
             klib::backtrace::print_backtrace();
         }
+
+        // if layout.size() > crate::arch::PGSIZE {
+        //     let pages = crate::arch::page_count(layout.size());
+        //     let align = layout.align().max(crate::arch::PGSIZE);
+        //     return crate::kernel::mm::page::alloc_contiguous_aligned(pages, align) as *mut u8;
+        // }
+
+        let _ = self.mutex.lock();
         let ptr = unsafe { malloc_aligned(layout.align(), layout.size()) as *mut u8 };
         debug_assert!(!ptr.is_null());
         ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // if layout.size() > crate::arch::PGSIZE {
+        //     let pages = crate::arch::page_count(layout.size());
+        //     let align = layout.align().max(crate::arch::PGSIZE);
+        //     crate::kernel::mm::page::free_contiguous_aligned(ptr as usize, pages, align);
+        //     return;
+        // }
+
+        let _ = layout;
         let _ = self.mutex.lock();
         unsafe { free(ptr as *mut c_void) };
     }

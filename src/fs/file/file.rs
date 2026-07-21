@@ -178,12 +178,12 @@ impl FileOps for RandomAccessFile {
         let mut total_read = 0;
         let mut current_offset = offset;
         for kbuf in ubuf.iter_mut() {
-            let kbuf = match kbuf {
+            let mut kbuf = match kbuf {
                 Ok(kbuf) => kbuf,
                 Err(_) if total_read > 0 => return Ok(total_read),
                 Err(err) => return Err(err),
             };
-            let n = match self.inode.readat(kbuf, current_offset, direct) {
+            let n = match self.inode.readat(&mut kbuf, current_offset, direct) {
                 Ok(n) => n,
                 Err(_) if total_read > 0 => return Ok(total_read),
                 Err(err) => return Err(err),
@@ -221,7 +221,7 @@ impl FileOps for RandomAccessFile {
                 Err(_) if total_written > 0 => return Ok(total_written),
                 Err(err) => return Err(err),
             };
-            let n = match self.inode.writeat(kbuf, current_offset) {
+            let n = match self.inode.writeat(&kbuf, current_offset) {
                 Ok(n) => n,
                 Err(_) if total_written > 0 => return Ok(total_written),
                 Err(err) => return Err(err),

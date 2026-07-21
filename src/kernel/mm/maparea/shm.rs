@@ -4,10 +4,10 @@ use alloc::sync::Arc;
 
 use crate::arch::{self, PageTable, PageTableTrait};
 use crate::kernel::ipc::shm::{ShmFrames, on_shm_area_drop};
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
-use super::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal};
+use super::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal, PinPageFrame};
 
 pub struct ShmArea {
     ubase: usize,
@@ -34,14 +34,10 @@ impl Drop for ShmArea {
 }
 
 impl Area for ShmArea {
-    fn translate_read(&mut self, uaddr: usize, _addrspace: &AddrSpace) -> Option<usize> {
+    fn translate_read(&mut self, uaddr: usize, _addrspace: &AddrSpace) -> Option<PinPageFrame> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let frames = self.frames.frames.lock();
-        if page_index < frames.len() {
-            Some(frames[page_index].get_page())
-        } else {
-            None
-        }
+        frames.get(page_index).cloned().map(PinPageFrame::stable)
     }
 
     fn translate_write(
@@ -49,7 +45,7 @@ impl Area for ShmArea {
         uaddr: usize,
         _addrspace: &AddrSpace,
         _map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Option<usize> {
+    ) -> Option<PinPageFrame> {
         self.translate_read(uaddr, _addrspace)
     }
 
@@ -58,10 +54,8 @@ impl Area for ShmArea {
         uaddr: usize,
         _addrspace: &AddrSpace,
         _map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Option<Arc<PhysPageFrame>> {
-        let page_index = (uaddr - self.ubase) / arch::PGSIZE;
-        let frames = self.frames.frames.lock();
-        frames.get(page_index).cloned()
+    ) -> Option<PinPageFrame> {
+        self.translate_write(uaddr, _addrspace, _map_change_notifier)
     }
 
     fn ubase(&self) -> usize {
@@ -76,7 +70,12 @@ impl Area for ShmArea {
         self.frames.frames.lock().len()
     }
 
-    fn fork(&mut self, _self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
+    fn fork(
+        &mut self,
+        _self_pagetable: &SpinLock<PageTable>,
+        _tlb_changed: &mut bool,
+        _addrspace: &Arc<AddrSpace>,
+    ) -> Box<dyn Area> {
         // Forked child gets its own ShmArea; increment ref_count to match.
         use crate::kernel::ipc::shm::on_shm_area_attach;
         on_shm_area_attach(self.shmid);
@@ -94,29 +93,30 @@ impl Area for ShmArea {
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
         _map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<usize, MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultSignal> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
-        let page_offset = (uaddr - self.ubase) % arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index >= frames.len() {
             return Err(MemoryFaultSignal::Segv);
         }
 
         let frame = &frames[page_index];
-        let kpage = frame.get_page();
         addrspace
             .pagetable()
             .lock()
             .mmap(uaddr & !arch::PGMASK, frame, self.perm);
-        Ok(kpage + page_offset)
+        Ok(())
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let mut pt = pagetable.lock();
+        let mut tlb_changed = false;
         let frames = self.frames.frames.lock();
         for i in 0..frames.len() {
             let uaddr = self.ubase + i * arch::PGSIZE;
-            pt.munmap(uaddr, &frames[i]);
+            tlb_changed |= pagetable.lock().munmap_with_check_no_flush(uaddr, frames[i].get_page());
+        }
+        if tlb_changed {
+            arch::flush_tlb_all();
         }
     }
 

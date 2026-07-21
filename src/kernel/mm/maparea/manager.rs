@@ -7,11 +7,11 @@ use crate::arch::{self, PageTable};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::PrivateAnonymousArea;
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 use crate::{ktrace, print};
 
-use super::area::{Area, MapAreaInfo, MemoryFaultSignal};
+use super::area::{Area, MapAreaInfo, MemoryFaultSignal, PinPageFrame};
 use super::userbrk::UserBrk;
 use super::userstack::{Auxv, UserStack};
 use super::watcher::{MapChange, MapChangeEvent, MapChangeNotifier, MapManagerWatcher};
@@ -33,8 +33,9 @@ impl Manager {
         }
     }
 
-    pub fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Manager {
+    pub fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, addrspace: &Arc<AddrSpace>) -> Manager {
         let watchers = self.watchers.as_slice();
+        let mut tlb_changed = false;
 
         let new_areas = self
             .areas
@@ -48,9 +49,12 @@ impl Manager {
                         event: MapChangeEvent::Remap,
                     },
                 );
-                (*ubase, area.fork(self_pagetable))
+                (*ubase, area.fork(self_pagetable, &mut tlb_changed, addrspace))
             })
             .collect();
+        if tlb_changed {
+            arch::flush_tlb_all();
+        }
 
         Self {
             areas: new_areas,
@@ -354,6 +358,7 @@ impl Manager {
             self.areas.get(overlapped_base).unwrap().check_set_perm(perm)?;
         }
 
+        let mut tlb_changed = false;
         for overlapped_base in overlapped_areas {
             let mut middle = self.areas.remove(&overlapped_base).unwrap();
             let overlapped_end = overlapped_base + middle.size();
@@ -375,8 +380,11 @@ impl Manager {
                 page_count: middle.page_count(),
                 event: MapChangeEvent::PermChange(perm),
             });
-            middle.set_perm(perm, pagetable);
+            middle.set_perm(perm, pagetable, &mut tlb_changed);
             self.areas.insert(middle.ubase(), middle);
+        }
+        if tlb_changed {
+            arch::flush_tlb_all();
         }
 
         Ok(())
@@ -387,12 +395,14 @@ impl Manager {
         argv: &[&str],
         envp: &[&str],
         auxv: &Auxv,
-        addrspace: &AddrSpace,
+        addrspace: &Arc<AddrSpace>,
     ) -> Result<usize, Errno> {
         assert!(self.userstack_ubase == 0, "User stack already created");
 
         let mut userstack = Box::new(UserStack::new());
         let ubase = config::USER_STACK_TOP - config::USER_STACK_PAGE_COUNT_MAX * arch::PGSIZE;
+
+        userstack.bind_addrspace(addrspace);
 
         let top = userstack.push_argv_envp_auxv(argv, envp, auxv, addrspace)?;
 
@@ -402,7 +412,7 @@ impl Manager {
         Ok(top)
     }
 
-    pub fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+    pub fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
         if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
             if !area.perm().contains(MapPerm::R) {
                 return None;
@@ -413,7 +423,7 @@ impl Manager {
         }
     }
 
-    pub fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
+    pub fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
         let watchers = self.watchers.as_slice();
         if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
             if !area.perm().contains(MapPerm::W) {
@@ -426,7 +436,7 @@ impl Manager {
         }
     }
 
-    pub fn get_frame(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<Arc<PhysPageFrame>> {
+    pub fn get_frame(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
         let watchers = self.watchers.as_slice();
         if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
             if !area.perm().contains(MapPerm::W) {
@@ -444,7 +454,7 @@ impl Manager {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Result<usize, MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultSignal> {
         let watchers = self.watchers.as_slice();
         if let Some((_ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
             if !access_type.match_perm(area.perm()) {
@@ -452,7 +462,7 @@ impl Manager {
             }
             let map_change_notifier = MapChangeNotifier::new(watchers);
             match area.try_to_fix_memory_fault(uaddr, access_type, addrspace, &map_change_notifier) {
-                Ok(kaddr) => Ok(kaddr),
+                Ok(()) => Ok(()),
                 Err(signal) => {
                     // crate::kinfo!(
                     //     "Area {} at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
@@ -469,7 +479,12 @@ impl Manager {
         }
     }
 
-    pub fn increase_userbrk(&mut self, new_ubrk: usize, pagetable: &SpinLock<PageTable>) -> Result<usize, Errno> {
+    pub fn increase_userbrk(
+        &mut self,
+        new_ubrk: usize,
+        pagetable: &SpinLock<PageTable>,
+        addrspace: &Arc<AddrSpace>,
+    ) -> Result<usize, Errno> {
         if new_ubrk == 0 {
             return Ok(self.userbrk.ubrk);
         }
@@ -491,11 +506,13 @@ impl Manager {
         if new_page_count > self.userbrk.page_count {
             // Growing: map new pages
             let ubase = config::USER_BRK_BASE + self.userbrk.page_count * arch::PGSIZE;
-            let new_area = Box::new(PrivateAnonymousArea::new(
+            let mut new_area = Box::new(PrivateAnonymousArea::new(
                 ubase,
                 MapPerm::R | MapPerm::W | MapPerm::U,
                 new_page_count - self.userbrk.page_count,
             ));
+
+            new_area.bind_addrspace(addrspace);
 
             self.map_area(ubase, new_area);
         } else if new_page_count < self.userbrk.page_count {
@@ -550,22 +567,6 @@ impl Manager {
             }
         }
         print!("=== End Memory Area Status ===\n");
-    }
-
-    /// Check if a given address range is mapped
-    pub fn is_range_mapped(&self, uaddr: usize, size: usize) -> bool {
-        let end_addr = uaddr + size;
-
-        for (&area_base, area) in self.areas.range(self.overlap_scan_start(uaddr)..) {
-            let area_end = area_base + area.size();
-
-            // Check if the range overlaps with this area
-            if area_base < end_addr && area_end > uaddr {
-                return true;
-            }
-        }
-
-        false
     }
 
     pub fn cleanup(&mut self, pagetable: &SpinLock<PageTable>) {

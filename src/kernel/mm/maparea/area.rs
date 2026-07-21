@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 
 use crate::arch::PageTable;
 use crate::kernel::errno::SysResult;
+use crate::kernel::mm::swappable::{AnonymousBackend, FileBackend, SwappableFramePin};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -55,10 +56,41 @@ impl Frame {
     }
 }
 
-pub trait Area: Send {
-    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize>;
+pub enum PinPageFrame {
+    Stable(Arc<PhysPageFrame>),
+    Swappable(SwappableFramePin<AnonymousBackend>),
+    FileSwappable(SwappableFramePin<FileBackend>),
+}
 
-    /// `translate_write` translates a user virtual address to a physical address for write access.
+impl PinPageFrame {
+    pub fn stable(frame: Arc<PhysPageFrame>) -> Self {
+        Self::Stable(frame)
+    }
+
+    pub fn swappable(pin: SwappableFramePin<AnonymousBackend>) -> Self {
+        Self::Swappable(pin)
+    }
+
+    pub fn file_swappable(pin: SwappableFramePin<FileBackend>) -> Self {
+        Self::FileSwappable(pin)
+    }
+
+    pub fn kpage(&self) -> usize {
+        match self {
+            Self::Stable(frame) => frame.get_page(),
+            Self::Swappable(pin) => pin.kpage(),
+            Self::FileSwappable(pin) => pin.kpage(),
+        }
+    }
+}
+
+pub trait Area: Send {
+    fn bind_addrspace(&mut self, _addrspace: &Arc<AddrSpace>) {}
+
+    /// Resolves a user virtual address for read access and pins its physical page.
+    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame>;
+
+    /// Resolves a user virtual address for write access and pins its physical page.
     /// It may unmap an old CoW page and allocate a new physical page if necessary so it should
     /// notify the `map_change_notifier` before the change happens.
     fn translate_write(
@@ -66,15 +98,15 @@ pub trait Area: Send {
         uaddr: usize,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Option<usize>;
+    ) -> Option<PinPageFrame>;
 
     fn get_frame(
         &mut self,
-        _uaddr: usize,
-        _addrspace: &AddrSpace,
-        _map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Option<Arc<PhysPageFrame>> {
-        None
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<PinPageFrame> {
+        self.translate_write(uaddr, addrspace, map_change_notifier)
     }
 
     fn ubase(&self) -> usize;
@@ -85,7 +117,12 @@ pub trait Area: Send {
 
     fn perm(&self) -> MapPerm;
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area>;
+    fn fork(
+        &mut self,
+        self_pagetable: &SpinLock<PageTable>,
+        tlb_changed: &mut bool,
+        addrspace: &Arc<AddrSpace>,
+    ) -> Box<dyn Area>;
 
     /// `try_to_fix_memory_fault` tries to fix a memory fault at the given user virtual address with the given access type.
     /// It may unmap an old CoW page and allocate a new physical page if necessary
@@ -96,7 +133,7 @@ pub trait Area: Send {
         access_type: MemAccessType,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<usize, MemoryFaultSignal>;
+    ) -> Result<(), MemoryFaultSignal>;
 
     fn page_count(&self) -> usize;
     fn size(&self) -> usize {
@@ -111,7 +148,7 @@ pub trait Area: Send {
         Ok(())
     }
 
-    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>) {
+    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>, _tlb_changed: &mut bool) {
         unimplemented!("set_perm not implemented for the area type: {}", self.type_name());
     }
 

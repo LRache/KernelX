@@ -9,7 +9,6 @@ pub mod vdso;
 pub use addrspace::*;
 pub use page::*;
 
-#[cfg(feature = "swap-memory")]
 pub mod swappable;
 
 use bitflags::bitflags;

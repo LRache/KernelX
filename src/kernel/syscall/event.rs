@@ -588,6 +588,7 @@ fn select(
     }
 }
 
+#[allow(dead_code)]
 pub fn pselect6_time32(
     nfds: usize,
     uptr_readfds: UPtr<FdSet>,
@@ -814,6 +815,7 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
     Ok(1)
 }
 
+#[allow(dead_code)]
 pub fn ppoll_time32(
     uptr_ufds: UArray<Pollfd>,
     nfds: usize,

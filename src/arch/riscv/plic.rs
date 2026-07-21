@@ -2,7 +2,6 @@ use alloc::collections::btree_map::BTreeMap;
 use fdt::Fdt;
 use fdt::node::FdtNode;
 
-use crate::kernel::mm::page;
 use crate::klib::{InitedCell, SpinLock};
 use crate::{arch, kinfo, kwarn};
 
@@ -146,9 +145,7 @@ pub fn from_fdt(fdt: &Fdt, fdt_node: &FdtNode) {
                 i += 1;
             }
 
-            let pages = arch::page_count(size);
-            let kbase = page::alloc_contiguous(pages);
-            arch::map_kernel_addr(kbase, base, size, arch::MapPerm::RW);
+            let kbase = arch::mmio_phys_to_kaddr(base, size);
 
             Some(PLIC::new(kbase, smode_context))
         } else {

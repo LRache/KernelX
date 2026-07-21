@@ -1,99 +1,114 @@
 use alloc::sync::Arc;
-use core::usize;
 
-use crate::kernel::mm::swappable::{AddrSpaceFamilyChain, swapper};
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
-use crate::klib::SpinLock;
 
-pub(super) struct AllocatedFrame {
-    pub(super) frame: PhysPageFrame,
-    pub(super) dirty: bool,
+use super::super::swappable::{AccessDirty, SwapError, SwappableBackendOps, SwappableFrame};
+use super::family::{AnonMapFamily, AnonMapFamilyMember, AnonMapFamilyRegistration};
+use super::swapspace::{SwapSlot, swap_space};
+
+#[derive(Clone)]
+pub struct AnonymousBackend {
+    mapping: Arc<AnonMapFamily>,
+    page_index: usize,
+    swap_slot: Option<SwapSlot>,
 }
 
-pub(super) enum State {
-    Allocated(AllocatedFrame),
-    SwappedOut,
-}
-
-pub(super) const NO_DISK_BLOCK: usize = usize::MAX;
-
-pub(super) struct FrameState {
-    pub(super) state: State,
-    pub(super) disk_slot: usize,
-}
-
-pub struct SwappableNoFileFrameInner {
-    pub(super) state: SpinLock<FrameState>,
-    pub(super) family_chain: AddrSpaceFamilyChain,
-    pub uaddr: usize,
-}
-
-impl SwappableNoFileFrameInner {
-    pub fn allocated(uaddr: usize, frame: PhysPageFrame, family_chain: AddrSpaceFamilyChain) -> Self {
-        Self {
-            state: SpinLock::new(
-                FrameState {
-                    state: State::Allocated(AllocatedFrame { frame, dirty: false }),
-                    disk_slot: NO_DISK_BLOCK,
-                },
-                "SwappableNoFileFrameInner::state",
-            ),
-            family_chain,
-            uaddr,
+impl AnonMapFamilyRegistration {
+    pub fn page_backend(&self, page_index: usize) -> AnonymousBackend {
+        AnonymousBackend {
+            mapping: self.mapping(),
+            page_index,
+            swap_slot: None,
         }
     }
 }
 
-pub struct SwappableNoFileFrame {
-    inner: Arc<SwappableNoFileFrameInner>,
+impl AnonymousBackend {
+    fn collect_access_dirty(
+        &self,
+        members: &[AnonMapFamilyMember],
+        frame: &PhysPageFrame,
+        operation: impl Fn(&AddrSpace, usize, usize) -> Option<AccessDirty>,
+    ) -> Option<AccessDirty> {
+        let expected_kpage = frame.get_page();
+        let mut result: Option<AccessDirty> = None;
+
+        for member in members {
+            let Some(uaddr) = member.page_uaddr(self.page_index) else {
+                continue;
+            };
+            let Some(addrspace) = member.addrspace().upgrade() else {
+                continue;
+            };
+            if let Some(access_dirty) = operation(&addrspace, uaddr, expected_kpage) {
+                let result = result.get_or_insert_default();
+                result.accessed |= access_dirty.accessed;
+                result.dirty |= access_dirty.dirty;
+            }
+        }
+
+        result
+    }
 }
 
-impl SwappableNoFileFrame {
-    pub fn allocated(uaddr: usize, frame: PhysPageFrame, addrspace: &AddrSpace) -> Self {
-        let inner = Arc::new(SwappableNoFileFrameInner::allocated(
-            uaddr,
-            frame,
-            addrspace.family_chain().clone(),
-        ));
-        Self { inner }
+/// The page frame finds the addrspace that maps it by each `backend.mapping.members`'s `addrspace` field,
+/// and then checks if the page is mapped in that addrspace at the user virtual address corresponding to the page index.
+/// If it is mapped, it checks if the page has been accessed or dirtied, and returns an `AccessDirty` struct indicating whether the page has been accessed or dirtied in any of the mappings.
+pub type AnonymousSwappableFrame = SwappableFrame<AnonymousBackend>;
+
+impl SwappableBackendOps for AnonymousBackend {
+    type SwappedOutContext = Arc<[AnonMapFamilyMember]>;
+
+    fn is_swappable(&self) -> bool {
+        swap_space().is_some()
     }
 
-    pub fn alloc_zeroed(uaddr: usize, addrspace: &AddrSpace) -> (Self, usize) {
+    fn inspect_access_dirty_no_flush(&self, frame: &PhysPageFrame) -> (Self::SwappedOutContext, AccessDirty, bool) {
+        let snapshot = self.mapping.snapshot();
+        let access_dirty = self.collect_access_dirty(&snapshot, frame, AddrSpace::take_access_dirty_if_maps_no_flush);
+        let tlb_changed = access_dirty.is_some();
+        (snapshot, access_dirty.unwrap_or_default(), tlb_changed)
+    }
+
+    fn unmap_no_flush(&self, snapshot: &Self::SwappedOutContext, frame: &PhysPageFrame) -> Option<AccessDirty> {
+        self.collect_access_dirty(snapshot, frame, AddrSpace::unmap_if_maps_no_flush)
+    }
+
+    fn read_in(&self) -> Result<PhysPageFrame, SwapError> {
+        let slot = self.swap_slot.expect("swapped-out anonymous page has no swap slot");
+        let swap_space = swap_space().expect("anonymous swap space disappeared while a page was swapped out");
         let frame = PhysPageFrame::alloc_with_shrink_zeroed();
-        let kpage = frame.get_page();
-        let frame = Self::allocated(uaddr, frame, addrspace);
-        swapper::push_lru(kpage, frame.inner.clone());
-        (frame, kpage)
+        swap_space.read_page(slot, &frame)?;
+        Ok(frame)
     }
 
-    pub fn copy(&self, addrspace: &AddrSpace) -> (Self, usize) {
-        let (inner, kpage) = self.inner.copy(addrspace);
-        (SwappableNoFileFrame { inner }, kpage)
-    }
+    fn write_out(&mut self, frame: &PhysPageFrame, dirty: bool, _mapping_refs: usize) -> Result<(), SwapError> {
+        let swap_space = swap_space().expect("swappable anonymous page has no swap space");
+        if let Some(slot) = self.swap_slot {
+            if !dirty {
+                return Ok(());
+            }
+            return swap_space.write_page(slot, frame);
+        }
 
-    pub fn get_page(&self) -> Option<usize> {
-        match &self.inner.state.lock().state {
-            State::Allocated(allocated) => Some(allocated.frame.get_page()),
-            State::SwappedOut => None,
+        let slot = swap_space.alloc_slot()?;
+        match swap_space.write_page(slot, frame) {
+            Ok(()) => {
+                self.swap_slot = Some(slot);
+                Ok(())
+            }
+            Err(error) => {
+                swap_space.free_slot(slot);
+                Err(error)
+            }
         }
     }
 
-    pub fn get_page_swap_in(&self) -> usize {
-        self.inner.get_page_swap_in()
-    }
-
-    pub fn uaddr(&self) -> usize {
-        self.inner.uaddr
-    }
-
-    pub fn is_swapped_out(&self) -> bool {
-        matches!(&self.inner.state.lock().state, State::SwappedOut)
-    }
-}
-
-impl Drop for SwappableNoFileFrame {
-    fn drop(&mut self) {
-        // When an SwappableNoFileFrame is dropped, it should be deallocated from the swapper.
-        self.inner.free();
+    fn release(&mut self) {
+        if let Some(slot) = self.swap_slot.take() {
+            swap_space()
+                .expect("anonymous swap space disappeared while a slot was allocated")
+                .free_slot(slot);
+        }
     }
 }

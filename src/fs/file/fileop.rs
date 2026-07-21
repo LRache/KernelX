@@ -47,8 +47,8 @@ pub trait FileOps: DowncastSync {
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
         let mut total_read = 0;
         for kbuf in ubuf.iter_mut() {
-            let kbuf = kbuf?;
-            let n = self.read(kbuf)?;
+            let mut kbuf = kbuf?;
+            let n = self.read(&mut kbuf)?;
             total_read += n;
             if n < kbuf.len() {
                 return Ok(total_read);
@@ -61,7 +61,7 @@ pub trait FileOps: DowncastSync {
         let mut total_written = 0;
         for kbuf in ubuf.iter() {
             let kbuf = kbuf?;
-            let n = self.write(kbuf)?;
+            let n = self.write(&kbuf)?;
             total_written += n;
             if n < kbuf.len() {
                 return Ok(total_written);
@@ -83,12 +83,12 @@ pub trait FileOps: DowncastSync {
         let mut total_read = 0;
         let mut current_offset = offset;
         for kbuf in ubuf.iter_mut() {
-            let kbuf = match kbuf {
+            let mut kbuf = match kbuf {
                 Ok(kbuf) => kbuf,
                 Err(_) if total_read > 0 => return Ok(total_read),
                 Err(err) => return Err(err),
             };
-            let n = match self.pread(kbuf, current_offset) {
+            let n = match self.pread(&mut kbuf, current_offset) {
                 Ok(n) => n,
                 Err(_) if total_read > 0 => return Ok(total_read),
                 Err(err) => return Err(err),
@@ -115,7 +115,7 @@ pub trait FileOps: DowncastSync {
                 Err(_) if total_written > 0 => return Ok(total_written),
                 Err(err) => return Err(err),
             };
-            let n = match self.pwrite(kbuf, current_offset) {
+            let n = match self.pwrite(&kbuf, current_offset) {
                 Ok(n) => n,
                 Err(_) if total_written > 0 => return Ok(total_written),
                 Err(err) => return Err(err),

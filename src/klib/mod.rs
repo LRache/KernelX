@@ -3,6 +3,7 @@ pub mod crc;
 pub mod defer;
 pub mod dmesg;
 pub mod initcell;
+pub mod intrusive_lru;
 pub mod kalloc;
 pub mod klog;
 pub mod ksync;
@@ -13,5 +14,7 @@ pub mod ring;
 pub mod utils;
 
 pub use initcell::InitedCell;
+#[allow(unused_imports)]
+pub use ksync::{BucketSleepLock, BucketSleepLockGuard};
 pub use ksync::{RWLock, SleepLock, SpinLock};
 pub use utils::LazyInitedCell;

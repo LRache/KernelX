@@ -3,6 +3,7 @@ use core::fmt::Debug;
 use crate::arch;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::AddrSpace;
+use crate::kernel::mm::maparea::{ReadChunk, WriteChunk};
 
 pub struct UAddrSpaceBuffer<'a> {
     uaddr: usize,
@@ -54,8 +55,8 @@ pub struct ReaderIter<'a> {
     offset: usize,
 }
 
-impl Iterator for ReaderIter<'_> {
-    type Item = SysResult<&'static [u8]>;
+impl<'a> Iterator for ReaderIter<'a> {
+    type Item = SysResult<ReadChunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let remaining = self.ubuf.length - self.offset;
@@ -63,23 +64,13 @@ impl Iterator for ReaderIter<'_> {
             return None;
         }
 
-        let uaddr = self.ubuf.uaddr + self.offset;
-        let kaddr = match self
-            .ubuf
-            .addrspace
-            .with_map_manager_mut(|manager| manager.translate_read(uaddr, self.ubuf.addrspace))
-        {
-            Some(kaddr) => kaddr,
+        let uaddr = match self.ubuf.uaddr.checked_add(self.offset) {
+            Some(uaddr) => uaddr,
             None => return Some(Err(Errno::EFAULT)),
         };
-
-        let length = core::cmp::min(remaining, arch::PGSIZE - (kaddr % arch::PGSIZE));
+        let length = core::cmp::min(remaining, arch::PGSIZE - (uaddr & arch::PGMASK));
         self.offset += length;
-
-        debug_assert!(kaddr % arch::PGSIZE + length <= arch::PGSIZE);
-        debug_assert!(kaddr != 0);
-
-        Some(Ok(unsafe { core::slice::from_raw_parts(kaddr as *const u8, length) }))
+        Some(self.ubuf.addrspace.translate_read(uaddr, length))
     }
 }
 
@@ -88,8 +79,8 @@ pub struct WriterIter<'a> {
     offset: usize,
 }
 
-impl Iterator for WriterIter<'_> {
-    type Item = SysResult<&'static mut [u8]>;
+impl<'a> Iterator for WriterIter<'a> {
+    type Item = SysResult<WriteChunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let remaining = self.ubuf.length - self.offset;
@@ -97,23 +88,13 @@ impl Iterator for WriterIter<'_> {
             return None;
         }
 
-        let uaddr = self.ubuf.uaddr + self.offset;
-        let kaddr = match self
-            .ubuf
-            .addrspace
-            .with_map_manager_mut(|manager| manager.translate_write(uaddr, self.ubuf.addrspace))
-        {
-            Some(kaddr) => kaddr,
+        let uaddr = match self.ubuf.uaddr.checked_add(self.offset) {
+            Some(uaddr) => uaddr,
             None => return Some(Err(Errno::EFAULT)),
         };
-
-        let length = core::cmp::min(remaining, arch::PGSIZE - (kaddr % arch::PGSIZE));
+        let length = core::cmp::min(remaining, arch::PGSIZE - (uaddr & arch::PGMASK));
         self.offset += length;
-
-        debug_assert!(kaddr % arch::PGSIZE + length <= arch::PGSIZE);
-        debug_assert!(kaddr != 0);
-
-        Some(Ok(unsafe { core::slice::from_raw_parts_mut(kaddr as *mut u8, length) }))
+        Some(self.ubuf.addrspace.translate_write(uaddr, length))
     }
 }
 

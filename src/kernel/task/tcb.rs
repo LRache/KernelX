@@ -175,7 +175,7 @@ pub struct TCB {
 
     user_context: TaskLocal<Box<UserContext>>,
     kernel_context: UnsafeCell<KernelContext>,
-    pub kernel_stack: KernelStack,
+    pub kernel_stack: KernelStack<{ UTASK_KSTACK_PAGE_COUNT - 1 }>,
 
     addrspace: Arc<AddrSpace>,
     fdtable: RWLock<Arc<SleepLock<FDTable>>>,
@@ -203,10 +203,11 @@ impl TCB {
         addrspace: Arc<AddrSpace>,
         fdtable: Arc<SleepLock<FDTable>>,
     ) -> Arc<Self> {
-        let kernel_stack = KernelStack::new(UTASK_KSTACK_PAGE_COUNT);
+        let kernel_stack = KernelStack::new();
         user_context.set_kernel_stack_top(kernel_stack.get_top());
 
         user_context.set_addrspace(&addrspace);
+        addrspace.acquire_task_user();
 
         let tcb = Arc::new(Self {
             tid,
@@ -795,13 +796,13 @@ impl TCB {
     /// Called by the task itself to apply pending state changes.
     /// Returns true if a state change was applied, false otherwise.
     pub fn apply_pending_state_change(&self) -> bool {
+        // Decide and, where possible, commit the state transition under the state
+        // lock. External notifications and potentially sleeping cleanup run only
+        // after the lock guard has been dropped.
         let change = {
             let mut state = self.state.lock();
             match state.pending_state_change {
-                PendingTCBStateChange::Exit => {
-                    state.state = TCBState::Exited;
-                    Some(PendingTCBStateChange::Exit)
-                }
+                PendingTCBStateChange::Exit => Some(PendingTCBStateChange::Exit),
                 PendingTCBStateChange::Stop(signum) => match state.state {
                     TCBState::Ready | TCBState::Running => {
                         state.state = TCBState::Stopped;
@@ -823,7 +824,12 @@ impl TCB {
         match change {
             Some(PendingTCBStateChange::Stop(signum)) => self.parent().notify_stopped(signum),
             Some(PendingTCBStateChange::PtraceStop(stop)) => self.notify_ptrace_stopped(stop.signum),
-            Some(PendingTCBStateChange::Exit) => {}
+            Some(PendingTCBStateChange::Exit) => {
+                // Releasing the last address-space user may sleep, so keep this
+                // task schedulable until cleanup has completed.
+                self.addrspace.release_task_user();
+                self.state.lock().state = TCBState::Exited;
+            }
             Some(PendingTCBStateChange::None) => unreachable!(),
             None => return false,
         }
@@ -849,11 +855,13 @@ impl TCB {
         drop(tid_address_guard);
 
         if let Some(tid_address) = tid_address {
-            if let Ok(tid_kaddr) = self.addrspace.translate_write(tid_address) {
-                // debug_assert!(tid_kaddr & 0x3 == 0);
-                // SAFETY: tid_kaddr comes from a successful writable translation
-                // of the registered clear_child_tid user address.
-                unsafe { *(tid_kaddr as *mut Tid) = 0 };
+            if self
+                .addrspace
+                .with_translated_write(tid_address, core::mem::size_of::<Tid>(), |dst| {
+                    dst.copy_from_slice(&0_i32.to_ne_bytes());
+                })
+                .is_ok()
+            {
                 if let Ok(frame) = self.addrspace.get_frame(tid_address) {
                     let mut futex_manager = futex::manager();
                     let _ =
@@ -867,11 +875,6 @@ impl TCB {
         } else {
             self.parent.remove_task(self);
             manager::remove(self.tid);
-
-            // cleanup addrspace before scheduler
-            if Arc::strong_count(&self.addrspace) == 1 {
-                self.addrspace.cleanup();
-            }
         }
     }
 
@@ -928,8 +931,8 @@ impl Task for TCB {
         self.kernel_context.get()
     }
 
-    fn kstack(&self) -> &KernelStack {
-        &self.kernel_stack
+    fn check_kernel_stack_overflow(&self, addr: usize) -> bool {
+        self.kernel_stack.check_stack_overflow(addr)
     }
 
     fn tcb(&self) -> &TCB {

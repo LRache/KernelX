@@ -6,9 +6,16 @@ use crate::kernel::mm::page;
 
 pub struct VirtIOHal;
 
+fn alloc_zeroed_dma_pages(pages: usize) -> usize {
+    let kaddr = page::alloc_contiguous_zero(pages);
+    // SAFETY: `kaddr` is an exclusive allocation of `pages` contiguous,
+    // writable pages, and `size` is exactly the allocation size.
+    kaddr
+}
+
 unsafe impl Hal for VirtIOHal {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
-        let kaddr = page::alloc_contiguous(pages);
+        let kaddr = alloc_zeroed_dma_pages(pages);
         let ptr = NonNull::new(kaddr as *mut u8).expect("Failed to allocate DMA memory");
         (arch::kaddr_to_paddr(kaddr), ptr)
     }
@@ -32,11 +39,37 @@ unsafe impl Hal for VirtIOHal {
         NonNull::new(kaddr as *mut u8).expect("Failed to convert MMIO physical address to virtual address")
     }
 
-    unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
-        arch::kaddr_to_paddr(buffer.as_ptr() as *mut u8 as usize)
+    unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> PhysAddr {
+        let kaddr = buffer.as_ptr() as *mut u8 as usize;
+        let len = buffer.len();
+
+        if let Some(paddr) = arch::dma_direct_paddr(kaddr, len) {
+            return paddr;
+        }
+
+        let bounce_kaddr = alloc_zeroed_dma_pages(arch::page_count(len));
+        if matches!(direction, BufferDirection::DriverToDevice | BufferDirection::Both) {
+            // SAFETY: `buffer` is valid for `len` bytes by the Hal contract,
+            // and `bounce_kaddr` owns at least `len` writable bytes.
+            unsafe { core::ptr::copy_nonoverlapping(kaddr as *const u8, bounce_kaddr as *mut u8, len) };
+        }
+        arch::kaddr_to_paddr(bounce_kaddr)
     }
 
-    unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {
-        // Unsharing logic if needed
+    unsafe fn unshare(paddr: PhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection) {
+        let kaddr = buffer.as_ptr() as *mut u8 as usize;
+        let len = buffer.len();
+
+        if arch::dma_direct_paddr(kaddr, len) == Some(paddr) {
+            return;
+        }
+
+        let bounce_kaddr = arch::paddr_to_kaddr(paddr);
+        if matches!(direction, BufferDirection::DeviceToDriver | BufferDirection::Both) {
+            // SAFETY: `paddr` is the contiguous bounce allocation returned by
+            // the matching `share`, and the device has finished using it.
+            unsafe { core::ptr::copy_nonoverlapping(bounce_kaddr as *const u8, kaddr as *mut u8, len) };
+        }
+        page::free_contiguous(bounce_kaddr, arch::page_count(len));
     }
 }

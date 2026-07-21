@@ -21,6 +21,7 @@ use crate::kernel::task::{ChildWaitOptions, ExitStatus, PCB, Tracer, WaitResult,
 use crate::kernel::uapi::{OpenFlags, Uid};
 use crate::kernel::{config, scheduler, task};
 
+use super::common::AT_FDCWD;
 use super::uid;
 
 pub fn sched_yield() -> SyscallRet {
@@ -838,8 +839,6 @@ pub fn execveat(
     uptr_envp: UArray<UString>,
     flags: usize,
 ) -> SyscallRet {
-    use super::def::AT_FDCWD;
-
     let flags = ExecveAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let path = uptr_path.should_not_null()?.read_path()?;
     let perm = Perm::current(PermFlags::X);

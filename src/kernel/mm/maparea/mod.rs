@@ -1,5 +1,6 @@
 mod anonymous;
 mod area;
+mod chunk;
 mod elf;
 mod filemap;
 mod manager;
@@ -10,7 +11,8 @@ mod userstack;
 mod watcher;
 
 pub use anonymous::{PrivateAnonymousArea, SharedAnonymousArea};
-pub use area::{Area, MapAreaInfo, MemoryFaultSignal};
+pub use area::{Area, MapAreaInfo, MemoryFaultSignal, PinPageFrame};
+pub use chunk::{ReadChunk, WriteChunk};
 pub use elf::ELFArea;
 pub use filemap::{PrivateFileMapArea, SharedFileMapArea};
 pub use manager::Manager;
