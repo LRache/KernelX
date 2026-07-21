@@ -1,0 +1,4 @@
+interface:
+  display_name: "KernelX Build Options"
+  short_description: "Configure KernelX compile-time build options"
+  default_prompt: "Use $kernelx-configure-build-options to configure the requested KernelX compile-time options and trace them through the build pipeline."
