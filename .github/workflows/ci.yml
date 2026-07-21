@@ -69,7 +69,7 @@ jobs:
 
       - name: Build riscv64 kmodule usertest image
         run: |
-          IMG_SIZE=128 ./usertests/build.sh riscv64 kmodule
+          IMG_SIZE=128 bash ./usertests/build.sh riscv64 kmodule
           test -x usertests/build/riscv64/tests/kmodule/hello
           test -f usertests/build/riscv64/tests/kmodule/hello.ko
 
@@ -238,7 +238,7 @@ jobs:
 
       - name: Build loongarch64 kmodule usertest image
         run: |
-          IMG_SIZE=128 ./usertests/build.sh loongarch64 kmodule
+          IMG_SIZE=128 bash ./usertests/build.sh loongarch64 kmodule
           test -x usertests/build/loongarch64/tests/kmodule/hello
           test -f usertests/build/loongarch64/tests/kmodule/hello.ko
 
