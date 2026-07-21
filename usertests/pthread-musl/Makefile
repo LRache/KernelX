@@ -26,7 +26,12 @@ CFLAGS += -Wall -Wextra
 CFLAGS += -static -no-pie
 CFLAGS += -O0 -Og -g -v
 
-TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+ALL_CASES := $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+$(foreach case,$(ALL_CASES),$(eval CASE_SOURCES_$(case) := $(case).c))
+$(foreach case,$(ALL_CASES),$(eval CASE_COMMAND_$(case) := $(case)))
+include ../mk/case-selection.mk
+
+TESTS = $(CASES)
 TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 
 define TEST_TARGET_RULE

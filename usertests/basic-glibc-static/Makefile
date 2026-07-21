@@ -14,7 +14,12 @@ CRT_FILES_END ?= $(GLIBC_DIR)/csu/crtn.o
 CFLAGS += -Wall -Wextra -static -nostdlib -nostartfiles
 LDFLAGS += -L$(GLIBC_DIR) -lc -lgcc -lgcc_eh
 
-TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+ALL_CASES := $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+$(foreach case,$(ALL_CASES),$(eval CASE_SOURCES_$(case) := $(case).c))
+$(foreach case,$(ALL_CASES),$(eval CASE_COMMAND_$(case) := $(case)))
+include ../mk/case-selection.mk
+
+TESTS = $(CASES)
 TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 
 define TEST_TARGET_RULE
@@ -34,5 +39,4 @@ clean:
 
 show-tests:
 	@echo "Auto-discovered tests:"
-	@for test in $(TESTS); do echo "  - $$test"; done
-	@for test in $(TESTS); do echo "  - $$test"; done
+	@for test in $(ALL_CASES); do echo "  - $$test"; done

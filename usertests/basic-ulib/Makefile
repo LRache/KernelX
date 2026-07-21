@@ -14,7 +14,12 @@ INC_DIR += ulib/include
 CFLAGS += -Wall -Wextra
 CFLAGS += -nostdlib -static
 
-TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+ALL_CASES := $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+$(foreach case,$(ALL_CASES),$(eval CASE_SOURCES_$(case) := $(case).c))
+$(foreach case,$(ALL_CASES),$(eval CASE_COMMAND_$(case) := $(case)))
+include ../mk/case-selection.mk
+
+TESTS = $(CASES)
 TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
@@ -30,12 +35,16 @@ endef
 $(foreach test,$(TESTS),$(eval $(call TEST_TARGET_RULE,$(test))))
 
 all: ulib-all $(TEST_TARGETS)
+ifneq ($(filter read,$(TESTS)),)
 	@ echo "Hello from basic-ulib read test" > $(OUTPUT_DIR)/read/test.txt
+endif
+ifneq ($(filter write,$(TESTS)),)
 	@ : > $(OUTPUT_DIR)/write/test-write.txt
+endif
 
 ulib-all:
 	$(MAKE) -C ulib all
 
 show-tests:
 	@echo "Auto-discovered tests:"
-	@for test in $(TESTS); do echo "  - $$test"; done
+	@for test in $(ALL_CASES); do echo "  - $$test"; done

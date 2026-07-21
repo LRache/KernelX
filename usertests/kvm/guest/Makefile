@@ -12,13 +12,13 @@ OUTPUT_DIR = $(BUILD_DIR)/output
 
 HELLO_TARGET = $(BUILD_DIR)/hello_sbi.elf
 HELLO_BIN_TARGET = $(BUILD_DIR)/hello_sbi.bin
-HELLO_OUTPUT_TARGET = $(OUTPUT_DIR)/hello_sbi.elf
-HELLO_OUTPUT_BIN_TARGET = $(OUTPUT_DIR)/hello_sbi.bin
+HELLO_OUTPUT_TARGET = $(OUTPUT_DIR)/hello_sbi/hello_sbi.elf
+HELLO_OUTPUT_BIN_TARGET = $(OUTPUT_DIR)/hello_sbi/hello_sbi.bin
 
 TIMER_TICK_TARGET = $(BUILD_DIR)/timer_tick.elf
 TIMER_TICK_BIN_TARGET = $(BUILD_DIR)/timer_tick.bin
-TIMER_TICK_OUTPUT_TARGET = $(OUTPUT_DIR)/timer_tick.elf
-TIMER_TICK_OUTPUT_BIN_TARGET = $(OUTPUT_DIR)/timer_tick.bin
+TIMER_TICK_OUTPUT_TARGET = $(OUTPUT_DIR)/timer_tick/timer_tick.elf
+TIMER_TICK_OUTPUT_BIN_TARGET = $(OUTPUT_DIR)/timer_tick/timer_tick.bin
 
 CFLAGS = -Wall -Werror -nostdlib -ffreestanding -static
 LDFLAGS = -Wl,-e,_start -Wl,-Ttext=0x80200000
@@ -45,11 +45,11 @@ $(HELLO_BIN_TARGET): $(HELLO_TARGET)
 	$(OBJCOPY) -O binary $(HELLO_TARGET) $(HELLO_BIN_TARGET)
 
 $(HELLO_OUTPUT_TARGET): $(HELLO_TARGET)
-	@ mkdir -p $(OUTPUT_DIR)
+	@ mkdir -p $(@D)
 	cp $(HELLO_TARGET) $(HELLO_OUTPUT_TARGET)
 
 $(HELLO_OUTPUT_BIN_TARGET): $(HELLO_BIN_TARGET)
-	@ mkdir -p $(OUTPUT_DIR)
+	@ mkdir -p $(@D)
 	cp $(HELLO_BIN_TARGET) $(HELLO_OUTPUT_BIN_TARGET)
 
 $(TIMER_TICK_TARGET): timer_tick.S
@@ -60,11 +60,11 @@ $(TIMER_TICK_BIN_TARGET): $(TIMER_TICK_TARGET)
 	$(OBJCOPY) -O binary $(TIMER_TICK_TARGET) $(TIMER_TICK_BIN_TARGET)
 
 $(TIMER_TICK_OUTPUT_TARGET): $(TIMER_TICK_TARGET)
-	@ mkdir -p $(OUTPUT_DIR)
+	@ mkdir -p $(@D)
 	cp $(TIMER_TICK_TARGET) $(TIMER_TICK_OUTPUT_TARGET)
 
 $(TIMER_TICK_OUTPUT_BIN_TARGET): $(TIMER_TICK_BIN_TARGET)
-	@ mkdir -p $(OUTPUT_DIR)
+	@ mkdir -p $(@D)
 	cp $(TIMER_TICK_BIN_TARGET) $(TIMER_TICK_OUTPUT_BIN_TARGET)
 
 clean:

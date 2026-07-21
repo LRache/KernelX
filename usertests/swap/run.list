@@ -1,0 +1,5 @@
+# Keep the long-running SMP stress tests manual; the default swap CI is single-core.
+anonymous_swap
+private_file_swap
+shared_anonymous_swap
+shared_file_swap
