@@ -43,10 +43,18 @@ impl Context {
 
     pub fn read_block_bitmap(&self, group: u32) -> SysResult<Ext4BitmapBlock> {
         let gd = self.read_group_desc(group)?;
+        self.read_block_bitmap_with_group_desc(group, &gd)
+    }
+
+    pub(super) fn read_block_bitmap_with_group_desc(
+        &self,
+        group: u32,
+        gd: &Ext4GroupDesc,
+    ) -> SysResult<Ext4BitmapBlock> {
         let raw = self.read_fs_block(gd.block_bitmap)?;
 
         if self.metadata_csum && (gd.flags & EXT4_BG_BLOCK_UNINIT) == 0 {
-            self.verify_bitmap_checksum(group, &gd, &raw, true)?;
+            self.verify_bitmap_checksum(group, gd, &raw, true)?;
         }
 
         Ok(Ext4BitmapBlock {

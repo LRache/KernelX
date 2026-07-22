@@ -139,7 +139,7 @@ pub trait ArchTrait {
     fn flush_kmodule_icache();
 
     fn crc32c(seed: u32, buf: &[u8]) -> u32 {
-        crate::klib::crc::crc32c_update(seed, buf)
+        crate::klib::crc::crc32c_update_generic(seed, buf)
     }
 }
 

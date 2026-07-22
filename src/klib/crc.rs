@@ -36,11 +36,17 @@ const CRC32C_TABLE: [[u32; 256]; 8] = {
 };
 
 /// Update CRC32C(Castagnoli) with `data` from an existing `crc` state.
+#[inline]
+pub fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
+    crate::arch::crc32c(crc, data)
+}
+
+/// Architecture-independent CRC32C fallback.
 ///
 /// Uses slicing-by-8 for bulk processing, falls back to byte-at-a-time for
 /// the remaining tail bytes.
 #[inline]
-pub fn crc32c_update(mut crc: u32, data: &[u8]) -> u32 {
+pub(crate) fn crc32c_update_generic(mut crc: u32, data: &[u8]) -> u32 {
     let mut i = 0;
     let len = data.len();
 

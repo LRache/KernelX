@@ -12,8 +12,8 @@ use crate::fs::inode::FileType;
 use crate::fs::vfs::{evict_inode, find_cached_inode};
 use crate::fs::{Dentry, Inode as VfsInode, InodeOps, Mode, Owner, VfsInode as VfsInodeWrapper};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::mm::swappable::{FileMapping, FilePageIdentityPin};
+use crate::kernel::mm::{FixedContiguousPhysPageFrame, PhysPageFrame, page};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::{SleepLock, SpinLock};
 
@@ -27,6 +27,7 @@ const S_IFDIR: u16 = 0x4000;
 const S_IFREG: u16 = 0x8000;
 const EXT_INIT_MAX_LEN: u16 = 32768;
 const MAX_BULK_ALLOC_BLOCKS: usize = 128;
+const WRITEBACK_BATCH_PAGES: usize = 4;
 
 fn now() -> Duration {
     kclock::now().unwrap_or(Duration::ZERO)
@@ -508,32 +509,108 @@ impl Inode {
 
         let file_size = usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?;
         drop(inode);
+        let write_buffer = page::try_alloc_contiguous(WRITEBACK_BATCH_PAGES)
+            .map(FixedContiguousPhysPageFrame::<WRITEBACK_BATCH_PAGES>::new);
         let page_cache = self.page_cache.lock();
         let dirty_pages = page_cache.dirty_pages();
-        for (page_index, page) in dirty_pages {
-            let offset = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
-            let Some(mut guard) = page.try_get_page() else {
-                continue;
-            };
-            if !guard.take_dirty() || offset >= file_size {
-                continue;
-            }
+        if let Some(write_buffer) = write_buffer {
+            let mut index = 0;
+            let mut batch = Vec::with_capacity(WRITEBACK_BATCH_PAGES);
+            while index < dirty_pages.len() {
+                let first_page_index = dirty_pages[index].0;
+                let batch_offset = first_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+                let mut batch_len = 0;
+                batch.clear();
 
-            let len = core::cmp::min(file_size - offset, arch::PGSIZE);
-            let write_result = {
-                let context = context.lock();
-                let mut inode = self.inode.lock();
-                Self::write_raw_at_locked(&context, &mut inode, &guard.frame().slice()[..len], offset)
-            };
-            match write_result {
-                Ok(written) if written == len => {}
-                Ok(_) => {
-                    guard.mark_dirty();
-                    return Err(Errno::EIO);
+                while index < dirty_pages.len() && batch.len() < WRITEBACK_BATCH_PAGES {
+                    let (page_index, page) = &dirty_pages[index];
+                    let expected_page_index = first_page_index.checked_add(batch.len()).ok_or(Errno::EFBIG)?;
+                    if *page_index != expected_page_index {
+                        break;
+                    }
+
+                    let offset = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+                    let Some(mut guard) = page.try_get_page() else {
+                        if batch.is_empty() {
+                            index += 1;
+                        }
+                        break;
+                    };
+                    if !guard.take_dirty() || offset >= file_size {
+                        if batch.is_empty() {
+                            index += 1;
+                        }
+                        break;
+                    }
+
+                    let len = core::cmp::min(file_size - offset, arch::PGSIZE);
+                    batch_len += len;
+                    batch.push((guard, len));
+                    index += 1;
                 }
-                Err(err) => {
-                    guard.mark_dirty();
-                    return Err(err);
+
+                if batch.is_empty() {
+                    continue;
+                }
+
+                let write_result = if batch.len() == 1 {
+                    let context = context.lock();
+                    let mut inode = self.inode.lock();
+                    let (guard, len) = &batch[0];
+                    Self::write_raw_at_locked(&context, &mut inode, &guard.frame().slice()[..*len], batch_offset)
+                } else {
+                    let mut buffer_offset = 0;
+                    for (guard, len) in &batch {
+                        write_buffer.slice()[buffer_offset..buffer_offset + len]
+                            .copy_from_slice(&guard.frame().slice()[..*len]);
+                        buffer_offset += len;
+                    }
+                    let context = context.lock();
+                    let mut inode = self.inode.lock();
+                    Self::write_raw_at_locked(&context, &mut inode, &write_buffer.slice()[..batch_len], batch_offset)
+                };
+                match write_result {
+                    Ok(written) if written == batch_len => {}
+                    Ok(_) => {
+                        for (guard, _) in &mut batch {
+                            guard.mark_dirty();
+                        }
+                        return Err(Errno::EIO);
+                    }
+                    Err(err) => {
+                        for (guard, _) in &mut batch {
+                            guard.mark_dirty();
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+        } else {
+            for (page_index, page) in dirty_pages {
+                let offset = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+                let Some(mut guard) = page.try_get_page() else {
+                    continue;
+                };
+                if !guard.take_dirty() || offset >= file_size {
+                    continue;
+                }
+
+                let len = core::cmp::min(file_size - offset, arch::PGSIZE);
+                let write_result = {
+                    let context = context.lock();
+                    let mut inode = self.inode.lock();
+                    Self::write_raw_at_locked(&context, &mut inode, &guard.frame().slice()[..len], offset)
+                };
+                match write_result {
+                    Ok(written) if written == len => {}
+                    Ok(_) => {
+                        guard.mark_dirty();
+                        return Err(Errno::EIO);
+                    }
+                    Err(err) => {
+                        guard.mark_dirty();
+                        return Err(err);
+                    }
                 }
             }
         }
@@ -1579,32 +1656,37 @@ fn allocate_full_block_run(
     if desired_blocks == 0 {
         return Ok((0, Vec::new()));
     }
+    let last_block_idx = u32::try_from(desired_blocks - 1)
+        .map_err(|_| debug_errno("allocate_full_block_run: block count does not fit u32", Errno::EFBIG))?;
+    lblk.checked_add(last_block_idx)
+        .ok_or_else(|| debug_errno("allocate_full_block_run: logical block overflow", Errno::EFBIG))?;
 
     let extents_before = extents.clone();
     let extent_idx_before = *extent_idx;
     let new_allocated_start = newly_allocated.len();
     let mut allocated = Vec::with_capacity(desired_blocks);
 
-    for block_idx in 0..desired_blocks {
-        let run_lblk = lblk
-            .checked_add(block_idx as u32)
-            .ok_or_else(|| debug_errno("allocate_full_block_run: logical block overflow", Errno::EFBIG))?;
-        let pblk = match context.alloc_block() {
-            Ok(pblk) => pblk,
+    while allocated.len() < desired_blocks {
+        let batch = match context.alloc_blocks(desired_blocks - allocated.len()) {
+            Ok(batch) => batch,
             Err(err) => {
                 rollback_newly_allocated(context, extents, newly_allocated, &extents_before, new_allocated_start);
                 *extent_idx = extent_idx_before;
                 return Err(err);
             }
         };
-        if let Err(err) = context.insert_extent_mapping(extents, run_lblk, pblk) {
-            let _ = context.free_block(pblk);
-            rollback_newly_allocated(context, extents, newly_allocated, &extents_before, new_allocated_start);
-            *extent_idx = extent_idx_before;
-            return Err(err);
+        let batch_start = allocated.len();
+        newly_allocated.extend(batch.iter().copied());
+        for (batch_idx, &pblk) in batch.iter().enumerate() {
+            let block_idx = batch_start + batch_idx;
+            let run_lblk = lblk + block_idx as u32;
+            if let Err(err) = context.insert_extent_mapping(extents, run_lblk, pblk) {
+                rollback_newly_allocated(context, extents, newly_allocated, &extents_before, new_allocated_start);
+                *extent_idx = extent_idx_before;
+                return Err(err);
+            }
         }
-        newly_allocated.push(pblk);
-        allocated.push(pblk);
+        allocated.extend(batch);
     }
 
     *extent_idx = extent_idx_before.saturating_sub(1);
