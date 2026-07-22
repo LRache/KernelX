@@ -43,11 +43,6 @@ pub trait UserPointer<T: UserStruct> {
     fn should_not_null(&self) -> SysResult<&Self> {
         if self.is_null() { Err(Errno::EINVAL) } else { Ok(self) }
     }
-
-    fn kaddr(&self) -> SysResult<usize> {
-        debug_assert!(!self.is_null());
-        current::addrspace().translate_write(self.uaddr())
-    }
 }
 
 #[repr(C)]

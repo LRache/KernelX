@@ -12,7 +12,12 @@ LDLIBS ?=
 
 PTHREAD_TESTS = thread_fork_mmap_leak
 
-TESTS = $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+ALL_CASES := $(basename $(notdir $(wildcard $(SRC_DIR)/*.c)))
+$(foreach case,$(ALL_CASES),$(eval CASE_SOURCES_$(case) := $(case).c))
+$(foreach case,$(ALL_CASES),$(eval CASE_COMMAND_$(case) := $(case)))
+include ../mk/case-selection.mk
+
+TESTS = $(CASES)
 TEST_TARGETS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 
 $(addprefix $(BUILD_DIR)/, $(addsuffix .o, $(PTHREAD_TESTS))): CFLAGS += -pthread
@@ -33,7 +38,9 @@ endef
 $(foreach test,$(TESTS),$(eval $(call TEST_TARGET_RULE,$(test))))
 
 all: $(TEST_TARGETS)
+ifneq ($(filter unlink,$(TESTS)),)
 	@ echo "File to unlink" > $(OUTPUT_DIR)/unlink/to_unlink.txt
+endif
 
 clean:
 	$(info + CLEAN)

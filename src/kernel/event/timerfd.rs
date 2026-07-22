@@ -41,26 +41,37 @@ pub struct TimerFdTime {
     pub value: Duration,
 }
 
-#[derive(Default)]
 struct TimerFdState {
     timer_id: Option<u64>,
     sequence: u64,
     interval: Duration,
     next_expiry_us: Option<u64>,
     expirations: u64,
+    waiter: WaitQueue<Event>,
+}
+
+impl TimerFdState {
+    fn new() -> Self {
+        Self {
+            timer_id: None,
+            sequence: 0,
+            interval: Duration::ZERO,
+            next_expiry_us: None,
+            expirations: 0,
+            waiter: WaitQueue::new(),
+        }
+    }
 }
 
 struct TimerFdInner {
     state: SpinLock<TimerFdState>,
-    waiter: SpinLock<WaitQueue<Event>>,
     epoll_notifier: Arc<EpollNotifier>,
 }
 
 impl TimerFdInner {
     fn new() -> Self {
         Self {
-            state: SpinLock::new(TimerFdState::default(), "TimerFdInner::state"),
-            waiter: SpinLock::new(WaitQueue::new(), "TimerFdInner::waiter"),
+            state: SpinLock::new(TimerFdState::new(), "TimerFdInner::state"),
             epoll_notifier: Arc::new(EpollNotifier::new()),
         }
     }
@@ -110,11 +121,11 @@ impl TimerFdInner {
             };
 
             state.expirations = state.expirations.saturating_add(expired);
+            state.waiter.wake_all(|event| event);
             true
         };
 
         if should_wake {
-            self.waiter.lock().wake_all(|event| event);
             self.epoll_notifier.notify(FileEvent::READ_READY);
         }
 
@@ -206,6 +217,9 @@ impl TimerFd {
                 } => {
                     state.expirations = initial_expirations;
                     state.next_expiry_us = next_expiry_us;
+                    if initial_expirations != 0 {
+                        state.waiter.wake_all(|event| event);
+                    }
                     (initial_expirations, next_expiry_us)
                 }
             };
@@ -217,7 +231,6 @@ impl TimerFd {
             timer::remove_timer(timer_id);
         }
         if initial_expirations != 0 {
-            self.inner.waiter.lock().wake_all(|event| event);
             self.inner.epoll_notifier.notify(FileEvent::READ_READY);
         }
         if let Some(expiry_us) = next_expiry_us {
@@ -281,14 +294,14 @@ impl TimerFd {
                 return Err(Errno::EAGAIN);
             }
 
-            self.inner.waiter.lock().wait_current(Event::ReadReady);
+            state.waiter.wait_current(Event::ReadReady);
             drop(state);
 
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
                 Event::ReadReady => {}
                 Event::Signal => {
-                    self.inner.waiter.lock().remove(current::task());
+                    self.inner.state.lock().waiter.remove(current::task());
                     return Err(Errno::EINTR);
                 }
                 event => unreachable!("unexpected event while waiting on timerfd read: {:?}", event),
@@ -364,11 +377,12 @@ impl FileOps for TimerFd {
             return Ok(None);
         }
 
-        if let Some(ready) = self.poll_event(event)? {
-            return Ok(Some(ready));
+        let mut state = self.inner.state.lock();
+        if state.expirations != 0 {
+            return Ok(Some(FileEvent::READ_READY));
         }
 
-        self.inner.waiter.lock().wait(
+        state.waiter.wait(
             current::task().clone(),
             Event::Poll {
                 event: FileEvent::READ_READY,
@@ -380,7 +394,7 @@ impl FileOps for TimerFd {
     }
 
     fn wait_event_cancel(&self) {
-        self.inner.waiter.lock().remove(current::task());
+        self.inner.state.lock().waiter.remove(current::task());
     }
 
     fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {

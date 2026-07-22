@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -48,7 +49,7 @@ pub fn addr_of(symbol: &str) -> usize {
 
 struct LoadedProgram {
     ubase: usize,
-    pages: Vec<PhysPageFrame>,
+    pages: Vec<Arc<PhysPageFrame>>,
 }
 
 struct VDSOInfo {
@@ -78,7 +79,7 @@ fn load_programs(file: &VdsoElf<'_>) -> Vec<LoadedProgram> {
         // Load unaligned
         let pageoff = to_usize(phdr.p_vaddr) & arch::PGMASK;
         if pageoff != 0 {
-            let page = PhysPageFrame::alloc_zeroed();
+            let page = Arc::new(PhysPageFrame::alloc_zeroed());
             let to_copy = core::cmp::min(arch::PGSIZE - pageoff, filesz);
             page.slice()[pageoff..pageoff + to_copy].copy_from_slice(&program[..to_copy]);
 
@@ -88,7 +89,7 @@ fn load_programs(file: &VdsoElf<'_>) -> Vec<LoadedProgram> {
         }
 
         while loaded < filesz {
-            let page = PhysPageFrame::alloc_zeroed();
+            let page = Arc::new(PhysPageFrame::alloc_zeroed());
             let to_copy = core::cmp::min(arch::PGSIZE, filesz - copied);
             page.slice()[..to_copy].copy_from_slice(&program[copied..copied + to_copy]);
 
@@ -98,7 +99,7 @@ fn load_programs(file: &VdsoElf<'_>) -> Vec<LoadedProgram> {
         }
 
         while loaded < memsz {
-            let page = PhysPageFrame::alloc_zeroed();
+            let page = Arc::new(PhysPageFrame::alloc_zeroed());
             pages.push(page);
             loaded += arch::PGSIZE;
         }
@@ -132,7 +133,7 @@ pub fn map_to_pagetale(pagetable: &mut arch::PageTable) {
     for program in &VDSO.programs {
         let mut uaddr = program.ubase + config::VDSO_BASE;
         for page in program.pages.iter() {
-            pagetable.mmap(uaddr, page.get_page(), MapPerm::R | MapPerm::X | MapPerm::U);
+            pagetable.mmap(uaddr, page, MapPerm::R | MapPerm::X | MapPerm::U);
             uaddr += arch::PGSIZE;
         }
     }

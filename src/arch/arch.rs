@@ -1,7 +1,9 @@
 use core::time::Duration;
 
+use alloc::sync::Arc;
+
 use crate::kernel::errno::SysResult;
-use crate::kernel::mm::MapPerm;
+use crate::kernel::mm::{MapPerm, PhysPageFrame};
 use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 
 use super::{KernelContext, SigContext};
@@ -20,18 +22,56 @@ pub enum CloneABI {
 }
 
 pub trait PageTableTrait {
-    fn mmap(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
-    fn mmap_replace(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
+    unsafe fn mmap_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
+    fn mmap(&mut self, uaddr: usize, frame: &Arc<PhysPageFrame>, perm: MapPerm) {
+        // SAFETY: The caller provides an Arc-backed frame reference, so the
+        // physical page is alive while the raw PTE is installed. Longer-lived
+        // mapping ownership is maintained by the owning MapArea state.
+        unsafe { self.mmap_raw(uaddr, frame.get_page(), perm) };
+    }
+
+    unsafe fn mmap_replace_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
+    fn mmap_replace(&mut self, uaddr: usize, frame: &Arc<PhysPageFrame>, perm: MapPerm) {
+        // SAFETY: The replacement target is derived from an Arc-backed frame
+        // borrowed by the caller. The owner keeps the frame resident across the
+        // map-area state transition that accompanies this PTE update.
+        unsafe { self.mmap_replace_raw(uaddr, frame.get_page(), perm) };
+    }
+    fn mmap_replace_with_check_and_ad(
+        &mut self,
+        uaddr: usize,
+        expected_kaddr: usize,
+        replacement_kaddr: usize,
+        perm: MapPerm,
+    ) -> Option<(bool, bool)>;
+
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm);
-    fn munmap(&mut self, uaddr: usize) -> Result<(), ()>;
+    fn mmap_replace_perm_with_check_and_ad(
+        &mut self,
+        uaddr: usize,
+        expected_kaddr: usize,
+        perm: MapPerm,
+    ) -> Option<(bool, bool)>;
+
+    fn munmap_raw(&mut self, uaddr: usize) -> Result<(), ()>;
+    fn munmap(&mut self, uaddr: usize, frame: &Arc<PhysPageFrame>) -> bool {
+        self.munmap_with_check(uaddr, frame.get_page())
+    }
+
     fn munmap_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> bool;
+    fn munmap_with_check_and_ad(&mut self, uaddr: usize, expected_kaddr: usize) -> Option<(bool, bool)>;
 
     #[allow(dead_code)]
     fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)>;
+    fn take_access_dirty_bit_with_check_no_flush(
+        &mut self,
+        uaddr: usize,
+        expected_kaddr: usize,
+    ) -> Option<(bool, bool)>;
 }
 
 pub trait ArchTrait {
-    fn init(memory_top: usize);
+    fn init();
     fn setup_all_cores(current_core: usize);
     fn clone_abi() -> CloneABI;
 
@@ -57,9 +97,13 @@ pub trait ArchTrait {
 
     fn kaddr_to_paddr(kaddr: usize) -> usize;
     fn paddr_to_kaddr(paddr: usize) -> usize;
+    /// Return the device-visible physical address only when the entire kernel
+    /// buffer is covered by one physically contiguous direct mapping.
+    fn dma_direct_paddr(kaddr: usize, len: usize) -> Option<usize>;
     fn scan_device();
     fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm);
     unsafe fn unmap_kernel_addr(kstart: usize, size: usize);
+    fn flush_tlb_all();
 
     /// Translate a device MMIO physical address into a kernel-accessible VA
     /// suitable for volatile reads/writes. The returned address must resolve
@@ -67,8 +111,8 @@ pub trait ArchTrait {
     /// semantics — cache coherence with DMA engines lives outside kernel
     /// control for these regions.
     ///
-    /// - RISC-V: reserves kernel virtual addresses above `memory_top + kaddr_offset`
-    ///   and installs a `MapPerm::RW` mapping via the kernel page table.
+    /// - RISC-V: reserves addresses from a dedicated kernel MMIO arena and
+    ///   installs a `MapPerm::RW` mapping via the kernel page table.
     /// - LoongArch: returns the DMW0 window mirror of the PA (no allocation,
     ///   no page-table edits — DMW0 is MAT=SUC, uncached by hardware).
     fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
@@ -95,7 +139,7 @@ pub trait ArchTrait {
     fn flush_kmodule_icache();
 
     fn crc32c(seed: u32, buf: &[u8]) -> u32 {
-        crate::klib::crc::crc32c_update(seed, buf)
+        crate::klib::crc::crc32c_update_generic(seed, buf)
     }
 }
 

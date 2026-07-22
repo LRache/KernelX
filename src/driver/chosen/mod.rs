@@ -3,8 +3,7 @@ use alloc::sync::Arc;
 
 use crate::driver::CharDriverOps;
 use crate::driver::manager::get_rtc_driver;
-use crate::fs::devfs::devnode::CharDevInode;
-use crate::fs::{VfsInode, vfs};
+use crate::fs::vfs;
 use crate::{kinfo, kwarn};
 
 pub mod kclock;
@@ -56,13 +55,21 @@ fn init_chosen_char_device(
     match vfs::load_dentry(name) {
         Ok(dentry) => {
             let inode = dentry.get_inode();
-            match inode.downcast_arc::<VfsInode<CharDevInode>>() {
-                Ok(inode) => {
-                    register(inode.driver().clone());
+            match inode.char_driver() {
+                Ok(Some(driver)) => {
+                    register(driver);
                     kinfo!("Chosen {} '{}' registered", description, name);
                 }
-                Err(_) => {
+                Ok(None) => {
                     kwarn!("Chosen {} '{}' is not a character device", description, name);
+                }
+                Err(err) => {
+                    kwarn!(
+                        "Chosen {} '{}' failed to get character driver: {:?}",
+                        description,
+                        name,
+                        err
+                    );
                 }
             }
         }

@@ -236,10 +236,18 @@ menu "Experimental Features"
 
 config ENABLE_SWAP_MEMORY
 	bool "Enable Swap Memory"
+	depends on NO_SMP && !KVM
 	default n
 	help
-	  Enable swap memory support in the kernel.
-	  This feature allows the kernel to swap memory pages to disk when physical memory is low.
+	  Compile anonymous-page swap support into the kernel. QEMU runs
+	  automatically attach a dedicated temporary swap disk and select it with
+	  the "swap=<block-driver-name>" command-line argument. Other platforms
+	  must provide that argument and a registered writable block driver.
+	  File-page reclaim uses the global LRU independently of this option.
+
+	  Swap currently requires single-CPU mode because the kernel does not yet
+	  provide cross-CPU user-TLB shootdown. It is also incompatible with KVM
+	  until KVM G-stage page pinning and invalidation are integrated with swap.
 
 config KVM
 	bool "Enable KVM"
@@ -368,6 +376,16 @@ config SECOND_MOUNTPOINT
 	help
 	  Absolute path where SECOND_DEVICE is mounted. The kernel creates this
 	  single-level directory during boot when it does not already exist.
+
+config QEMU_SWAP_SIZE_MIB
+	int "Dedicated swap disk size (MiB)"
+	depends on ENABLE_SWAP_MEMORY
+	range 1 1048576
+	default 1024
+	help
+	  Size of the dedicated raw swap disk created under /tmp for QEMU runs.
+	  The temporary disk is independent of SECOND_DISK_IMAGE and is removed
+	  when QEMU exits.
 
 config INITPATH
 	string "Init process path"

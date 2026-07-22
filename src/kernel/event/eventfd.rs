@@ -230,7 +230,17 @@ impl FileOps for EventFd {
             return Ok(None);
         }
 
-        if let Some(ready) = self.poll_event(event)? {
+        let counter = self.counter.lock();
+
+        let mut ready = FileEvent::empty();
+        if want_read && *counter != 0 {
+            ready |= FileEvent::READ_READY;
+        }
+        if want_write && Self::is_write_ready(*counter) {
+            ready |= FileEvent::WRITE_READY;
+        }
+
+        if !ready.is_empty() {
             return Ok(Some(ready));
         }
 

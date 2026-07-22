@@ -51,7 +51,7 @@ impl PCB {
             cwd: SpinLock::new(inherit.cwd.lock().clone(), "PCB::cwd"),
             umask: SpinLock::new(*parent.umask.lock(), "PCB::umask"),
             file_size_limit: SpinLock::new(*parent.file_size_limit.lock(), "PCB::file_size_limit"),
-            waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
+            child_wait: SleepLock::new(ChildWaitState::new(), "PCB::child_wait"),
             pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
             uts,
 
@@ -59,8 +59,6 @@ impl PCB {
                 actions: SpinLock::new(parent.signal.actions.lock().clone(), "PCB::signal.actions"),
                 pending: SpinLock::new(PendingSignalQueue::new(), "PCB::signal.pending"),
             },
-
-            children: SleepLock::new(Vec::new(), "PCB::children"),
 
             itimers: SpinLock::new([None; 3], "PCB::itimers"),
             timers: TimerTable::new(),
@@ -117,7 +115,7 @@ impl PCB {
             cwd: SpinLock::new(cwd.clone(), "PCB::cwd"),
             umask: SpinLock::new(0o022, "PCB::umask"),
             file_size_limit: SpinLock::new((usize::MAX, usize::MAX), "PCB::file_size_limit"),
-            waiting_task: SpinLock::new(Vec::new(), "PCB::waiting_task"),
+            child_wait: SleepLock::new(ChildWaitState::new(), "PCB::child_wait"),
             pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
             uts: UtsNamespace::new(),
 
@@ -125,8 +123,6 @@ impl PCB {
                 actions: SpinLock::new(SignalActionTable::new(), "PCB::signal.actions"),
                 pending: SpinLock::new(PendingSignalQueue::new(), "PCB::signal.pending"),
             },
-
-            children: SleepLock::new(Vec::new(), "static::initpcb::children"),
 
             uid: SpinLock::new(0, "PCB::uid"),
             euid: SpinLock::new(0, "PCB::euid"),
@@ -213,12 +209,12 @@ impl PCB {
             );
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
-            real_parent.children.lock().push(new_pcb);
+            real_parent.child_wait.lock().children.push(new_pcb);
         } else {
             let new_pcb = PCB::new(new_tid, self.pgid(), self, self, exit_signal, flags.new_uts, tcb.tid());
             new_tcb = tcb.new_clone(new_tid, &new_pcb, userstack, flags, tls)?;
             new_pcb.tasks.lock().push(new_tcb.clone());
-            self.children.lock().push(new_pcb);
+            self.child_wait.lock().children.push(new_pcb);
         }
 
         manager::insert(new_tcb.clone());
@@ -284,11 +280,11 @@ impl PCB {
         // marked exited it will never be rescheduled, causing it to block
         // indefinitely and leaving the system hung instead of halting cleanly.
         if self.pid == task::INIT_UTASK_TID {
-            self.children.lock().iter().for_each(|child| {
+            self.child_wait.lock().children.iter().for_each(|child| {
                 let _ = child.send_signal(signum::SIGKILL, SiCode::EMPTY, 0, KSiFields::Empty, None);
             });
             loop {
-                if let Some(child) = self.children.lock().pop() {
+                if let Some(child) = self.child_wait.lock().children.pop() {
                     loop {
                         if child.is_exited() {
                             child.recycle();
@@ -365,13 +361,16 @@ impl PCB {
             }
         }
 
+        let mut children = {
+            let mut child_wait = self.child_wait.lock();
+            child_wait.children.split_off(0)
+        };
         with_initpcb(|init_process| {
-            let mut children = self.children.lock();
             children.iter_mut().for_each(|c| {
                 *c.parent.lock() = Some(init_process.clone());
                 c.set_wait_parent_tid(init_process.pid());
             });
-            init_process.children.lock().append(&mut children);
+            init_process.child_wait.lock().children.append(&mut children);
         });
     }
 

@@ -26,7 +26,12 @@ endif
 CFLAGS += -Wall -Wextra
 
 TEST_DIRS = $(sort $(dir $(wildcard $(SRC_DIR)/*/loader.c)))
-TESTS = $(notdir $(patsubst %/,%,$(TEST_DIRS)))
+ALL_CASES := $(notdir $(patsubst %/,%,$(TEST_DIRS)))
+$(foreach case,$(ALL_CASES),$(eval CASE_SOURCES_$(case) := $(case)/loader.c $(case)/module.c $(case)/CMakeLists.txt CMakeLists.txt))
+$(foreach case,$(ALL_CASES),$(eval CASE_COMMAND_$(case) := $(case)))
+include ../mk/case-selection.mk
+
+TESTS = $(CASES)
 TEST_BINS = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test))
 TEST_MODULES = $(foreach test,$(TESTS),$(OUTPUT_DIR)/$(test)/$(test).ko)
 

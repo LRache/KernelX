@@ -163,9 +163,6 @@ impl FileOps for RtcFile {
     }
 }
 
-unsafe impl Send for RtcFile {}
-unsafe impl Sync for RtcFile {}
-
 /// Convert Unix epoch seconds to `RtcTime`.
 fn epoch_to_rtc_time(epoch: u64) -> RtcTime {
     let secs = epoch as i64;

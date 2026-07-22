@@ -82,39 +82,77 @@ struct HashedDirectoryEntry {
 
 impl Context {
     pub fn alloc_block(&self) -> SysResult<u64> {
+        self.alloc_blocks(1)?
+            .pop()
+            .ok_or_else(|| debug_errno("alloc_block: allocator returned no blocks", Errno::EIO))
+    }
+
+    pub fn alloc_blocks(&self, max_blocks: usize) -> SysResult<Vec<u64>> {
+        if max_blocks == 0 {
+            return Ok(Vec::new());
+        }
+
         for group in 0..self.groups_count {
             let mut gd = self.read_group_desc(group)?;
             if gd.free_blocks_count == 0 {
                 continue;
             }
 
-            let mut bitmap = self.read_block_bitmap(group)?;
+            let mut bitmap = self.read_block_bitmap_with_group_desc(group, &gd)?;
+            let group_first_block = self.group_first_block(group)?;
+            let alloc_limit = max_blocks.min(gd.free_blocks_count as usize);
+            let mut blocks = Vec::with_capacity(alloc_limit);
             for bit in 0..self.blocks_per_group {
-                let pblk = self
-                    .group_first_block(group)?
+                let pblk = group_first_block
                     .checked_add(bit as u64)
-                    .ok_or_else(|| debug_errno("alloc_block: physical block calculation overflow", Errno::EINVAL))?;
+                    .ok_or_else(|| debug_errno("alloc_blocks: physical block calculation overflow", Errno::EINVAL))?;
                 if pblk >= self.blocks_count || test_bit(&bitmap, bit) {
                     continue;
                 }
 
-                set_bit(&mut bitmap, bit);
-                self.write_block_bitmap(group, &mut gd, &bitmap)?;
-
-                gd.free_blocks_count = gd
-                    .free_blocks_count
-                    .checked_sub(1)
-                    .ok_or_else(|| debug_errno("alloc_block: free_blocks_count underflow", Errno::EIO))?;
-                self.write_group_desc(group, &mut gd)?;
-                self.dec_superblock_free_blocks()?;
-
-                let zero = vec![0u8; self.block_size as usize];
-                self.write_fs_block(pblk, &zero)?;
-                return Ok(pblk);
+                blocks.push(pblk);
+                if blocks.len() == alloc_limit {
+                    break;
+                }
             }
+            if blocks.is_empty() {
+                continue;
+            }
+
+            let zero = vec![0u8; blocks.len() * self.block_size as usize];
+            let mut segment_start = 0;
+            while segment_start < blocks.len() {
+                let mut segment_end = segment_start + 1;
+                while segment_end < blocks.len() && blocks[segment_end] == blocks[segment_end - 1] + 1 {
+                    segment_end += 1;
+                }
+                self.write_fs_blocks(
+                    blocks[segment_start],
+                    &zero[..(segment_end - segment_start) * self.block_size as usize],
+                )?;
+                segment_start = segment_end;
+            }
+
+            for &pblk in &blocks {
+                let (_, bit) = self.block_group_bit(pblk)?;
+                set_bit(&mut bitmap, bit);
+            }
+
+            let allocated = u32::try_from(blocks.len())
+                .map_err(|_| debug_errno("alloc_blocks: allocated block count does not fit u32", Errno::EIO))?;
+            gd.free_blocks_count = gd
+                .free_blocks_count
+                .checked_sub(allocated)
+                .ok_or_else(|| debug_errno("alloc_blocks: free_blocks_count underflow", Errno::EIO))?;
+            self.write_block_bitmap(group, &mut gd, &bitmap)?;
+            if !self.metadata_csum {
+                self.write_group_desc(group, &mut gd)?;
+            }
+            self.dec_superblock_free_blocks(blocks.len() as u64)?;
+            return Ok(blocks);
         }
 
-        ret_errno("alloc_block: no free data block", Errno::ENOSPC)
+        ret_errno("alloc_blocks: no free data block", Errno::ENOSPC)
     }
 
     pub fn free_block(&self, pblk: u64) -> SysResult<()> {
@@ -1205,11 +1243,11 @@ impl Context {
         Ok((group as u32, bit as u32))
     }
 
-    fn dec_superblock_free_blocks(&self) -> SysResult<()> {
+    fn dec_superblock_free_blocks(&self, count: u64) -> SysResult<()> {
         let mut sb = self.read_superblock()?;
         let free = sb
             .free_blocks_count()?
-            .checked_sub(1)
+            .checked_sub(count)
             .ok_or_else(|| debug_errno("dec_superblock_free_blocks: underflow", Errno::EIO))?;
         sb.set_free_blocks_count(free)?;
         self.write_superblock(&mut sb)

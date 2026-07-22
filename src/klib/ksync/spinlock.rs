@@ -85,8 +85,6 @@ impl LockerTrait for SpinLocker {
         }
     }
 
-    fn spin(&self) {}
-
     fn lock(&self, name: &'static str) {
         let _ = name;
         #[cfg(feature = "spinlock-check")]
@@ -126,15 +124,6 @@ impl LockerTrait for SpinLocker {
         self.lock.store(false, core::sync::atomic::Ordering::Release);
         #[cfg(feature = "spinlock-check")]
         self.track_release(name);
-    }
-
-    fn is_locked(&self) -> bool {
-        #[cfg(feature = "no-smp")]
-        unsafe {
-            *self.lock.get()
-        }
-        #[cfg(not(feature = "no-smp"))]
-        self.lock.load(core::sync::atomic::Ordering::Acquire)
     }
 }
 

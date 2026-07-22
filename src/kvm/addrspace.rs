@@ -1,9 +1,11 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 use crate::arch::{self, KvmPageTable, PageTableTrait};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::{AddrSpace, AddrSpaceWatcher, MapPerm, MemAccessType};
+use crate::kernel::mm::maparea::{Manager, MapChange, MapChangeEvent, MapManagerWatcher, PinPageFrame};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::{SleepLock, SpinLock};
 
 struct KvmUserMemorySlot {
@@ -45,7 +47,6 @@ struct KvmUserMemoryFault {
     owner: Arc<AddrSpace>,
     uaddr: usize,
     gpage: usize,
-    page_offset: usize,
 }
 
 impl KvmUserMemoryFault {
@@ -57,13 +58,13 @@ impl KvmUserMemoryFault {
         }
     }
 
-    fn translate(&self, access_type: MemAccessType) -> Option<(usize, MapPerm)> {
-        let kaddr = match access_type {
-            MemAccessType::Read | MemAccessType::Execute => self.owner.translate_read(self.uaddr).ok()?,
-            MemAccessType::Write => self.owner.translate_write(self.uaddr).ok()?,
+    fn translate(&self, map_manager: &mut Manager, access_type: MemAccessType) -> Option<(PinPageFrame, MapPerm)> {
+        let frame = match access_type {
+            MemAccessType::Read | MemAccessType::Execute => map_manager.translate_read(self.uaddr, &self.owner)?,
+            MemAccessType::Write => map_manager.translate_write(self.uaddr, &self.owner)?,
         };
 
-        Some((kaddr & !arch::PGMASK, Self::stage2_perm(access_type)))
+        Some((frame, Self::stage2_perm(access_type)))
     }
 }
 
@@ -117,6 +118,35 @@ impl KvmMapManager {
         Ok(())
     }
 
+    fn unwatch_all_user_memory(&mut self, pagetable: &SpinLock<KvmPageTable>) -> Vec<Arc<AddrSpace>> {
+        let mut owners = Vec::new();
+
+        for slot in self.user_slots.values() {
+            if let Some(owner) = slot.owner.upgrade()
+                && !owners.iter().any(|registered| Arc::ptr_eq(registered, &owner))
+            {
+                owners.push(owner);
+            }
+        }
+
+        let mut pagetable = pagetable.lock();
+        for slot in self.user_slots.values() {
+            for page_index in 0..slot.page_count {
+                let Some(offset) = page_index.checked_mul(arch::PGSIZE) else {
+                    break;
+                };
+                let Some(gpage) = slot.gbase.checked_add(offset) else {
+                    break;
+                };
+                let _ = pagetable.munmap_if_mapped(gpage);
+            }
+        }
+        drop(pagetable);
+
+        self.user_slots.clear();
+        owners
+    }
+
     fn invalidate_user_range(&mut self, uaddr: usize, page_count: usize, pagetable: &SpinLock<KvmPageTable>) {
         let Some(size) = page_count.checked_mul(arch::PGSIZE) else {
             return;
@@ -158,7 +188,6 @@ impl KvmMapManager {
             owner,
             uaddr: slot.ubase + page_index * arch::PGSIZE,
             gpage: slot.gbase + page_index * arch::PGSIZE,
-            page_offset: gaddr & arch::PGMASK,
         })
     }
 }
@@ -194,8 +223,8 @@ impl KvmAddrSpace {
             .lock()
             .watch_user_memory(Arc::downgrade(owner), ubase, gbase, page_count)?;
 
-        let watcher: Arc<dyn AddrSpaceWatcher> = self.clone();
-        owner.add_watcher(Arc::downgrade(&watcher));
+        let watcher: Arc<dyn MapManagerWatcher> = self.clone();
+        owner.add_map_manager_watcher(watcher);
         Ok(())
     }
 
@@ -205,42 +234,65 @@ impl KvmAddrSpace {
             .invalidate_user_range(uaddr, page_count, &self.pagetable);
     }
 
-    pub fn try_to_fix_memory_fault(&self, gaddr: usize, access_type: MemAccessType) -> Option<usize> {
+    pub fn unwatch_all_user_memory(self: &Arc<Self>) {
+        let owners = self.map_manager.lock().unwatch_all_user_memory(&self.pagetable);
+        let watcher: Arc<dyn MapManagerWatcher> = self.clone();
+        for owner in owners {
+            owner.remove_map_manager_watcher(&watcher);
+        }
+    }
+
+    pub fn try_to_fix_memory_fault(&self, gaddr: usize, access_type: MemAccessType) -> bool {
         let user_fault = {
             let map_manager = self.map_manager.lock();
             map_manager.find_user_memory_fault(gaddr)
-        }?;
+        };
 
-        let (kpage, requested_perm) = user_fault.translate(access_type)?;
-        // TODO: Pin the owner page or validate a mapping generation before
-        // installing this bare kpage into G-stage. The owner may unmap or COW
-        // the page after translate() returns.
-        let mut pagetable = self.pagetable.lock();
-        let perm = pagetable
-            .mapped_perm(user_fault.gpage)
-            .map(|current_perm| current_perm | requested_perm)
-            .unwrap_or(requested_perm);
+        let Some(user_fault) = user_fault else {
+            return false;
+        };
 
-        if pagetable.is_mapped(user_fault.gpage) {
-            pagetable.mmap_replace(user_fault.gpage, kpage, perm);
-        } else {
-            pagetable.mmap(user_fault.gpage, kpage, perm);
-        }
+        user_fault
+            .owner
+            .with_map_manager_mut(|map_manager| {
+                let (frame, requested_perm) = user_fault.translate(map_manager, access_type)?;
+                let kpage = frame.kpage();
+                let mut pagetable = self.pagetable.lock();
+                let perm = pagetable
+                    .mapped_perm(user_fault.gpage)
+                    .map(|current_perm| current_perm | requested_perm)
+                    .unwrap_or(requested_perm);
 
-        Some(kpage + user_fault.page_offset)
+                if pagetable.is_mapped(user_fault.gpage) {
+                    // SAFETY: The owner MapManager lock is held across host
+                    // translation and this G-stage PTE update. Host unmap/remap/COW
+                    // paths notify KVM while holding the same lock before replacing
+                    // or releasing the backing page, so they cannot miss this PTE.
+                    unsafe { pagetable.mmap_replace_raw(user_fault.gpage, kpage, perm) };
+                } else {
+                    // SAFETY: The owner MapManager lock is held across host
+                    // translation and this G-stage PTE update. Host unmap/remap/COW
+                    // paths notify KVM while holding the same lock before replacing
+                    // or releasing the backing page, so they cannot miss this PTE.
+                    unsafe { pagetable.mmap_raw(user_fault.gpage, kpage, perm) };
+                }
+
+                Some(())
+            })
+            .is_some()
     }
 }
 
-impl AddrSpaceWatcher for KvmAddrSpace {
-    fn on_addrspace_unmap(&self, uaddr: usize, page_count: usize) {
-        self.invalidate_user_range(uaddr, page_count);
-    }
-
-    fn on_addrspace_remap(&self, uaddr: usize, page_count: usize) {
-        self.invalidate_user_range(uaddr, page_count);
-    }
-
-    fn on_addrspace_perm_change(&self, uaddr: usize, page_count: usize, _perm: MapPerm) {
-        self.invalidate_user_range(uaddr, page_count);
+impl MapManagerWatcher for KvmAddrSpace {
+    fn before_map_change(&self, change: MapChange) {
+        match change.event {
+            MapChangeEvent::Unmap | MapChangeEvent::Remap => {
+                self.invalidate_user_range(change.uaddr, change.page_count);
+            }
+            MapChangeEvent::PermChange(perm) => {
+                let _ = perm;
+                self.invalidate_user_range(change.uaddr, change.page_count);
+            }
+        }
     }
 }

@@ -8,9 +8,8 @@ use crate::fs::Dentry;
 use crate::fs::file::{FileFlags, FileOps};
 use crate::fs::inode::{Inode, release_bsd_flock};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::event::{EpollNotifier, Event, FileEvent};
+use crate::kernel::event::{EpollNotifier, FileEvent};
 use crate::kernel::mm::AddrSpace;
-use crate::kernel::scheduler::current;
 use crate::kernel::uapi::FileStat;
 use crate::klib::SpinLock;
 
@@ -124,22 +123,11 @@ impl FileOps for PtmxFile {
     }
 
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
-        if let Some(ready) = self.poll_event(event)? {
-            return Ok(Some(ready));
-        }
-
-        if event.contains(FileEvent::READ_READY) {
-            self.inner.master_waiters.lock().wait_current(Event::Poll {
-                event: FileEvent::READ_READY,
-                waker,
-            });
-        }
-
-        Ok(None)
+        self.inner.master_wait_event(waker, event)
     }
 
     fn wait_event_cancel(&self) {
-        self.inner.master_waiters.lock().remove(current::task());
+        self.inner.master_cancel_wait();
     }
 
     fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {
@@ -245,22 +233,11 @@ impl FileOps for PtsFile {
     }
 
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
-        if let Some(ready) = self.poll_event(event)? {
-            return Ok(Some(ready));
-        }
-
-        if event.contains(FileEvent::READ_READY) {
-            self.inner.slave_waiters.lock().wait_current(Event::Poll {
-                event: FileEvent::READ_READY,
-                waker,
-            });
-        }
-
-        Ok(None)
+        self.inner.slave_wait_event(waker, event)
     }
 
     fn wait_event_cancel(&self) {
-        self.inner.slave_waiters.lock().remove(current::task());
+        self.inner.slave_cancel_wait();
     }
 
     fn epoll_notifier(&self) -> Option<Arc<EpollNotifier>> {

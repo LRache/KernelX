@@ -46,9 +46,6 @@ fn kinit() {
 
     net::configure();
 
-    #[cfg(feature = "swap-memory")]
-    mm::swappable::init();
-
     task::create_initprocess(
         BOOT_ARGS.get("init").unwrap_or(&config::DEFAULT_INITPATH),
         BOOT_ARGS.get("initcwd").unwrap_or(&config::DEFAULT_INITCWD),
@@ -66,7 +63,6 @@ fn kinit() {
 
     kinfo!("Welcome to use KernelX!");
 
-    #[cfg(feature = "swap-memory")]
     crate::kernel::mm::swappable::spawn_kswapd();
 }
 
@@ -137,17 +133,38 @@ const LOGO: &str = r#"
 "#;
 
 #[unsafe(no_mangle)]
-extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
+extern "C" fn main(hartid: usize, bootstrap_end: usize, mem_regions: *const mm::MemRegion, mem_region_count: usize) {
     let processor = Processor::new(hartid);
     arch::set_percpu_data(&processor as *const Processor as usize);
 
     if FIRST_BOOTED.swap(false, Ordering::SeqCst) {
-        kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
-        mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
-        arch::init(memory_top);
+        // SAFETY: The architecture entry code reserves one page for the memory
+        // region array and passes the exact number of initialized entries.
+        unsafe { mm::init(bootstrap_end, mem_regions, mem_region_count) };
+        kalloc::init();
+        mm::swappable::init();
+        arch::init();
         fs::init();
         driver::init();
         arch::scan_device();
+        #[cfg(feature = "swap-memory")]
+        {
+            let swap_driver = BOOT_ARGS.get("swap").and_then(|name| {
+                let driver = driver::get_block_driver(name);
+                if driver.is_none() {
+                    crate::kwarn!("Anonymous swap driver '{}' not found; swap is disabled.", name);
+                }
+                driver
+            });
+            mm::swappable::init_anonymous_swap(swap_driver);
+        }
+        #[cfg(not(feature = "swap-memory"))]
+        if let Some(name) = BOOT_ARGS.get("swap") {
+            crate::kwarn!(
+                "Anonymous swap driver '{}' was specified, but swap-memory support is disabled.",
+                name
+            );
+        }
         net::init();
 
         let inittask = kthread::spawn(kinit);
@@ -169,7 +186,6 @@ extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
 pub fn deinit() {
     fs::fini();
 
-    #[cfg(feature = "swap-memory")]
     crate::kernel::mm::swappable::fini();
 }
 

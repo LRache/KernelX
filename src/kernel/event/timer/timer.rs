@@ -26,7 +26,7 @@ impl Timer {
         }
     }
 
-    pub fn add_timer(&self, time: Duration, callback: Box<dyn FnOnce()>) -> u64 {
+    pub fn add_timer(&self, time: Duration, callback: Box<dyn FnOnce() + Send>) -> u64 {
         let time = arch::get_time_us() + time.as_micros() as u64;
         let new_id = self.next_timer_id.fetch_add(1, Ordering::Relaxed) as u64;
         self.wait_queue.lock().push(Reverse(TimerEvent {
@@ -59,7 +59,7 @@ impl Timer {
     }
 }
 
-unsafe impl Sync for Timer {}
+// unsafe impl Sync for Timer {}
 
 static TIMER: Timer = Timer::new();
 
@@ -79,7 +79,7 @@ pub fn add_timer(task: Arc<dyn Task>, time: Duration) -> u64 {
     )
 }
 
-pub fn add_timer_with_callback(time: Duration, callback: Box<dyn FnOnce()>) -> u64 {
+pub fn add_timer_with_callback(time: Duration, callback: Box<dyn FnOnce() + Send>) -> u64 {
     TIMER.add_timer(time, callback)
 }
 

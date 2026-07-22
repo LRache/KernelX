@@ -1,4 +1,3 @@
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
@@ -12,9 +11,9 @@ use crate::fs::file::{DirResult, FileFlags, FileOps, RandomAccessFile};
 use crate::fs::inode::FileType;
 use crate::fs::vfs::{evict_inode, find_cached_inode};
 use crate::fs::{Dentry, Inode as VfsInode, InodeOps, Mode, Owner, VfsInode as VfsInodeWrapper};
-use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::PhysPageFrame;
+use crate::kernel::mm::swappable::{FileMapping, FilePageIdentityPin};
+use crate::kernel::mm::{FixedContiguousPhysPageFrame, PhysPageFrame, page};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::{SleepLock, SpinLock};
 
@@ -28,115 +27,89 @@ const S_IFDIR: u16 = 0x4000;
 const S_IFREG: u16 = 0x8000;
 const EXT_INIT_MAX_LEN: u16 = 32768;
 const MAX_BULK_ALLOC_BLOCKS: usize = 128;
+const WRITEBACK_BATCH_PAGES: usize = 4;
 
 fn now() -> Duration {
     kclock::now().unwrap_or(Duration::ZERO)
 }
 
-struct CachedPage {
-    frame: Arc<PhysPageFrame>,
-    dirty: bool,
-}
-
 struct InodePageCache {
-    pages: BTreeMap<usize, CachedPage>,
+    mapping: Option<Arc<FileMapping>>,
 }
 
 impl InodePageCache {
-    const CAPACITY: usize = config::EXT4_INODE_PAGE_CACHE_SIZE;
-
     fn new() -> Self {
-        Self { pages: BTreeMap::new() }
+        Self { mapping: None }
     }
 
-    fn enabled() -> bool {
-        Self::CAPACITY != 0
-    }
-
-    fn get_frame(&self, page_index: usize) -> Option<Arc<PhysPageFrame>> {
-        self.pages.get(&page_index).map(|page| page.frame.clone())
-    }
-
-    fn insert_frame(&mut self, page_index: usize, frame: Arc<PhysPageFrame>) -> Arc<PhysPageFrame> {
-        if Self::CAPACITY == 0 {
-            return frame;
-        }
-        if let Some(page) = self.pages.get(&page_index) {
-            return page.frame.clone();
-        }
-
-        self.shrink_for_insert();
-        self.pages.insert(
-            page_index,
-            CachedPage {
-                frame: frame.clone(),
-                dirty: false,
-            },
+    fn attach(&mut self, mapping: Arc<FileMapping>) {
+        assert!(
+            self.mapping.replace(mapping).is_none(),
+            "file mapping is already attached"
         );
-        frame
     }
 
-    fn mark_dirty(&mut self, page_index: usize) {
-        if let Some(page) = self.pages.get_mut(&page_index) {
-            page.dirty = true;
+    fn mapping(&self) -> &Arc<FileMapping> {
+        self.mapping.as_ref().expect("file mapping is not attached")
+    }
+
+    fn get_page(&self, page_index: usize) -> Option<FilePageIdentityPin> {
+        self.mapping().cached_page(page_index)
+    }
+
+    fn acquire_cached_page(
+        &self,
+        page_index: usize,
+        load: impl FnOnce() -> SysResult<Option<PhysPageFrame>>,
+    ) -> SysResult<FilePageIdentityPin> {
+        let page = self
+            .mapping()
+            .acquire_cached_page(page_index, load)?
+            .ok_or(Errno::EIO)?;
+        Ok(page)
+    }
+
+    fn insert_frame(&self, page_index: usize, frame: PhysPageFrame) -> SysResult<FilePageIdentityPin> {
+        self.acquire_cached_page(page_index, || Ok(Some(frame)))
+    }
+
+    fn dirty_pages(&self) -> Vec<(usize, FilePageIdentityPin)> {
+        let mut tlb_changed = false;
+        let dirty_pages = self
+            .mapping()
+            .pages_snapshot()
+            .into_iter()
+            .filter_map(|(page_index, page)| {
+                let (dirty, page_tlb_changed) = page.collect_mapped_access_dirty_no_flush();
+                tlb_changed |= page_tlb_changed;
+                dirty.then_some((page_index, page))
+            })
+            .collect();
+        if tlb_changed {
+            arch::flush_tlb_all();
         }
-    }
-
-    fn mark_clean(&mut self, page_index: usize) {
-        if let Some(page) = self.pages.get_mut(&page_index) {
-            page.dirty = false;
-        }
-    }
-
-    fn dirty_pages(&self) -> Vec<usize> {
-        self.pages
-            .iter()
-            .filter_map(|(page_index, page)| page.dirty.then_some(*page_index))
-            .collect()
+        dirty_pages
     }
 
     fn discard_after_truncate(&mut self, new_size: usize) {
         let new_page_count = new_size.div_ceil(arch::PGSIZE);
-        let _ = self.pages.split_off(&new_page_count);
+        self.mapping().invalidate_after(new_page_count);
 
         let tail_offset = new_size % arch::PGSIZE;
         if tail_offset != 0
-            && let Some(page) = self.pages.get(&(new_page_count - 1))
+            && let Some(page) = self.get_page(new_page_count - 1)
         {
-            page.frame.slice()[tail_offset..].fill(0);
+            page.with_resident_and_record_ad(true, |frame| {
+                frame.slice()[tail_offset..].fill(0);
+                ((), Default::default())
+            });
         }
     }
 
     fn clear(&mut self) {
-        self.pages.clear();
-    }
-
-    fn shrink_to_capacity(&mut self) {
-        while self.pages.len() > Self::CAPACITY {
-            if !self.remove_reclaimable_page() {
-                break;
-            }
+        if let Some(mapping) = &self.mapping {
+            mapping.invalidate_after(0);
         }
-    }
-
-    fn shrink_for_insert(&mut self) {
-        while self.pages.len() >= Self::CAPACITY {
-            if !self.remove_reclaimable_page() {
-                break;
-            }
-        }
-    }
-
-    fn remove_reclaimable_page(&mut self) -> bool {
-        let Some(page_index) = self
-            .pages
-            .iter()
-            .find_map(|(page_index, page)| (!page.dirty && Arc::strong_count(&page.frame) == 1).then_some(*page_index))
-        else {
-            return false;
-        };
-        self.pages.remove(&page_index);
-        true
     }
 }
 
@@ -219,7 +192,6 @@ impl Inode {
     fn mark_deleted(&self, inode: &Ext4Inode) {
         self.metadata_dirty.store(false, Ordering::Release);
         self.refresh_cached_state(inode);
-        self.page_cache.lock().clear();
         self.invalidate_dir_cache();
         self.deleted.store(true, Ordering::Release);
     }
@@ -497,14 +469,13 @@ impl Inode {
 
     fn load_page_to_cache(
         &self,
-        context: &Context,
-        inode: &Ext4Inode,
-        page_cache: &mut InodePageCache,
+        context: &Arc<SleepLock<Context>>,
+        page_cache: &InodePageCache,
         file_page_index: usize,
         file_size: usize,
-    ) -> SysResult<Arc<PhysPageFrame>> {
-        if let Some(frame) = page_cache.get_frame(file_page_index) {
-            return Ok(frame);
+    ) -> SysResult<FilePageIdentityPin> {
+        if let Some(page) = page_cache.get_page(file_page_index) {
+            return Ok(page);
         }
 
         let page_offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
@@ -512,90 +483,136 @@ impl Inode {
             return Err(Errno::EINVAL);
         }
 
-        let len = core::cmp::min(file_size - page_offset, arch::PGSIZE);
-        let frame = Arc::new(PhysPageFrame::alloc_zeroed());
-        let read_len = Self::read_raw_at_locked(context, inode, &mut frame.slice()[..len], page_offset)?;
-        if read_len < len {
-            frame.slice()[read_len..len].fill(0);
-        }
-
-        Ok(page_cache.insert_frame(file_page_index, frame))
+        page_cache.acquire_cached_page(file_page_index, || {
+            let context = context.lock();
+            let inode = self.inode.lock();
+            let len = core::cmp::min(file_size - page_offset, arch::PGSIZE);
+            let frame = PhysPageFrame::alloc_zeroed();
+            let read_len = Self::read_raw_at_locked(&context, &inode, &mut frame.slice()[..len], page_offset)?;
+            if read_len < len {
+                frame.slice()[read_len..len].fill(0);
+            }
+            Ok(Some(frame))
+        })
     }
 
     fn flush_dirty_pages(&self) -> SysResult<()> {
         let Some(context) = self.context.upgrade() else {
             return Err(Errno::EIO);
         };
-        let context = context.lock();
-        let mut inode = self.inode.lock();
-        if !InodePageCache::enabled() || !Self::is_cacheable_file(&inode) {
+        let inode = self.inode.lock();
+        if !Self::is_cacheable_file(&inode) {
+            drop(inode);
             self.page_cache.lock().clear();
             return Ok(());
         }
 
-        let mut page_cache = self.page_cache.lock();
         let file_size = usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?;
+        drop(inode);
+        let write_buffer = page::try_alloc_contiguous(WRITEBACK_BATCH_PAGES)
+            .map(FixedContiguousPhysPageFrame::<WRITEBACK_BATCH_PAGES>::new);
+        let page_cache = self.page_cache.lock();
         let dirty_pages = page_cache.dirty_pages();
-        let mut index = 0;
-        while index < dirty_pages.len() {
-            let page_index = dirty_pages[index];
-            let offset = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
-            if offset >= file_size {
-                page_cache.mark_clean(page_index);
-                index += 1;
-                continue;
-            }
+        if let Some(write_buffer) = write_buffer {
+            let mut index = 0;
+            let mut batch = Vec::with_capacity(WRITEBACK_BATCH_PAGES);
+            while index < dirty_pages.len() {
+                let first_page_index = dirty_pages[index].0;
+                let batch_offset = first_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+                let mut batch_len = 0;
+                batch.clear();
 
-            let mut run_end = index + 1;
-            while run_end < dirty_pages.len() {
-                let previous_page = dirty_pages[run_end - 1];
-                let current_page = dirty_pages[run_end];
-                if current_page != previous_page + 1 {
-                    break;
-                }
+                while index < dirty_pages.len() && batch.len() < WRITEBACK_BATCH_PAGES {
+                    let (page_index, page) = &dirty_pages[index];
+                    let expected_page_index = first_page_index.checked_add(batch.len()).ok_or(Errno::EFBIG)?;
+                    if *page_index != expected_page_index {
+                        break;
+                    }
 
-                let current_offset = current_page.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
-                if current_offset >= file_size {
-                    break;
-                }
-
-                run_end += 1;
-            }
-
-            if run_end == index + 1 {
-                let len = core::cmp::min(file_size - offset, arch::PGSIZE);
-                let Some(frame) = page_cache.get_frame(page_index) else {
-                    return Err(Errno::EIO);
-                };
-                let written = Self::write_raw_at_locked(&context, &mut inode, &frame.slice()[..len], offset)?;
-                if written != len {
-                    return Err(Errno::EIO);
-                }
-            } else {
-                let max_run_size = (run_end - index).checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
-                let run_size = core::cmp::min(file_size - offset, max_run_size);
-                let mut write_buf = Vec::with_capacity(run_size);
-
-                for &page_index in dirty_pages[index..run_end].iter() {
-                    let page_offset = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
-                    let len = core::cmp::min(file_size - page_offset, arch::PGSIZE);
-                    let Some(frame) = page_cache.get_frame(page_index) else {
-                        return Err(Errno::EIO);
+                    let offset = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+                    let Some(mut guard) = page.try_get_page() else {
+                        if batch.is_empty() {
+                            index += 1;
+                        }
+                        break;
                     };
-                    write_buf.extend_from_slice(&frame.slice()[..len]);
+                    if !guard.take_dirty() || offset >= file_size {
+                        if batch.is_empty() {
+                            index += 1;
+                        }
+                        break;
+                    }
+
+                    let len = core::cmp::min(file_size - offset, arch::PGSIZE);
+                    batch_len += len;
+                    batch.push((guard, len));
+                    index += 1;
                 }
 
-                let written = Self::write_raw_at_locked(&context, &mut inode, &write_buf, offset)?;
-                if written != write_buf.len() {
-                    return Err(Errno::EIO);
+                if batch.is_empty() {
+                    continue;
+                }
+
+                let write_result = if batch.len() == 1 {
+                    let context = context.lock();
+                    let mut inode = self.inode.lock();
+                    let (guard, len) = &batch[0];
+                    Self::write_raw_at_locked(&context, &mut inode, &guard.frame().slice()[..*len], batch_offset)
+                } else {
+                    let mut buffer_offset = 0;
+                    for (guard, len) in &batch {
+                        write_buffer.slice()[buffer_offset..buffer_offset + len]
+                            .copy_from_slice(&guard.frame().slice()[..*len]);
+                        buffer_offset += len;
+                    }
+                    let context = context.lock();
+                    let mut inode = self.inode.lock();
+                    Self::write_raw_at_locked(&context, &mut inode, &write_buffer.slice()[..batch_len], batch_offset)
+                };
+                match write_result {
+                    Ok(written) if written == batch_len => {}
+                    Ok(_) => {
+                        for (guard, _) in &mut batch {
+                            guard.mark_dirty();
+                        }
+                        return Err(Errno::EIO);
+                    }
+                    Err(err) => {
+                        for (guard, _) in &mut batch {
+                            guard.mark_dirty();
+                        }
+                        return Err(err);
+                    }
                 }
             }
+        } else {
+            for (page_index, page) in dirty_pages {
+                let offset = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+                let Some(mut guard) = page.try_get_page() else {
+                    continue;
+                };
+                if !guard.take_dirty() || offset >= file_size {
+                    continue;
+                }
 
-            for &page_index in dirty_pages[index..run_end].iter() {
-                page_cache.mark_clean(page_index);
+                let len = core::cmp::min(file_size - offset, arch::PGSIZE);
+                let write_result = {
+                    let context = context.lock();
+                    let mut inode = self.inode.lock();
+                    Self::write_raw_at_locked(&context, &mut inode, &guard.frame().slice()[..len], offset)
+                };
+                match write_result {
+                    Ok(written) if written == len => {}
+                    Ok(_) => {
+                        guard.mark_dirty();
+                        return Err(Errno::EIO);
+                    }
+                    Err(err) => {
+                        guard.mark_dirty();
+                        return Err(err);
+                    }
+                }
             }
-
-            index = run_end;
         }
         Ok(())
     }
@@ -707,7 +724,6 @@ impl Inode {
             inode.set_mtime(&time);
             inode.set_ctime(&time);
             context.write_inode(&mut inode)?;
-            self.page_cache.lock().clear();
             return Ok(());
         }
 
@@ -719,7 +735,6 @@ impl Inode {
         }
         inode.i_size = 0;
         inode.i_blocks = 0;
-        self.page_cache.lock().clear();
 
         let written = Self::write_extent_data_locked(&context, &mut inode, target, 0, target.len(), "symlink")?;
         if written != target.len() {
@@ -734,6 +749,10 @@ impl Inode {
 }
 
 impl InodeOps for Inode {
+    fn attach_file_mapping(&mut self, mapping: Arc<FileMapping>) {
+        self.page_cache.lock().attach(mapping);
+    }
+
     fn get_ino(&self) -> u32 {
         self.inode.lock().ino
     }
@@ -750,20 +769,20 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("readat: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
-        let inode = self.inode.lock();
-
-        if direct || !InodePageCache::enabled() || !Self::is_cacheable_file(&inode) {
-            return Self::read_raw_at_locked(&context, &inode, buf, offset);
-        }
-
-        let file_size = usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?;
+        let file_size = {
+            let context = context.lock();
+            let inode = self.inode.lock();
+            if direct || !Self::is_cacheable_file(&inode) {
+                return Self::read_raw_at_locked(&context, &inode, buf, offset);
+            }
+            usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?
+        };
         if offset >= file_size {
             return Ok(0);
         }
 
         let to_read = buf.len().min(file_size - offset);
-        let mut page_cache = self.page_cache.lock();
+        let page_cache = self.page_cache.lock();
         let mut read_len = 0;
         while read_len < to_read {
             let current_offset = offset + read_len;
@@ -771,8 +790,15 @@ impl InodeOps for Inode {
             let page_offset = current_offset % arch::PGSIZE;
             let copy_len = core::cmp::min(to_read - read_len, arch::PGSIZE - page_offset);
 
-            let frame = self.load_page_to_cache(&context, &inode, &mut page_cache, page_index, file_size)?;
-            frame.copy_to_slice(page_offset, &mut buf[read_len..read_len + copy_len]);
+            let page = if let Some(page) = page_cache.get_page(page_index) {
+                page
+            } else {
+                self.load_page_to_cache(&context, &page_cache, page_index, file_size)?
+            };
+            let guard = page.ensure_page().map_err(|_| Errno::EIO)?;
+            guard
+                .frame()
+                .copy_to_slice(page_offset, &mut buf[read_len..read_len + copy_len]);
 
             read_len += copy_len;
         }
@@ -789,16 +815,18 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("writeat: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
-        let mut inode = self.inode.lock();
-
-        if !InodePageCache::enabled() || !Self::is_cacheable_file(&inode) {
-            return Self::write_raw_at_locked(&context, &mut inode, buf, offset);
-        }
-
-        let end = Self::validate_regular_write(&inode, offset, buf.len())?;
-        let old_size = usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?;
-        let mut page_cache = self.page_cache.lock();
+        let (end, old_size) = {
+            let context = context.lock();
+            let mut inode = self.inode.lock();
+            if !Self::is_cacheable_file(&inode) {
+                return Self::write_raw_at_locked(&context, &mut inode, buf, offset);
+            }
+            (
+                Self::validate_regular_write(&inode, offset, buf.len())?,
+                usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?,
+            )
+        };
+        let page_cache = self.page_cache.lock();
         let mut written = 0;
         while written < buf.len() {
             let current_offset = offset + written;
@@ -807,24 +835,31 @@ impl InodeOps for Inode {
             let copy_len = core::cmp::min(buf.len() - written, arch::PGSIZE - page_offset);
             let page_start = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
 
-            let frame = if let Some(frame) = page_cache.get_frame(page_index) {
-                frame
+            let page = if let Some(page) = page_cache.get_page(page_index) {
+                page
             } else if page_start < old_size && copy_len != arch::PGSIZE {
-                self.load_page_to_cache(&context, &inode, &mut page_cache, page_index, old_size)?
+                self.load_page_to_cache(&context, &page_cache, page_index, old_size)?
             } else {
-                page_cache.insert_frame(page_index, Arc::new(PhysPageFrame::alloc_zeroed()))
+                page_cache.insert_frame(page_index, PhysPageFrame::alloc_zeroed())?
             };
-            frame.copy_from_slice(page_offset, &buf[written..written + copy_len]);
-            page_cache.mark_dirty(page_index);
+            let mut guard = page.ensure_page().map_err(|_| Errno::EIO)?;
+            guard
+                .frame()
+                .copy_from_slice(page_offset, &buf[written..written + copy_len]);
+            guard.mark_dirty();
 
             written += copy_len;
         }
-        drop(page_cache);
 
+        let context = context.lock();
+        let mut inode = self.inode.lock();
         if (end as u64) > inode.i_size {
             inode.i_size = end as u64;
             context.write_inode(&mut inode)?;
         }
+        drop(inode);
+        drop(context);
+        drop(page_cache);
 
         Ok(written)
     }
@@ -885,6 +920,8 @@ impl InodeOps for Inode {
         inode.i_size = new_size;
         context.write_inode(&mut inode)?;
         let new_size = usize::try_from(new_size).map_err(|_| Errno::EFBIG)?;
+        drop(inode);
+        drop(context);
         self.page_cache.lock().discard_after_truncate(new_size);
         Ok(())
     }
@@ -1330,11 +1367,16 @@ impl InodeOps for Inode {
     }
 
     fn mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<Arc<PhysPageFrame>>> {
+        self.load_raw_page(file_page_index).map(|frame| frame.map(Arc::new))
+    }
+
+    fn load_raw_page(&self, file_page_index: usize) -> SysResult<Option<PhysPageFrame>> {
         let offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
         let context = self
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("mmap_shared_page: context has been dropped", Errno::EIO))?;
+        let frame = PhysPageFrame::alloc_with_shrink_zeroed();
         let context = context.lock();
         let inode = self.inode.lock();
 
@@ -1343,19 +1385,16 @@ impl InodeOps for Inode {
             return Ok(None);
         }
 
-        if !InodePageCache::enabled() || !Self::is_cacheable_file(&inode) {
-            let len = core::cmp::min(file_size - offset, arch::PGSIZE);
-            let frame = Arc::new(PhysPageFrame::alloc_zeroed());
-            let read_len = Self::read_raw_at_locked(&context, &inode, &mut frame.slice()[..len], offset)?;
-            if read_len < len {
-                frame.slice()[read_len..len].fill(0);
-            }
-            return Ok(Some(frame));
+        let len = core::cmp::min(file_size - offset, arch::PGSIZE);
+        let read_len = Self::read_raw_at_locked(&context, &inode, &mut frame.slice()[..len], offset)?;
+        if read_len < len {
+            frame.slice()[read_len..len].fill(0);
         }
+        Ok(Some(frame))
+    }
 
-        let mut page_cache = self.page_cache.lock();
-        self.load_page_to_cache(&context, &inode, &mut page_cache, file_page_index, file_size)
-            .map(Some)
+    fn supports_file_mapping(&self) -> bool {
+        Self::is_cacheable_file(&self.inode.lock())
     }
 
     fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
@@ -1378,18 +1417,7 @@ impl InodeOps for Inode {
             return Err(Errno::EIO);
         }
 
-        let mut page_cache = self.page_cache.lock();
-        if let Some(cached) = page_cache.get_frame(file_page_index) {
-            if cached.get_page() != frame.get_page() {
-                cached.copy_from_slice(0, &frame.slice()[..arch::PGSIZE]);
-            }
-        }
-        page_cache.mark_clean(file_page_index);
         Ok(())
-    }
-
-    fn release_mmap_shared_page(&self, _file_page_index: usize) {
-        self.page_cache.lock().shrink_to_capacity();
     }
 
     fn owner(&self) -> SysResult<(Uid, Uid)> {
@@ -1628,32 +1656,37 @@ fn allocate_full_block_run(
     if desired_blocks == 0 {
         return Ok((0, Vec::new()));
     }
+    let last_block_idx = u32::try_from(desired_blocks - 1)
+        .map_err(|_| debug_errno("allocate_full_block_run: block count does not fit u32", Errno::EFBIG))?;
+    lblk.checked_add(last_block_idx)
+        .ok_or_else(|| debug_errno("allocate_full_block_run: logical block overflow", Errno::EFBIG))?;
 
     let extents_before = extents.clone();
     let extent_idx_before = *extent_idx;
     let new_allocated_start = newly_allocated.len();
     let mut allocated = Vec::with_capacity(desired_blocks);
 
-    for block_idx in 0..desired_blocks {
-        let run_lblk = lblk
-            .checked_add(block_idx as u32)
-            .ok_or_else(|| debug_errno("allocate_full_block_run: logical block overflow", Errno::EFBIG))?;
-        let pblk = match context.alloc_block() {
-            Ok(pblk) => pblk,
+    while allocated.len() < desired_blocks {
+        let batch = match context.alloc_blocks(desired_blocks - allocated.len()) {
+            Ok(batch) => batch,
             Err(err) => {
                 rollback_newly_allocated(context, extents, newly_allocated, &extents_before, new_allocated_start);
                 *extent_idx = extent_idx_before;
                 return Err(err);
             }
         };
-        if let Err(err) = context.insert_extent_mapping(extents, run_lblk, pblk) {
-            let _ = context.free_block(pblk);
-            rollback_newly_allocated(context, extents, newly_allocated, &extents_before, new_allocated_start);
-            *extent_idx = extent_idx_before;
-            return Err(err);
+        let batch_start = allocated.len();
+        newly_allocated.extend(batch.iter().copied());
+        for (batch_idx, &pblk) in batch.iter().enumerate() {
+            let block_idx = batch_start + batch_idx;
+            let run_lblk = lblk + block_idx as u32;
+            if let Err(err) = context.insert_extent_mapping(extents, run_lblk, pblk) {
+                rollback_newly_allocated(context, extents, newly_allocated, &extents_before, new_allocated_start);
+                *extent_idx = extent_idx_before;
+                return Err(err);
+            }
         }
-        newly_allocated.push(pblk);
-        allocated.push(pblk);
+        allocated.extend(batch);
     }
 
     *extent_idx = extent_idx_before.saturating_sub(1);

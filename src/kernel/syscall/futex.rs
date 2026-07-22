@@ -4,8 +4,9 @@ use core::convert::{TryFrom, TryInto};
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
+use crate::arch;
 use crate::driver::chosen::kclock;
-use crate::kernel::errno::Errno;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, timer};
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall::SyscallRet;
@@ -38,8 +39,15 @@ enum FutexOp {
 }
 
 const FUTEX_OP_MASK: usize = 0x7f;
-const FUTEX_CLOCK_REALTIME: usize = 0x100;
 const FUTEX_WAITV_MAX: usize = 128;
+
+bitflags! {
+    #[derive(Clone, Copy)]
+    struct FutexOpFlags: usize {
+        const PRIVATE = 0x80;
+        const CLOCK_REALTIME = 0x100;
+    }
+}
 
 bitflags! {
     #[derive(Clone, Copy)]
@@ -65,6 +73,20 @@ enum FutexWaitvClockId {
     Monotonic = 1,
 }
 
+fn read_futex_addr(uaddr: UPtr<i32>, key: futex::FutexKey) -> SysResult<futex::FutexAddr> {
+    let value = uaddr.read()?;
+    Ok(futex::FutexAddr::new(key, value))
+}
+
+fn futex_key(uaddr: UPtr<i32>, private: bool) -> SysResult<futex::FutexKey> {
+    if private {
+        Ok(futex::FutexKey::private(current::addrspace(), uaddr.uaddr()))
+    } else {
+        let frame = current::addrspace().get_frame(uaddr.uaddr())?;
+        Ok(futex::FutexKey::shared(&frame, uaddr.uaddr() & arch::PGMASK))
+    }
+}
+
 pub fn futex(
     uaddr: UPtr<i32>,
     futex_op: usize,
@@ -79,6 +101,8 @@ pub fn futex(
     }
 
     let op = FutexOp::try_from(futex_op & FUTEX_OP_MASK).map_err(|_| Errno::EINVAL)?;
+    let op_flags = FutexOpFlags::from_bits_truncate(futex_op);
+    let private = op_flags.contains(FutexOpFlags::PRIVATE);
     match op {
         FutexOp::Wait | FutexOp::WaitBitset => {
             let bitset = if op == FutexOp::WaitBitset {
@@ -93,7 +117,7 @@ pub fn futex(
             let timeout = if let Some(timeout) = timeout.read_optional()? {
                 let duration: Duration = timeout.try_into()?;
                 if op == FutexOp::WaitBitset {
-                    let now = if (futex_op & FUTEX_CLOCK_REALTIME) != 0 {
+                    let now = if op_flags.contains(FutexOpFlags::CLOCK_REALTIME) {
                         kclock::now()?
                     } else {
                         timer::now()
@@ -106,19 +130,26 @@ pub fn futex(
                 None
             };
 
-            let kaddr = uaddr.kaddr()?;
-            futex::wait_current(kaddr, val as i32, bitset)?;
+            let key = futex_key(uaddr, private)?;
+            let task = current::task().clone();
+
+            let mut futex_manager = futex::manager();
+            let addr = read_futex_addr(uaddr, key)?;
+
             if timeout == Some(Duration::ZERO) {
-                let task = current::task().clone();
-                futex::cancel_wait_all(&task);
+                futex_manager.touch(addr, val as i32)?;
                 return Err(Errno::ETIMEDOUT);
             }
 
-            let timer_id = timeout.map(|timeout| timer::add_timer(current::task().clone(), timeout));
-            let event = current::block("futex");
+            futex_manager.wait_current(addr, val as i32, bitset)?;
+            drop(futex_manager);
+
+            let timer_id = timeout.map(|timeout| timer::add_timer(task.clone(), timeout));
+            current::schedule();
+            let event = current::task().take_wakeup_event().unwrap();
             if !matches!(event, Event::Futex) {
-                let task = current::task().clone();
-                futex::cancel_wait_all(&task);
+                let mut futex_manager = futex::manager();
+                futex_manager.cancel_wait_all(&task);
             }
             if let Some(timer_id) = timer_id {
                 if event != Event::Timeout {
@@ -134,7 +165,6 @@ pub fn futex(
             }
         }
         FutexOp::Wake | FutexOp::WakeBitset => {
-            let kaddr = uaddr.kaddr()?;
             let bitset = if op == FutexOp::WakeBitset {
                 val3 as u32
             } else {
@@ -143,7 +173,9 @@ pub fn futex(
             if bitset == 0 {
                 return Err(Errno::EINVAL);
             }
-            futex::wake(kaddr, val, bitset)
+            let key = futex_key(uaddr, private)?;
+            let mut futex_manager = futex::manager();
+            futex_manager.wake(key, val, bitset)
         }
 
         FutexOp::REQUEUE | FutexOp::CmpRequeue => {
@@ -151,12 +183,14 @@ pub fn futex(
             if uaddr2.uaddr() & 3 != 0 {
                 return Err(Errno::EINVAL);
             }
-            let kaddr = uaddr.kaddr()?;
-            let kaddr2 = uaddr2.kaddr()?;
+            let key = futex_key(uaddr, private)?;
+            let key2 = futex_key(UPtr::<i32>::from_uaddr(uaddr2.uaddr()), private)?;
             let wake_count = val;
             let requeue_count = timeout.uaddr();
             let cmp = (op == FutexOp::CmpRequeue).then_some(val3 as i32);
-            futex::requeue(kaddr, kaddr2, wake_count, requeue_count, cmp)
+            let mut futex_manager = futex::manager();
+            let addr = read_futex_addr(uaddr, key)?;
+            futex_manager.requeue(addr, key2, wake_count, requeue_count, cmp)
         }
     }
 }
@@ -199,36 +233,54 @@ pub fn futex_waitv(
             return Err(Errno::EINVAL);
         }
 
-        let kaddr = UPtr::<i32>::from_uaddr(uaddr).kaddr()?;
-        let expected = u32::try_from(waiter.val).ok().map(|val| val as i32);
-        futexes.push((kaddr, expected));
+        let uaddr = UPtr::<i32>::from_uaddr(uaddr);
+        let key = futex_key(uaddr, waiter_flags.contains(FutexWaitvFlags::FUTEX_PRIVATE_FLAG))?;
+        let expected = u32::try_from(waiter.val).map_err(|_| Errno::EAGAIN)? as i32;
+        futexes.push((uaddr, key, expected));
     }
 
-    let cancel_waiters = |_futexes: &[(usize, Option<i32>)]| {
-        let task = current::task().clone();
-        futex::cancel_wait_all(&task);
-    };
+    let task = current::task().clone();
 
-    for (index, (kaddr, expected)) in futexes.iter().enumerate() {
-        let Some(expected) = expected else {
-            cancel_waiters(&futexes[..index]);
-            return Err(Errno::EAGAIN);
+    // Hold the futex manager lock while reading each futex word and, for a
+    // real wait, until the current task is blocked and linked into every queue.
+    // Without that, this lost-wakeup race is possible:
+    //
+    //   | Task A (waiter)             | Task B (waker)
+    // 0 | read futex == expected      |
+    // 1 |                             | store futex = new_value
+    // 2 |                             | futex_wake()
+    // 3 | enqueue and sleep           |
+    //
+    // The lock makes futex_wake wait until Task A has either fully enqueued
+    // all waitv entries, rolled them back, or confirmed a zero-timeout touch.
+    let mut futex_manager = futex::manager();
+    let mut wait_entries = Vec::new();
+    for (index, (uaddr, key, expected)) in futexes.iter().enumerate() {
+        let addr = match read_futex_addr(*uaddr, *key) {
+            Ok(addr) => addr,
+            Err(err) => {
+                return Err(err);
+            }
         };
-
-        if let Err(err) = futex::wait_current_waitv(*kaddr, *expected, u32::MAX, index) {
-            cancel_waiters(&futexes[..index]);
-            return Err(err);
-        }
+        futex_manager.touch(addr, *expected)?;
+        wait_entries.push((addr, index));
     }
 
     if timeout == Some(Duration::ZERO) {
-        cancel_waiters(&futexes);
         return Err(Errno::ETIMEDOUT);
     }
 
-    let timer_id = timeout.map(|timeout| timer::add_timer(current::task().clone(), timeout));
-    let event = current::block("futex_waitv");
-    cancel_waiters(&futexes);
+    task.block("futex_waitv");
+    for (addr, index) in wait_entries {
+        futex_manager.wait_current_waitv_unchecked(addr, u32::MAX, index);
+    }
+    drop(futex_manager);
+
+    let timer_id = timeout.map(|timeout| timer::add_timer(task.clone(), timeout));
+    current::schedule();
+    let event = current::task().take_wakeup_event().unwrap();
+    let mut futex_manager = futex::manager();
+    futex_manager.cancel_wait_all(&task);
     if let Some(timer_id) = timer_id {
         if event != Event::Timeout {
             timer::remove_timer(timer_id);

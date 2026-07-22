@@ -457,12 +457,13 @@ pub fn rt_sigsuspend(mask: UPtr<SignalSet>) -> SyscallRet {
     };
 
     tcb.recive_pending_signal_from_parent();
-    if tcb.state().lock().pending_signal.is_some() {
+    if !tcb.block_if_no_pending_signal("sigsuspend") {
         *tcb.signal_mask.lock() = old;
         return Err(Errno::EINTR);
     }
 
-    let event = current::block("sigsuspend");
+    current::schedule();
+    let event = current::task().take_wakeup_event().unwrap();
 
     *tcb.signal_mask.lock() = old;
 
@@ -511,38 +512,23 @@ pub fn sigtimedwait(
 
     tcb.recive_pending_signal_from_parent();
 
-    if let Some(pending) = {
-        let mut state = tcb.state().lock();
-        if let Some(pending) = state.pending_signal {
-            if signal_set.contains(pending.signum) {
-                state.pending_signal.take()
-            } else {
-                return Err(Errno::EINTR);
-            }
-        } else {
-            None
-        }
-    } {
-        return finish_sigtimedwait(pending, uptr_info);
-    }
-
-    if let Some(pending) = tcb.parent().pending_signals().lock().pop_waiting(signal_set, tcb.tid()) {
-        return finish_sigtimedwait(pending, uptr_info);
-    }
-
-    let timer_id = if let Some(ts) = timeout {
+    let timeout_duration = if let Some(ts) = timeout {
         let timeout_duration: Duration = ts.try_into()?;
         if timeout_duration.is_zero() {
             return Err(Errno::EAGAIN);
         }
-        Some(timer::add_timer(current::task().clone(), timeout_duration))
+        Some(timeout_duration)
     } else {
         None
     };
 
-    tcb.state().lock().signal_to_wait = signal_set;
+    if let Some(pending) = tcb.prepare_signal_wait(signal_set, "sigtimedwait")? {
+        return finish_sigtimedwait(pending, uptr_info);
+    }
 
-    let event = current::block("sigtimedwait");
+    let timer_id = timeout_duration.map(|timeout| timer::add_timer(current::task().clone(), timeout));
+    current::schedule();
+    let event = current::task().take_wakeup_event().unwrap();
     tcb.state().lock().signal_to_wait = SignalSet::empty();
 
     match event {
@@ -623,7 +609,8 @@ fn do_msgsnd(msqid: usize, mtype: isize, data: &[u8], nowait: bool) -> SyscallRe
             msg::MsgStatus::WouldBlock => {}
         }
 
-        let event = current::block("msgsnd");
+        current::schedule();
+        let event = current::task().take_wakeup_event().unwrap();
         if !matches!(event, Event::Msg) {
             msg::remove_current_waiter(msqid);
         }
@@ -697,7 +684,8 @@ fn do_msgrcv(
             Err(msg::MsgStatus::Done) => unreachable!(),
         }
 
-        let event = current::block("msgrcv");
+        current::schedule();
+        let event = current::task().take_wakeup_event().unwrap();
         if !matches!(event, Event::Msg) {
             msg::remove_current_waiter(msqid);
         }
@@ -798,7 +786,8 @@ fn do_semtimedop(semid: usize, ops: &[sem::SemOp], timeout: Option<Duration>) ->
         };
 
         let timer_id = wait_timeout.map(|timeout| timer::add_timer(current::task().clone(), timeout));
-        let event = current::block("semop");
+        current::schedule();
+        let event = current::task().take_wakeup_event().unwrap();
         if !matches!(event, Event::Sem) {
             sem::remove_current_waiter(semid);
         }

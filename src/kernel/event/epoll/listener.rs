@@ -1,9 +1,8 @@
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
 use bitflags::bitflags;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use num_enum::TryFromPrimitive;
 
 use crate::fs::file::{FileFlags, FileOps};
@@ -98,7 +97,7 @@ impl EpollEntry {
         events.to_file_event()
     }
 
-    fn matches_ready(&self, ready: FileEvent) -> FileEvent {
+    fn interest_on(&self, ready: FileEvent) -> FileEvent {
         let interest = self.interest();
         let always_report = ready & (FileEvent::ERROR | FileEvent::HANG_UP);
         (ready & interest) | always_report
@@ -116,6 +115,7 @@ impl EpollEntry {
 }
 
 struct EpollListenerInner {
+    /// fd -> EpollEntry { file, notifiers, event, ready state... }
     entries: BTreeMap<usize, EpollEntry>,
     ready: VecDeque<usize>,
     waiter: WaitQueue<Event>,
@@ -138,7 +138,9 @@ impl EpollListenerInner {
             return false;
         }
 
-        let ready = entry.matches_ready(ready);
+        // The epoll notifier notified all listeners and ignored the interest of each listener.
+        // We may not be interested in the event.
+        let ready = entry.interest_on(ready);
         if ready.is_empty() {
             return false;
         }
@@ -195,6 +197,8 @@ impl EpollListener {
         inner.entries.insert(fd, EpollEntry::new(fd, file, notifiers, event));
         drop(inner);
 
+        // Refresh the fd to check if it is ready now or before add to the epoll listener.
+        // If it is ready, we will add it to the ready queue.
         self.refresh_fd(fd);
         Ok(())
     }
@@ -277,6 +281,7 @@ impl EpollListener {
         }
     }
 
+    /// Enqueue events if fd has already been ready.
     fn refresh_fd(&self, fd: usize) {
         let file_and_interest = {
             let inner = self.inner.lock();
@@ -298,7 +303,7 @@ impl EpollListener {
         }
     }
 
-    fn refresh_all(&self) {
+    fn enqueue_ready_level_triggered_entries(&self) {
         let files = {
             let inner = self.inner.lock();
             inner
@@ -331,7 +336,7 @@ impl EpollListener {
     }
 
     pub fn collect_ready(&self, max_events: usize) -> Vec<EpollEvent> {
-        self.refresh_all();
+        self.enqueue_ready_level_triggered_entries();
 
         let mut events = Vec::new();
         let mut inner = self.inner.lock();
@@ -361,22 +366,39 @@ impl EpollListener {
     }
 
     pub fn has_ready(&self) -> bool {
-        self.refresh_all();
+        // Level-triggered entries should be queued again while their files stay ready.
+        self.enqueue_ready_level_triggered_entries();
         !self.inner.lock().ready.is_empty()
     }
 
-    pub fn wait_current(&self) {
-        self.inner.lock().waiter.wait_current(Event::Epoll);
+    pub fn wait_current_if_not_ready(&self) -> bool {
+        self.enqueue_ready_level_triggered_entries();
+
+        let mut inner = self.inner.lock();
+        if !inner.ready.is_empty() {
+            return false;
+        }
+
+        inner.waiter.wait_current(Event::Epoll);
+        true
     }
 
-    pub fn wait_poll(&self, waker: usize) {
-        self.inner.lock().waiter.wait(
+    pub fn wait_poll_if_not_ready(&self, waker: usize) -> bool {
+        self.enqueue_ready_level_triggered_entries();
+
+        let mut inner = self.inner.lock();
+        if !inner.ready.is_empty() {
+            return false;
+        }
+
+        inner.waiter.wait(
             current::task().clone(),
             Event::Poll {
                 event: FileEvent::READ_READY,
                 waker,
             },
         );
+        true
     }
 
     pub fn wait_cancel(&self) {
@@ -465,13 +487,15 @@ impl FileOps for EpollFile {
     }
 
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
-        if let Some(ready) = self.poll_event(event)? {
-            return Ok(Some(ready));
+        if !event.contains(FileEvent::READ_READY) {
+            return Ok(None);
         }
-        if event.contains(FileEvent::READ_READY) {
-            self.listener.wait_poll(waker);
+
+        if self.listener.wait_poll_if_not_ready(waker) {
+            Ok(None)
+        } else {
+            Ok(Some(FileEvent::READ_READY))
         }
-        Ok(None)
     }
 
     fn wait_event_cancel(&self) {

@@ -82,12 +82,18 @@ impl CharDriverOps for Stty {
     fn read(&self, buf: &mut [u8], blocked: bool) -> SysResult<usize> {
         if blocked {
             loop {
+                // Lock `waiters` first to avoid losing wakeup window.
+                let mut waiters = self.waiters.lock();
+
                 if let Some(read) = self.tty.read_input(buf) {
                     return Ok(read);
                 }
 
-                self.waiters.lock().wait_current(Event::ReadReady);
-                match current::block("read_stty") {
+                waiters.wait_current(Event::ReadReady);
+                drop(waiters);
+
+                current::schedule();
+                match current::task().take_wakeup_event().unwrap() {
                     Event::ReadReady => {}
                     Event::Signal => {
                         self.waiters.lock().remove_current();
@@ -116,15 +122,21 @@ impl CharDriverOps for Stty {
     }
 
     fn wait_event(&self, waker: usize, event: FileEvent) -> SysResult<Option<FileEvent>> {
+        // Lock `waiters` first to avoid losing wakeup window.
+        let mut waiters = self.waiters.lock();
+
         if let Some(ready) = self.poll_event(event)? {
             return Ok(Some(ready));
         }
 
         if event.contains(FileEvent::READ_READY) {
-            self.waiters.lock().wait_current(Event::Poll {
-                event: FileEvent::READ_READY,
-                waker,
-            });
+            waiters.wait(
+                current::task().clone(),
+                Event::Poll {
+                    event: FileEvent::READ_READY,
+                    waker,
+                },
+            );
         }
 
         Ok(None)

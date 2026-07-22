@@ -194,8 +194,9 @@ impl FileOps for FanotifyFile {
             return Ok(None);
         }
 
-        if let Some(ready) = self.poll_event(event)? {
-            return Ok(Some(ready));
+        let pending = self.inner.pending.lock();
+        if !pending.is_empty() {
+            return Ok(Some(FileEvent::READ_READY));
         }
 
         self.inner.waiter.lock().wait(

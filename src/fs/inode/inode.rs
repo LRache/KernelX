@@ -1,9 +1,9 @@
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::ops::Deref;
 use core::time::Duration;
 use downcast_rs::{DowncastSync, impl_downcast};
 
-use crate::driver::BlockDriverOps;
+use crate::driver::{BlockDriverOps, CharDriverOps};
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::{Dentry, Perm};
 use crate::kernel::config;
@@ -11,6 +11,7 @@ use crate::kernel::errno::{Errno, SysResult};
 #[cfg(feature = "fanotify")]
 use crate::kernel::event::Fanotify;
 use crate::kernel::ipc::pipe::PipeInner;
+use crate::kernel::mm::swappable::{FileMapping, SharedFilePage};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
@@ -24,6 +25,7 @@ pub type Inode = dyn VfsInodeOps;
 
 pub struct VfsInode<T: InodeOps> {
     inner: T,
+    file_mapping: Option<Arc<FileMapping>>,
     lock_state: SpinLock<InodeLockState>,
     seal_state: SpinLock<InodeSealState>,
     fifo_pipe: LazyInitedCell<Arc<PipeInner>>,
@@ -32,14 +34,22 @@ pub struct VfsInode<T: InodeOps> {
 }
 
 impl<T: InodeOps> VfsInode<T> {
-    pub fn new(inner: T) -> Arc<Self> {
-        Arc::new(VfsInode {
-            inner,
-            lock_state: SpinLock::new(InodeLockState::new(), "VfsInode::lock_state"),
-            seal_state: SpinLock::new(InodeSealState::new(), "VfsInode::seal_state"),
-            fifo_pipe: LazyInitedCell::new("Inode::fifo_pipe"),
-            #[cfg(feature = "fanotify")]
-            fanotify: LazyInitedCell::new("Inode::fanotify"),
+    pub fn new(mut inner: T) -> Arc<Self> {
+        Arc::new_cyclic(|weak: &Weak<Self>| {
+            let inode: Weak<Inode> = weak.clone();
+            let file_mapping = inner.supports_file_mapping().then(|| FileMapping::new(inode));
+            if let Some(file_mapping) = &file_mapping {
+                inner.attach_file_mapping(file_mapping.clone());
+            }
+            VfsInode {
+                inner,
+                file_mapping,
+                lock_state: SpinLock::new(InodeLockState::new(), "VfsInode::lock_state"),
+                seal_state: SpinLock::new(InodeSealState::new(), "VfsInode::seal_state"),
+                fifo_pipe: LazyInitedCell::new("Inode::fifo_pipe"),
+                #[cfg(feature = "fanotify")]
+                fanotify: LazyInitedCell::new("Inode::fanotify"),
+            }
         })
     }
 
@@ -334,6 +344,8 @@ pub trait VfsInodeOps: DowncastSync {
 
     fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>>;
 
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>>;
+
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>>;
 
     fn as_seal_ops(&self) -> Option<&dyn InodeSealOps>;
@@ -380,11 +392,13 @@ pub trait VfsInodeOps: DowncastSync {
 
     fn size(&self) -> SysResult<u64>;
 
-    fn mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<Arc<PhysPageFrame>>>;
+    fn load_raw_page(&self, file_page_index: usize) -> SysResult<Option<PhysPageFrame>>;
+
+    fn acquire_mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<SharedFilePage>>;
+
+    fn file_mapping(&self) -> Option<&FileMapping>;
 
     fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()>;
-
-    fn release_mmap_shared_page(&self, file_page_index: usize);
 
     fn mode(&self) -> SysResult<Mode>;
 
@@ -440,6 +454,10 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
 
     fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
         self.inner.block_driver()
+    }
+
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>> {
+        self.inner.char_driver()
     }
 
     fn lock_state(&self) -> Option<&SpinLock<InodeLockState>> {
@@ -555,16 +573,28 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
         self.inner.size()
     }
 
-    fn mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<Arc<PhysPageFrame>>> {
-        self.inner.mmap_shared_page(file_page_index)
+    fn load_raw_page(&self, file_page_index: usize) -> SysResult<Option<PhysPageFrame>> {
+        self.inner.load_raw_page(file_page_index)
+    }
+
+    fn acquire_mmap_shared_page(&self, file_page_index: usize) -> SysResult<Option<SharedFilePage>> {
+        let Some(file_mapping) = &self.file_mapping else {
+            return self
+                .inner
+                .mmap_shared_page(file_page_index)
+                .map(|page| page.map(SharedFilePage::Stable));
+        };
+        file_mapping
+            .acquire_mapped_page(file_page_index, || self.inner.load_raw_page(file_page_index))
+            .map(|page| page.map(SharedFilePage::Swappable))
+    }
+
+    fn file_mapping(&self) -> Option<&FileMapping> {
+        self.file_mapping.as_deref()
     }
 
     fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
         self.inner.writeback_mmap_shared_page(file_page_index, frame)
-    }
-
-    fn release_mmap_shared_page(&self, file_page_index: usize) {
-        self.inner.release_mmap_shared_page(file_page_index)
     }
 
     fn mode(&self) -> SysResult<Mode> {
@@ -659,11 +689,17 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
 impl_downcast!(sync VfsInodeOps);
 
 pub trait InodeOps: Send + Sync + Sized + 'static {
+    fn attach_file_mapping(&mut self, _mapping: Arc<FileMapping>) {}
+
     fn get_ino(&self) -> u32;
 
     fn type_name(&self) -> &'static str;
 
     fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(None)
+    }
+
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>> {
         Ok(None)
     }
 
@@ -724,8 +760,8 @@ pub trait InodeOps: Send + Sync + Sized + 'static {
         let mut total_read = 0;
         let mut current_offset = offset;
         for kbuf in ubuf.iter_mut() {
-            let kbuf = kbuf?;
-            let n = self.readat(kbuf, current_offset, direct)?;
+            let mut kbuf = kbuf?;
+            let n = self.readat(&mut kbuf, current_offset, direct)?;
             total_read += n;
             current_offset += n;
             if n < kbuf.len() {
@@ -740,7 +776,7 @@ pub trait InodeOps: Send + Sync + Sized + 'static {
         let mut current_offset = offset;
         for kbuf in ubuf.iter() {
             let kbuf = kbuf?;
-            let n = self.writeat(kbuf, current_offset)?;
+            let n = self.writeat(&kbuf, current_offset)?;
             total_written += n;
             current_offset += n;
             if n < kbuf.len() {
@@ -789,6 +825,26 @@ pub trait InodeOps: Send + Sync + Sized + 'static {
         Ok(Some(Arc::new(frame)))
     }
 
+    fn load_raw_page(&self, file_page_index: usize) -> SysResult<Option<PhysPageFrame>> {
+        let offset = file_page_index.checked_mul(crate::arch::PGSIZE).ok_or(Errno::EFBIG)?;
+        let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
+        if offset >= file_size {
+            return Ok(None);
+        }
+
+        let len = core::cmp::min(file_size - offset, crate::arch::PGSIZE);
+        let frame = PhysPageFrame::alloc_zeroed();
+        let read_len = self.readat(&mut frame.slice()[..len], offset, false)?;
+        if read_len < len {
+            frame.slice()[read_len..len].fill(0);
+        }
+        Ok(Some(frame))
+    }
+
+    fn supports_file_mapping(&self) -> bool {
+        false
+    }
+
     fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
         let offset = file_page_index.checked_mul(crate::arch::PGSIZE).ok_or(Errno::EFBIG)?;
         let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
@@ -800,8 +856,6 @@ pub trait InodeOps: Send + Sync + Sized + 'static {
         self.writeat(&frame.slice()[..len], offset)?;
         Ok(())
     }
-
-    fn release_mmap_shared_page(&self, _file_page_index: usize) {}
 
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::empty())
@@ -993,12 +1047,12 @@ impl<T: InodeOps> InodeOps for Arc<T> {
         self.as_ref().mmap_shared_page(file_page_index)
     }
 
-    fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
-        self.as_ref().writeback_mmap_shared_page(file_page_index, frame)
+    fn supports_file_mapping(&self) -> bool {
+        self.as_ref().supports_file_mapping()
     }
 
-    fn release_mmap_shared_page(&self, file_page_index: usize) {
-        self.as_ref().release_mmap_shared_page(file_page_index)
+    fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
+        self.as_ref().writeback_mmap_shared_page(file_page_index, frame)
     }
 
     fn mode(&self) -> SysResult<Mode> {

@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::time::Duration;
 
-use crate::driver::BlockDriverOps;
+use crate::driver::{BlockDriverOps, CharDriverOps};
 use crate::fs::file::{DirResult, FileFlags, FileOps};
 use crate::fs::inode::{Inode as VfsInode, Mode, Owner};
 use crate::fs::{Dentry, FileType, InodeOps};
@@ -24,6 +24,10 @@ pub trait MemInodeOps<T: StaticFsInfo>: Send + Sync + 'static {
     fn type_name(&self) -> &'static str;
 
     fn block_driver(&self) -> SysResult<Option<Arc<dyn BlockDriverOps>>> {
+        Ok(None)
+    }
+
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>> {
         Ok(None)
     }
 
@@ -67,8 +71,8 @@ pub trait MemInodeOps<T: StaticFsInfo>: Send + Sync + 'static {
         let mut total_read = 0;
         let mut current_offset = offset;
         for kbuf in ubuf.iter_mut() {
-            let kbuf = kbuf?;
-            let n = self.readat(kbuf, current_offset, direct)?;
+            let mut kbuf = kbuf?;
+            let n = self.readat(&mut kbuf, current_offset, direct)?;
             total_read += n;
             current_offset += n;
             if n < kbuf.len() {
@@ -83,7 +87,7 @@ pub trait MemInodeOps<T: StaticFsInfo>: Send + Sync + 'static {
         let mut current_offset = offset;
         for kbuf in ubuf.iter() {
             let kbuf = kbuf?;
-            let n = self.writeat(kbuf, current_offset)?;
+            let n = self.writeat(&kbuf, current_offset)?;
             total_written += n;
             current_offset += n;
             if n < kbuf.len() {
@@ -122,8 +126,6 @@ pub trait MemInodeOps<T: StaticFsInfo>: Send + Sync + 'static {
     fn writeback_mmap_shared_page(&self, _file_page_index: usize, _frame: &PhysPageFrame) -> SysResult<()> {
         Ok(())
     }
-
-    fn release_mmap_shared_page(&self, _file_page_index: usize) {}
 
     fn mode(&self) -> SysResult<Mode> {
         Ok(Mode::empty())
@@ -221,6 +223,10 @@ impl<T: StaticFsInfo, I: InodeOps> MemInodeOps<T> for I {
         InodeOps::block_driver(self)
     }
 
+    fn char_driver(&self) -> SysResult<Option<Arc<dyn CharDriverOps>>> {
+        InodeOps::char_driver(self)
+    }
+
     fn unlink(&self, name: &str) -> SysResult<()> {
         InodeOps::unlink(self, name)
     }
@@ -271,10 +277,6 @@ impl<T: StaticFsInfo, I: InodeOps> MemInodeOps<T> for I {
 
     fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
         InodeOps::writeback_mmap_shared_page(self, file_page_index, frame)
-    }
-
-    fn release_mmap_shared_page(&self, file_page_index: usize) {
-        InodeOps::release_mmap_shared_page(self, file_page_index)
     }
 
     fn mode(&self) -> SysResult<Mode> {

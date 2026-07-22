@@ -1,7 +1,6 @@
 use crate::arch::arch::UserContextTrait;
-use crate::arch::loongarch::task::traphandle;
+use crate::arch::loongarch::task::{KernelStack, traphandle};
 use crate::kernel::mm::AddrSpace;
-use crate::kernel::scheduler::KernelStack;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -124,7 +123,7 @@ pub struct KernelContext {
 }
 
 impl KernelContext {
-    pub fn new(kernel_stack: &KernelStack) -> Self {
+    pub fn new<const MAPPED_PAGE_COUNT: usize>(kernel_stack: &KernelStack<MAPPED_PAGE_COUNT>) -> Self {
         KernelContext {
             ra: traphandle::return_to_user as *const () as usize,
             sp: kernel_stack.get_top(),
@@ -134,7 +133,10 @@ impl KernelContext {
         }
     }
 
-    pub fn new_user(kernel_stack: &KernelStack, _addrspace: &AddrSpace) -> Self {
+    pub fn new_user<const MAPPED_PAGE_COUNT: usize>(
+        kernel_stack: &KernelStack<MAPPED_PAGE_COUNT>,
+        _addrspace: &AddrSpace,
+    ) -> Self {
         Self::new(kernel_stack)
     }
 
@@ -162,9 +164,6 @@ impl KernelContext {
         self.fp
     }
 }
-
-unsafe impl Send for KernelContext {}
-unsafe impl Sync for KernelContext {}
 
 /// Snapshot of user state saved during signal delivery.
 #[repr(C)]

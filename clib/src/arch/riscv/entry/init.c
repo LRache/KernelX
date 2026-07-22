@@ -20,26 +20,31 @@ void __riscv_init(uintptr_t hartid, const void *fdt, uintptr_t kaddr_offset)  {
     *__riscv_init_symbol_ktop() = __riscv_init_symbol_kernel_end();
     *__riscv_init_symbol_kaddr_offset() = kaddr_offset;
 
-    uintptr_t memory_top = __riscv_load_fdt(fdt);
-    uintptr_t satp = __riscv_map_kaddr(kaddr_offset, memory_top);
+    struct kernelx_mem_region *mem_regions;
+    size_t mem_region_count = __riscv_load_fdt(fdt, &mem_regions);
+    uintptr_t satp = __riscv_map_kaddr(kaddr_offset, mem_regions, mem_region_count);
 
     void *ktop = *__riscv_init_symbol_ktop() + kaddr_offset;
+    void *mem_regions_kaddr = (void *)((uintptr_t)mem_regions + kaddr_offset);
 
     /*
         Return:
         a0: hartid
-        a1: heap_start
-        a2: memory_top
-        a3: satp
+        a1: bootstrap allocation end
+        a2: memory region array
+        a3: memory region count
+        a4: satp
     */
     asm volatile (
         "mv a0, %0\n"
         "mv a1, %1\n"
         "mv a2, %2\n"
         "mv a3, %3\n"
+        "mv a4, %4\n"
         :
-        : "r"(hartid), "r"(ktop), "r"(memory_top + kaddr_offset), "r"(satp)
-        : "a0", "a1", "a2", "a3"
+        : "r"(hartid), "r"(ktop), "r"(mem_regions_kaddr), "r"(mem_region_count),
+          "r"(satp)
+        : "a0", "a1", "a2", "a3", "a4"
     );
 }
 

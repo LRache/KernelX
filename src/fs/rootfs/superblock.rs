@@ -13,9 +13,6 @@ use crate::klib::LazyInitedCell;
 #[derive(Debug, Clone)]
 pub struct RootInode;
 
-unsafe impl Send for RootInode {}
-unsafe impl Sync for RootInode {}
-
 impl RootInode {
     pub const fn new() -> Self {
         RootInode

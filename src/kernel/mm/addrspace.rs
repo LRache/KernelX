@@ -1,59 +1,44 @@
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use fixedstr::tstr;
 use spin::Lazy;
 
+use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
-use crate::kernel::config::{MAX_PATH_LEN, USER_BRK_BASE, USER_RANDOM_ADDR_BASE};
+use crate::kernel::config::{MAX_PATH_LEN, USER_RANDOM_ADDR_BASE};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::Auxv;
+use crate::kernel::mm::maparea::{Auxv, MapManagerWatcher, PinPageFrame, ReadChunk, WriteChunk};
+use crate::kernel::mm::swappable::ResidentPageGuard;
 use crate::kernel::mm::{PhysPageFrame, maparea};
 use crate::klib::{SleepLock, SpinLock};
-use crate::{arch, safe_page_write};
 
+use super::swappable::AccessDirty;
 use super::{MapPerm, MemAccessType, vdso};
 
-cfg_if::cfg_if! {
-    if #[cfg(feature="swap-memory")] {
-        use alloc::collections::LinkedList;
-    }
-}
-
-static RANDOM_PAGE: Lazy<PhysPageFrame> = Lazy::new(|| PhysPageFrame::alloc());
-
-pub trait AddrSpaceWatcher: Send + Sync {
-    fn on_addrspace_unmap(&self, uaddr: usize, page_count: usize);
-
-    fn on_addrspace_remap(&self, uaddr: usize, page_count: usize) {
-        self.on_addrspace_unmap(uaddr, page_count);
-    }
-
-    fn on_addrspace_perm_change(&self, uaddr: usize, page_count: usize, _perm: MapPerm) {
-        self.on_addrspace_unmap(uaddr, page_count);
-    }
-}
+static RANDOM_PAGE: Lazy<Arc<PhysPageFrame>> = Lazy::new(|| Arc::new(PhysPageFrame::alloc()));
 
 fn create_pagetable() -> PageTable {
     let mut pagetable = PageTable::new_user();
-    pagetable.mmap(USER_RANDOM_ADDR_BASE, RANDOM_PAGE.get_page(), MapPerm::R | MapPerm::U);
+    pagetable.mmap(USER_RANDOM_ADDR_BASE, &RANDOM_PAGE, MapPerm::R | MapPerm::U);
 
     vdso::map_to_pagetale(&mut pagetable);
 
     pagetable
 }
 
-#[cfg(feature = "swap-memory")]
-use crate::kernel::mm::swappable::AddrSpaceFamilyChain;
-
 pub struct AddrSpace {
+    /// Number of TCBs still using this address space, excluding temporary `Arc`s.
+    task_users: AtomicUsize,
     map_manager: SleepLock<maparea::Manager>,
     pagetable: SpinLock<PageTable>,
-    watchers: SpinLock<Vec<Weak<dyn AddrSpaceWatcher>>>,
+}
 
-    #[cfg(feature = "swap-memory")]
-    family_chain: AddrSpaceFamilyChain,
+pub enum MmapPlacement {
+    Hint(usize),
+    Fixed(usize),
+    FixedNoReplace(usize),
 }
 
 impl AddrSpace {
@@ -63,55 +48,39 @@ impl AddrSpace {
 
     pub fn new_with_pagetable(pagetable: PageTable) -> Arc<Self> {
         let addrspace = Arc::new(AddrSpace {
+            task_users: AtomicUsize::new(0),
             map_manager: SleepLock::new(maparea::Manager::new(), "AddrSpace::map_manager"),
             pagetable: SpinLock::new(pagetable, "AddrSpace::pagetable"),
-            watchers: SpinLock::new(Vec::new(), "AddrSpace::watchers"),
-
-            #[cfg(feature = "swap-memory")]
-            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new(), "AddrSpace::family_chain")),
         });
 
-        #[cfg(feature = "swap-memory")]
-        addrspace.family_chain.lock().push_back(Arc::downgrade(&addrspace));
-
         addrspace
+    }
+
+    pub(crate) fn acquire_task_user(&self) {
+        let previous = self.task_users.fetch_add(1, Ordering::Relaxed);
+        assert!(previous != usize::MAX, "AddrSpace::task_users overflow");
+    }
+
+    /// Releases one logical TCB user and cleans up the last user's mappings.
+    ///
+    /// This may sleep and must be called before the task becomes unschedulable.
+    pub(crate) fn release_task_user(&self) {
+        let previous = self.task_users.fetch_sub(1, Ordering::AcqRel);
+        assert!(previous > 0, "AddrSpace::task_users underflow");
+        if previous == 1 {
+            self.cleanup();
+        }
     }
 
     pub fn fork(self: &Arc<Self>) -> Arc<AddrSpace> {
-        let new_pagetable = create_pagetable();
-
-        let new_map_manager = self.map_manager.lock().fork(&self.pagetable);
-
-        let addrspace = Arc::new(AddrSpace {
-            map_manager: SleepLock::new(new_map_manager, "AddrSpace::map_manager"),
-            pagetable: SpinLock::new(new_pagetable, "AddrSpace::pagetable"),
-            watchers: SpinLock::new(Vec::new(), "AddrSpace::watchers"),
-
-            #[cfg(feature = "swap-memory")]
-            family_chain: AddrSpaceFamilyChain::new(SpinLock::new(LinkedList::new(), "AddrSpace::family_chain")),
-        });
-
-        #[cfg(feature = "swap-memory")]
-        {
-            let weak = Arc::downgrade(&addrspace);
-            addrspace.family_chain.lock().push_back(weak.clone());
-            self.family_chain.lock().push_back(weak);
-        }
-
-        // Fork turns writable private pages in the parent into read-only COW
-        // mappings. Watchers cache user-VA backing, so invalidate broadly.
-        self.notify_addrspace_unmap(0, arch::page_count(arch::USEREND));
+        let addrspace = Self::new_with_pagetable(create_pagetable());
+        let new_map_manager = self.map_manager.lock().fork(&self.pagetable, &addrspace);
+        *addrspace.map_manager.lock() = new_map_manager;
 
         addrspace
     }
 
-    #[cfg(feature = "swap-memory")]
-    pub fn family_chain(&self) -> &AddrSpaceFamilyChain {
-        &self.family_chain
-    }
-
-    pub fn create_user_stack(&self, argv: &[&str], envp: &[&str], auxv: &Auxv) -> Result<usize, Errno> {
-        // self.user_stack.create(argv, envp, aux, &mut self.map_manager)
+    pub fn create_user_stack(self: &Arc<Self>, argv: &[&str], envp: &[&str], auxv: &Auxv) -> Result<usize, Errno> {
         let mut map_manager = self.map_manager.lock();
         map_manager.create_user_stack(argv, envp, auxv, self)
     }
@@ -123,78 +92,147 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn map_area_fixed(&self, uaddr: usize, area: Box<dyn maparea::Area>) -> Result<(), Errno> {
+    pub fn mmap_area(self: &Arc<Self>, placement: MmapPlacement, mut area: Box<dyn maparea::Area>) -> SysResult<usize> {
+        let mut map_manager = self.map_manager.lock();
         let page_count = area.page_count();
-        {
-            let mut map_manager = self.map_manager.lock();
-            map_manager.map_area_fixed(uaddr, area, &self.pagetable);
-        }
-        self.notify_addrspace_remap(uaddr, page_count);
+        let (ubase, replace) = match placement {
+            MmapPlacement::Hint(addr) => {
+                if addr == 0 || map_manager.is_map_range_overlapped(addr, page_count) {
+                    (map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)?, false)
+                } else {
+                    (addr, false)
+                }
+            }
+            MmapPlacement::Fixed(addr) => (addr, true),
+            MmapPlacement::FixedNoReplace(addr) => {
+                if map_manager.is_map_range_overlapped(addr, page_count) {
+                    return Err(Errno::EEXIST);
+                }
+                (addr, false)
+            }
+        };
 
-        Ok(())
+        area.set_ubase(ubase);
+        area.bind_addrspace(self);
+        if replace {
+            map_manager.map_area_fixed(ubase, area, &self.pagetable);
+        } else {
+            map_manager.map_area(ubase, area);
+        }
+
+        Ok(ubase)
     }
 
     pub fn unmap_area(&self, uaddr: usize, page_count: usize) -> Result<(), Errno> {
-        {
-            let mut map_manager = self.map_manager.lock();
-            map_manager.unmap_area(uaddr, page_count, &self.pagetable)?;
-        }
-        self.notify_addrspace_unmap(uaddr, page_count);
+        let mut map_manager = self.map_manager.lock();
+        map_manager.unmap_area(uaddr, page_count, &self.pagetable)?;
 
         Ok(())
     }
 
     pub fn set_area_perm(&self, uaddr: usize, page_count: usize, perm: MapPerm) -> Result<(), Errno> {
-        {
-            let mut map_manager = self.map_manager.lock();
-            map_manager.set_map_area_perm(uaddr, page_count, perm, &self.pagetable)?;
-        }
-        self.notify_addrspace_perm_change(uaddr, page_count, perm);
+        let mut map_manager = self.map_manager.lock();
+        map_manager.set_map_area_perm(uaddr, page_count, perm, &self.pagetable)?;
 
         Ok(())
     }
 
-    pub fn increase_userbrk(&self, ubrk: usize) -> Result<usize, Errno> {
-        let old_page_count = self.map_manager.lock().userbrk_page_count();
-        let new_ubrk = {
-            let mut map_manager = self.map_manager.lock();
-            map_manager.increase_userbrk(ubrk, &self.pagetable)?
-        };
-        let new_page_count = self.map_manager.lock().userbrk_page_count();
-        if new_page_count < old_page_count {
-            self.notify_addrspace_unmap(
-                USER_BRK_BASE + new_page_count * arch::PGSIZE,
-                old_page_count - new_page_count,
-            );
-        }
-
-        Ok(new_ubrk)
+    pub fn increase_userbrk(self: &Arc<Self>, ubrk: usize) -> Result<usize, Errno> {
+        let mut map_manager = self.map_manager.lock();
+        map_manager.increase_userbrk(ubrk, &self.pagetable, self)
     }
 
-    pub fn translate_write(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
-        self.map_manager
+    pub fn translate_write(&self, uaddr: usize, len: usize) -> SysResult<WriteChunk> {
+        let offset = uaddr & arch::PGMASK;
+        if len == 0 || len > arch::PGSIZE - offset {
+            return Err(Errno::EFAULT);
+        }
+        let frame = self
+            .map_manager
             .lock()
             .translate_write(uaddr, self)
-            .ok_or(Errno::EFAULT)
+            .ok_or(Errno::EFAULT)?;
+        Ok(WriteChunk::new(frame, offset, len))
     }
 
-    pub fn translate_read(self: &Arc<Self>, uaddr: usize) -> SysResult<usize> {
-        self.map_manager.lock().translate_read(uaddr, self).ok_or(Errno::EFAULT)
+    pub fn translate_read(&self, uaddr: usize, len: usize) -> SysResult<ReadChunk> {
+        let offset = uaddr & arch::PGMASK;
+        if len == 0 || len > arch::PGSIZE - offset {
+            return Err(Errno::EFAULT);
+        }
+        let frame = self
+            .map_manager
+            .lock()
+            .translate_read(uaddr, self)
+            .ok_or(Errno::EFAULT)?;
+        Ok(ReadChunk::new(frame, offset, len))
+    }
+
+    pub fn get_frame(self: &Arc<Self>, uaddr: usize) -> SysResult<PinPageFrame> {
+        self.map_manager.lock().get_frame(uaddr, self).ok_or(Errno::EFAULT)
+    }
+
+    pub fn with_translated_read<F, R>(&self, uaddr: usize, len: usize, f: F) -> SysResult<R>
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        if len == 0 {
+            return Ok(f(&[]));
+        }
+        let chunk = self.translate_read(uaddr, len)?;
+        Ok(f(&chunk))
+    }
+
+    pub fn with_translated_write<F, R>(&self, uaddr: usize, len: usize, f: F) -> SysResult<R>
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        if len == 0 {
+            return Ok(f(&mut []));
+        }
+        let mut chunk = self.translate_write(uaddr, len)?;
+        Ok(f(&mut chunk))
+    }
+
+    pub fn with_translated_read_write<F, R>(
+        &self,
+        read_uaddr: usize,
+        write_uaddr: usize,
+        len: usize,
+        f: F,
+    ) -> SysResult<R>
+    where
+        F: FnOnce(&[u8], &mut [u8]) -> R,
+    {
+        if len == 0 {
+            return Ok(f(&[], &mut []));
+        }
+        if len > arch::PGSIZE - (read_uaddr & arch::PGMASK) || len > arch::PGSIZE - (write_uaddr & arch::PGMASK) {
+            return Err(Errno::EFAULT);
+        }
+
+        let read_end = read_uaddr.checked_add(len).ok_or(Errno::EFAULT)?;
+        let write_end = write_uaddr.checked_add(len).ok_or(Errno::EFAULT)?;
+        if read_uaddr < write_end && write_uaddr < read_end {
+            return Err(Errno::EFAULT);
+        }
+
+        let mut source = alloc::vec![0u8; len];
+        self.with_translated_read(read_uaddr, len, |slice| source.copy_from_slice(slice))?;
+        self.with_translated_write(write_uaddr, len, |destination| f(&source, destination))
     }
 
     pub fn copy_to_user_buffer(&self, mut uaddr: usize, buffer: &[u8]) -> Result<(), Errno> {
         let mut left = buffer.len();
         let mut copied: usize = 0;
 
-        let mut map_manager = self.map_manager.lock();
-
         while left > 0 {
-            let kaddr = map_manager.translate_write(uaddr, self).ok_or(Errno::EFAULT)?;
-
             let page_offset = uaddr & (arch::PGSIZE - 1);
             let write_len = core::cmp::min(left, arch::PGSIZE - page_offset);
 
-            safe_page_write!(kaddr, &buffer[copied..copied + write_len]);
+            self.with_translated_write(uaddr, write_len, |dst| {
+                dst.copy_from_slice(&buffer[copied..copied + write_len]);
+            })?;
 
             copied += write_len;
             left -= write_len;
@@ -205,6 +243,8 @@ impl AddrSpace {
     }
 
     pub fn copy_to_user<T: Copy>(&self, uaddr: usize, value: T) -> Result<(), Errno> {
+        // SAFETY: `value` is a properly initialized `T`, and the byte slice is
+        // limited to exactly its in-memory representation for immediate copy.
         let buffer =
             unsafe { core::slice::from_raw_parts((&value as *const T) as *const u8, core::mem::size_of::<T>()) };
         self.copy_to_user_buffer(uaddr, buffer)
@@ -212,6 +252,8 @@ impl AddrSpace {
 
     /// Copy a slice to user space
     pub fn copy_to_user_slice<T>(&self, uaddr: usize, slice: &[T]) -> SysResult<()> {
+        // SAFETY: `slice` is an initialized slice of `T`; this only views its
+        // existing contiguous storage as bytes for immediate copy.
         let buffer = unsafe { core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice)) };
         self.copy_to_user_buffer(uaddr, buffer)
     }
@@ -220,16 +262,13 @@ impl AddrSpace {
         let mut left = buffer.len();
         let mut copied: usize = 0;
 
-        let mut map_manager = self.map_manager.lock();
-
         while left > 0 {
-            let kaddr = map_manager.translate_read(uaddr, self).ok_or(Errno::EFAULT)?;
-
             let page_offset = uaddr & (arch::PGSIZE - 1);
             let read_len = core::cmp::min(left, arch::PGSIZE - page_offset);
 
-            let src = unsafe { core::slice::from_raw_parts(kaddr as *const u8, read_len) };
-            buffer[copied..copied + read_len].copy_from_slice(src);
+            self.with_translated_read(uaddr, read_len, |src| {
+                buffer[copied..copied + read_len].copy_from_slice(src);
+            })?;
 
             copied += read_len;
             left -= read_len;
@@ -240,7 +279,11 @@ impl AddrSpace {
     }
 
     pub fn copy_from_user<T: Copy>(&self, uaddr: usize) -> Result<T, Errno> {
+        // SAFETY: This preserves the previous UserStruct contract: callers use
+        // `T: Copy` types whose all-zero bit pattern is valid before overwrite.
         let mut value: T = unsafe { core::mem::zeroed() };
+        // SAFETY: `value` is initialized storage for `T`; this byte view is
+        // used only to fill that storage before returning the copied value.
         let buffer =
             unsafe { core::slice::from_raw_parts_mut(&mut value as *mut T as *mut u8, core::mem::size_of::<T>()) };
         self.copy_from_user_buffer(uaddr, buffer)?;
@@ -269,28 +312,28 @@ impl AddrSpace {
         }
 
         let max_size = N - 1;
-        let mut map_manager = self.map_manager.lock();
         let mut result = tstr::<N>::new();
 
         loop {
             let page_offset = *uaddr & arch::PGMASK;
             let to_read = arch::PGSIZE - page_offset;
-            let kaddr = map_manager.translate_read(*uaddr, self).ok_or(Errno::EFAULT)?;
+            let done = self.with_translated_read(*uaddr, to_read, |slice| {
+                let (bytes, done) = match slice.iter().position(|&b| b == 0) {
+                    Some(pos) => (&slice[..pos], true),
+                    None => (slice, false),
+                };
 
-            let slice = unsafe { core::slice::from_raw_parts(kaddr as *const u8, to_read) };
-            let (bytes, done) = match slice.iter().position(|&b| b == 0) {
-                Some(pos) => (&slice[..pos], true),
-                None => (slice, false),
-            };
+                let part = core::str::from_utf8(bytes).map_err(|_| Errno::EINVAL)?;
+                if result.len() + part.len() > max_size {
+                    return Err(too_long_errno);
+                }
 
-            let part = core::str::from_utf8(bytes).map_err(|_| Errno::EINVAL)?;
-            if result.len() + part.len() > max_size {
-                return Err(too_long_errno);
-            }
+                if !result.push_str(part).is_empty() {
+                    return Err(too_long_errno);
+                }
 
-            if !result.push_str(part).is_empty() {
-                return Err(too_long_errno);
-            }
+                Ok(done)
+            })??;
 
             if done {
                 break;
@@ -308,24 +351,28 @@ impl AddrSpace {
         max_size: usize,
         too_long_errno: Errno,
     ) -> Result<String, Errno> {
-        let mut map_manager = self.map_manager.lock();
-
         let mut result = String::new();
 
         loop {
             let page_offset = *uaddr & arch::PGMASK;
             let to_read = arch::PGSIZE - page_offset;
-            let kaddr = map_manager.translate_read(*uaddr, self).ok_or(Errno::EFAULT)?;
+            let done = self.with_translated_read(*uaddr, to_read, |slice| {
+                let (bytes, done) = match slice.iter().position(|&b| b == 0) {
+                    Some(pos) => (&slice[..pos], true),
+                    None => (slice, false),
+                };
 
-            let slice = unsafe { core::slice::from_raw_parts(kaddr as *const u8, to_read) };
-            if let Some(pos) = slice.iter().position(|&b| b == 0) {
-                result.push_str(&String::from_utf8(slice[..pos].to_vec()).map_err(|_| Errno::EINVAL)?);
-                break;
-            } else {
-                result.push_str(&String::from_utf8(slice.to_vec()).map_err(|_| Errno::EINVAL)?);
-                if result.len() > max_size {
+                let part = core::str::from_utf8(bytes).map_err(|_| Errno::EINVAL)?;
+                result.push_str(part);
+                if !done && result.len() > max_size {
                     return Err(too_long_errno);
                 }
+
+                Ok(done)
+            })??;
+
+            if done {
+                break;
             }
 
             *uaddr += to_read;
@@ -339,6 +386,8 @@ impl AddrSpace {
     }
 
     pub fn copy_from_user_slice<T: Copy>(&self, uaddr: usize, slice: &mut [T]) -> SysResult<()> {
+        // SAFETY: `slice` is valid mutable storage for `T`; this byte view is
+        // used only to fill its existing contiguous storage from user memory.
         let buffer =
             unsafe { core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, core::mem::size_of_val(slice)) };
         self.copy_from_user_buffer(uaddr, buffer)
@@ -356,48 +405,12 @@ impl AddrSpace {
         &self.pagetable
     }
 
-    pub fn add_watcher(&self, watcher: Weak<dyn AddrSpaceWatcher>) {
-        self.watchers.lock().push(watcher);
+    pub fn add_map_manager_watcher(&self, watcher: Arc<dyn MapManagerWatcher>) {
+        self.map_manager.lock().add_watcher(watcher);
     }
 
-    fn live_watchers(&self) -> Vec<Arc<dyn AddrSpaceWatcher>> {
-        let mut live = Vec::new();
-        self.watchers.lock().retain(|watcher| {
-            if let Some(watcher) = watcher.upgrade() {
-                live.push(watcher);
-                true
-            } else {
-                false
-            }
-        });
-        live
-    }
-
-    fn notify_addrspace_unmap(&self, uaddr: usize, page_count: usize) {
-        if page_count == 0 {
-            return;
-        }
-        for watcher in self.live_watchers() {
-            watcher.on_addrspace_unmap(uaddr, page_count);
-        }
-    }
-
-    pub(crate) fn notify_addrspace_remap(&self, uaddr: usize, page_count: usize) {
-        if page_count == 0 {
-            return;
-        }
-        for watcher in self.live_watchers() {
-            watcher.on_addrspace_remap(uaddr, page_count);
-        }
-    }
-
-    fn notify_addrspace_perm_change(&self, uaddr: usize, page_count: usize, perm: MapPerm) {
-        if page_count == 0 {
-            return;
-        }
-        for watcher in self.live_watchers() {
-            watcher.on_addrspace_perm_change(uaddr, page_count, perm);
-        }
+    pub fn remove_map_manager_watcher(&self, watcher: &Arc<dyn MapManagerWatcher>) {
+        self.map_manager.lock().remove_watcher(watcher);
     }
 
     pub fn with_map_manager_mut<F, R>(&self, f: F) -> R
@@ -411,7 +424,7 @@ impl AddrSpace {
         self: &Arc<Self>,
         uaddr: usize,
         access_type: MemAccessType,
-    ) -> Result<usize, maparea::MemoryFaultSignal> {
+    ) -> Result<(), maparea::MemoryFaultSignal> {
         let map_manager = &mut self.map_manager.lock();
         map_manager.try_to_fix_memory_fault(uaddr, access_type, self)
     }
@@ -422,15 +435,70 @@ impl AddrSpace {
         map_manager.cleanup(&self.pagetable);
     }
 
-    #[cfg(feature = "swap-memory")]
-    pub fn unmap_swap_page(&self, uaddr: usize, kaddr: usize) {
-        self.pagetable.write().munmap_with_check(uaddr, kaddr);
+    pub fn take_access_dirty_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<AccessDirty> {
+        self.pagetable
+            .lock()
+            .take_access_dirty_bit_with_check_no_flush(uaddr, expected_kpage)
+            .map(AccessDirty::from)
     }
 
-    #[cfg(feature = "swap-memory")]
-    pub fn take_page_access_dirty_bit(&self, uaddr: usize) -> Option<(bool, bool)> {
-        self.pagetable.write().take_access_dirty_bit(uaddr)
+    pub fn unmap_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<AccessDirty> {
+        self.pagetable
+            .lock()
+            .munmap_with_check_and_ad_no_flush(uaddr, expected_kpage)
+            .map(AccessDirty::from)
+    }
+
+    pub(crate) fn mmap_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)
+    where
+        G: ResidentPageGuard,
+    {
+        // SAFETY: The guard keeps the logical page resident and its page lock
+        // held until after the PTE is installed. The owning Area already
+        // registered this address range before acquiring the guard.
+        unsafe { self.pagetable.lock().mmap_raw(uaddr, guard.frame().get_page(), perm) };
+    }
+
+    pub(crate) fn mmap_replace_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)
+    where
+        G: ResidentPageGuard,
+    {
+        // SAFETY: The guard keeps the replacement frame resident for the
+        // complete PTE update, and the Area retains the logical page owner.
+        unsafe {
+            self.pagetable
+                .lock()
+                .mmap_replace_raw(uaddr, guard.frame().get_page(), perm)
+        };
+    }
+
+    pub(crate) fn mmap_replace_swappable_if_maps<E, R>(
+        &self,
+        uaddr: usize,
+        expected: &E,
+        replacement: &R,
+        perm: MapPerm,
+    ) -> Option<AccessDirty>
+    where
+        E: ResidentPageGuard,
+        R: ResidentPageGuard,
+    {
+        let mut pagetable = self.pagetable.lock();
+        let access_dirty = match pagetable.mmap_replace_with_check_and_ad(
+            uaddr,
+            expected.frame().get_page(),
+            replacement.frame().get_page(),
+            perm,
+        ) {
+            Some(access_dirty) => AccessDirty::from(access_dirty),
+            None if pagetable.mapped_flag(uaddr).is_none() => {
+                // SAFETY: Both page guards remain live while the same page-table
+                // lock verifies that the slot is empty and installs the frame.
+                unsafe { pagetable.mmap_raw(uaddr, replacement.frame().get_page(), perm) };
+                return Some(AccessDirty::default());
+            }
+            None => return None,
+        };
+        Some(access_dirty)
     }
 }
-
-unsafe impl Send for AddrSpace {}

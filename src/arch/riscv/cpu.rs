@@ -43,6 +43,14 @@ pub fn load_cpu_node(cpus_node: &FdtNode) {
 
     let mut cpus = Vec::new();
     for child in cpus_node.children() {
+        if child.property("device_type").and_then(|p| p.as_str()) != Some("cpu") {
+            continue;
+        }
+
+        if child.property("reg").and_then(|p| p.as_usize()).is_none() {
+            continue;
+        }
+
         let isa_support = child.property("riscv,isa").and_then(|p| p.as_str()).unwrap_or("");
         let extensions: Vec<&str> = isa_support.split('_').collect();
 

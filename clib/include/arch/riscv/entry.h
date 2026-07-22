@@ -3,11 +3,14 @@
 
 #include <stdint.h>
 
+#include "boot/memory.h"
+
 #define __init_text __attribute__((section(".text.init")))
 #define __init_data __attribute__((section(".data.init")))
 
-uintptr_t __riscv_load_fdt(const void *fdt);
-uintptr_t __riscv_map_kaddr(uintptr_t kaddr_offset, uintptr_t memory_top);
+size_t __riscv_load_fdt(const void *fdt, struct kernelx_mem_region **regions);
+uintptr_t __riscv_map_kaddr(uintptr_t kaddr_offset,
+                            const struct kernelx_mem_region *regions, size_t region_count);
 
 void **__riscv_init_symbol_ktop();
 uintptr_t *__riscv_init_symbol_kpgtable_root();

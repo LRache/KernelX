@@ -10,7 +10,7 @@ use crate::kernel::event::Event;
 use crate::kernel::scheduler::{self, Task, current};
 
 use super::locker::LockerTrait;
-use super::mutex::Mutex;
+use super::mutex::{LockGuard, Mutex};
 
 pub struct SleepLocker {
     #[cfg(feature = "no-smp")]
@@ -47,18 +47,6 @@ impl LockerTrait for SleepLocker {
         self.locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
-    }
-
-    fn spin(&self) {
-        let task = current::task();
-
-        {
-            let mut waiters = self.waiters.lock();
-            waiters.push_back(task.clone());
-        }
-
-        scheduler::block_task_uninterruptible(task.clone(), "sleep_lock");
-        current::schedule();
     }
 
     fn lock(&self, name: &'static str) {
@@ -102,21 +90,13 @@ impl LockerTrait for SleepLocker {
             scheduler::wakeup_task_uninterruptible(task, Event::SleepLock);
         }
     }
-
-    fn is_locked(&self) -> bool {
-        #[cfg(feature = "no-smp")]
-        unsafe {
-            *self.locked.get()
-        }
-        #[cfg(not(feature = "no-smp"))]
-        self.locked.load(Ordering::Acquire)
-    }
 }
 
 unsafe impl Send for SleepLocker {}
 unsafe impl Sync for SleepLocker {}
 
 pub type SleepLock<T> = Mutex<T, SleepLocker>;
+pub type SleepLockGuard<'a, T> = LockGuard<'a, T, SleepLocker>;
 
 impl<T> SleepLock<T> {
     pub const fn new(data: T, name: &'static str) -> Self {

@@ -33,6 +33,20 @@ struct Signal {
     pending: SpinLock<PendingSignalQueue>,
 }
 
+struct ChildWaitState {
+    children: Vec<Arc<PCB>>,
+    waiters: Vec<(Arc<dyn Task>, Option<Tid>)>,
+}
+
+impl ChildWaitState {
+    fn new() -> Self {
+        Self {
+            children: Vec::new(),
+            waiters: Vec::new(),
+        }
+    }
+}
+
 pub struct PCB {
     pid: Tid,
     pub parent: SpinLock<Option<Arc<PCB>>>,
@@ -48,13 +62,11 @@ pub struct PCB {
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
     file_size_limit: SpinLock<(usize, usize)>,
-    waiting_task: SpinLock<Vec<(Arc<dyn Task>, Option<Tid>)>>,
+    child_wait: SleepLock<ChildWaitState>,
     pidfd_waiters: SpinLock<WaitQueue<Event>>,
     uts: UtsNamespace,
 
     signal: Signal,
-
-    children: SleepLock<Vec<Arc<PCB>>>,
 
     pub itimers: SpinLock<[Option<ITimer>; 3]>,
     pub timers: TimerTable,

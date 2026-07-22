@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
 use crate::arch::KernelContext;
+use crate::kernel::config::KTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::event::Event;
 use crate::kernel::scheduler::{self, KernelStack, Task, Tid, WakeupFailure, current, tid};
 use crate::kernel::task::TCB;
@@ -32,7 +33,7 @@ enum KThreadState {
 pub struct KThread {
     tid: Tid,
     kcontext: UnsafeCell<KernelContext>,
-    kstack: KernelStack,
+    kstack: KernelStack<{ KTASK_KSTACK_PAGE_COUNT - 1 }>,
     state: SpinLock<KThreadState>,
     wakeup_event: SpinLock<Option<Event>>,
     #[cfg(feature = "lockdep")]
@@ -44,7 +45,7 @@ impl KThread {
         let boxed: Box<dyn FnOnce() + Send> = Box::new(entry);
         let ptr = Box::into_raw(Box::new(boxed)) as usize;
 
-        let kstack = KernelStack::new(crate::kernel::config::KTASK_KSTACK_PAGE_COUNT);
+        let kstack = KernelStack::new();
         let mut kcontext = KernelContext::new(&kstack);
         kcontext
             .set_entry(kthread_trampoline as *const () as usize)
@@ -93,8 +94,8 @@ impl Task for KThread {
 
     fn resume_system_time(&self) {}
 
-    fn kstack(&self) -> &KernelStack {
-        &self.kstack
+    fn check_kernel_stack_overflow(&self, addr: usize) -> bool {
+        self.kstack.check_stack_overflow(addr)
     }
 
     fn kcontext_ptr(&self) -> *mut KernelContext {

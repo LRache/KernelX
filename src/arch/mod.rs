@@ -12,6 +12,7 @@ cfg_if::cfg_if! {
 
 pub type UserContext = arch_impl::UserContext;
 pub type KernelContext = arch_impl::KernelContext;
+pub type KernelStack<const MAPPED_PAGE_COUNT: usize> = arch_impl::KernelStack<MAPPED_PAGE_COUNT>;
 pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
 // pub type MappedPage<'a> = arch_impl::MappedPage<'a>;
@@ -46,7 +47,7 @@ use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 use core::time::Duration;
 
 arch_export! {
-    init(memory_top: usize) -> ();
+    init() -> ();
     setup_all_cores(current_core: usize) -> ();
     clone_abi() -> CloneABI;
 
@@ -71,7 +72,9 @@ arch_export! {
 
     kaddr_to_paddr(kaddr: usize) -> usize;
     paddr_to_kaddr(paddr: usize) -> usize;
+    dma_direct_paddr(kaddr: usize, len: usize) -> Option<usize>;
     map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
+    flush_tlb_all() -> ();
     mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
 
     get_time_us() -> u64;

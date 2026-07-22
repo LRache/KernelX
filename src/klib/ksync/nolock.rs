@@ -54,10 +54,6 @@ impl<T> NoLockMutex<T> {
     pub unsafe fn lock_unchecked(&self) -> NoLockGuard<'_, T> {
         self.lock()
     }
-
-    pub fn is_locked(&self) -> bool {
-        false
-    }
 }
 
 unsafe impl<T: Send> Send for NoLockMutex<T> {}

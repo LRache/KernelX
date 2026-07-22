@@ -125,6 +125,3 @@ impl FileOps for CharFile {
         self.release_bsd_flock_if_last_fd();
     }
 }
-
-unsafe impl Send for CharFile {}
-unsafe impl Sync for CharFile {}

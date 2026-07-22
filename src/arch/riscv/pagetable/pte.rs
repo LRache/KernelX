@@ -213,6 +213,11 @@ impl PTE {
     pub const fn is_valid(self) -> bool {
         self.flags().contains(PTEFlags::V)
     }
+
+    pub const fn is_leaf(self) -> bool {
+        self.flags()
+            .intersects(PTEFlags::R.union(PTEFlags::W).union(PTEFlags::X))
+    }
 }
 
 impl fmt::Display for PTE {

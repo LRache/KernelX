@@ -1,16 +1,20 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::arch;
-use crate::arch::{PageTable, PageTableTrait};
+use crate::arch::PageTable;
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::area::{Area, MapAreaInfo, MemoryFaultSignal};
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::kernel::mm::maparea::{
+    Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal, PinPageFrame,
+};
+use crate::kernel::mm::swappable::AccessDirty;
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
-use super::nofilemap::{FrameState, SwappableNoFileFrame};
+use super::nofilemap::{AnonMapFamilyRegistration, FrameState, SwappablePageFrame};
 
 pub enum AuxKey {
     _NULL = 0,
@@ -58,13 +62,21 @@ impl Auxv {
 }
 
 pub struct UserStack {
+    ubase: usize,
+    page_count: usize,
     frames: BTreeMap<usize, FrameState>,
+    family_registration: AnonMapFamilyRegistration,
+    page_base: usize,
 }
 
 impl UserStack {
     pub fn new() -> Self {
         Self {
+            ubase: config::USER_STACK_TOP - config::USER_STACK_PAGE_COUNT_MAX * arch::PGSIZE,
+            page_count: config::USER_STACK_PAGE_COUNT_MAX,
             frames: BTreeMap::new(),
+            family_registration: AnonMapFamilyRegistration::new_root(),
+            page_base: 0,
         }
     }
 
@@ -72,7 +84,19 @@ impl UserStack {
         config::USER_STACK_PAGE_COUNT_MAX
     }
 
-    fn allocate_page(&mut self, page_index: usize, pagetable: &mut PageTable, addrspace: &AddrSpace) -> usize {
+    fn contains_uaddr(&self, uaddr: usize) -> bool {
+        let Some(size) = self.page_count.checked_mul(arch::PGSIZE) else {
+            return false;
+        };
+        self.ubase <= uaddr && uaddr < self.ubase.saturating_add(size)
+    }
+
+    fn anonymous_page_index(&self, stack_page_index: usize) -> usize {
+        let uaddr = config::USER_STACK_TOP - (stack_page_index + 1) * arch::PGSIZE;
+        self.page_base + (uaddr - self.ubase) / arch::PGSIZE
+    }
+
+    fn allocate_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
         debug_assert!(
             page_index < self.get_max_page_count(),
             "Page index out of bounds: {}",
@@ -85,16 +109,26 @@ impl UserStack {
         );
 
         let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
-        let (allocated, kpage) = FrameState::allocate(uaddr, addrspace);
-
-        pagetable.mmap(uaddr, kpage, MapPerm::R | MapPerm::W | MapPerm::U);
-
-        self.frames.insert(page_index, allocated);
-
+        debug_assert!(self.contains_uaddr(uaddr));
+        let frame = PhysPageFrame::alloc_with_shrink_zeroed();
+        let page = SwappablePageFrame::new_mapped(
+            self.family_registration
+                .page_backend(self.anonymous_page_index(page_index)),
+            frame,
+        );
+        self.frames.insert(page_index, FrameState::Allocated(page.clone()));
+        let guard = page.ensure_page().expect("new stack page must be resident");
+        let kpage = guard.frame().get_page();
+        addrspace.mmap_swappable(uaddr, &guard, MapPerm::R | MapPerm::W | MapPerm::U);
         kpage
     }
 
-    fn copy_on_write_page(&mut self, page_index: usize, addrspace: &AddrSpace) -> usize {
+    fn copy_on_write_page(
+        &mut self,
+        page_index: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<()> {
         debug_assert!(
             page_index < self.get_max_page_count(),
             "Page index out of bounds: {}",
@@ -106,47 +140,81 @@ impl UserStack {
             page_index
         );
 
-        let kpage = self.frames.get_mut(&page_index).unwrap().cow_to_allocated(addrspace);
+        let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
+        map_change_notifier.before_map_change(MapChange {
+            uaddr,
+            page_count: 1,
+            event: MapChangeEvent::Remap,
+        });
+
+        let old_page = match self.frames.get(&page_index) {
+            Some(FrameState::Cow(page)) => page.clone(),
+            _ => unreachable!(),
+        };
+
+        if old_page.mapping_refs() == 1 {
+            // The page is only mapped in this address space, we can just remap it as writable.
+            let mut guard = old_page.ensure_page().ok()?;
+            addrspace.mmap_replace_swappable_if_maps(uaddr, &guard, &guard, MapPerm::R | MapPerm::W | MapPerm::U)?;
+            guard.mark_dirty();
+            drop(guard);
+            self.frames.insert(page_index, FrameState::Allocated(old_page));
+            return Some(());
+        }
+
+        let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
+        let mut old_guard = old_page.ensure_page().ok()?;
+        new_frame.slice().copy_from_slice(old_guard.frame().slice());
+        let new_page = SwappablePageFrame::new_mapped(
+            self.family_registration
+                .page_backend(self.anonymous_page_index(page_index)),
+            new_frame,
+        );
+        let Ok(mut new_guard) = new_page.ensure_page() else {
+            new_page.release_mapping_ref();
+            return None;
+        };
+        new_guard.mark_dirty();
+        let Some(AccessDirty { dirty, .. }) = addrspace.mmap_replace_swappable_if_maps(
+            uaddr,
+            &old_guard,
+            &new_guard,
+            MapPerm::R | MapPerm::W | MapPerm::U,
+        ) else {
+            new_guard.release_mapping_ref();
+            return None;
+        };
+        if dirty {
+            old_guard.mark_dirty();
+        }
+        self.frames.insert(page_index, FrameState::Allocated(new_page.clone()));
+        old_guard.release_mapping_ref();
+        Some(())
+    }
+
+    fn map_cow_page(&self, page_index: usize, frame: &Arc<SwappablePageFrame>, addrspace: &AddrSpace) -> Option<usize> {
         let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
 
-        addrspace
-            .pagetable()
-            .lock()
-            .mmap_replace(uaddr, kpage, MapPerm::R | MapPerm::W | MapPerm::U);
-        addrspace.notify_addrspace_remap(uaddr, 1);
-
-        kpage
+        let guard = frame.ensure_page().ok()?;
+        let kpage = guard.frame().get_page();
+        addrspace.mmap_replace_swappable(uaddr, &guard, MapPerm::R | MapPerm::U);
+        Some(kpage)
     }
 
-    fn map_cow_page(&self, page_index: usize, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) -> usize {
-        let kpage = frame.get_page_swap_in();
-        let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
-
-        addrspace
-            .pagetable()
-            .lock()
-            .mmap_replace(uaddr, kpage, MapPerm::R | MapPerm::U);
-
-        kpage
-    }
-
-    #[cfg(feature = "swap-memory")]
-    fn handle_memory_fault_on_swapped_allocated(&self, frame: &SwappableNoFileFrame, addrspace: &AddrSpace) {
-        debug_assert!(frame.is_swapped_out(), "Frame is not swapped out");
-        let kpage = frame.get_page_swap_in();
-        addrspace
-            .pagetable()
-            .write()
-            .mmap(frame.uaddr(), kpage, MapPerm::R | MapPerm::W | MapPerm::U);
-    }
-
-    fn push_buffer(
-        &mut self,
-        top: &mut usize,
-        buffer: &[u8],
-        pagetable: &mut PageTable,
+    fn handle_memory_fault_on_swapped_allocated(
+        &self,
+        page_index: usize,
+        frame: &Arc<SwappablePageFrame>,
         addrspace: &AddrSpace,
-    ) -> SysResult<()> {
+    ) -> Option<usize> {
+        let guard = frame.ensure_page().ok()?;
+        let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
+        let kpage = guard.frame().get_page();
+        addrspace.mmap_replace_swappable(uaddr, &guard, MapPerm::R | MapPerm::W | MapPerm::U);
+        Some(kpage)
+    }
+
+    fn push_buffer(&mut self, top: &mut usize, buffer: &[u8], addrspace: &AddrSpace) -> SysResult<()> {
         let total_len = buffer.len();
         let new_top = (*top).checked_sub(total_len).ok_or(Errno::E2BIG)?;
         if new_top < self.ubase() {
@@ -163,13 +231,14 @@ impl UserStack {
             let page_index = (config::USER_STACK_TOP - uaddr - 1) / arch::PGSIZE;
 
             if !self.frames.contains_key(&page_index) {
-                self.allocate_page(page_index, pagetable, addrspace);
+                self.allocate_page(page_index, addrspace);
             }
 
             match self.frames.get(&page_index).unwrap() {
                 FrameState::Allocated(frame) => {
-                    let pa = frame.get_page_swap_in();
-                    let dst = unsafe { core::slice::from_raw_parts_mut((pa + page_offset) as *mut u8, to_copy) };
+                    let mut guard = frame.ensure_page().map_err(|_| Errno::EFAULT)?;
+                    guard.mark_dirty();
+                    let dst = &mut guard.frame().slice()[page_offset..page_offset + to_copy];
                     dst.copy_from_slice(&buffer[copied..copied + to_copy]);
                 }
                 _ => panic!("Page at index {} is not allocated", page_index),
@@ -184,48 +253,33 @@ impl UserStack {
         Ok(())
     }
 
-    fn push_c_str(
-        &mut self,
-        top: &mut usize,
-        s: &str,
-        pagetable: &mut PageTable,
-        addrspace: &AddrSpace,
-    ) -> SysResult<()> {
-        self.push_usize(top, 0, pagetable, addrspace)?;
-        self.push_buffer(top, s.as_bytes(), pagetable, addrspace)
+    fn push_c_str(&mut self, top: &mut usize, s: &str, addrspace: &AddrSpace) -> SysResult<()> {
+        self.push_usize(top, 0, addrspace)?;
+        self.push_buffer(top, s.as_bytes(), addrspace)
     }
 
-    fn push_usize(
-        &mut self,
-        top: &mut usize,
-        value: usize,
-        pagetable: &mut PageTable,
-        addrspace: &AddrSpace,
-    ) -> SysResult<()> {
+    fn push_usize(&mut self, top: &mut usize, value: usize, addrspace: &AddrSpace) -> SysResult<()> {
         // *top &= !(core::mem::size_of::<usize>() - 1);
-        self.push_buffer(top, &value.to_le_bytes(), pagetable, addrspace)
+        self.push_buffer(top, &value.to_le_bytes(), addrspace)
     }
 
-    fn push_auxv(
-        &mut self,
-        top: &mut usize,
-        auxv: &Auxv,
-        pagetable: &mut PageTable,
-        addrspace: &AddrSpace,
-    ) -> SysResult<()> {
-        self.push_usize(top, 0, pagetable, addrspace)?;
+    fn push_auxv(&mut self, top: &mut usize, auxv: &Auxv, addrspace: &AddrSpace) -> SysResult<()> {
+        self.push_usize(top, 0, addrspace)?;
 
         if auxv.length == 0 {
             return Ok(());
         }
 
+        // SAFETY: `auxv.auxv` is initialized through `Auxv::new/push`; the
+        // byte view is bounded by the initialized logical entry count and is
+        // consumed immediately while constructing the user stack.
         let buffer = unsafe {
             core::slice::from_raw_parts(
                 auxv.auxv.as_ptr() as *const u8,
                 auxv.length * 2 * core::mem::size_of::<usize>(),
             )
         };
-        self.push_buffer(top, &buffer, pagetable, addrspace)?;
+        self.push_buffer(top, &buffer, addrspace)?;
 
         Ok(())
     }
@@ -257,18 +311,17 @@ impl UserStack {
         auxv: &Auxv,
         addrspace: &AddrSpace,
     ) -> SysResult<usize> {
-        let mut pagetable = addrspace.pagetable().lock();
         let mut top = config::USER_STACK_TOP;
 
         let mut envp_ptrs = Vec::with_capacity(envp.len());
         for &env in envp.iter() {
-            self.push_c_str(&mut top, env, &mut pagetable, addrspace)?;
+            self.push_c_str(&mut top, env, addrspace)?;
             envp_ptrs.push(top);
         }
 
         let mut argv_ptrs = Vec::with_capacity(argv.len());
         for &arg in argv.iter() {
-            self.push_c_str(&mut top, arg, &mut pagetable, addrspace)?;
+            self.push_c_str(&mut top, arg, addrspace)?;
             argv_ptrs.push(top);
         }
 
@@ -285,22 +338,22 @@ impl UserStack {
         top -= (16 - (count_to_push * core::mem::size_of::<usize>()) % 16) % 16;
 
         // Push auxiliary vector
-        self.push_auxv(&mut top, auxv, &mut pagetable, addrspace)?;
+        self.push_auxv(&mut top, auxv, addrspace)?;
 
         // Push envp pointers
-        self.push_usize(&mut top, 0, &mut pagetable, addrspace)?;
+        self.push_usize(&mut top, 0, addrspace)?;
         for &addr in envp_ptrs.iter().rev() {
-            self.push_usize(&mut top, addr, &mut pagetable, addrspace)?;
+            self.push_usize(&mut top, addr, addrspace)?;
         }
 
         // Push argv pointers
-        self.push_usize(&mut top, 0, &mut pagetable, addrspace)?;
+        self.push_usize(&mut top, 0, addrspace)?;
         for &addr in argv_ptrs.iter().rev() {
-            self.push_usize(&mut top, addr, &mut pagetable, addrspace)?;
+            self.push_usize(&mut top, addr, addrspace)?;
         }
 
         // Push argc
-        self.push_usize(&mut top, argv.len(), &mut pagetable, addrspace)?;
+        self.push_usize(&mut top, argv.len(), addrspace)?;
 
         debug_assert!(top % 16 == 0, "User stack top is not aligned to 16 bytes: {:#x}", top);
 
@@ -308,83 +361,125 @@ impl UserStack {
     }
 }
 
-impl Area for UserStack {
-    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
-        if uaddr >= config::USER_STACK_TOP {
-            return None;
-        }
-
-        let page_index = (config::USER_STACK_TOP - uaddr - 1) / arch::PGSIZE;
-        if page_index < self.get_max_page_count() {
-            if !self.frames.contains_key(&page_index) {
-                self.allocate_page(page_index, &mut addrspace.pagetable().lock(), addrspace);
+impl Drop for UserStack {
+    fn drop(&mut self) {
+        let frames = core::mem::take(&mut self.frames);
+        for (_, state) in frames {
+            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
+                page.release_mapping_ref();
             }
-
-            let page = match self.frames.get(&page_index).unwrap() {
-                FrameState::Allocated(frame) | FrameState::Cow(frame) => frame.get_page_swap_in(),
-                FrameState::Unallocated => unreachable!(),
-            };
-
-            Some(page + uaddr % arch::PGSIZE)
-        } else {
-            None
         }
     }
+}
 
-    fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<usize> {
-        if uaddr >= config::USER_STACK_TOP {
+impl Area for UserStack {
+    fn bind_addrspace(&mut self, addrspace: &Arc<AddrSpace>) {
+        self.family_registration
+            .bind(addrspace, self.ubase, self.page_base, self.page_count);
+    }
+
+    fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
+        if !self.contains_uaddr(uaddr) {
             return None;
         }
 
         let page_index = (config::USER_STACK_TOP - uaddr - 1) / arch::PGSIZE;
-        if page_index < self.get_max_page_count() {
-            if !self.frames.contains_key(&page_index) {
-                let mut pagetable = addrspace.pagetable().lock();
-                self.allocate_page(page_index, &mut pagetable, addrspace);
-            }
-
-            let page = if matches!(self.frames.get(&page_index), Some(FrameState::Cow(_))) {
-                self.copy_on_write_page(page_index, addrspace)
-            } else {
-                match self.frames.get(&page_index).unwrap() {
-                    FrameState::Allocated(frame) => frame.get_page_swap_in(),
-                    FrameState::Cow(_) | FrameState::Unallocated => unreachable!(),
-                }
-            };
-
-            Some(page + uaddr % arch::PGSIZE)
-        } else {
-            None
+        if page_index >= self.get_max_page_count() {
+            return None;
         }
+        if !self.frames.contains_key(&page_index) {
+            self.allocate_page(page_index, addrspace);
+        }
+        let page = match self.frames.get(&page_index)? {
+            FrameState::Allocated(page) | FrameState::Cow(page) => page.clone(),
+            FrameState::Unallocated => unreachable!(),
+        };
+        let pin = page.pin_page(false).ok()?;
+        Some(PinPageFrame::swappable(pin))
+    }
+
+    fn translate_write(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<PinPageFrame> {
+        if !self.contains_uaddr(uaddr) {
+            return None;
+        }
+
+        let page_index = (config::USER_STACK_TOP - uaddr - 1) / arch::PGSIZE;
+        if page_index >= self.get_max_page_count() {
+            return None;
+        }
+        if !self.frames.contains_key(&page_index) {
+            self.allocate_page(page_index, addrspace);
+        }
+        if matches!(self.frames.get(&page_index), Some(FrameState::Cow(_))) {
+            self.copy_on_write_page(page_index, addrspace, map_change_notifier)?;
+        }
+        let page = match self.frames.get(&page_index)? {
+            FrameState::Allocated(page) => page.clone(),
+            FrameState::Cow(_) | FrameState::Unallocated => unreachable!(),
+        };
+        let pin = page.pin_page(true).ok()?;
+        Some(PinPageFrame::swappable(pin))
+    }
+
+    fn get_frame(
+        &mut self,
+        uaddr: usize,
+        addrspace: &AddrSpace,
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Option<PinPageFrame> {
+        self.translate_write(uaddr, addrspace, map_change_notifier)
     }
 
     fn perm(&self) -> MapPerm {
         MapPerm::R | MapPerm::W | MapPerm::U
     }
 
-    fn fork(&mut self, self_pagetable: &SpinLock<PageTable>) -> Box<dyn Area> {
+    fn fork(
+        &mut self,
+        self_pagetable: &SpinLock<PageTable>,
+        tlb_changed: &mut bool,
+        addrspace: &Arc<AddrSpace>,
+    ) -> Box<dyn Area> {
         let mut new_frames = BTreeMap::new();
-        self.frames.iter().for_each(|(&index, frame)| {
-            if let FrameState::Allocated(frame) | FrameState::Cow(frame) = frame {
-                new_frames.insert(index, FrameState::Cow(frame.clone()));
+        for (&index, state) in &self.frames {
+            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
+                page.add_mapping_ref();
+                new_frames.insert(index, FrameState::Cow(page.clone()));
             }
-        });
+        }
 
-        let mut self_pagetable = self_pagetable.lock();
-        self.frames.iter_mut().for_each(|(&index, frame)| {
-            *frame = match frame {
-                FrameState::Allocated(frame) | FrameState::Cow(frame) => {
-                    let uaddr = config::USER_STACK_TOP - (index + 1) * arch::PGSIZE;
-                    if !frame.is_swapped_out() && self_pagetable.mapped_flag(uaddr).is_some() {
-                        self_pagetable.mmap_replace_perm(uaddr, MapPerm::R | MapPerm::U);
-                    }
-                    FrameState::Cow(frame.clone())
-                }
-                FrameState::Unallocated => unreachable!(),
+        for (&index, state) in &mut self.frames {
+            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
+                let page = page.clone();
+                let uaddr = config::USER_STACK_TOP - (index + 1) * arch::PGSIZE;
+                page.with_resident_and_record_ad(false, |frame| {
+                    let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad_no_flush(
+                        uaddr,
+                        frame.get_page(),
+                        MapPerm::R | MapPerm::U,
+                    );
+                    *tlb_changed |= access_dirty.is_some();
+                    let (accessed, dirty) = access_dirty.unwrap_or((false, false));
+                    ((), AccessDirty { accessed, dirty })
+                });
+                *state = FrameState::Cow(page);
             }
-        });
+        }
 
-        Box::new(UserStack { frames: new_frames })
+        Box::new(UserStack {
+            ubase: self.ubase,
+            page_count: self.page_count,
+            frames: new_frames,
+            family_registration: self
+                .family_registration
+                .fork(addrspace, self.ubase, self.page_base, self.page_count),
+            page_base: self.page_base,
+        })
     }
 
     fn try_to_fix_memory_fault(
@@ -392,8 +487,9 @@ impl Area for UserStack {
         addr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Result<usize, MemoryFaultSignal> {
-        if addr >= config::USER_STACK_TOP {
+        map_change_notifier: &MapChangeNotifier<'_>,
+    ) -> Result<(), MemoryFaultSignal> {
+        if !self.contains_uaddr(addr) {
             return Err(MemoryFaultSignal::Segv);
         }
 
@@ -404,65 +500,122 @@ impl Area for UserStack {
         }
 
         if access_type == MemAccessType::Write && matches!(self.frames.get(&page_index), Some(FrameState::Cow(_))) {
-            self.copy_on_write_page(page_index, addrspace);
+            self.copy_on_write_page(page_index, addrspace, map_change_notifier)
+                .ok_or(MemoryFaultSignal::Bus)?;
         } else {
             match self.frames.get(&page_index) {
                 Some(FrameState::Allocated(frame)) => {
-                    #[cfg(feature = "swap-memory")]
-                    self.handle_memory_fault_on_swapped_allocated(frame, addrspace);
-                    #[cfg(not(feature = "swap-memory"))]
-                    {
-                        let _ = frame;
-                        // Maybe the page is allocated and mapped by the other task.
-                    }
+                    self.handle_memory_fault_on_swapped_allocated(page_index, frame, addrspace)
+                        .ok_or(MemoryFaultSignal::Bus)?;
                 }
                 Some(FrameState::Cow(frame)) => {
-                    self.map_cow_page(page_index, frame, addrspace);
+                    self.map_cow_page(page_index, frame, addrspace)
+                        .ok_or(MemoryFaultSignal::Bus)?;
                 }
                 Some(FrameState::Unallocated) => unreachable!(),
                 None => {
-                    let mut pagetable = addrspace.pagetable().lock();
-                    self.allocate_page(page_index, &mut pagetable, addrspace);
+                    self.allocate_page(page_index, addrspace);
                 }
             }
         }
 
         if access_type == MemAccessType::Write {
-            self.translate_write(addr, addrspace).ok_or(MemoryFaultSignal::Segv)
+            self.translate_write(addr, addrspace, map_change_notifier)
+                .map(|_| ())
+                .ok_or(MemoryFaultSignal::Segv)
         } else {
-            self.translate_read(addr, addrspace).ok_or(MemoryFaultSignal::Segv)
+            self.translate_read(addr, addrspace)
+                .map(|_| ())
+                .ok_or(MemoryFaultSignal::Segv)
         }
     }
 
     fn ubase(&self) -> usize {
-        config::USER_STACK_TOP - self.get_max_page_count() * arch::PGSIZE
+        self.ubase
     }
 
     fn page_count(&self) -> usize {
-        self.get_max_page_count()
+        self.page_count
+    }
+
+    fn split(mut self: Box<Self>, uaddr: usize) -> (Box<dyn Area>, Box<dyn Area>) {
+        debug_assert!(uaddr % arch::PGSIZE == 0, "uaddr should be page-aligned");
+        debug_assert!(
+            uaddr >= self.ubase && uaddr < self.ubase + self.size(),
+            "uaddr out of range for stack split, urange: [{:#x}, {:#x}), uaddr: {:#x}",
+            self.ubase,
+            self.ubase + self.size(),
+            uaddr
+        );
+
+        let left_page_count = (uaddr - self.ubase) / arch::PGSIZE;
+        let right_page_count = self.page_count - left_page_count;
+        let split_stack_index = (config::USER_STACK_TOP - uaddr) / arch::PGSIZE;
+
+        // Stack frame keys count down from USER_STACK_TOP. `split_off`
+        // therefore extracts the lower-address (left) half.
+        let left_frames = self.frames.split_off(&split_stack_index);
+        let right_frames = core::mem::replace(&mut self.frames, left_frames);
+
+        let right_page_base = self
+            .page_base
+            .checked_add(left_page_count)
+            .expect("stack split page index overflow");
+        let right_family_registration = self.family_registration.split(
+            self.ubase,
+            self.page_base,
+            left_page_count,
+            uaddr,
+            right_page_base,
+            right_page_count,
+        );
+
+        self.page_count = left_page_count;
+        let right = Self {
+            ubase: uaddr,
+            page_count: right_page_count,
+            frames: right_frames,
+            family_registration: right_family_registration,
+            page_base: right_page_base,
+        };
+
+        (self, Box::new(right))
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let mut pagetable = pagetable.lock();
-        for (&page_index, frame) in self.frames.iter_mut() {
-            let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
+        let frames = core::mem::take(&mut self.frames);
+        self.family_registration.with_tlb_invalidation_batch(|token| {
+            let mut tlb_changed = false;
+            for (&page_index, state) in &frames {
+                if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
+                    let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
+                    page.begin_tlb_invalidation(token, |frame| {
+                        let access_dirty = pagetable
+                            .lock()
+                            .munmap_with_check_and_ad_no_flush(uaddr, frame.get_page());
+                        tlb_changed |= access_dirty.is_some();
+                        access_dirty.map(AccessDirty::from)
+                    });
+                }
+            }
 
-            #[cfg(feature = "swap-memory")]
-            let is_mapped = match frame {
-                FrameState::Allocated(f) | FrameState::Cow(f) => !f.is_swapped_out(),
-                FrameState::Unallocated => false,
-            };
-            #[cfg(not(feature = "swap-memory"))]
-            let _ = frame;
-            #[cfg(not(feature = "swap-memory"))]
-            let is_mapped = true;
-            if is_mapped {
-                // The page may not be mapped to the page table if it was loaded by
-                // `translate_read` or `translate_write` but never accessed afterwards.
-                let _ = pagetable.munmap(uaddr);
+            if tlb_changed {
+                arch::flush_tlb_all();
+            }
+
+            for state in frames.values() {
+                if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
+                    assert!(page.finish_tlb_invalidation(token));
+                }
+            }
+        });
+
+        for (_, state) in frames {
+            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
+                page.release_mapping_ref();
             }
         }
-        self.frames.clear();
+        self.family_registration.unregister();
     }
 
     fn type_name(&self) -> &'static str {

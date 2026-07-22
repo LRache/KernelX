@@ -136,7 +136,7 @@ impl Sv39x4PageTable {
 }
 
 impl PageTableTrait for Sv39x4PageTable {
-    fn mmap(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
+    unsafe fn mmap_raw(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
         flags |= PTEFlags::U | PTEFlags::A | PTEFlags::D;
 
@@ -153,7 +153,7 @@ impl PageTableTrait for Sv39x4PageTable {
         pte.write_back().expect("Failed to write back Sv39x4 PTE");
     }
 
-    fn mmap_replace(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
+    unsafe fn mmap_replace_raw(&mut self, gaddr: usize, kaddr: usize, perm: MapPerm) {
         let mut flags: PTEFlags = perm.into();
         flags |= PTEFlags::A | PTEFlags::D;
 
@@ -161,6 +161,28 @@ impl PageTableTrait for Sv39x4PageTable {
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back Sv39x4 PTE");
+    }
+
+    fn mmap_replace_with_check_and_ad(
+        &mut self,
+        gaddr: usize,
+        expected_kaddr: usize,
+        replacement_kaddr: usize,
+        perm: MapPerm,
+    ) -> Option<(bool, bool)> {
+        let mut pte = self.find_pte(gaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let old_flags = pte.flags();
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::U | PTEFlags::A | PTEFlags::D;
+        pte.set_flags(flags);
+        pte.set_ppn(Addr::from_kaddr(replacement_kaddr).ppn());
+        pte.write_back()
+            .expect("Failed to write back Sv39x4 PTE on checked mmap_replace");
+        Some((old_flags.contains(PTEFlags::A), old_flags.contains(PTEFlags::D)))
     }
 
     fn mmap_replace_perm(&mut self, gaddr: usize, perm: MapPerm) {
@@ -173,7 +195,27 @@ impl PageTableTrait for Sv39x4PageTable {
         }
     }
 
-    fn munmap(&mut self, gaddr: usize) -> Result<(), ()> {
+    fn mmap_replace_perm_with_check_and_ad(
+        &mut self,
+        gaddr: usize,
+        expected_kaddr: usize,
+        perm: MapPerm,
+    ) -> Option<(bool, bool)> {
+        let mut pte = self.find_pte(gaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let old_flags = pte.flags();
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::A | PTEFlags::D;
+        pte.set_flags(flags)
+            .write_back()
+            .expect("Failed to write back Sv39x4 PTE on checked mmap_replace_perm");
+        Some((old_flags.contains(PTEFlags::A), old_flags.contains(PTEFlags::D)))
+    }
+
+    fn munmap_raw(&mut self, gaddr: usize) -> Result<(), ()> {
         if let Some(mut pte) = self.find_pte(gaddr) {
             pte.set_flags(PTEFlags::empty());
             pte.write_back().expect("Failed to write back Sv39x4 PTE for munmap");
@@ -195,6 +237,21 @@ impl PageTableTrait for Sv39x4PageTable {
         false
     }
 
+    fn munmap_with_check_and_ad(&mut self, gaddr: usize, expected_kaddr: usize) -> Option<(bool, bool)> {
+        let mut pte = self.find_pte(gaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let flags = pte.flags();
+        let accessed = flags.contains(PTEFlags::A);
+        let dirty = flags.contains(PTEFlags::D);
+        pte.set_flags(PTEFlags::empty())
+            .write_back()
+            .expect("Failed to write back Sv39x4 PTE for munmap_with_check_and_ad");
+        Some((accessed, dirty))
+    }
+
     fn take_access_dirty_bit(&mut self, gaddr: usize) -> Option<(bool, bool)> {
         self.find_pte(gaddr).map(|mut pte| {
             let flags = pte.flags();
@@ -205,6 +262,25 @@ impl PageTableTrait for Sv39x4PageTable {
                 .expect("Failed to write back Sv39x4 PTE when taking access and dirty bits");
             (accessed, dirty)
         })
+    }
+
+    fn take_access_dirty_bit_with_check_no_flush(
+        &mut self,
+        gaddr: usize,
+        expected_kaddr: usize,
+    ) -> Option<(bool, bool)> {
+        let mut pte = self.find_pte(gaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let flags = pte.flags();
+        let accessed = flags.contains(PTEFlags::A);
+        let dirty = flags.contains(PTEFlags::D);
+        pte.set_flags(flags.difference(PTEFlags::A | PTEFlags::D))
+            .write_back()
+            .expect("Failed to write back Sv39x4 PTE when taking checked access and dirty bits");
+        Some((accessed, dirty))
     }
 }
 

@@ -105,8 +105,10 @@ pub fn nanosleep(uptr_req: UPtr<Timespec>, uptr_rem: UPtr<Timespec>) -> SysResul
     let to_sleep = Duration::try_from(req)?;
 
     let start_sleep = timer::now();
+    current::task().block("timer nanosleep");
     let timer_id = timer::add_timer(current::task().clone(), to_sleep);
-    let event = current::block("timer nanosleep");
+    current::schedule();
+    let event = current::task().take_wakeup_event().unwrap();
 
     match event {
         Event::Timeout => Ok(0),
@@ -201,8 +203,10 @@ pub fn clock_nanosleep(
     };
 
     let start_sleep = timer::now();
+    current::task().block("timer nanosleep");
     let timer_id = timer::add_timer(current::task().clone(), to_sleep);
-    let event = current::block("timer nanosleep");
+    current::schedule();
+    let event = current::task().take_wakeup_event().unwrap();
 
     match event {
         Event::Timeout => Ok(0),

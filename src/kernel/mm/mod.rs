@@ -3,13 +3,14 @@ pub mod page;
 // mod frame;
 mod addrspace;
 pub mod maparea;
+mod memregion;
 pub mod ubuf;
 pub mod vdso;
 
 pub use addrspace::*;
+pub use memregion::{MemRegion, contains_range as contains_memory_range, max_end as max_memory_end};
 pub use page::*;
 
-#[cfg(feature = "swap-memory")]
 pub mod swappable;
 
 use bitflags::bitflags;
@@ -43,7 +44,9 @@ impl MemAccessType {
 }
 
 #[unsafe(link_section = ".text.init")]
-pub fn init(frame_start: usize, frame_end: usize) {
-    page::init(frame_start, frame_end);
-    // crate::kinfo!("Frame space inited: {:#x} - {:#x}, total {:#x}", frame_start, frame_end, frame_end - frame_start);
+pub unsafe fn init(bootstrap_end: usize, regions: *const MemRegion, region_count: usize) {
+    // SAFETY: The architecture entry code reserves the region array page and
+    // passes the number of initialized entries in that page.
+    let regions = unsafe { memregion::init(regions, region_count) };
+    page::init(bootstrap_end, regions);
 }

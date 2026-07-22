@@ -11,7 +11,7 @@ use crate::kernel::mm::FixedContiguousPhysPageFrame;
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::scheduler::current;
 use crate::kernel::task::CapabilitySet;
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::SleepLock;
 
 const PIPE_CAPACITY: usize = arch::PGSIZE * config::PIPE_BUFFER_PAGES;
 type PipeBuffer = FixedContiguousPhysPageFrame<{ config::PIPE_BUFFER_PAGES }>;
@@ -141,27 +141,66 @@ impl FIFO {
 }
 
 pub struct PipeInner {
-    fifo: SleepLock<FIFO>,
-    read_waiter: SpinLock<WaitQueue<Event>>,
-    write_waiter: SpinLock<WaitQueue<Event>>,
+    state: SleepLock<PipeState>,
     read_notifier: Arc<EpollNotifier>,
     write_notifier: Arc<EpollNotifier>,
-    capacity: SpinLock<usize>,
-    writer_count: SpinLock<u32>,
-    reader_count: SpinLock<u32>,
+}
+
+struct PipeState {
+    fifo: FIFO,
+    read_waiter: WaitQueue<Event>,
+    write_waiter: WaitQueue<Event>,
+    capacity: usize,
+    writer_count: u32,
+    reader_count: u32,
+}
+
+impl PipeState {
+    fn new(capacity: usize) -> Self {
+        Self {
+            fifo: FIFO::new(),
+            read_waiter: WaitQueue::new(),
+            write_waiter: WaitQueue::new(),
+            capacity,
+            writer_count: 0,
+            reader_count: 0,
+        }
+    }
+
+    fn poll_event(&self, event: FileEvent, writable: bool) -> Option<FileEvent> {
+        let want_read = event.contains(FileEvent::READ_READY) && !writable;
+        let want_write = event.contains(FileEvent::WRITE_READY) && writable;
+        let mut ready = FileEvent::empty();
+
+        if want_read {
+            if self.writer_count == 0 {
+                ready |= FileEvent::HANG_UP;
+                if self.fifo.len() > 0 {
+                    ready |= FileEvent::READ_READY;
+                }
+            } else if self.fifo.len() > 0 {
+                ready |= FileEvent::READ_READY;
+            }
+        }
+
+        if want_write {
+            if self.reader_count == 0 {
+                ready |= FileEvent::HANG_UP;
+            } else if self.fifo.len() < self.capacity {
+                ready |= FileEvent::WRITE_READY;
+            }
+        }
+
+        if ready.is_empty() { None } else { Some(ready) }
+    }
 }
 
 impl PipeInner {
     pub fn new(capacity: usize) -> Self {
         Self {
-            fifo: SleepLock::new(FIFO::new(), "PipeInner::fifo"),
-            read_waiter: SpinLock::new(WaitQueue::new(), "PipeInner::read_waiter"),
-            write_waiter: SpinLock::new(WaitQueue::new(), "PipeInner::write_waiter"),
+            state: SleepLock::new(PipeState::new(capacity), "PipeInner::state"),
             read_notifier: Arc::new(EpollNotifier::new()),
             write_notifier: Arc::new(EpollNotifier::new()),
-            capacity: SpinLock::new(capacity, "PipeInner::capacity"),
-            writer_count: SpinLock::new(0, "PipeInner::writer_count"),
-            reader_count: SpinLock::new(0, "PipeInner::reader_count"),
         }
     }
 
@@ -173,22 +212,24 @@ impl PipeInner {
         // Phase 1: wait until at least one byte is available
         let notify_write_ready;
         loop {
-            let mut fifo = self.fifo.lock();
-            if fifo.len() > 0 {
-                let was_write_ready = fifo.len() < *self.capacity.lock();
-                buf[0] = fifo.pop_front().unwrap();
+            let mut state = self.state.lock();
+            if state.fifo.len() > 0 {
+                let was_write_ready = state.fifo.len() < state.capacity;
+                buf[0] = state.fifo.pop_front().unwrap();
                 notify_write_ready = !was_write_ready;
-                drop(fifo);
                 break;
             }
-            if *self.writer_count.lock() == 0 {
+            if state.writer_count == 0 {
                 return Ok(0); // EOF
             }
-            drop(fifo);
+
             if !blocked {
                 return Err(Errno::EAGAIN);
             }
-            self.read_waiter.lock().wait_current(Event::ReadReady);
+
+            state.read_waiter.wait_current(Event::ReadReady);
+            drop(state);
+
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
                 Event::ReadReady => {}
@@ -203,19 +244,18 @@ impl PipeInner {
         // Phase 2: drain as much as is immediately available
         let mut total_read = 1;
         while total_read < buf.len() {
-            let mut fifo = self.fifo.lock();
-            if fifo.len() == 0 {
+            let mut state = self.state.lock();
+            if state.fifo.len() == 0 {
                 break;
             }
-            let to_read = core::cmp::min(buf.len() - total_read, fifo.len());
+            let to_read = core::cmp::min(buf.len() - total_read, state.fifo.len());
             for _ in 0..to_read {
-                buf[total_read] = fifo.pop_front().unwrap();
+                buf[total_read] = state.fifo.pop_front().unwrap();
                 total_read += 1;
             }
-            drop(fifo);
         }
 
-        self.write_waiter.lock().wake_all(|e| e);
+        self.state.lock().write_waiter.wake_all(|e| e);
         if notify_write_ready {
             self.write_notifier.notify(FileEvent::WRITE_READY);
         }
@@ -229,14 +269,14 @@ impl PipeInner {
         }
 
         loop {
-            let mut fifo = self.fifo.lock();
+            let mut state = self.state.lock();
 
-            if fifo.len() > 0 {
-                let was_write_ready = fifo.len() < *self.capacity.lock();
-                let r = fifo.pop_front_ubuf(ubuf);
-                drop(fifo);
+            if state.fifo.len() > 0 {
+                let was_write_ready = state.fifo.len() < state.capacity;
+                let r = state.fifo.pop_front_ubuf(ubuf);
                 if r.as_ref().map_or(false, |n| *n > 0) {
-                    self.write_waiter.lock().wake_all(|e| e);
+                    state.write_waiter.wake_all(|e| e);
+                    drop(state);
                     if !was_write_ready {
                         self.write_notifier.notify(FileEvent::WRITE_READY);
                     }
@@ -244,18 +284,17 @@ impl PipeInner {
                 return r;
             }
 
-            if *self.writer_count.lock() == 0 {
+            if state.writer_count == 0 {
                 return Ok(0); // EOF: no writers left
             }
-
-            drop(fifo);
 
             if !blocked {
                 return Err(Errno::EAGAIN);
             }
 
             // Wait for data
-            self.read_waiter.lock().wait_current(Event::ReadReady);
+            state.read_waiter.wait_current(Event::ReadReady);
+            drop(state);
             current::schedule();
 
             match current::task().take_wakeup_event().unwrap() {
@@ -270,42 +309,41 @@ impl PipeInner {
     }
 
     pub fn write(&self, buf: &[u8], blocked: bool) -> SysResult<usize> {
-        if *self.reader_count.lock() == 0 {
+        let mut state = self.state.lock();
+        if state.reader_count == 0 {
+            drop(state);
             let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, 0, KSiFields::Empty, None);
             return Err(Errno::EPIPE);
         }
 
-        let cap = *self.capacity.lock();
-
-        if buf.len() >= cap {
+        if buf.len() >= state.capacity {
             // Large write (> PIPE_BUF): write as much as fits, non-atomic
-            let mut fifo = self.fifo.lock();
-            let to_write = core::cmp::min(buf.len(), PIPE_CAPACITY - fifo.len());
+            let to_write = core::cmp::min(buf.len(), PIPE_CAPACITY - state.fifo.len());
             for i in 0..to_write {
-                fifo.push_back(buf[i]);
+                state.fifo.push_back(buf[i]);
             }
-            drop(fifo);
-            self.read_waiter.lock().wake_all(|e| e);
+            state.read_waiter.wake_all(|e| e);
+            drop(state);
             self.read_notifier.notify(FileEvent::READ_READY);
             Ok(to_write)
         } else {
             // Small write (<= PIPE_BUF): must be atomic, wait until space available
-            let mut fifo;
             loop {
-                if *self.reader_count.lock() == 0 {
+                if state.reader_count == 0 {
+                    drop(state);
+                    let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, 0, KSiFields::Empty, None);
                     return Err(Errno::EPIPE);
                 }
-                let cap = *self.capacity.lock();
-                fifo = self.fifo.lock();
-                if cap - fifo.len() >= buf.len() {
+                let cap = state.capacity;
+                if cap - state.fifo.len() >= buf.len() {
                     break;
                 }
-                drop(fifo);
                 if !blocked {
                     return Err(Errno::EAGAIN);
                 }
                 // Buffer is full, wait for space
-                self.write_waiter.lock().wait_current(Event::WriteReady);
+                state.write_waiter.wait_current(Event::WriteReady);
+                drop(state);
                 current::schedule();
 
                 match current::task().take_wakeup_event().unwrap() {
@@ -316,13 +354,14 @@ impl PipeInner {
                     }
                     _ => unreachable!(),
                 }
+                state = self.state.lock();
             }
 
             for c in buf {
-                fifo.push_back(*c);
+                state.fifo.push_back(*c);
             }
-            drop(fifo);
-            self.read_waiter.lock().wake_all(|e| e);
+            state.read_waiter.wake_all(|e| e);
+            drop(state);
             self.read_notifier.notify(FileEvent::READ_READY);
             Ok(buf.len())
         }
@@ -334,26 +373,25 @@ impl PipeInner {
         }
 
         loop {
-            let fifo = self.fifo.lock();
+            let mut state = self.state.lock();
 
-            if fifo.len() > 0 {
-                let n = core::cmp::min(len, fifo.len());
+            if state.fifo.len() > 0 {
+                let n = core::cmp::min(len, state.fifo.len());
                 let mut buf = vec![0u8; n];
-                fifo.peek_front(&mut buf);
+                state.fifo.peek_front(&mut buf);
                 return Ok(buf);
             }
 
-            if *self.writer_count.lock() == 0 {
+            if state.writer_count == 0 {
                 return Ok(Vec::new());
             }
-
-            drop(fifo);
 
             if !blocked {
                 return Err(Errno::EAGAIN);
             }
 
-            self.read_waiter.lock().wait_current(Event::ReadReady);
+            state.read_waiter.wait_current(Event::ReadReady);
+            drop(state);
             current::schedule();
 
             match current::task().take_wakeup_event().unwrap() {
@@ -368,37 +406,38 @@ impl PipeInner {
     }
 
     pub fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, blocked: bool) -> SysResult<usize> {
-        if *self.reader_count.lock() == 0 {
+        let mut state = self.state.lock();
+        if state.reader_count == 0 {
+            drop(state);
             let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, 0, KSiFields::Empty, None);
             return Err(Errno::EPIPE);
         }
 
-        let cap = *self.capacity.lock();
-
-        if ubuf.length() >= cap {
+        if ubuf.length() >= state.capacity {
             // Large write: write as much as fits, non-atomic
-            let n = self.fifo.lock().push_back_ubuf(ubuf)?;
-            self.read_waiter.lock().wake_all(|e| e);
+            let n = state.fifo.push_back_ubuf(ubuf)?;
+            state.read_waiter.wake_all(|e| e);
+            drop(state);
             self.read_notifier.notify(FileEvent::READ_READY);
             Ok(n)
         } else {
             // Small write: atomic, wait until enough space available
-            let mut fifo;
             loop {
-                if *self.reader_count.lock() == 0 {
+                if state.reader_count == 0 {
+                    drop(state);
+                    let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, 0, KSiFields::Empty, None);
                     return Err(Errno::EPIPE);
                 }
-                let cap = *self.capacity.lock();
-                fifo = self.fifo.lock();
-                if cap - fifo.len() >= ubuf.length() {
+                let cap = state.capacity;
+                if cap - state.fifo.len() >= ubuf.length() {
                     break;
                 }
-                drop(fifo);
                 if !blocked {
                     return Err(Errno::EAGAIN);
                 }
                 // Buffer is full, wait for space
-                self.write_waiter.lock().wait_current(Event::WriteReady);
+                state.write_waiter.wait_current(Event::WriteReady);
+                drop(state);
                 current::schedule();
 
                 match current::task().take_wakeup_event().unwrap() {
@@ -409,11 +448,12 @@ impl PipeInner {
                     }
                     _ => unreachable!(),
                 }
+                state = self.state.lock();
             }
 
-            fifo.push_back_ubuf(ubuf)?;
-            drop(fifo);
-            self.read_waiter.lock().wake_all(|e| e);
+            state.fifo.push_back_ubuf(ubuf)?;
+            state.read_waiter.wake_all(|e| e);
+            drop(state);
             self.read_notifier.notify(FileEvent::READ_READY);
             Ok(ubuf.length())
         }
@@ -426,34 +466,7 @@ impl PipeInner {
             return Ok(None);
         }
 
-        let fifo = self.fifo.lock();
-        let mut ready = FileEvent::empty();
-
-        if want_read {
-            if *self.writer_count.lock() == 0 {
-                ready |= FileEvent::HANG_UP;
-                if fifo.len() > 0 {
-                    ready |= FileEvent::READ_READY;
-                }
-            } else if fifo.len() > 0 {
-                ready |= FileEvent::READ_READY;
-            }
-        }
-
-        if want_write {
-            if *self.reader_count.lock() == 0 {
-                // All readers gone: write end should get HangUp (caller maps to EPIPE)
-                ready |= FileEvent::HANG_UP;
-            } else if fifo.len() < *self.capacity.lock() {
-                ready |= FileEvent::WRITE_READY;
-            }
-        }
-
-        if !ready.is_empty() {
-            return Ok(Some(ready));
-        }
-
-        Ok(None)
+        Ok(self.state.lock().poll_event(event, writable))
     }
 
     pub fn wait_event(&self, waker: usize, event: FileEvent, writable: bool) -> SysResult<Option<FileEvent>> {
@@ -463,12 +476,13 @@ impl PipeInner {
             return Ok(None);
         }
 
-        if let Some(ready) = self.poll_event(event, writable)? {
+        let mut state = self.state.lock();
+        if let Some(ready) = state.poll_event(event, writable) {
             return Ok(Some(ready));
         }
 
         if want_read {
-            self.read_waiter.lock().wait(
+            state.read_waiter.wait(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::READ_READY,
@@ -478,7 +492,7 @@ impl PipeInner {
         }
 
         if want_write {
-            self.write_waiter.lock().wait(
+            state.write_waiter.wait(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::WRITE_READY,
@@ -491,8 +505,9 @@ impl PipeInner {
     }
 
     pub fn wait_event_cancel(&self) {
-        self.read_waiter.lock().remove(current::task());
-        self.write_waiter.lock().remove(current::task());
+        let mut state = self.state.lock();
+        state.read_waiter.remove(current::task());
+        state.write_waiter.remove(current::task());
     }
 
     pub fn epoll_notifier(&self, writable: bool) -> Arc<EpollNotifier> {
@@ -504,82 +519,89 @@ impl PipeInner {
     }
 
     pub fn increment_reader_count(&self) {
-        let mut waiter = self.write_waiter.lock();
-        *self.reader_count.lock() += 1;
-        waiter.wake_all(|e| e);
+        let mut state = self.state.lock();
+        state.reader_count += 1;
+        state.write_waiter.wake_all(|e| e);
+        drop(state);
         self.write_notifier.notify(FileEvent::WRITE_READY);
     }
 
     pub fn decrement_reader_count(&self) {
         let has_no_reader = {
-            let mut reader_count = self.reader_count.lock();
-            debug_assert!(*reader_count > 0);
-            *reader_count -= 1;
-            *reader_count == 0
+            let mut state = self.state.lock();
+            debug_assert!(state.reader_count > 0);
+            state.reader_count -= 1;
+            let has_no_reader = state.reader_count == 0;
+            if has_no_reader {
+                state.write_waiter.wake_all(|e| e);
+            }
+            has_no_reader
         };
 
         if has_no_reader {
             // Wake blocked writers so they can return EPIPE
-            self.write_waiter.lock().wake_all(|e| e);
             self.write_notifier.notify(FileEvent::HANG_UP);
         }
         self.clear_if_unused();
     }
 
     pub fn increment_writer_count(&self) {
-        let mut waiter = self.read_waiter.lock();
-        *self.writer_count.lock() += 1;
-        waiter.wake_all(|e| e);
+        let mut state = self.state.lock();
+        state.writer_count += 1;
+        state.read_waiter.wake_all(|e| e);
+        drop(state);
         self.read_notifier.notify(FileEvent::READ_READY);
     }
 
     pub fn decrement_writer_count(&self) {
-        let has_no_writer = {
-            let mut writer_count = self.writer_count.lock();
-            debug_assert!(*writer_count > 0);
-            *writer_count -= 1;
-            *writer_count == 0
+        let wake_event = {
+            let mut state = self.state.lock();
+            debug_assert!(state.writer_count > 0);
+            state.writer_count -= 1;
+            if state.writer_count != 0 {
+                None
+            } else {
+                let wake_event = if state.fifo.len() > 0 {
+                    FileEvent::READ_READY | FileEvent::HANG_UP
+                } else {
+                    FileEvent::HANG_UP
+                };
+                state.read_waiter.wake_all(|e| match e {
+                    Event::Poll { event, waker } if event.intersects(FileEvent::READ_READY) => Event::Poll {
+                        event: wake_event,
+                        waker,
+                    },
+                    _ => e,
+                });
+                Some(wake_event)
+            }
         };
 
-        if has_no_writer {
-            let wake_event = if self.fifo.lock().len() > 0 {
-                FileEvent::READ_READY | FileEvent::HANG_UP
-            } else {
-                FileEvent::HANG_UP
-            };
-            self.read_waiter.lock().wake_all(|e| match e {
-                Event::Poll { event, waker } if event.intersects(FileEvent::READ_READY) => Event::Poll {
-                    event: wake_event,
-                    waker,
-                },
-                _ => e,
-            }); // Wake up readers to notify them of EOF
+        if let Some(wake_event) = wake_event {
             self.read_notifier.notify(wake_event);
         }
         self.clear_if_unused();
     }
 
     fn clear_if_unused(&self) {
-        let mut fifo = self.fifo.lock();
-        let reader_count = self.reader_count.lock();
-        let writer_count = self.writer_count.lock();
-        if *reader_count == 0 && *writer_count == 0 {
-            fifo.clear();
+        let mut state = self.state.lock();
+        if state.reader_count == 0 && state.writer_count == 0 {
+            state.fifo.clear();
         }
     }
 
     pub fn has_readers(&self) -> bool {
-        *self.reader_count.lock() > 0
+        self.state.lock().reader_count > 0
     }
 
     pub fn wait_for_reader(&self) -> SysResult<()> {
         loop {
-            let mut waiter = self.write_waiter.lock();
-            if *self.reader_count.lock() > 0 {
+            let mut state = self.state.lock();
+            if state.reader_count > 0 {
                 return Ok(());
             }
-            waiter.wait_current(Event::WriteReady);
-            drop(waiter);
+            state.write_waiter.wait_current(Event::WriteReady);
+            drop(state);
 
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
@@ -595,12 +617,12 @@ impl PipeInner {
 
     pub fn wait_for_writer(&self) -> SysResult<()> {
         loop {
-            let mut waiter = self.read_waiter.lock();
-            if *self.writer_count.lock() > 0 {
+            let mut state = self.state.lock();
+            if state.writer_count > 0 {
                 return Ok(());
             }
-            waiter.wait_current(Event::ReadReady);
-            drop(waiter);
+            state.read_waiter.wait_current(Event::ReadReady);
+            drop(state);
 
             current::schedule();
             match current::task().take_wakeup_event().unwrap() {
@@ -615,11 +637,11 @@ impl PipeInner {
     }
 
     pub fn get_capacity(&self) -> usize {
-        *self.capacity.lock()
+        self.state.lock().capacity
     }
 
     pub fn read_available(&self) -> usize {
-        self.fifo.lock().len()
+        self.state.lock().fifo.len()
     }
 
     pub fn set_capacity(&self, size: usize) -> SysResult<usize> {
@@ -633,7 +655,8 @@ impl PipeInner {
             size.div_ceil(arch::PGSIZE) * arch::PGSIZE
         };
 
-        let used = self.fifo.lock().len();
+        let mut state = self.state.lock();
+        let used = state.fifo.len();
         if aligned < used {
             return Err(Errno::EBUSY);
         }
@@ -646,9 +669,10 @@ impl PipeInner {
             return Err(Errno::EINVAL);
         }
 
-        *self.capacity.lock() = aligned;
+        state.capacity = aligned;
         // Capacity changes may unblock writers waiting for room.
-        self.write_waiter.lock().wake_all(|e| e);
+        state.write_waiter.wake_all(|e| e);
+        drop(state);
         self.write_notifier.notify(FileEvent::WRITE_READY);
         Ok(aligned)
     }

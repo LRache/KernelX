@@ -137,7 +137,9 @@ impl VTask {
                     inst,
                     val,
                 } => {
-                    if self.addrspace.try_to_fix_memory_fault(addr, access_type).is_none() {
+                    if !self.addrspace.try_to_fix_memory_fault(addr, access_type) {
+                        // If we cannot fix the memory fault,
+                        // we need to return the fault information to the user space.
                         *self.page_fault.lock() = Some(KvmPageFault {
                             addr,
                             access_type: Self::access_type_value(access_type),

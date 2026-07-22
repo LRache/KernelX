@@ -198,15 +198,7 @@ pub fn return_to_user() -> ! {
 
     csr::write::<{ csr::num::PGDL }>(uc.user_pgd);
 
-    unsafe {
-        core::arch::asm!(
-            "dbar 0",
-            "invtlb 0x00, $zero, $zero",
-            "dbar 0",
-            "ibar 0",
-            options(nostack, preserves_flags)
-        );
-    }
+    crate::arch::flush_tlb_all();
 
     csr::write::<{ csr::num::ERA }>(uc.get_user_entry());
     csr::write::<{ csr::num::PRMD }>(csr::prmd::USERFRAME);

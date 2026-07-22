@@ -35,6 +35,7 @@ panic = "abort"
 lto = true
 
 [dependencies]
+buddy-slab-allocator = "=0.4.6"
 buddy_system_allocator = { version = "0.9", default-features = false, features = ["use_spin"] }
 spin = "0.9"
 bitflags = "2.0"

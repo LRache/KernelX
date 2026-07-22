@@ -62,20 +62,20 @@ _entry:
     /* Kernel stack grows down from __stack_end. */
     la.pcrel $sp, __stack_end
 
-    /*
-     * main(hartid, heap_start, memory_top). heap_start and memory_top
-     * are VAs in the DMW1 high half — kernel arithmetic stays in the
-     * 64-bit linked space.
-     *
-     * memory_top = 0x9000_..._0000 | 0x1000_0000 (256 MiB). QEMU `-M virt`
-     * gives 256 MiB at PA [0, 0x1000_0000); past that is MMIO and cached
-     * loads there would raise ADE through DMW1. The frame allocator must
-     * respect this cap.
-     */
+    /* Reserve one page after the kernel for the physical memory region array. */
+    la.pcrel $s2, __kernel_end
+    move    $a0, $s2
+    la.global $t0, __la_load_mem_regions
+    jirl    $ra, $t0, 0
+    move    $s3, $a0                  /* Number of memory regions. */
+
+    li.d    $t0, 0x1000
+    add.d   $s4, $s2, $t0            /* First address after bootstrap data. */
+
     move    $a0, $s0
-    la.pcrel $a1, __kernel_end
-    lu12i.w $a2, 0x10000                /* 0x1000_0000 */
-    lu52i.d $a2, $a2, -1792             /* | 0x9000_..._0000 */
+    move    $a1, $s4
+    move    $a2, $s2
+    move    $a3, $s3
 
     la.global $t0, main
     jirl    $zero, $t0, 0
