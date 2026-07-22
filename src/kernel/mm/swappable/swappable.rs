@@ -8,14 +8,58 @@ use crate::klib::{BucketSleepLock, BucketSleepLockGuard, SleepLock};
 pub struct TlbInvalidationToken;
 
 /// Serializes TLB invalidation batches that can touch pages from one mapping family.
-///
-/// The lock is required because a batch rescans shared page storage after the
-/// flush instead of retaining an owner list. Without serialization, batch A can
-/// skip an empty slot, batch B can materialize and pin a page in that slot, and
-/// then A's rescan can consume B's unowned `tlb_invalidation_pins` entry before
-/// B flushes its TLB. Keeping one lock per family prevents that race while still
-/// allowing unrelated mapping families to invalidate concurrently.
 pub struct TlbInvalidationLock(SleepLock<()>);
+
+/*
+ * Without this lock, invalidation batches in one mapping family can overlap and
+ * make one batch clear another batch's `tlb_flush_pending` mark.
+ *
+ * Private anonymous page shared by fork/COW:
+ *
+ *   CPU 0 - Batch A / Swapper    CPU 1 - Batch B             CPU 2 - B's address space
+ *   --------------------------   --------------------------   ---------------------------
+ *   begin(P): pending = true
+ *   clear A's PTE for P
+ *   flush_tlb_all()
+ *                              begin(P): pending is true
+ *                              (assertion catches this today)
+ *                              clear B's PTE, no flush yet
+ *                              <Batch B stalls>
+ *   finish(P): pending = false
+ *   swapper sees no pending and
+ *   no PTE, then releases P's
+ *   resident frame
+ *                                                            stale TLB accesses frame
+ *                              flush_tlb_all() // too late
+ *
+ * If the overlapping begin were allowed, the boolean mark could not record
+ * that it belongs to both batches. A's finish would therefore expose P to
+ * reclaim after A's flush but before B's flush.
+ *
+ * Shared anonymous page materialized between the two scans:
+ *
+ *   CPU 0 - Batch A / Swapper    CPU 1 - Fault then Batch B  CPU 2 - B's address space
+ *   --------------------------   --------------------------   ---------------------------
+ *   first scan: slot S empty
+ *   complete its flush, or
+ *   decide no flush is needed
+ *                              fault materializes P in S
+ *                              begin(P): pending = true
+ *                              clear B's PTE, no flush
+ *                              <Batch B stalls>
+ *   second scan: S contains P
+ *   finish(P): pending = false
+ *   swapper sees no pending and
+ *   no PTE, then releases P's
+ *   resident frame
+ *                                                            stale TLB accesses frame
+ *                              flush_tlb_all() // too late
+ *
+ * The fault on CPU 1 may materialize P while A holds the family lock, but Batch B
+ * cannot begin invalidating P until A completes its second scan. Consequently,
+ * A can only observe a newly materialized P with `tlb_flush_pending == false`,
+ * and its finish call leaves P unchanged.
+ */
 
 impl TlbInvalidationLock {
     pub const fn new(name: &'static str) -> Self {
@@ -163,9 +207,17 @@ enum SwappableFrameState {
 struct SwappableFrameInner<B> {
     state: SwappableFrameState,
     backend: B,
+
+    /// The number of mappings that reference this page.
     mapping_refs: usize,
+
+    /// The number of ordinary pins on the page.
+    /// If `pins` > 0, the page cannot be swapped out or released.
     pins: usize,
-    tlb_invalidation_pins: usize,
+
+    /// Whether a cleared PTE may still be cached in a TLB.
+    /// While this is true, the resident frame cannot be swapped out or released.
+    tlb_flush_pending: bool,
 }
 
 pub struct SwappableFrame<B: SwappableBackendOps> {
@@ -199,7 +251,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
                     backend,
                     mapping_refs,
                     pins: 0,
-                    tlb_invalidation_pins: 0,
+                    tlb_flush_pending: false,
                 },
                 "SwappableFrame::inner",
             ),
@@ -407,7 +459,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
 
         let state = core::mem::replace(&mut inner.state, SwappableFrameState::Invalid);
         if let SwappableFrameState::In { frame, .. } = state
-            && inner.pins != 0
+            && (inner.pins != 0 || inner.tlb_flush_pending)
         {
             inner.state = SwappableFrameState::Invalidating { _frame: frame };
         }
@@ -440,17 +492,62 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
     }
 
     /// Begins a TLB invalidation for this swappable frame.
+    ///
+    /// The batch rescans shared page storage after the flush instead of retaining
+    /// the exact pages seen in its first pass. A page materialized between the
+    /// scans has a false flag, so the second scan leaves it unchanged:
+    ///
+    /// ```text
+    /// TLB invalidation batch A       Concurrent task B
+    /// ------------------------       -----------------
+    /// first scan: slot is empty
+    ///                                materialize page P
+    /// flush_tlb_all()
+    /// second scan: slot contains P
+    /// finish(P): pending is false, so do nothing
+    /// ```
+    ///
+    /// The per-family invalidation lock serializes batches, so at most one
+    /// pending TLB flush can belong to this page.
     pub fn begin_tlb_invalidation(
         self: &Arc<Self>,
         _token: &TlbInvalidationToken,
         unmap: impl FnOnce(&PhysPageFrame) -> Option<AccessDirty>,
     ) {
         let mut inner = self.inner.lock();
-        inner.pins = inner.pins.checked_add(1).expect("swappable frame pin count overflow");
-        inner.tlb_invalidation_pins = inner
-            .tlb_invalidation_pins
-            .checked_add(1)
-            .expect("swappable frame TLB invalidation pin count overflow");
+        assert!(
+            !inner.tlb_flush_pending,
+            "overlapping TLB invalidation for one swappable frame"
+        );
+        // Without this mark:
+        //
+        //   CPU 0 - unmap              CPU 1                  CPU 2 - Swapper
+        //   --------------------       ----------------       ----------------------------
+        //   clear VA -> P PTE
+        //   without flushing TLB
+        //                                                       try_swap_out(P)
+        //                                                       sees no pin and no PTE
+        //                                                       skips its own TLB flush
+        //                                                       writes out and releases P
+        //                                                       allocator reuses P for Q
+        //                              stale TLB writes P
+        //                              and corrupts page Q
+        //   flush_tlb_all()                                    // Too late
+        //
+        // With this mark:
+        //
+        //   CPU 0 - unmap              CPU 1                  CPU 2 - Swapper
+        //   --------------------       ----------------       ----------------------------
+        //   mark TLB flush pending
+        //   clear VA -> P PTE
+        //   without flushing TLB
+        //                              stale TLB accesses P
+        //                                                       sees TLB flush pending
+        //                                                       keeps P resident and stops
+        //   flush_tlb_all()
+        //   clear the pending mark
+        //                                                       P may now be reclaimed
+        inner.tlb_flush_pending = true;
 
         let access_dirty = match &inner.state {
             SwappableFrameState::In { frame, .. } => unmap(frame),
@@ -471,12 +568,10 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
 
     pub fn finish_tlb_invalidation(self: &Arc<Self>, _token: &TlbInvalidationToken) -> bool {
         let mut inner = self.inner.lock();
-        if inner.tlb_invalidation_pins == 0 {
+        if !inner.tlb_flush_pending {
             return false;
         }
-        inner.tlb_invalidation_pins -= 1;
-        assert!(inner.pins > 0, "swappable frame pin count underflow");
-        inner.pins -= 1;
+        inner.tlb_flush_pending = false;
         if inner.pins == 0 && matches!(inner.state, SwappableFrameState::Invalidating { .. }) {
             inner.state = SwappableFrameState::Invalid;
         }
@@ -509,8 +604,8 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
     pub fn try_swap_out(self: Arc<Self>) -> Result<SwapOutResult, SwapError> {
         let mut inner = self.inner.lock();
 
-        if inner.pins != 0 {
-            // The frame is pinned by other code.
+        if inner.pins != 0 || inner.tlb_flush_pending {
+            // The frame is pinned or may still be accessed through a stale TLB.
             return Ok(if inner.mapping_refs != 0 || inner.backend.retain_unmapped_pages() {
                 SwapOutResult::Referenced
             } else {
@@ -771,6 +866,7 @@ impl<B: SwappableBackendOps> Drop for SwappableFramePin<B> {
         assert!(inner.pins > 0, "swappable frame pin count underflow");
         inner.pins -= 1;
         let last_pin = inner.pins == 0;
+        let can_finish_invalidation = last_pin && !inner.tlb_flush_pending;
         let is_swappable = inner.backend.is_swappable();
         match &mut inner.state {
             SwappableFrameState::In { referenced, .. } => {
@@ -779,7 +875,7 @@ impl<B: SwappableBackendOps> Drop for SwappableFramePin<B> {
                     self.owner.relink_locked(&inner);
                 }
             }
-            SwappableFrameState::Invalidating { .. } if last_pin => {
+            SwappableFrameState::Invalidating { .. } if can_finish_invalidation => {
                 inner.state = SwappableFrameState::Invalid;
             }
             SwappableFrameState::Invalidating { .. } => {}
