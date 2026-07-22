@@ -10,7 +10,7 @@ use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::config::{MAX_PATH_LEN, USER_RANDOM_ADDR_BASE};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Auxv, MapManagerWatcher, PinPageFrame, ReadChunk, WriteChunk};
-use crate::kernel::mm::swappable::{SwappableBackendOps, SwappableFrameGuard};
+use crate::kernel::mm::swappable::ResidentPageGuard;
 use crate::kernel::mm::{PhysPageFrame, maparea};
 use crate::klib::{SleepLock, SpinLock};
 
@@ -449,13 +449,9 @@ impl AddrSpace {
             .map(AccessDirty::from)
     }
 
-    pub fn mmap_swappable<B>(
-        &self,
-        uaddr: usize,
-        guard: &crate::kernel::mm::swappable::SwappableFrameGuard<'_, B>,
-        perm: MapPerm,
-    ) where
-        B: crate::kernel::mm::swappable::SwappableBackendOps,
+    pub(crate) fn mmap_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)
+    where
+        G: ResidentPageGuard,
     {
         // SAFETY: The guard keeps the logical page resident and its page lock
         // held until after the PTE is installed. The owning Area already
@@ -463,9 +459,9 @@ impl AddrSpace {
         unsafe { self.pagetable.lock().mmap_raw(uaddr, guard.frame().get_page(), perm) };
     }
 
-    pub fn mmap_replace_swappable<B>(&self, uaddr: usize, guard: &SwappableFrameGuard<'_, B>, perm: MapPerm)
+    pub(crate) fn mmap_replace_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)
     where
-        B: SwappableBackendOps,
+        G: ResidentPageGuard,
     {
         // SAFETY: The guard keeps the replacement frame resident for the
         // complete PTE update, and the Area retains the logical page owner.
@@ -476,15 +472,16 @@ impl AddrSpace {
         };
     }
 
-    pub fn mmap_replace_swappable_if_maps<B>(
+    pub(crate) fn mmap_replace_swappable_if_maps<E, R>(
         &self,
         uaddr: usize,
-        expected: &crate::kernel::mm::swappable::SwappableFrameGuard<'_, B>,
-        replacement: &crate::kernel::mm::swappable::SwappableFrameGuard<'_, B>,
+        expected: &E,
+        replacement: &R,
         perm: MapPerm,
     ) -> Option<AccessDirty>
     where
-        B: crate::kernel::mm::swappable::SwappableBackendOps,
+        E: ResidentPageGuard,
+        R: ResidentPageGuard,
     {
         let mut pagetable = self.pagetable.lock();
         let access_dirty = match pagetable.mmap_replace_with_check_and_ad(

@@ -4,12 +4,12 @@ cfg_if::cfg_if! {
         mod family;
         mod swapspace;
 
-        pub use frame::{AnonymousBackend, AnonymousSwappableFrame};
+        pub use frame::{AnonymousSwappableFrame, AnonymousSwappableFramePin};
         pub use family::AnonMapFamilyRegistration;
         pub use swapspace::*;
     } else {
         mod noswap;
 
-        pub use noswap::{AnonMapFamilyRegistration, AnonymousBackend, AnonymousSwappableFrame};
+        pub use noswap::{AnonMapFamilyRegistration, AnonymousSwappableFrame, AnonymousSwappableFramePin};
     }
 }

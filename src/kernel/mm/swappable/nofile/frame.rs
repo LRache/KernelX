@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 
-use super::super::swappable::{AccessDirty, SwapError, SwappableBackendOps, SwappableFrame};
+use super::super::swappable::{AccessDirty, SwapError, SwappableBackendOps, SwappableFrame, SwappableFramePin};
 use super::family::{AnonMapFamily, AnonMapFamilyMember, AnonMapFamilyRegistration};
 use super::swapspace::{SwapSlot, swap_space};
 
@@ -55,6 +55,7 @@ impl AnonymousBackend {
 /// and then checks if the page is mapped in that addrspace at the user virtual address corresponding to the page index.
 /// If it is mapped, it checks if the page has been accessed or dirtied, and returns an `AccessDirty` struct indicating whether the page has been accessed or dirtied in any of the mappings.
 pub type AnonymousSwappableFrame = SwappableFrame<AnonymousBackend>;
+pub type AnonymousSwappableFramePin = SwappableFramePin<AnonymousBackend>;
 
 impl SwappableBackendOps for AnonymousBackend {
     type SwappedOutContext = Arc<[AnonMapFamilyMember]>;

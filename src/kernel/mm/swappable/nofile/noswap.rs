@@ -1,40 +1,103 @@
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 
-use super::super::swappable::{AccessDirty, SwapError, SwappableBackendOps, SwappableFrame, TlbInvalidationToken};
+use super::super::swappable::{AccessDirty, ResidentPageGuard, SwapError, TlbInvalidationToken};
 
 #[derive(Clone, Copy)]
 pub struct AnonymousBackend;
 
-pub type AnonymousSwappableFrame = SwappableFrame<AnonymousBackend>;
+pub struct AnonymousSwappableFrame {
+    frame: PhysPageFrame,
+    mapping_refs: AtomicUsize,
+}
 
-impl SwappableBackendOps for AnonymousBackend {
-    type SwappedOutContext = ();
-
-    fn inspect_access_dirty_no_flush(&self, frame: &PhysPageFrame) -> (Self::SwappedOutContext, AccessDirty, bool) {
-        let _ = frame;
-        ((), AccessDirty::default(), false)
+impl AnonymousSwappableFrame {
+    pub fn new_mapped(_backend: AnonymousBackend, frame: PhysPageFrame) -> Arc<Self> {
+        Arc::new(Self {
+            frame,
+            mapping_refs: AtomicUsize::new(1),
+        })
     }
 
-    fn unmap_no_flush(&self, context: &Self::SwappedOutContext, frame: &PhysPageFrame) -> Option<AccessDirty> {
-        let _ = (context, frame);
-        None
+    pub fn ensure_page(self: &Arc<Self>) -> Result<AnonymousSwappableFrameGuard<'_>, SwapError> {
+        Ok(AnonymousSwappableFrameGuard { owner: self })
     }
 
-    fn read_in(&self) -> Result<PhysPageFrame, SwapError> {
-        Err(SwapError::InvalidBacking)
+    pub fn pin_page(self: &Arc<Self>, _write: bool) -> Result<AnonymousSwappableFramePin, SwapError> {
+        Ok(AnonymousSwappableFramePin { owner: self.clone() })
     }
 
-    fn write_out(&mut self, frame: &PhysPageFrame, dirty: bool, _mapping_refs: usize) -> Result<(), SwapError> {
-        let _ = (frame, dirty);
-        Err(SwapError::InvalidBacking)
+    pub fn mapping_refs(&self) -> usize {
+        self.mapping_refs.load(Ordering::Acquire)
     }
 
-    fn release(&mut self) {}
+    pub fn add_mapping_ref(&self) {
+        self.mapping_refs
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |refs| refs.checked_add(1))
+            .expect("anonymous mapping reference count overflow");
+    }
 
-    fn is_swappable(&self) -> bool {
-        false
+    pub fn release_mapping_ref(&self) -> usize {
+        let previous = self
+            .mapping_refs
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |refs| refs.checked_sub(1))
+            .expect("anonymous mapping reference count underflow");
+        previous - 1
+    }
+
+    pub fn with_resident_and_record_ad<R>(
+        &self,
+        _accessed: bool,
+        f: impl FnOnce(&PhysPageFrame) -> (R, AccessDirty),
+    ) -> Option<R> {
+        let (result, _) = f(&self.frame);
+        Some(result)
+    }
+
+    pub fn begin_tlb_invalidation(
+        &self,
+        _token: &TlbInvalidationToken,
+        unmap: impl FnOnce(&PhysPageFrame) -> Option<AccessDirty>,
+    ) {
+        let _ = unmap(&self.frame);
+    }
+
+    pub fn finish_tlb_invalidation(&self, _token: &TlbInvalidationToken) -> bool {
+        true
+    }
+}
+
+pub struct AnonymousSwappableFrameGuard<'a> {
+    owner: &'a AnonymousSwappableFrame,
+}
+
+impl AnonymousSwappableFrameGuard<'_> {
+    pub fn frame(&self) -> &PhysPageFrame {
+        &self.owner.frame
+    }
+
+    pub fn mark_dirty(&mut self) {}
+
+    pub fn release_mapping_ref(&mut self) -> usize {
+        self.owner.release_mapping_ref()
+    }
+}
+
+impl ResidentPageGuard for AnonymousSwappableFrameGuard<'_> {
+    fn frame(&self) -> &PhysPageFrame {
+        AnonymousSwappableFrameGuard::frame(self)
+    }
+}
+
+pub struct AnonymousSwappableFramePin {
+    owner: Arc<AnonymousSwappableFrame>,
+}
+
+impl AnonymousSwappableFramePin {
+    pub fn kpage(&self) -> usize {
+        self.owner.frame.get_page()
     }
 }
 

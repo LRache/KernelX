@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::arch::PageTable;
 use crate::kernel::errno::SysResult;
-use crate::kernel::mm::swappable::{AnonymousBackend, FileBackend, SwappableFramePin};
+use crate::kernel::mm::swappable::{AnonymousSwappableFramePin, FileBackend, SwappableFramePin};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
@@ -58,7 +58,7 @@ impl Frame {
 
 pub enum PinPageFrame {
     Stable(Arc<PhysPageFrame>),
-    Swappable(SwappableFramePin<AnonymousBackend>),
+    Swappable(AnonymousSwappableFramePin),
     FileSwappable(SwappableFramePin<FileBackend>),
 }
 
@@ -67,7 +67,7 @@ impl PinPageFrame {
         Self::Stable(frame)
     }
 
-    pub fn swappable(pin: SwappableFramePin<AnonymousBackend>) -> Self {
+    pub fn swappable(pin: AnonymousSwappableFramePin) -> Self {
         Self::Swappable(pin)
     }
 

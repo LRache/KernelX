@@ -89,6 +89,10 @@ pub trait SwappableBackendOps: Clone + Send + Sync + Sized + 'static {
     fn remove_unmapped_page(&self, _page: &Arc<SwappableFrame<Self>>) {}
 }
 
+pub(crate) trait ResidentPageGuard {
+    fn frame(&self) -> &PhysPageFrame;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwapOutResult {
     /// The frame was successfully evicted from memory.
@@ -727,6 +731,12 @@ impl<B: SwappableBackendOps> SwappableFrameGuard<'_, B> {
     pub fn release_mapping_ref(&mut self) -> usize {
         let inner = &mut self.inner;
         self.owner.release_mapping_ref_locked(inner)
+    }
+}
+
+impl<B: SwappableBackendOps> ResidentPageGuard for SwappableFrameGuard<'_, B> {
+    fn frame(&self) -> &PhysPageFrame {
+        SwappableFrameGuard::frame(self)
     }
 }
 
