@@ -1937,6 +1937,7 @@ pub fn tee(in_fd: usize, out_fd: usize, len: usize, flags: usize) -> SyscallRet 
 #[repr(usize)]
 #[derive(TryFromPrimitive)]
 enum IOCTLReq {
+    FIONBIO = 0x5421,
     FIOCLEX = 0x5451,
 }
 
@@ -1945,6 +1946,15 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> SyscallRet {
 
     if let Some(req) = IOCTLReq::try_from(request).ok() {
         match req {
+            IOCTLReq::FIONBIO => {
+                let nonblocking = current::addrspace().copy_from_user::<i32>(arg)?;
+                let old_flags = file.flags();
+                file.set_flags(FileFlags {
+                    blocked: nonblocking == 0,
+                    ..old_flags
+                });
+                Ok(0)
+            }
             IOCTLReq::FIOCLEX => {
                 current::fdtable().lock().set_fd_flags(fd, FDFlags { cloexec: true })?;
                 Ok(0)

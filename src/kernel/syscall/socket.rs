@@ -224,6 +224,10 @@ fn is_netlink_socket(file: &Arc<dyn FileOps>) -> bool {
     file.downcast_ref::<NetlinkSocket>().is_some()
 }
 
+fn is_unix_socket(file: &Arc<dyn FileOps>) -> bool {
+    file.downcast_ref::<UnixSocket>().is_some()
+}
+
 fn read_inet_sockaddr(addr_ptr: UPtr<SockAddrIn>, addrlen: usize) -> SysResult<SocketAddr> {
     if addrlen < size_of::<SockAddrIn>() {
         return Err(Errno::EINVAL);
@@ -409,6 +413,12 @@ fn send_socket(file: &Arc<dyn FileOps>, buf: &[u8], dst: Option<SocketAddr>, fla
     if is_netlink_socket(file) {
         return file.write(buf);
     }
+    if is_unix_socket(file) {
+        if dst.is_some() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        return file.write(buf);
+    }
 
     inet_socket(file)?.sendto_with_blocking(buf, dst, allow_block(flags))
 }
@@ -432,6 +442,9 @@ pub fn sendto(
 
 fn recv_socket(file: &Arc<dyn FileOps>, buf: &mut [u8], flags: usize) -> SysResult<(usize, Option<SocketAddr>)> {
     if is_netlink_socket(file) {
+        return Ok((file.read(buf)?, None));
+    }
+    if is_unix_socket(file) {
         return Ok((file.read(buf)?, None));
     }
 

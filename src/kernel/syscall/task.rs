@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
@@ -743,7 +744,7 @@ pub fn clone3(uargs: UPtr<KernelCloneArgs>, size: usize) -> SyscallRet {
     })
 }
 
-fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<fixedstr::tstr<255>>> {
+fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<String>> {
     if uarray.is_null() {
         return Ok(Vec::new());
     }
@@ -755,7 +756,7 @@ fn read_ustring_array(uarray: UArray<UString>) -> SysResult<Vec<fixedstr::tstr<2
         if p.is_null() {
             break;
         }
-        vec.push(p.read_string()?);
+        vec.push(p.read_path()?);
         i += 1;
     }
     Ok(vec)
@@ -785,7 +786,7 @@ fn do_execve(
 pub fn execve(uptr_path: UString, uptr_argv: UArray<UString>, uptr_envp: UArray<UString>) -> SyscallRet {
     uptr_path.should_not_null()?;
 
-    let path = uptr_path.read_string()?;
+    let path = uptr_path.read_path()?;
 
     let file = current::with_root_cwd(|root, cwd| {
         vfs::openat_file(&root, &cwd, &path, FileFlags::readonly(), &Perm::current(PermFlags::X))
