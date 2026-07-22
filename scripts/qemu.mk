@@ -31,6 +31,10 @@ QPERF_SVG_DIR := $(dir $(QPERF_SVG))
 QPERF_CONSOLE_LOG ?= $(QPERF_FOLDED_OUTPUT_DIR)/kernelx-qperf-$(QPERF_RUN_TIMESTAMP).console.log
 QPERF_CONSOLE_LOG_DIR := $(dir $(QPERF_CONSOLE_LOG))
 QPERF_FLAMEGRAPH ?= tools/FlameGraph/flamegraph.pl
+QPERF_REPORT_SCRIPT ?= scripts/qperf_report.py
+QPERF_REPORT_DIR ?= $(basename $(QPERF_FOLDED)).report
+QPERF_REPORT_SUMMARY ?= $(QPERF_REPORT_DIR)/summary.md
+QPERF_REPORT_DB ?= $(QPERF_REPORT_DIR)/profile.sqlite
 QPERF_FLAGS = -plugin file=$(QPERF_PLUGIN),freq=$(QPERF_FREQ),out=$(QPERF_OUT)
 
 TMPDISK_SIZE ?= 1G
@@ -182,8 +186,14 @@ qperf-flamegraph:
 		exit 1; \
 	}
 
+qperf-report:
+	@test -f $(QPERF_REPORT_SCRIPT) || { \
+		echo "Missing $(QPERF_REPORT_SCRIPT)"; \
+		exit 1; \
+	}
+
 qemu-run-qperf: QEMU_DEBUG_CONSOLE_LOG = $(QPERF_CONSOLE_LOG)
-qemu-run-qperf: qperf-plugin qperf-analyzer qperf-flamegraph
+qemu-run-qperf: qperf-plugin qperf-analyzer qperf-flamegraph qperf-report
 ifeq ($(SECOND_DISK_IMAGE),)
 	truncate -s $(TMPDISK_SIZE) $(TMPDISK)
 endif
@@ -191,9 +201,12 @@ endif
 	$(QEMU_SWAP_RUN) $(QEMU) $(QEMU_FLAGS) $(QPERF_FLAGS)
 	@ cargo run --release --manifest-path $(QPERF_ANALYZER_MANIFEST) -- --elf $(VMKERNELX) $(QPERF_OUT) $(QPERF_FOLDED)
 	@ $(QPERF_FLAMEGRAPH) --title "KernelX qperf $(QPERF_RUN_TIMESTAMP)" $(QPERF_FOLDED) > $(QPERF_SVG)
+	@ python3 $(QPERF_REPORT_SCRIPT) build $(QPERF_FOLDED) --output $(QPERF_REPORT_DIR) --force
 	@ echo "QPerf folded output: $(QPERF_FOLDED)"
 	@ echo "QPerf SVG output: $(QPERF_SVG)"
 	@ echo "QPerf console log: $(QPERF_CONSOLE_LOG)"
+	@ echo "QPerf LLM summary: $(QPERF_REPORT_SUMMARY)"
+	@ echo "QPerf query database: $(QPERF_REPORT_DB)"
 ifeq ($(SECOND_DISK_IMAGE),)
 	@ rm -f $(TMPDISK)
 endif
@@ -225,4 +238,4 @@ qemu-dts:
 	$(QEMU_SWAP_RUN) $(QEMU) $(QEMU_FLAGS) -machine dumpdtb=qemu-virt-$(ARCH)$(ARCH_BITS).dtb
 	@ dtc -I dtb -O dts qemu-virt-$(ARCH)$(ARCH_BITS).dtb -o qemu-virt-$(ARCH)$(ARCH_BITS).dts
 
-.PHONY: qemu-run qperf-plugin qperf-analyzer qperf-flamegraph qemu-run-qperf qemu-gdb qemu-dts
+.PHONY: qemu-run qperf-plugin qperf-analyzer qperf-flamegraph qperf-report qemu-run-qperf qemu-gdb qemu-dts

@@ -1,0 +1,4 @@
+interface:
+  display_name: "KernelX Local Test and Qperf"
+  short_description: "Run KernelX locally and analyze qperf reports"
+  default_prompt: "Use $kernelx-local-test-qperf to run the requested KernelX local workflow and analyze the resulting qperf report efficiently."

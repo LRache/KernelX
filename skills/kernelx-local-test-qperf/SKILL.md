@@ -1,6 +1,6 @@
 ---
 name: kernelx-local-test-qperf
-description: Use when working in the KernelX repository on local kernel configuration, common testsuit run configs, boot/QEMU parameters, or qperf performance profiling. Covers the repo-specific Kconfig to make to Cargo feature pipeline, using make importconfig for common run-test configs without preserving the previous .config, using RISC-V instead of unstable LoongArch for qperf, and interpreting qperf folded stacks versus sampling noise.
+description: Use when working in the KernelX repository on local kernel configuration, common testsuit run configs, boot/QEMU parameters, qperf performance profiling, or large qperf report analysis through summary.md and profile.sqlite. Covers the repo-specific Kconfig to Make to Cargo feature pipeline, common run-test configs, the RISC-V qperf workflow, compact report generation, bounded hotspot queries, and separation of real kernel hotspots from unresolved symbols or sampling noise.
 ---
 
 # KernelX Local Test And Qperf Workflow
@@ -178,7 +178,7 @@ Use the top-level wrapper:
 make run-qperf
 ```
 
-It rebuilds the kernel with `CONFIG_BACKTRACE=y CONFIG_DWARF=y`, builds `tools/qperf`, runs QEMU with the TCG plugin, runs the analyzer, and emits FlameGraph output.
+It rebuilds the kernel with `CONFIG_BACKTRACE=y CONFIG_DWARF=y`, builds `tools/qperf`, runs QEMU with the TCG plugin, runs the analyzer, emits FlameGraph output, and runs `scripts/qperf_report.py` to build an LLM-oriented report and SQLite query index.
 
 Default outputs:
 
@@ -186,6 +186,9 @@ Default outputs:
 - Folded stacks: `output/qperf/kernelx-qperf-<timestamp>.folded`
 - FlameGraph SVG: `output/qperf/kernelx-qperf-<timestamp>.svg`
 - Console log: `output/qperf/kernelx-qperf-<timestamp>.console.log`
+- LLM summary: `output/qperf/kernelx-qperf-<timestamp>.report/summary.md`
+- Query index: `output/qperf/kernelx-qperf-<timestamp>.report/profile.sqlite`
+- Bounded TSV/folded views and the lossless aggregate: other files under the matching `.report/` directory
 
 Useful overrides:
 
@@ -195,13 +198,34 @@ make run-qperf QEMU_ARGS='QPERF_FREQ=101'
 make run-qperf QEMU_ARGS='QPERF_FOLDED=output/qperf/my-run.folded QPERF_SVG=output/qperf/my-run.svg'
 ```
 
-Analyze qperf artifacts in this order:
+Read the active `QPERF_FREQ` from `scripts/qemu.mk` or the Make override. Keep it away from the 100Hz timer cadence when possible; `137` is a useful example. Treat a trap-heavy profile as suspicious even with a non-aligned frequency and verify it against raw samples before assigning blame.
 
-1. Start from the exact `.folded` file and count total samples/top stacks.
-2. Separate symbolized stacks from `??` or `main;??`.
-3. If the folded output is under-symbolized or trap-heavy, inspect raw `qperf.bin` and map top IPs before assigning blame.
-4. Check `QPERF_FREQ` in `scripts/qemu.mk` against the timer cadence. The default `QPERF_FREQ=99` is close to 100Hz and can phase-lock with a 10ms timer, making `kerneltrap.S` or `usertrap.S` look hotter than the real workload.
-5. Cross-check remaining hotspots against source paths, commonly ext4 metadata/checksum/inode-ref paths, syscall completion/timestamp paths, tmpfs/memtreefs paths, or workload startup/lookup/stat/fsync behavior.
+Analyze qperf artifacts progressively:
+
+1. Start with the exact timestamped `.report/summary.md`. Confirm its input SHA-256, total samples, unique stacks, top-stack coverage, CPU distribution, and unresolved-symbol percentage.
+2. If the matching report does not exist, generate it without running QEMU again:
+
+   ```bash
+   python3 scripts/qperf_report.py build output/qperf/<name>.folded
+   ```
+
+3. Use bounded SQLite queries before reading large folded or TSV files:
+
+   ```bash
+   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite stats
+   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite top --metric inclusive --limit 50
+   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite top --metric self --limit 50
+   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite stacks --contains <symbol> --limit 20
+   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite callers --symbol <symbol> --limit 20
+   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite callees --symbol <symbol> --limit 20
+   ```
+
+4. Treat `subsystems.tsv` as overlapping stack-presence classification. One sample may contribute to trap, memory, VFS, and ext4_native simultaneously, so subsystem percentages do not sum to 100%.
+5. Read `top-stacks.folded` when the bounded queries need exact stack evidence. Read `full-aggregated.folded` only when the top view is insufficient.
+6. If `summary.md` reports substantial `??` or `main;??` coverage, inspect raw `qperf.bin` and map top IPs with the matching ELF before assigning blame. The report database cannot recover instruction pointers already discarded by folded symbolization.
+7. Cross-check selected hotspots against source paths, commonly ext4 metadata/checksum/allocation paths, syscall completion/timestamp paths, tmpfs/memtreefs paths, MM fault/TLB paths, or workload startup/lookup/stat/fsync behavior.
+
+The SQLite database stores normalized symbol names, weighted unique stacks, ordered frames, sample-weighted caller/callee edges, CPU totals, subsystem totals, and profile metadata. It does not store raw IPs, sample chronology, source lines, or per-stack CPU identity. Do not load the database directly into model context; use the bounded query commands and consume their text output.
 
 Do not treat disabling semantic filesystem features such as metadata checksums as the default fix. Use those changes as benchmark controls unless the user explicitly asks for such a tradeoff.
 
