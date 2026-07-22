@@ -10,6 +10,7 @@ use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::config::{MAX_PATH_LEN, USER_RANDOM_ADDR_BASE};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Auxv, MapManagerWatcher, PinPageFrame, ReadChunk, WriteChunk};
+use crate::kernel::mm::swappable::{SwappableBackendOps, SwappableFrameGuard};
 use crate::kernel::mm::{PhysPageFrame, maparea};
 use crate::klib::{SleepLock, SpinLock};
 
@@ -462,13 +463,9 @@ impl AddrSpace {
         unsafe { self.pagetable.lock().mmap_raw(uaddr, guard.frame().get_page(), perm) };
     }
 
-    pub fn mmap_replace_swappable<B>(
-        &self,
-        uaddr: usize,
-        guard: &crate::kernel::mm::swappable::SwappableFrameGuard<'_, B>,
-        perm: MapPerm,
-    ) where
-        B: crate::kernel::mm::swappable::SwappableBackendOps,
+    pub fn mmap_replace_swappable<B>(&self, uaddr: usize, guard: &SwappableFrameGuard<'_, B>, perm: MapPerm)
+    where
+        B: SwappableBackendOps,
     {
         // SAFETY: The guard keeps the replacement frame resident for the
         // complete PTE update, and the Area retains the logical page owner.
