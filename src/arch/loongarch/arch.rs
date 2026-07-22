@@ -7,7 +7,7 @@ use elf::abi;
 use crate::arch::arch::{Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
 use crate::kernel::errno::SysResult;
-use crate::kernel::mm::MapPerm;
+use crate::kernel::mm::{self, MapPerm};
 use crate::klib::initcell::InitedCell;
 use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 
@@ -36,8 +36,8 @@ impl Arch {
 }
 
 impl ArchTrait for Arch {
-    fn init(memory_top: usize) {
-        DIRECT_MAP_END.init(memory_top);
+    fn init() {
+        DIRECT_MAP_END.init(Self::paddr_to_kaddr(mm::max_memory_end()));
         chosen::kconsole::register(Box::new(EarlyUart));
 
         trap::install_trap_entry();
@@ -135,7 +135,8 @@ impl ArchTrait for Arch {
         if len == 0 || kaddr & !PA_MASK != DMW1_MASK || kaddr < direct_map_start || end > *DIRECT_MAP_END {
             return None;
         }
-        Some(Self::kaddr_to_paddr(kaddr))
+        let paddr = Self::kaddr_to_paddr(kaddr);
+        mm::contains_memory_range(paddr, len).then_some(paddr)
     }
 
     fn map_kernel_addr(_kstart: usize, _pstart: usize, _size: usize, _perm: MapPerm) {}

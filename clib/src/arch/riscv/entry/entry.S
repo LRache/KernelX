@@ -30,7 +30,7 @@ _entry:
     ld      t0, %pcrel_lo(1b)(t0)
     
     sfence.vma
-    csrw satp, a3
+    csrw satp, a4
     sfence.vma
 
     /*

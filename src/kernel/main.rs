@@ -133,15 +133,17 @@ const LOGO: &str = r#"
 "#;
 
 #[unsafe(no_mangle)]
-extern "C" fn main(hartid: usize, heap_start: usize, memory_top: usize) {
+extern "C" fn main(hartid: usize, bootstrap_end: usize, mem_regions: *const mm::MemRegion, mem_region_count: usize) {
     let processor = Processor::new(hartid);
     arch::set_percpu_data(&processor as *const Processor as usize);
 
     if FIRST_BOOTED.swap(false, Ordering::SeqCst) {
-        kalloc::init(heap_start, config::KERNEL_HEAP_SIZE);
-        mm::init(heap_start + config::KERNEL_HEAP_SIZE, memory_top);
+        // SAFETY: The architecture entry code reserves one page for the memory
+        // region array and passes the exact number of initialized entries.
+        unsafe { mm::init(bootstrap_end, mem_regions, mem_region_count) };
+        kalloc::init();
         mm::swappable::init();
-        arch::init(memory_top);
+        arch::init();
         fs::init();
         driver::init();
         arch::scan_device();

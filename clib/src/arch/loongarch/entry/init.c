@@ -9,16 +9,21 @@
 #define LOONGARCH_FALLBACK_MEMORY_TOP UINT64_C(0x10000000)
 
 __init_text
-uintptr_t __la_fdt_memory_top(void) {
+size_t __la_load_mem_regions(struct kernelx_mem_region *regions) {
     const void *fdt = (const void *)(LOONGARCH_DMW1_MASK | LOONGARCH_FDT_BASE_PA);
-    uintptr_t memory_top = LOONGARCH_FALLBACK_MEMORY_TOP;
+    size_t count = 0;
 
     if (fdt_check_header(fdt) == 0) {
-        uintptr_t parsed_top = kernelx_fdt_memory_top(fdt);
-        if (parsed_top != 0) {
-            memory_top = parsed_top;
-        }
+        count = kernelx_fdt_memory_regions(fdt, regions, KERNELX_MEM_REGION_CAPACITY);
     }
 
-    return memory_top | LOONGARCH_DMW1_MASK;
+    if (count == 0) {
+        regions[0] = (struct kernelx_mem_region){
+            .start = 0,
+            .end = LOONGARCH_FALLBACK_MEMORY_TOP,
+        };
+        count = 1;
+    }
+
+    return count;
 }

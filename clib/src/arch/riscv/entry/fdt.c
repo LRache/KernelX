@@ -7,7 +7,7 @@
 void *__riscv_copied_fdt;
 
 __init_text
-uintptr_t __riscv_load_fdt(const void *fdt) {
+size_t __riscv_load_fdt(const void *fdt, struct kernelx_mem_region **regions) {
     uintptr_t *ktop = (uintptr_t *)__riscv_init_symbol_ktop();
     
     if (fdt_check_header(fdt) != 0) {
@@ -26,10 +26,16 @@ uintptr_t __riscv_load_fdt(const void *fdt) {
     *__riscv_init_symbol_copied_fdt() = (void *)(dst + *__riscv_init_symbol_kaddr_offset());
     *ktop += fdt_size;
 
-    uintptr_t memory_top = kernelx_fdt_memory_top(fdt);
-    if (memory_top == 0) {
+    *ktop = (*ktop + KERNELX_MEM_REGION_PAGE_SIZE - 1) &
+            ~(uintptr_t)(KERNELX_MEM_REGION_PAGE_SIZE - 1);
+    *regions = (struct kernelx_mem_region *)*ktop;
+    *ktop += KERNELX_MEM_REGION_PAGE_SIZE;
+
+    size_t region_count =
+        kernelx_fdt_memory_regions(fdt, *regions, KERNELX_MEM_REGION_CAPACITY);
+    if (region_count == 0) {
         __riscv_init_die("no memory node found in FDT\n");
     }
 
-    return memory_top;
+    return region_count;
 }

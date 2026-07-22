@@ -71,7 +71,7 @@ pub trait PageTableTrait {
 }
 
 pub trait ArchTrait {
-    fn init(memory_top: usize);
+    fn init();
     fn setup_all_cores(current_core: usize);
     fn clone_abi() -> CloneABI;
 

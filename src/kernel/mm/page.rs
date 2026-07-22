@@ -1,18 +1,31 @@
-use core::alloc::Layout;
+use buddy_slab_allocator::SlabPoolTrait;
+use buddy_slab_allocator::eii::{slab_pool_impl, virt_to_phys_impl};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::mutex::SpinMutex;
 
 use crate::arch;
+use crate::kernel::mm::MemRegion;
 use crate::klib::InitedCell;
 
+#[virt_to_phys_impl]
+fn buddy_slab_virt_to_phys(vaddr: usize) -> usize {
+    arch::kaddr_to_paddr(vaddr)
+}
+
+// buddy-slab-allocator requires this EII hook even when only BuddyAllocator is used.
+#[slab_pool_impl]
+fn buddy_slab_pool() -> &'static dyn SlabPoolTrait {
+    unreachable!("the KernelX page allocator does not use the slab allocator")
+}
+
 struct FrameAllocator {
-    allocator: buddy_system_allocator::FrameAllocator,
+    allocator: buddy_slab_allocator::BuddyAllocator<{ arch::PGSIZE }>,
     waterlevel_high: usize,
     waterlevel_low: usize,
 }
 
 impl FrameAllocator {
-    fn new(allocator: buddy_system_allocator::FrameAllocator, total: usize) -> Self {
+    fn new(allocator: buddy_slab_allocator::BuddyAllocator<{ arch::PGSIZE }>, total: usize) -> Self {
         Self {
             allocator,
             waterlevel_high: total * crate::kernel::config::KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH / 100,
@@ -21,8 +34,7 @@ impl FrameAllocator {
     }
 
     fn alloc(&mut self) -> Option<usize> {
-        let layout = Layout::from_size_align(arch::PGSIZE, arch::PGSIZE).unwrap();
-        let addr = self.allocator.alloc_aligned(layout)?;
+        let addr = self.allocator.alloc_pages(1, arch::PGSIZE).ok()?;
         ALLOCATED_PAGES.fetch_add(1, Ordering::Relaxed);
         Some(addr)
     }
@@ -32,15 +44,13 @@ impl FrameAllocator {
     }
 
     fn alloc_contiguous_aligned(&mut self, pages: usize, align: usize) -> Option<usize> {
-        let layout = Layout::from_size_align(pages * arch::PGSIZE, align).unwrap();
-        let addr = self.allocator.alloc_aligned(layout)?;
-        ALLOCATED_PAGES.fetch_add(pages, Ordering::Relaxed);
+        let addr = self.allocator.alloc_pages(pages, align.max(arch::PGSIZE)).ok()?;
+        ALLOCATED_PAGES.fetch_add(pages.next_power_of_two(), Ordering::Relaxed);
         Some(addr)
     }
 
     fn free(&mut self, addr: usize) {
-        let layout = Layout::from_size_align(arch::PGSIZE, arch::PGSIZE).unwrap();
-        self.allocator.dealloc_aligned(addr, layout);
+        self.allocator.dealloc_pages(addr, 1);
         ALLOCATED_PAGES.fetch_sub(1, Ordering::Relaxed);
     }
 
@@ -48,43 +58,54 @@ impl FrameAllocator {
         self.free_contiguous_aligned(addr, pages, arch::PGSIZE);
     }
 
-    fn free_contiguous_aligned(&mut self, addr: usize, pages: usize, align: usize) {
-        let layout = Layout::from_size_align(pages * arch::PGSIZE, align).unwrap();
-        self.allocator.dealloc_aligned(addr, layout);
-        ALLOCATED_PAGES.fetch_sub(pages, Ordering::Relaxed);
+    fn free_contiguous_aligned(&mut self, addr: usize, pages: usize, _align: usize) {
+        self.allocator.dealloc_pages(addr, pages);
+        ALLOCATED_PAGES.fetch_sub(pages.next_power_of_two(), Ordering::Relaxed);
     }
 }
 
 static FRAME_ALLOCATOR: InitedCell<SpinMutex<FrameAllocator>> = InitedCell::uninit();
 static TOTAL_PAGES: InitedCell<usize> = InitedCell::uninit();
 static ALLOCATED_PAGES: AtomicUsize = AtomicUsize::new(0);
-// static META_PTR_BASE: InitedCell<usize> = InitedCell::uninit();
-// static FRAME_BASE: InitedCell<usize> = InitedCell::uninit();
 
 #[unsafe(link_section = ".text.init")]
-pub fn init(frame_start: usize, frame_end: usize) {
-    // let zone_size = frame_end - frame_start;
-    // let ptr_zone_size = zone_size / (arch::PGSIZE + core::mem::size_of::<*const u8>()) * core::mem::size_of::<*const u8>();
-    // META_PTR_BASE.init(frame_start);
+pub fn init(bootstrap_end: usize, regions: &[MemRegion]) {
+    let mut allocator = buddy_slab_allocator::BuddyAllocator::new();
 
-    // let frame_base = (frame_start + ptr_zone_size + arch::PGSIZE - 1) & !(arch::PGSIZE - 1);
-    // FRAME_BASE.init(frame_base);
+    let bootstrap_end_paddr = arch::kaddr_to_paddr(bootstrap_end);
+    assert_eq!(bootstrap_end_paddr % arch::PGSIZE, 0);
+    let mut initialized = false;
 
-    let frame_base = frame_start;
-    let total = (frame_end - frame_start) / arch::PGSIZE;
+    for region in regions {
+        let start = region.start.max(bootstrap_end_paddr);
+        if start >= region.end {
+            continue;
+        }
 
-    let mut allocator = buddy_system_allocator::FrameAllocator::new();
-    allocator.add_frame(frame_base, frame_end);
+        let kaddr = arch::paddr_to_kaddr(start);
+        // SAFETY: The range is page-aligned RAM above all bootstrap allocations.
+        // Each normalized memory region is disjoint and is handed exclusively to
+        // the page allocator for the lifetime of the kernel.
+        let memory = unsafe { core::slice::from_raw_parts_mut(kaddr as *mut u8, region.end - start) };
+
+        // SAFETY: `memory` is a disjoint, writable RAM region that remains valid
+        // for the lifetime of the allocator.
+        unsafe {
+            if initialized {
+                allocator.add_region(memory)
+            } else {
+                allocator.init(memory)
+            }
+            .expect("Failed to register page allocator region");
+        }
+        initialized = true;
+    }
+
+    assert!(initialized, "No memory remains after bootstrap allocations");
+    let total = allocator.total_pages();
     TOTAL_PAGES.init(total);
-    ALLOCATED_PAGES.store(0, Ordering::Relaxed);
     FRAME_ALLOCATOR.init(SpinMutex::new(FrameAllocator::new(allocator, total)));
 }
-
-// fn page_meta_ref(page: usize) -> &'static mut *const () {
-//     let index = (page - *FRAME_BASE) / arch::PGSIZE;
-//     let meta_ptr_addr = *META_PTR_BASE + index * core::mem::size_of::<*const ()>();
-//     unsafe { &mut *(meta_ptr_addr as *mut *const ()) }
-// }
 
 pub fn total_pages() -> usize {
     *TOTAL_PAGES
@@ -117,11 +138,7 @@ pub fn need_to_shrink() -> bool {
 }
 
 pub fn alloc() -> usize {
-    if let Some(page) = FRAME_ALLOCATOR.lock().alloc() {
-        page
-    } else {
-        panic!("Out of physical memory");
-    }
+    FRAME_ALLOCATOR.lock().alloc().expect("Out of physical memory")
 }
 
 pub fn alloc_with_shrink() -> usize {
@@ -162,8 +179,11 @@ pub fn alloc_with_shrink_zero() -> usize {
 }
 
 pub fn alloc_contiguous(pages: usize) -> usize {
-    let page = FRAME_ALLOCATOR.lock().alloc_contiguous(pages).unwrap();
-    page
+    try_alloc_contiguous(pages).unwrap_or_else(|| allocation_failed("contiguous", pages))
+}
+
+pub fn try_alloc_contiguous(pages: usize) -> Option<usize> {
+    FRAME_ALLOCATOR.lock().alloc_contiguous(pages)
 }
 
 pub fn alloc_contiguous_zero(pages: usize) -> usize {

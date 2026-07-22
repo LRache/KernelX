@@ -47,7 +47,7 @@ use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 use core::time::Duration;
 
 arch_export! {
-    init(memory_top: usize) -> ();
+    init() -> ();
     setup_all_cores(current_core: usize) -> ();
     clone_abi() -> CloneABI;
 

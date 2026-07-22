@@ -9,7 +9,7 @@ use crate::arch::{self, Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
-use crate::kernel::mm::MapPerm;
+use crate::kernel::mm::{self, MapPerm};
 use crate::kernel::scheduler::current;
 use crate::klib::{InitedCell, SpinLock};
 use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
@@ -42,8 +42,8 @@ impl Arch {
     }
 }
 
-fn init_mmio_kaddr(memory_top: usize) {
-    let direct_map_end = align_up(memory_top, arch::PGSIZE);
+fn init_mmio_kaddr(max_memory_kaddr: usize) {
+    let direct_map_end = align_up(max_memory_kaddr, arch::PGSIZE);
     assert!(
         direct_map_end <= super::KERNEL_MMIO_START,
         "RISC-V direct map overlaps the dynamic kernel address space"
@@ -69,11 +69,11 @@ fn align_up(addr: usize, align: usize) -> usize {
 }
 
 impl ArchTrait for Arch {
-    fn init(memory_top: usize) {
+    fn init() {
         unsafe extern "C" {
             fn asm_kerneltrap_entry() -> !;
         }
-        init_mmio_kaddr(memory_top);
+        init_mmio_kaddr(Self::paddr_to_kaddr(mm::max_memory_end()));
         stvec::write(asm_kerneltrap_entry as *const () as usize);
         kernelpagetable::init();
         task::init_kernel_stack_allocator();
@@ -191,7 +191,8 @@ impl ArchTrait for Arch {
         if len == 0 || kaddr < direct_map_start || end > *DIRECT_MAP_END {
             return None;
         }
-        Some(Self::kaddr_to_paddr(kaddr))
+        let paddr = Self::kaddr_to_paddr(kaddr);
+        mm::contains_memory_range(paddr, len).then_some(paddr)
     }
 
     fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) {

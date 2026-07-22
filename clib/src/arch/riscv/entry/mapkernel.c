@@ -92,7 +92,8 @@ static inline void map_range(
 }
 
 __init_text
-uintptr_t __riscv_map_kaddr(uintptr_t kaddr_offset, uintptr_t memory_top) {
+uintptr_t __riscv_map_kaddr(uintptr_t kaddr_offset,
+                            const struct kernelx_mem_region *regions, size_t region_count) {
     uintptr_t *ktop = (uintptr_t *)__riscv_init_symbol_ktop();
     *ktop = (*ktop + PGSIZE - 1) & ~(PGSIZE - 1);
     
@@ -122,9 +123,17 @@ uintptr_t __riscv_map_kaddr(uintptr_t kaddr_offset, uintptr_t memory_top) {
     map_range(root, rodata_start + kaddr_offset, rodata_start, rodata_end - rodata_start, flags);
     
     uintptr_t data_start = (uintptr_t)__riscv_init_symbol_data_start();
-    memory_top = (memory_top + PGSIZE - 1) & ~(PGSIZE - 1);
     flags = PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D;
-    map_range(root, data_start + kaddr_offset, data_start, memory_top - data_start, flags);
+    for (size_t i = 0; i < region_count; i++) {
+        uintptr_t start = regions[i].start;
+        uintptr_t end = regions[i].end;
+        if (start < data_start) {
+            start = data_start;
+        }
+        if (start < end) {
+            map_range(root, start + kaddr_offset, start, end - start, flags);
+        }
+    }
 
     uintptr_t satp = (8ULL << 60) | get_ppn(root);
     return satp;
