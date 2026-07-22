@@ -23,6 +23,17 @@ __riscv_init_symbol_kaddr_offset:
     sub a0, a0, tp
     ret
     .size __riscv_init_symbol_kaddr_offset, . - __riscv_init_symbol_kaddr_offset
+
+    .global __riscv_init_symbol_init_result
+    .type __riscv_init_symbol_init_result, @function
+__riscv_init_symbol_init_result:
+    .option push
+    .option norelax
+1:  auipc   a0, %pcrel_hi(__riscv_init_result)
+    addi    a0, a0, %pcrel_lo(1b)
+    .option pop
+    ret
+    .size __riscv_init_symbol_init_result, . - __riscv_init_symbol_init_result
     
     .global __riscv_init_symbol_ktop
     .type __riscv_init_symbol_ktop, @function

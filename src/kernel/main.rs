@@ -134,16 +134,22 @@ const LOGO: &str = r#"
 
 #[unsafe(no_mangle)]
 extern "C" fn main(hartid: usize, bootstrap_end: usize, mem_regions: *const mm::MemRegion, mem_region_count: usize) {
-    let processor = Processor::new(hartid);
+    let mut processor = Processor::new(hartid);
     arch::set_percpu_data(&processor as *const Processor as usize);
 
-    if FIRST_BOOTED.swap(false, Ordering::SeqCst) {
+    let first_booted = FIRST_BOOTED.swap(false, Ordering::SeqCst);
+    if first_booted {
         // SAFETY: The architecture entry code reserves one page for the memory
         // region array and passes the exact number of initialized entries.
         unsafe { mm::init(bootstrap_end, mem_regions, mem_region_count) };
         kalloc::init();
         mm::swappable::init();
         arch::init();
+    }
+
+    arch::init_percpu();
+
+    if first_booted {
         fs::init();
         driver::init();
         arch::scan_device();
@@ -169,7 +175,6 @@ extern "C" fn main(hartid: usize, bootstrap_end: usize, mem_regions: *const mm::
 
         let inittask = kthread::spawn(kinit);
         debug_assert!(inittask.tid() == 0);
-
         arch::setup_all_cores(hartid);
     }
 
@@ -180,7 +185,9 @@ extern "C" fn main(hartid: usize, bootstrap_end: usize, mem_regions: *const mm::
     arch::enable_timer_interrupt();
     arch::enable_device_interrupt(hartid);
 
-    scheduler::run_tasks(hartid);
+    crate::kinfo!("Hart {} initialized successfully!", hartid);
+
+    scheduler::run_tasks(&mut processor);
 }
 
 pub fn deinit() {

@@ -7,8 +7,20 @@ uintptr_t __riscv_ktop;
 
 uintptr_t __riscv_kaddr_offset;
 
+struct riscv_init_result {
+    uintptr_t hartid;
+    uintptr_t bootstrap_end;
+    uintptr_t mem_regions;
+    uintptr_t mem_region_count;
+    uintptr_t satp;
+};
+
+__init_data
+struct riscv_init_result __riscv_init_result;
+
 __init_text
-void __riscv_init(uintptr_t hartid, const void *fdt, uintptr_t kaddr_offset)  {
+struct riscv_init_result *__riscv_init(uintptr_t hartid, const void *fdt,
+                                       uintptr_t kaddr_offset) {
     // Clear BSS
     // Assume BSS in aligned to 4K
     uintptr_t* bss_start = (uintptr_t *)__riscv_init_symbol_bss_start();
@@ -27,25 +39,13 @@ void __riscv_init(uintptr_t hartid, const void *fdt, uintptr_t kaddr_offset)  {
     void *ktop = *__riscv_init_symbol_ktop() + kaddr_offset;
     void *mem_regions_kaddr = (void *)((uintptr_t)mem_regions + kaddr_offset);
 
-    /*
-        Return:
-        a0: hartid
-        a1: bootstrap allocation end
-        a2: memory region array
-        a3: memory region count
-        a4: satp
-    */
-    asm volatile (
-        "mv a0, %0\n"
-        "mv a1, %1\n"
-        "mv a2, %2\n"
-        "mv a3, %3\n"
-        "mv a4, %4\n"
-        :
-        : "r"(hartid), "r"(ktop), "r"(mem_regions_kaddr), "r"(mem_region_count),
-          "r"(satp)
-        : "a0", "a1", "a2", "a3", "a4"
-    );
+    struct riscv_init_result *result = __riscv_init_symbol_init_result();
+    result->hartid = hartid;
+    result->bootstrap_end = (uintptr_t)ktop;
+    result->mem_regions = (uintptr_t)mem_regions_kaddr;
+    result->mem_region_count = mem_region_count;
+    result->satp = satp;
+    return result;
 }
 
 __init_text

@@ -87,8 +87,8 @@ impl VCpuState {
             asm_kvm_guest_trap_return(&mut self.context);
         };
 
-        Hstatus::read().set_spv(HstatusSpv::Hypervisor).write();
         traphandle::set_stvec_to_kerneltrap_handler();
+        Hstatus::read().set_spv(HstatusSpv::Hypervisor).write();
         self.vsatp = vsatp::read();
         self.hie = Hie::read();
         self.hvip = Hvip::read();

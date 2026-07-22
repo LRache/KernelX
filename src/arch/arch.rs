@@ -72,6 +72,7 @@ pub trait PageTableTrait {
 
 pub trait ArchTrait {
     fn init();
+    fn init_percpu();
     fn setup_all_cores(current_core: usize);
     fn clone_abi() -> CloneABI;
 

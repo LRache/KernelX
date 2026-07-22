@@ -2,7 +2,9 @@ use core::fmt::Write;
 
 use crate::arch;
 use crate::driver::chosen::{kconsole, kdebug_console};
-use crate::klib::dmesg;
+use crate::klib::{SpinLock, dmesg};
+
+static KLOG_LOCK: SpinLock<()> = SpinLock::new((), "KLOG_LOCK");
 
 pub struct Writer;
 impl Write for Writer {
@@ -23,6 +25,7 @@ impl Write for KlogWriter {
 }
 
 pub fn _klog_print(args: core::fmt::Arguments) {
+    let _guard = KLOG_LOCK.lock();
     let mut writer = KlogWriter;
     write_uptime_prefix(&mut writer);
     writer.write_fmt(args).unwrap();

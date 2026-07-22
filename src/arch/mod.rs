@@ -48,6 +48,7 @@ use core::time::Duration;
 
 arch_export! {
     init() -> ();
+    init_percpu() -> ();
     setup_all_cores(current_core: usize) -> ();
     clone_abi() -> CloneABI;
 

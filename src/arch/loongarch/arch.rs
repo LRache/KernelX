@@ -40,6 +40,10 @@ impl ArchTrait for Arch {
         DIRECT_MAP_END.init(Self::paddr_to_kaddr(mm::max_memory_end()));
         chosen::kconsole::register(Box::new(EarlyUart));
 
+        STABLE_COUNTER_FREQ_HZ.init(csr::stable_counter_freq());
+    }
+
+    fn init_percpu() {
         trap::install_trap_entry();
 
         csr::write::<{ csr::num::STLBPS }>(csr::stlbps::PS_4K);
@@ -49,8 +53,6 @@ impl ArchTrait for Arch {
 
         const TLBREHI_PS_SHIFT: usize = 24;
         csr::write::<{ csr::num::TLBREHI }>(12usize << TLBREHI_PS_SHIFT);
-
-        STABLE_COUNTER_FREQ_HZ.init(csr::stable_counter_freq());
     }
 
     fn setup_all_cores(_current_core: usize) {}

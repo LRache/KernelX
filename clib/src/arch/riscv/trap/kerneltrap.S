@@ -11,9 +11,7 @@
 
 .align 3
 asm_kerneltrap_entry:
-    csrw sscratch, sp
-
-    la sp, __ktrap_temp_stack_end
+    csrrw sp, sscratch, sp
     
     addi sp, sp, -32*__riscv_xlen/8
     
@@ -83,7 +81,7 @@ asm_kerneltrap_entry:
 
     addi sp, sp, 32*__riscv_xlen/8
 
-    csrr sp, sscratch
+    csrrw sp, sscratch, sp
 
     sret
 

@@ -41,6 +41,15 @@ pub mod stval {
 }
 
 pub mod sscratch {
+    pub fn read() -> usize {
+        let value: usize;
+        // SAFETY: Reading `sscratch` has no memory-safety side effects.
+        unsafe {
+            core::arch::asm!("csrr {}, sscratch", out(reg) value);
+        }
+        value
+    }
+
     pub fn write(value: usize) {
         unsafe {
             core::arch::asm!("csrw sscratch, {}", in(reg) value);

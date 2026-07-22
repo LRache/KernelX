@@ -16,6 +16,7 @@ void **__riscv_init_symbol_ktop();
 uintptr_t *__riscv_init_symbol_kpgtable_root();
 void **__riscv_init_symbol_copied_fdt();
 uintptr_t *__riscv_init_symbol_kaddr_offset();
+void *__riscv_init_symbol_init_result();
 
 void *__riscv_init_symbol_kernel_end();
 void *__riscv_init_symbol_init_start();

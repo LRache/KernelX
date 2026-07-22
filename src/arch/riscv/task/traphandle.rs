@@ -84,6 +84,9 @@ pub fn set_stvec_to_kerneltrap_handler() {
     unsafe extern "C" {
         fn asm_kerneltrap_entry() -> !;
     }
+    let stack_top = current::processor().kernel_trap_stack_top();
+    assert_ne!(stack_top, 0, "Kernel trap stack is not initialized");
+    sscratch::write(stack_top);
     stvec::write(asm_kerneltrap_entry as *const () as usize);
 }
 
@@ -98,6 +101,8 @@ fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
 }
 
 pub fn usertrap_handler() -> ! {
+    set_stvec_to_kerneltrap_handler();
+
     debug_assert!(
         Sstatus::read().sie() == false,
         "Interrupts should be disabled when handling user traps"
@@ -106,9 +111,6 @@ pub fn usertrap_handler() -> ! {
         Sstatus::read().spp() == SstatusSPP::User,
         "User trap should come from user mode"
     );
-
-    set_stvec_to_kerneltrap_handler();
-
     let user_context = current::tcb().user_context();
     user_context.set_user_entry(sepc::read());
 

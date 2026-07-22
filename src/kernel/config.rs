@@ -22,6 +22,7 @@ pub const KTASK_KSTACK_PAGE_COUNT: usize = 32; // Total slot pages; page 0 is th
 pub const KERNEL_HEAP_POOL_SIZE: usize = 32 * 1024 * 1024; // Default kernel heap pool size (32 MiB)
 pub const KERNEL_HEAP_MAX_PERCENT: usize = 30; // Maximum share of managed pages used by heap pools
 pub const SCHEDULER_KSTACK_PAGE_COUNT: usize = 4; // Total slot pages; page 0 is the guard page
+pub const KERNEL_TRAP_STACK_PAGE_COUNT: usize = 8;
 
 pub const KERNEL_PAGE_SHRINK_WATERLEVEL_LOW: usize = 70; // LOW Threshold% for kernel page shrinker
 pub const KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH: usize = 85; // HIGH Threshold% for kernel page shrinker

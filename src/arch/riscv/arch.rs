@@ -15,7 +15,7 @@ use crate::klib::{InitedCell, SpinLock};
 use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 use crate::{driver, kinfo, kwarn};
 
-use super::csr::{SIE, Sstatus, stvec};
+use super::csr::{SIE, Sstatus, sscratch};
 use super::pagetable::kernelpagetable;
 use super::sbi_driver::SBIKConsole;
 use super::task::context::KernelContext;
@@ -70,11 +70,7 @@ fn align_up(addr: usize, align: usize) -> usize {
 
 impl ArchTrait for Arch {
     fn init() {
-        unsafe extern "C" {
-            fn asm_kerneltrap_entry() -> !;
-        }
         init_mmio_kaddr(Self::paddr_to_kaddr(mm::max_memory_end()));
-        stvec::write(asm_kerneltrap_entry as *const () as usize);
         kernelpagetable::init();
         task::init_kernel_stack_allocator();
 
@@ -84,6 +80,18 @@ impl ArchTrait for Arch {
         driver::register_matched_driver(Arc::new(SBIConsoleDriver));
     }
 
+    fn init_percpu() {
+        let mut stack_top = sscratch::read();
+        if stack_top == 0 {
+            unsafe extern "C" {
+                static __ktrap_temp_stack_end: u8;
+            }
+            stack_top = core::ptr::addr_of!(__ktrap_temp_stack_end) as usize;
+        }
+        current::processor().set_kernel_trap_stack_top(stack_top);
+        task::traphandle::set_stvec_to_kerneltrap_handler();
+    }
+
     fn setup_all_cores(current_core: usize) {
         unsafe extern "C" {
             static __riscv_others_entry: u8;
@@ -91,19 +99,38 @@ impl ArchTrait for Arch {
 
         kinfo!("Starting other harts...");
 
+        let interrupt_stack_base = mm::page::alloc_contiguous_zero(config::KERNEL_TRAP_STACK_PAGE_COUNT);
+        let interrupt_stack_top = interrupt_stack_base + config::KERNEL_TRAP_STACK_PAGE_COUNT * arch::PGSIZE;
+        // This allocation is owned by the boot hart for the kernel lifetime.
+        current::processor().set_kernel_trap_stack_top(interrupt_stack_top);
+        sscratch::write(interrupt_stack_top);
+
         for hartid in 0..core_count() {
             if hartid != current_core {
+                let interrupt_stack_base = mm::page::alloc_contiguous_zero(config::KERNEL_TRAP_STACK_PAGE_COUNT);
+                let interrupt_stack_top = interrupt_stack_base + config::KERNEL_TRAP_STACK_PAGE_COUNT * arch::PGSIZE;
                 let stack = task::KernelStack::<{ config::SCHEDULER_KSTACK_PAGE_COUNT - 1 }>::new();
+                let stack_top = stack.get_top();
+                // SAFETY: The bootstrap stack is exclusively owned here, and its top
+                // 16 bytes are reserved for the secondary-hart handoff before `main`.
+                unsafe {
+                    core::ptr::write_volatile(
+                        (stack_top - core::mem::size_of::<usize>()) as *mut usize,
+                        interrupt_stack_top,
+                    );
+                }
                 if let Err(error) = sbi_driver::hart_start(
                     hartid,
-                    core::ptr::addr_of!(__riscv_others_entry) as usize,
-                    stack.get_top(),
+                    Self::kaddr_to_paddr(core::ptr::addr_of!(__riscv_others_entry) as usize),
+                    stack_top,
                 ) {
+                    mm::page::free_contiguous(interrupt_stack_base, config::KERNEL_TRAP_STACK_PAGE_COUNT);
                     kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
                 } else {
                     kinfo!("Hart {} started successfully", hartid);
-                    // The secondary hart uses this bootstrap stack for the
-                    // lifetime of the kernel, so its mapping must remain live.
+                    // The secondary hart uses both stacks for the lifetime of
+                    // the kernel, so the bootstrap stack mapping remains live
+                    // and the raw interrupt-stack allocation is not freed.
                     core::mem::forget(stack);
                 }
             }

@@ -16,6 +16,7 @@ struct HeldSpinLock {
 
 pub struct Processor {
     hart_id: usize,
+    kernel_trap_stack_top: usize,
     task: Option<NonNull<Arc<dyn Task>>>,
     idle_kernel_context: arch::KernelContext,
 
@@ -27,6 +28,7 @@ impl<'a> Processor {
     pub fn new(hart_id: usize) -> Self {
         Self {
             hart_id,
+            kernel_trap_stack_top: 0,
             task: None,
             idle_kernel_context: arch::KernelContext::new_idle(),
             #[cfg(feature = "spinlock-check")]
@@ -37,6 +39,14 @@ impl<'a> Processor {
 
     pub fn hart_id(&self) -> usize {
         self.hart_id
+    }
+
+    pub fn kernel_trap_stack_top(&self) -> usize {
+        self.kernel_trap_stack_top
+    }
+
+    pub fn set_kernel_trap_stack_top(&mut self, stack_top: usize) {
+        self.kernel_trap_stack_top = stack_top;
     }
 
     pub fn has_task(&self) -> bool {
