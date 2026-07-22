@@ -6,6 +6,7 @@ mod filemap;
 mod manager;
 mod nofilemap;
 pub mod shm;
+mod slots;
 mod userbrk;
 mod userstack;
 mod watcher;

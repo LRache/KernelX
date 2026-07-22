@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::PageTable;
@@ -10,10 +9,12 @@ use crate::kernel::mm::swappable::AccessDirty;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
 
+use super::super::slots::AreaPageSlots;
+
 pub struct PrivateAnonymousArea {
     ubase: usize,
     perm: MapPerm,
-    frames: Vec<FrameState>,
+    frames: AreaPageSlots<FrameState>,
 
     /* For swappable page */
     family_registration: AnonMapFamilyRegistration,
@@ -25,12 +26,10 @@ impl PrivateAnonymousArea {
         // Anonymous areas should be page-aligned
         debug_assert!(ubase % arch::PGSIZE == 0, "ubase should be page-aligned");
 
-        let frames = Vec::from_iter((0..page_count).map(|_| FrameState::Unallocated));
-
         Self {
             ubase,
             perm,
-            frames,
+            frames: AreaPageSlots::new(page_count),
             family_registration: AnonMapFamilyRegistration::new_root(),
             page_base: 0,
         }
@@ -38,7 +37,7 @@ impl PrivateAnonymousArea {
 
     fn allocate_page(&mut self, frame_index: usize, addrspace: &AddrSpace, dirty: bool) -> usize {
         debug_assert!(frame_index < self.frames.len());
-        debug_assert!(self.frames[frame_index].is_unallocated());
+        debug_assert!(self.frames.get(frame_index).is_none());
 
         let page_index = self
             .page_base
@@ -48,7 +47,7 @@ impl PrivateAnonymousArea {
             self.family_registration.page_backend(page_index),
             PhysPageFrame::alloc_with_shrink_zeroed(),
         );
-        self.frames[frame_index] = FrameState::Allocated(page.clone());
+        self.frames.insert(frame_index, FrameState::Allocated(page.clone()));
 
         let mut guard = page
             .ensure_page()
@@ -68,11 +67,11 @@ impl PrivateAnonymousArea {
         map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Option<()> {
         debug_assert!(frame_index < self.frames.len());
-        debug_assert!(self.frames[frame_index].is_cow());
+        debug_assert!(self.frames.get(frame_index).is_some_and(FrameState::is_cow));
 
-        let old_page = match &self.frames[frame_index] {
+        let old_page = match self.frames.get(frame_index)? {
             FrameState::Cow(page) => page.clone(),
-            FrameState::Unallocated | FrameState::Allocated(_) => unreachable!(),
+            FrameState::Allocated(_) => unreachable!(),
         };
         let uaddr = self.ubase + frame_index * arch::PGSIZE;
         map_change_notifier.before_map_change(MapChange {
@@ -87,7 +86,7 @@ impl PrivateAnonymousArea {
             addrspace.mmap_replace_swappable_if_maps(uaddr, &guard, &guard, self.perm)?;
             guard.mark_dirty();
             drop(guard);
-            self.frames[frame_index] = FrameState::Allocated(old_page);
+            self.frames.insert(frame_index, FrameState::Allocated(old_page));
             return Some(());
         }
 
@@ -123,7 +122,7 @@ impl PrivateAnonymousArea {
         if old_dirty {
             old_guard.mark_dirty();
         }
-        self.frames[frame_index] = FrameState::Allocated(new_page.clone());
+        self.frames.insert(frame_index, FrameState::Allocated(new_page.clone()));
 
         old_guard.release_mapping_ref();
 
@@ -159,12 +158,11 @@ impl Area for PrivateAnonymousArea {
         if page_index >= self.frames.len() {
             return None;
         }
-        if self.frames[page_index].is_unallocated() {
+        if self.frames.get(page_index).is_none() {
             self.allocate_page(page_index, addrspace, false);
         }
-        let page = match &self.frames[page_index] {
+        let page = match self.frames.get(page_index)? {
             FrameState::Allocated(page) | FrameState::Cow(page) => page.clone(),
-            FrameState::Unallocated => unreachable!(),
         };
         let pin = page.pin_page(false).ok()?;
         Some(PinPageFrame::swappable(pin))
@@ -188,16 +186,14 @@ impl Area for PrivateAnonymousArea {
             return None;
         }
 
-        if self.frames[page_index].is_unallocated() {
+        if self.frames.get(page_index).is_none() {
             self.allocate_page(page_index, addrspace, true);
-        } else {
-            if self.frames[page_index].is_cow() {
-                self.copy_on_write_page(page_index, addrspace, map_change_notifier)?;
-            }
+        } else if self.frames.get(page_index).is_some_and(FrameState::is_cow) {
+            self.copy_on_write_page(page_index, addrspace, map_change_notifier)?;
         }
-        let page = match &self.frames[page_index] {
+        let page = match self.frames.get(page_index)? {
             FrameState::Allocated(page) => page.clone(),
-            FrameState::Cow(_) | FrameState::Unallocated => unreachable!(),
+            FrameState::Cow(_) => unreachable!(),
         };
         let pin = page.pin_page(true).ok()?;
         Some(PinPageFrame::swappable(pin))
@@ -223,11 +219,10 @@ impl Area for PrivateAnonymousArea {
         addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
-        let mut child_frames = Vec::with_capacity(self.frames.len());
+        let mut child_frames = AreaPageSlots::new(self.frames.len());
 
-        for (frame_index, state) in self.frames.iter_mut().enumerate() {
+        for (frame_index, state) in self.frames.iter_mut() {
             let child_state = match state {
-                FrameState::Unallocated => FrameState::Unallocated,
                 FrameState::Allocated(page) => {
                     let page = page.clone();
                     page.add_mapping_ref();
@@ -252,7 +247,7 @@ impl Area for PrivateAnonymousArea {
                     FrameState::Cow(page.clone())
                 }
             };
-            child_frames.push(child_state);
+            child_frames.insert(frame_index, child_state);
         }
 
         Box::new(Self {
@@ -281,15 +276,12 @@ impl Area for PrivateAnonymousArea {
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index < self.frames.len() {
-            match &self.frames[page_index] {
-                FrameState::Unallocated => {
-                    self.allocate_page(page_index, addrspace, false);
-                }
-                FrameState::Allocated(frame) => {
+            match self.frames.get(page_index) {
+                Some(FrameState::Allocated(frame)) => {
                     self.map_swappable_page(page_index, frame, addrspace, self.perm)
                         .ok_or(MemoryFaultSignal::Bus)?;
                 }
-                FrameState::Cow(frame) => {
+                Some(FrameState::Cow(frame)) => {
                     if access_type != MemAccessType::Write {
                         self.map_swappable_page(page_index, frame, addrspace, self.perm - MapPerm::W)
                             .ok_or(MemoryFaultSignal::Bus)?;
@@ -297,6 +289,9 @@ impl Area for PrivateAnonymousArea {
                         self.copy_on_write_page(page_index, addrspace, map_change_notifier)
                             .ok_or(MemoryFaultSignal::Bus)?;
                     }
+                }
+                None => {
+                    self.allocate_page(page_index, addrspace, false);
                 }
             }
             Ok(())
@@ -369,10 +364,9 @@ impl Area for PrivateAnonymousArea {
 
         self.perm = perm;
 
-        for (frame_index, state) in self.frames.iter().enumerate() {
+        for (frame_index, state) in self.frames.iter() {
             let page = match state {
                 FrameState::Allocated(page) | FrameState::Cow(page) => page,
-                FrameState::Unallocated => continue,
             };
             let uaddr = self.ubase + frame_index * arch::PGSIZE;
             let frame_perm = if matches!(state, FrameState::Cow(_)) {
@@ -395,10 +389,9 @@ impl Area for PrivateAnonymousArea {
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         self.family_registration.with_tlb_invalidation_batch(|token| {
             let mut tlb_changed = false;
-            for (frame_index, state) in self.frames.iter().enumerate() {
+            for (frame_index, state) in self.frames.iter() {
                 let page = match state {
                     FrameState::Allocated(page) | FrameState::Cow(page) => page,
-                    FrameState::Unallocated => continue,
                 };
                 let uaddr = self.ubase + frame_index * arch::PGSIZE;
                 page.begin_tlb_invalidation(token, |frame| {
@@ -412,21 +405,20 @@ impl Area for PrivateAnonymousArea {
             if tlb_changed {
                 arch::flush_tlb_all();
             }
-            for state in &self.frames {
-                if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
-                    assert!(page.finish_tlb_invalidation(token));
-                }
+            for (_, state) in self.frames.iter() {
+                let page = match state {
+                    FrameState::Allocated(page) | FrameState::Cow(page) => page,
+                };
+                assert!(page.finish_tlb_invalidation(token));
             }
         });
 
-        for state in &mut self.frames {
-            let state = core::mem::replace(state, FrameState::Unallocated);
+        self.frames.clear_with(|_, state| {
             let page = match state {
                 FrameState::Allocated(page) | FrameState::Cow(page) => page,
-                FrameState::Unallocated => continue,
             };
             page.release_mapping_ref();
-        }
+        });
         self.family_registration.unregister();
     }
 
@@ -437,12 +429,12 @@ impl Area for PrivateAnonymousArea {
 
 impl Drop for PrivateAnonymousArea {
     fn drop(&mut self) {
-        for state in &mut self.frames {
-            let state = core::mem::replace(state, FrameState::Unallocated);
-            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
-                page.release_mapping_ref();
-            }
-        }
+        self.frames.clear_with(|_, state| {
+            let page = match state {
+                FrameState::Allocated(page) | FrameState::Cow(page) => page,
+            };
+            page.release_mapping_ref();
+        });
         self.family_registration.unregister();
     }
 }

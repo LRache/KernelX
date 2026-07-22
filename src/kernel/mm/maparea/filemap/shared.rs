@@ -1,7 +1,6 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
@@ -14,10 +13,7 @@ use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::kernel::uapi::FileSealFlags;
 use crate::klib::SpinLock;
 
-enum FrameState {
-    Unallocated,
-    Loaded(SharedFilePage),
-}
+use super::super::slots::AreaPageSlots;
 
 pub struct SharedFileMapArea {
     /* Inode basic */
@@ -26,7 +22,7 @@ pub struct SharedFileMapArea {
 
     ubase: usize,
     offset: usize,
-    states: Vec<FrameState>,
+    states: AreaPageSlots<SharedFilePage>,
     perm: MapPerm,
     writable: bool,
 
@@ -56,15 +52,13 @@ impl SharedFileMapArea {
         }
 
         let file_map_registration = inode.file_mapping().map(|mapping| mapping.registration());
-        let mut states = Vec::with_capacity(page_count);
-        states.resize_with(page_count, || FrameState::Unallocated);
 
         Self {
             inode,
             file_map_registration,
             ubase,
             offset,
-            states,
+            states: AreaPageSlots::new(page_count),
             perm,
             writable,
             inode_index: index,
@@ -88,25 +82,22 @@ impl SharedFileMapArea {
             return Ok(None);
         }
 
-        let needs_load = match &self.states[page_index] {
-            FrameState::Unallocated => true,
-            FrameState::Loaded(SharedFilePage::Stable(_)) => false,
-            FrameState::Loaded(SharedFilePage::Swappable(page)) => page.is_invalid(),
+        let needs_load = match self.states.get(page_index) {
+            None => true,
+            Some(SharedFilePage::Stable(_)) => false,
+            Some(SharedFilePage::Swappable(page)) => page.is_invalid(),
         };
         if needs_load {
             // Replacing an invalid swappable page drops its old mapping pin.
-            self.states[page_index] = FrameState::Unallocated;
+            self.states.remove(page_index);
             let file_page_index = self.file_page_index(page_index).ok_or(Errno::EFBIG)?;
             let Some(page) = self.inode.acquire_mmap_shared_page(file_page_index)? else {
                 return Ok(None);
             };
-            self.states[page_index] = FrameState::Loaded(page);
+            self.states.insert(page_index, page);
         }
 
-        let FrameState::Loaded(page) = &self.states[page_index] else {
-            unreachable!();
-        };
-        Ok(Some(page))
+        Ok(self.states.get(page_index))
     }
 
     fn translate(&mut self, uaddr: usize, write: bool) -> Option<PinPageFrame> {
@@ -181,10 +172,7 @@ impl Area for SharedFileMapArea {
         }
         self.perm = perm;
 
-        for (page_index, state) in self.states.iter().enumerate() {
-            let FrameState::Loaded(page) = state else {
-                continue;
-            };
+        for (page_index, page) in self.states.iter() {
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match page {
                 SharedFilePage::Stable(frame) => {
@@ -225,8 +213,6 @@ impl Area for SharedFileMapArea {
         if let Some(seal_ops) = self.inode.as_seal_ops() {
             seal_ops.begin_shared_mmap(is_writable);
         }
-        let mut states = Vec::with_capacity(self.states.len());
-        states.resize_with(self.states.len(), || FrameState::Unallocated);
         let new_area = SharedFileMapArea {
             inode: self.inode.clone(),
             file_map_registration: self
@@ -235,7 +221,7 @@ impl Area for SharedFileMapArea {
                 .map(|registration| registration.fork(addrspace, self.ubase, self.file_page_base(), self.states.len())),
             ubase: self.ubase,
             offset: self.offset,
-            states,
+            states: AreaPageSlots::new(self.states.len()),
             perm: self.perm,
             writable: self.writable,
             inode_index: self.inode_index,
@@ -343,10 +329,7 @@ impl Area for SharedFileMapArea {
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         let invalidate = |token: Option<&TlbInvalidationToken>| {
             let mut tlb_changed = false;
-            for (page_index, state) in self.states.iter().enumerate() {
-                let FrameState::Loaded(page) = state else {
-                    continue;
-                };
+            for (page_index, page) in self.states.iter() {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
                 match page {
                     SharedFilePage::Stable(frame) => {
@@ -367,8 +350,8 @@ impl Area for SharedFileMapArea {
             if tlb_changed {
                 arch::flush_tlb_all();
             }
-            for state in &self.states {
-                if let FrameState::Loaded(SharedFilePage::Swappable(page)) = state {
+            for (_, state) in self.states.iter() {
+                if let SharedFilePage::Swappable(page) = state {
                     let token = token.expect("swappable file page must have a file mapping registration");
                     assert!(page.finish_tlb_invalidation(token));
                 }
@@ -380,9 +363,7 @@ impl Area for SharedFileMapArea {
             invalidate(None);
         }
 
-        for state in &mut self.states {
-            *state = FrameState::Unallocated;
-        }
+        self.states.clear_with(|_, _| {});
 
         if let Some(registration) = &mut self.file_map_registration {
             registration.unregister();
@@ -406,9 +387,7 @@ impl Area for SharedFileMapArea {
 
 impl Drop for SharedFileMapArea {
     fn drop(&mut self) {
-        for state in &mut self.states {
-            *state = FrameState::Unallocated;
-        }
+        self.states.clear_with(|_, _| {});
         if let Some(registration) = &mut self.file_map_registration {
             registration.unregister();
         }

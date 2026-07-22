@@ -365,9 +365,10 @@ impl Drop for UserStack {
     fn drop(&mut self) {
         let frames = core::mem::take(&mut self.frames);
         for (_, state) in frames {
-            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
-                page.release_mapping_ref();
-            }
+            let page = match state {
+                FrameState::Allocated(page) | FrameState::Cow(page) => page,
+            };
+            page.release_mapping_ref();
         }
     }
 }
@@ -392,7 +393,6 @@ impl Area for UserStack {
         }
         let page = match self.frames.get(&page_index)? {
             FrameState::Allocated(page) | FrameState::Cow(page) => page.clone(),
-            FrameState::Unallocated => unreachable!(),
         };
         let pin = page.pin_page(false).ok()?;
         Some(PinPageFrame::swappable(pin))
@@ -420,7 +420,7 @@ impl Area for UserStack {
         }
         let page = match self.frames.get(&page_index)? {
             FrameState::Allocated(page) => page.clone(),
-            FrameState::Cow(_) | FrameState::Unallocated => unreachable!(),
+            FrameState::Cow(_) => unreachable!(),
         };
         let pin = page.pin_page(true).ok()?;
         Some(PinPageFrame::swappable(pin))
@@ -447,28 +447,29 @@ impl Area for UserStack {
     ) -> Box<dyn Area> {
         let mut new_frames = BTreeMap::new();
         for (&index, state) in &self.frames {
-            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
-                page.add_mapping_ref();
-                new_frames.insert(index, FrameState::Cow(page.clone()));
-            }
+            let page = match state {
+                FrameState::Allocated(page) | FrameState::Cow(page) => page,
+            };
+            page.add_mapping_ref();
+            new_frames.insert(index, FrameState::Cow(page.clone()));
         }
 
         for (&index, state) in &mut self.frames {
-            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
-                let page = page.clone();
-                let uaddr = config::USER_STACK_TOP - (index + 1) * arch::PGSIZE;
-                page.with_resident_and_record_ad(false, |frame| {
-                    let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad_no_flush(
-                        uaddr,
-                        frame.get_page(),
-                        MapPerm::R | MapPerm::U,
-                    );
-                    *tlb_changed |= access_dirty.is_some();
-                    let (accessed, dirty) = access_dirty.unwrap_or((false, false));
-                    ((), AccessDirty { accessed, dirty })
-                });
-                *state = FrameState::Cow(page);
-            }
+            let page = match state {
+                FrameState::Allocated(page) | FrameState::Cow(page) => page.clone(),
+            };
+            let uaddr = config::USER_STACK_TOP - (index + 1) * arch::PGSIZE;
+            page.with_resident_and_record_ad(false, |frame| {
+                let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad_no_flush(
+                    uaddr,
+                    frame.get_page(),
+                    MapPerm::R | MapPerm::U,
+                );
+                *tlb_changed |= access_dirty.is_some();
+                let (accessed, dirty) = access_dirty.unwrap_or((false, false));
+                ((), AccessDirty { accessed, dirty })
+            });
+            *state = FrameState::Cow(page);
         }
 
         Box::new(UserStack {
@@ -512,7 +513,6 @@ impl Area for UserStack {
                     self.map_cow_page(page_index, frame, addrspace)
                         .ok_or(MemoryFaultSignal::Bus)?;
                 }
-                Some(FrameState::Unallocated) => unreachable!(),
                 None => {
                     self.allocate_page(page_index, addrspace);
                 }
@@ -587,16 +587,17 @@ impl Area for UserStack {
         self.family_registration.with_tlb_invalidation_batch(|token| {
             let mut tlb_changed = false;
             for (&page_index, state) in &frames {
-                if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
-                    let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
-                    page.begin_tlb_invalidation(token, |frame| {
-                        let access_dirty = pagetable
-                            .lock()
-                            .munmap_with_check_and_ad_no_flush(uaddr, frame.get_page());
-                        tlb_changed |= access_dirty.is_some();
-                        access_dirty.map(AccessDirty::from)
-                    });
-                }
+                let page = match state {
+                    FrameState::Allocated(page) | FrameState::Cow(page) => page,
+                };
+                let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
+                page.begin_tlb_invalidation(token, |frame| {
+                    let access_dirty = pagetable
+                        .lock()
+                        .munmap_with_check_and_ad_no_flush(uaddr, frame.get_page());
+                    tlb_changed |= access_dirty.is_some();
+                    access_dirty.map(AccessDirty::from)
+                });
             }
 
             if tlb_changed {
@@ -604,16 +605,18 @@ impl Area for UserStack {
             }
 
             for state in frames.values() {
-                if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
-                    assert!(page.finish_tlb_invalidation(token));
-                }
+                let page = match state {
+                    FrameState::Allocated(page) | FrameState::Cow(page) => page,
+                };
+                assert!(page.finish_tlb_invalidation(token));
             }
         });
 
         for (_, state) in frames {
-            if let FrameState::Allocated(page) | FrameState::Cow(page) = state {
-                page.release_mapping_ref();
-            }
+            let page = match state {
+                FrameState::Allocated(page) | FrameState::Cow(page) => page,
+            };
+            page.release_mapping_ref();
         }
         self.family_registration.unregister();
     }
