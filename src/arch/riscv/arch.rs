@@ -141,6 +141,10 @@ impl ArchTrait for Arch {
         CloneABI::Backwards
     }
 
+    fn cpu_count() -> usize {
+        core_count()
+    }
+
     #[inline(always)]
     fn set_percpu_data(data: usize) {
         unsafe { core::arch::asm!("mv tp, {data}", data = in(reg) data) };

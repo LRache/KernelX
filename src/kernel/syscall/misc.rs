@@ -498,14 +498,16 @@ pub fn sched_setaffinity(_pid: usize, _cpusetsize: usize, _uptr_mask: UBuffer) -
     Ok(0)
 }
 
-// TODO: implement sched_getaffinity syscall
 pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UBuffer) -> SyscallRet {
-    if cpusetsize == 0 {
+    let cpu_count = arch::cpu_count();
+    if cpusetsize < cpu_count.div_ceil(u8::BITS as usize) {
         return Err(Errno::EINVAL);
     }
 
     let mut cpuset_buffer = vec![0u8; cpusetsize];
-    cpuset_buffer[0] = 1; // only one CPU (CPU 0) is available
+    for cpu in 0..cpu_count {
+        cpuset_buffer[cpu / u8::BITS as usize] |= 1 << (cpu % u8::BITS as usize);
+    }
 
     uptr_mask.write(0, &cpuset_buffer)?;
 

@@ -75,6 +75,7 @@ pub trait ArchTrait {
     fn init_percpu();
     fn setup_all_cores(current_core: usize);
     fn clone_abi() -> CloneABI;
+    fn cpu_count() -> usize;
 
     /* ----- Per-CPU Data ----- */
     fn set_percpu_data(data: usize);

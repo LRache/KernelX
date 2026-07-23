@@ -51,6 +51,7 @@ arch_export! {
     init_percpu() -> ();
     setup_all_cores(current_core: usize) -> ();
     clone_abi() -> CloneABI;
+    cpu_count() -> usize;
 
     /* ----- Per-CPU Data ----- */
     set_percpu_data(data: usize) -> ();

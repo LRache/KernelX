@@ -61,6 +61,10 @@ impl ArchTrait for Arch {
         CloneABI::Normal
     }
 
+    fn cpu_count() -> usize {
+        1
+    }
+
     #[inline(always)]
     fn set_percpu_data(data: usize) {
         unsafe { core::arch::asm!("move $r21, {x}", x = in(reg) data) };
