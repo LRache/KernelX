@@ -80,7 +80,8 @@ pub fn run_tasks(processor: &mut Processor) -> ! {
             }
 
             // TODO: What if the task is exited here?
-            processor.switch_to_task(&task);
+            task.resume_system_time();
+            processor.switch_from_idle(&task);
 
             if task.finish_switch() {
                 push_task(task);

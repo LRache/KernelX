@@ -66,14 +66,13 @@ impl<'a> Processor {
         self.task().tcb()
     }
 
-    pub fn switch_to_task(&mut self, task: &'a Arc<dyn Task>) {
-        task.resume_system_time();
+    pub fn switch_from_idle(&mut self, task: &'a Arc<dyn Task>) {
         self.task = Some(NonNull::from(task));
         arch::kernel_switch(&mut self.idle_kernel_context, task.kcontext_ptr());
         self.task = None;
     }
 
-    pub fn schedule(&mut self) {
+    pub fn switch_to_idle(&mut self) {
         #[cfg(feature = "spinlock-check")]
         if !self.locked_spin.is_empty() {
             use crate::println;
@@ -89,10 +88,7 @@ impl<'a> Processor {
                 self.hart_id
             );
         }
-        arch::disable_interrupt();
-        self.task().pause_system_time();
         arch::kernel_switch(self.task().kcontext_ptr(), &mut self.idle_kernel_context);
-        self.task().resume_system_time();
     }
 
     #[cfg(feature = "spinlock-check")]

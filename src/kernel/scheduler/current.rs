@@ -1,6 +1,5 @@
-use core::time::Duration;
-
 use alloc::sync::Arc;
+use core::time::Duration;
 
 use crate::arch;
 use crate::fs::Dentry;
@@ -184,16 +183,15 @@ pub mod copy_from_user {
 }
 
 pub fn schedule() {
-    processor().schedule()
-}
+    arch::disable_interrupt();
+    task().pause_system_time();
 
-// pub fn block_sigmask(reason: &'static str, mask: SignalSet) -> Event {
-//     let old_mask = tcb().swap_signal_mask(mask);
-//     task().block(reason);
-//     schedule();
-//     tcb().set_signal_mask(old_mask);
-//     task().take_wakeup_event().unwrap()
-// }
+    processor().switch_to_idle();
+
+    // Do not cache `processor()` here because `switch_to_idle` may resume
+    // this task on a different processor.
+    task().resume_system_time();
+}
 
 pub fn block_uninterruptible(reason: &'static str) -> Event {
     task().block_uninterruptible(reason);
