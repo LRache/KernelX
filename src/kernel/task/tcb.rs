@@ -16,6 +16,8 @@ use crate::kernel::event::{Event, FanotifyEventMask, notify_fanotify, timer, wai
 use crate::kernel::ipc::{PendingSignal, SignalNum, SignalSet, SignalStackState};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::mm::{AddrSpace, elf};
+#[cfg(feature = "watchdog")]
+use crate::kernel::scheduler::TaskRunState;
 use crate::kernel::scheduler::{KernelStack, Task, Tid, WakeupAction, WakeupFailure, current};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
@@ -81,12 +83,24 @@ impl PartialEq for TCBState {
 
 impl Eq for TCBState {}
 
+#[cfg(feature = "watchdog")]
+fn task_run_state(state: TCBState) -> TaskRunState {
+    match state {
+        TCBState::Ready => TaskRunState::Ready,
+        TCBState::Running => TaskRunState::Running,
+        TCBState::Blocked | TCBState::BlockedUninterruptible => TaskRunState::Blocked,
+        TCBState::Stopped | TCBState::PtraceStop(_) | TCBState::Exited => TaskRunState::Other,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TCBStateSet {
     state: TCBState,
     pending_state_change: PendingTCBStateChange,
     on_cpu: bool,
     wake_pending: bool,
+    #[cfg(feature = "watchdog")]
+    watchdog_counted: bool,
 
     pub pending_signal: Option<PendingSignal>,
     pub signal_to_wait: SignalSet,
@@ -108,12 +122,20 @@ impl TCBStateSet {
         )
     }
 
+    fn set_state(&mut self, state: TCBState) {
+        #[cfg(feature = "watchdog")]
+        if self.watchdog_counted {
+            scheduler::watchdog::transition_task(task_run_state(self.state), task_run_state(state));
+        }
+        self.state = state;
+    }
+
     fn make_ready(&mut self) -> WakeupAction {
         if self.on_cpu {
             self.wake_pending = true;
             WakeupAction::Deferred
         } else {
-            self.state = TCBState::Ready;
+            self.set_state(TCBState::Ready);
             WakeupAction::Enqueue
         }
     }
@@ -126,6 +148,8 @@ impl Default for TCBStateSet {
             pending_state_change: PendingTCBStateChange::None,
             on_cpu: false,
             wake_pending: false,
+            #[cfg(feature = "watchdog")]
+            watchdog_counted: false,
             pending_signal: None,
             signal_to_wait: SignalSet::empty(),
         }
@@ -643,7 +667,7 @@ impl TCB {
         let already_stopped = state.state == TCBState::Stopped;
         state.pending_state_change = PendingTCBStateChange::PtraceStop(stop);
         if already_stopped {
-            state.state = TCBState::PtraceStop(stop);
+            state.set_state(TCBState::PtraceStop(stop));
         }
         let should_wake = state.state == TCBState::Blocked;
         drop(state);
@@ -707,6 +731,26 @@ impl TCB {
         &self.state
     }
 
+    #[cfg(feature = "watchdog")]
+    pub(super) fn register_watchdog(&self) {
+        let mut state = self.state.lock();
+        if state.watchdog_counted {
+            return;
+        }
+        scheduler::watchdog::register_task(task_run_state(state.state));
+        state.watchdog_counted = true;
+    }
+
+    #[cfg(feature = "watchdog")]
+    pub(super) fn unregister_watchdog(&self) {
+        let mut state = self.state.lock();
+        if !state.watchdog_counted {
+            return;
+        }
+        scheduler::watchdog::unregister_task(task_run_state(state.state));
+        state.watchdog_counted = false;
+    }
+
     pub fn block_if_no_pending_signal(&self, _reason: &str) -> bool {
         debug_assert!(current::tid() == self.tid);
 
@@ -720,7 +764,7 @@ impl TCB {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
-        state.state = TCBState::Blocked;
+        state.set_state(TCBState::Blocked);
         true
     }
 
@@ -744,7 +788,7 @@ impl TCB {
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
         state.signal_to_wait = signal_set;
-        state.state = TCBState::Blocked;
+        state.set_state(TCBState::Blocked);
         Ok(None)
     }
 
@@ -821,7 +865,7 @@ impl TCB {
                 PendingTCBStateChange::Exit => Some(PendingTCBStateChange::Exit),
                 PendingTCBStateChange::Stop(signum) => match state.state {
                     TCBState::Ready | TCBState::Running => {
-                        state.state = TCBState::Stopped;
+                        state.set_state(TCBState::Stopped);
                         state.wake_pending = false;
                         Some(PendingTCBStateChange::Stop(signum))
                     }
@@ -829,7 +873,7 @@ impl TCB {
                 },
                 PendingTCBStateChange::PtraceStop(stop) => match state.state {
                     TCBState::Ready | TCBState::Running | TCBState::Stopped => {
-                        state.state = TCBState::PtraceStop(stop);
+                        state.set_state(TCBState::PtraceStop(stop));
                         state.wake_pending = false;
                         Some(PendingTCBStateChange::PtraceStop(stop))
                     }
@@ -847,7 +891,7 @@ impl TCB {
                 // task schedulable until cleanup has completed.
                 self.addrspace.release_task_user();
                 let mut state = self.state.lock();
-                state.state = TCBState::Exited;
+                state.set_state(TCBState::Exited);
                 state.wake_pending = false;
             }
             Some(PendingTCBStateChange::None) => unreachable!(),
@@ -974,7 +1018,7 @@ impl Task for TCB {
         }
         debug_assert!(!state.on_cpu);
         debug_assert!(!state.wake_pending);
-        state.state = TCBState::Running;
+        state.set_state(TCBState::Running);
         state.on_cpu = true;
         return true;
     }
@@ -990,13 +1034,13 @@ impl Task for TCB {
                 state.state,
                 TCBState::Blocked | TCBState::BlockedUninterruptible | TCBState::Stopped | TCBState::PtraceStop(_)
             ) {
-                state.state = TCBState::Ready;
+                state.set_state(TCBState::Ready);
                 return true;
             }
         }
 
         if state.state == TCBState::Running {
-            state.state = TCBState::Ready;
+            state.set_state(TCBState::Ready);
             return true;
         }
         false
@@ -1017,7 +1061,7 @@ impl Task for TCB {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
-        state.state = TCBState::Blocked;
+        state.set_state(TCBState::Blocked);
         true
     }
 
@@ -1031,7 +1075,7 @@ impl Task for TCB {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
-        state.state = TCBState::BlockedUninterruptible;
+        state.set_state(TCBState::BlockedUninterruptible);
         true
     }
 
@@ -1042,7 +1086,7 @@ impl Task for TCB {
             state.state,
             TCBState::Blocked | TCBState::BlockedUninterruptible
         ));
-        state.state = TCBState::Running;
+        state.set_state(TCBState::Running);
         state.wake_pending = false;
     }
 

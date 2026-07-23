@@ -5,6 +5,8 @@ use core::cell::UnsafeCell;
 use crate::arch::KernelContext;
 use crate::kernel::config::KTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::event::Event;
+#[cfg(feature = "watchdog")]
+use crate::kernel::scheduler::TaskRunState;
 use crate::kernel::scheduler::{self, KernelStack, Task, Tid, WakeupAction, WakeupFailure, current, tid};
 use crate::kernel::task::TCB;
 use crate::kernel::uapi::Uid;
@@ -30,10 +32,32 @@ enum KThreadState {
     Exited,
 }
 
+#[cfg(feature = "watchdog")]
+fn task_run_state(state: KThreadState) -> TaskRunState {
+    match state {
+        KThreadState::Ready => TaskRunState::Ready,
+        KThreadState::Running => TaskRunState::Running,
+        KThreadState::Blocked | KThreadState::BlockedUninterruptible => TaskRunState::Blocked,
+        KThreadState::Exited => TaskRunState::Other,
+    }
+}
+
 struct KThreadStateSet {
     state: KThreadState,
     on_cpu: bool,
     wake_pending: bool,
+    #[cfg(feature = "watchdog")]
+    watchdog_counted: bool,
+}
+
+impl KThreadStateSet {
+    fn set_state(&mut self, state: KThreadState) {
+        #[cfg(feature = "watchdog")]
+        if self.watchdog_counted {
+            scheduler::watchdog::transition_task(task_run_state(self.state), task_run_state(state));
+        }
+        self.state = state;
+    }
 }
 
 pub struct KThread {
@@ -65,6 +89,8 @@ impl KThread {
                     state: KThreadState::Ready,
                     on_cpu: false,
                     wake_pending: false,
+                    #[cfg(feature = "watchdog")]
+                    watchdog_counted: false,
                 },
                 "KThread::state",
             ),
@@ -72,6 +98,16 @@ impl KThread {
             #[cfg(feature = "lockdep")]
             lockstate: crate::klib::ksync::LockState::new(),
         }
+    }
+
+    #[cfg(feature = "watchdog")]
+    fn register_watchdog(&self) {
+        let mut state = self.state.lock();
+        if state.watchdog_counted {
+            return;
+        }
+        scheduler::watchdog::register_task(task_run_state(state.state));
+        state.watchdog_counted = true;
     }
 }
 
@@ -122,7 +158,7 @@ impl Task for KThread {
         }
         debug_assert!(!state.on_cpu);
         debug_assert!(!state.wake_pending);
-        state.state = KThreadState::Running;
+        state.set_state(KThreadState::Running);
         state.on_cpu = true;
         true
     }
@@ -138,13 +174,13 @@ impl Task for KThread {
                 state.state,
                 KThreadState::Blocked | KThreadState::BlockedUninterruptible
             ) {
-                state.state = KThreadState::Ready;
+                state.set_state(KThreadState::Ready);
                 return true;
             }
         }
 
         if state.state == KThreadState::Running {
-            state.state = KThreadState::Ready;
+            state.set_state(KThreadState::Ready);
             return true;
         }
         false
@@ -159,7 +195,7 @@ impl Task for KThread {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
-        state.state = KThreadState::Blocked;
+        state.set_state(KThreadState::Blocked);
         true
     }
 
@@ -172,7 +208,7 @@ impl Task for KThread {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
-        state.state = KThreadState::BlockedUninterruptible;
+        state.set_state(KThreadState::BlockedUninterruptible);
         true
     }
 
@@ -183,7 +219,7 @@ impl Task for KThread {
             state.state,
             KThreadState::Blocked | KThreadState::BlockedUninterruptible
         ));
-        state.state = KThreadState::Running;
+        state.set_state(KThreadState::Running);
         state.wake_pending = false;
     }
 
@@ -199,7 +235,7 @@ impl Task for KThread {
                     state.wake_pending = true;
                     Ok(WakeupAction::Deferred)
                 } else {
-                    state.state = KThreadState::Ready;
+                    state.set_state(KThreadState::Ready);
                     Ok(WakeupAction::Enqueue)
                 }
             }
@@ -222,7 +258,7 @@ impl Task for KThread {
             state.wake_pending = true;
             Some(WakeupAction::Deferred)
         } else {
-            state.state = KThreadState::Ready;
+            state.set_state(KThreadState::Ready);
             Some(WakeupAction::Enqueue)
         }
     }
@@ -233,7 +269,7 @@ impl Task for KThread {
 
     fn set_exited(&self) {
         let mut state = self.state.lock();
-        state.state = KThreadState::Exited;
+        state.set_state(KThreadState::Exited);
         state.wake_pending = false;
     }
 
@@ -247,6 +283,8 @@ pub fn spawn<F: FnOnce() + Send + 'static>(entry: F) -> Arc<KThread> {
     let tid = tid::alloc();
     let kthread = KThread::new(tid, entry);
     let task = Arc::new(kthread);
+    #[cfg(feature = "watchdog")]
+    task.register_watchdog();
     scheduler::push_task(task.clone());
     task
 }

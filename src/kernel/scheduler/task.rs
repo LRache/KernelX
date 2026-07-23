@@ -25,6 +25,14 @@ pub enum WakeupAction {
     Deferred,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskRunState {
+    Ready,
+    Running,
+    Blocked,
+    Other,
+}
+
 pub trait Task: Send + Sync {
     fn tid(&self) -> Tid;
     fn euid(&self) -> Uid;

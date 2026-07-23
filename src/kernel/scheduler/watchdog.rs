@@ -1,15 +1,68 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use spin::mutex::SpinMutex;
 
-use crate::kernel::scheduler::{Task, Tid, current};
+use crate::kernel::scheduler::{Task, TaskRunState, Tid, current};
 
 const WATCHDOG_TICK: Duration = Duration::from_secs(1);
-const WATCHDOG_THRESHOLD_TICKS: u8 = 3;
-const WATCHDOG_REPORT_ALIVE_TICKS: u8 = 60;
+const WATCHDOG_THRESHOLD_TICKS: u8 = 12;
+const WATCHDOG_REPORT_ALIVE_TICKS: u8 = 15;
 
 static BLOCKED_TASKS: SpinMutex<BTreeMap<Tid, (Arc<dyn Task>, u8, &'static str)>> = SpinMutex::new(BTreeMap::new());
+
+#[repr(align(64))]
+struct CacheLineAlignedAtomicUsize(AtomicUsize);
+
+static READY_TASKS: CacheLineAlignedAtomicUsize = CacheLineAlignedAtomicUsize(AtomicUsize::new(0));
+static RUNNING_TASKS: CacheLineAlignedAtomicUsize = CacheLineAlignedAtomicUsize(AtomicUsize::new(0));
+static BLOCKED_TASK_COUNT: CacheLineAlignedAtomicUsize = CacheLineAlignedAtomicUsize(AtomicUsize::new(0));
+
+#[derive(Default)]
+struct TaskCounts {
+    ready: usize,
+    running: usize,
+    blocked: usize,
+}
+
+fn count_tasks() -> TaskCounts {
+    TaskCounts {
+        ready: READY_TASKS.0.load(Ordering::Relaxed),
+        running: RUNNING_TASKS.0.load(Ordering::Relaxed),
+        blocked: BLOCKED_TASK_COUNT.0.load(Ordering::Relaxed),
+    }
+}
+
+fn counter(state: TaskRunState) -> Option<&'static AtomicUsize> {
+    match state {
+        TaskRunState::Ready => Some(&READY_TASKS.0),
+        TaskRunState::Running => Some(&RUNNING_TASKS.0),
+        TaskRunState::Blocked => Some(&BLOCKED_TASK_COUNT.0),
+        TaskRunState::Other => None,
+    }
+}
+
+pub fn register_task(state: TaskRunState) {
+    if let Some(counter) = counter(state) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub fn unregister_task(state: TaskRunState) {
+    if let Some(counter) = counter(state) {
+        let previous = counter.fetch_sub(1, Ordering::Relaxed);
+        debug_assert!(previous > 0);
+    }
+}
+
+pub fn transition_task(old: TaskRunState, new: TaskRunState) {
+    if old == new {
+        return;
+    }
+    unregister_task(old);
+    register_task(new);
+}
 
 pub fn kwatchdog() {
     let mut alive_ticks = 0u8;
@@ -48,7 +101,13 @@ pub fn kwatchdog() {
             });
         alive_ticks = alive_ticks + 1;
         if alive_ticks >= WATCHDOG_REPORT_ALIVE_TICKS {
-            crate::kdebug!("kwatchdog: alive");
+            let counts = count_tasks();
+            crate::kdebug!(
+                "kwatchdog: alive, tasks: ready={}, running={}, blocked={}",
+                counts.ready,
+                counts.running,
+                counts.blocked
+            );
             alive_ticks = 0;
         }
     }

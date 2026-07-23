@@ -77,6 +77,8 @@ pub fn create_initprocess(initpath: &str, initcwd: &str, initargs: &str, tty: &s
     );
 
     TCBS.lock().insert(tcb.tid(), tcb.clone());
+    #[cfg(feature = "watchdog")]
+    tcb.register_watchdog();
     scheduler::push_task(tcb.clone());
     tcb
 }
@@ -91,6 +93,8 @@ where
 }
 
 pub fn insert(tcb: Arc<TCB>) {
+    #[cfg(feature = "watchdog")]
+    tcb.register_watchdog();
     TCBS.lock().insert(tcb.tid(), tcb);
 }
 
@@ -99,7 +103,12 @@ pub fn get(tid: Tid) -> Option<Arc<TCB>> {
 }
 
 pub fn remove(tid: Tid) -> Option<Arc<TCB>> {
-    TCBS.lock().remove(&tid)
+    let tcb = TCBS.lock().remove(&tid);
+    #[cfg(feature = "watchdog")]
+    if let Some(tcb) = &tcb {
+        tcb.unregister_watchdog();
+    }
+    tcb
 }
 
 pub fn tcbs() -> &'static SpinLock<BTreeMap<Tid, Arc<TCB>>> {
