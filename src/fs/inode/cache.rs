@@ -89,21 +89,27 @@ impl Cache {
         self.cache.lock().len()
     }
 
-    pub fn insert(&self, index: &Index, inode: Arc<Inode>) -> SysResult<Arc<Inode>> {
+    pub fn get_or_insert(&self, index: &Index, inode: Arc<Inode>) -> SysResult<Arc<Inode>> {
         let (inode, removed) = {
             let mut cache = self.cache.lock();
             let mut removed = Vec::new();
 
-            if !cache.contains_key(index) && cache.len() >= config::INODE_CACHE_HIGH_WATERMARK {
-                removed = Self::reclaim(&mut cache);
-            }
+            // Recheck while holding the cache lock because the inode was loaded without it.
+            if cache.contains_key(index) {
+                let existing = cache
+                    .get(index)
+                    .cloned()
+                    .expect("inode disappeared while cache is locked");
+                removed.push(inode);
+                (existing, removed)
+            } else {
+                if cache.len() >= config::INODE_CACHE_HIGH_WATERMARK {
+                    removed = Self::reclaim(&mut cache);
+                }
 
-            if let Some(old) = Self::remove_entry(&mut cache, index) {
-                removed.push(old);
+                cache.put(*index, inode.clone());
+                (inode, removed)
             }
-            cache.put(*index, inode.clone());
-
-            (inode, removed)
         };
         drop(removed);
         Ok(inode)

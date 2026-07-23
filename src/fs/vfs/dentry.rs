@@ -850,7 +850,7 @@ impl Dentry {
         }
 
         let raw_inode = create(&parent_inode, name, mode, owner)?;
-        let inode = vfs().cache.insert(
+        let inode = vfs().cache.get_or_insert(
             &Index {
                 sno: self.sno(),
                 ino: raw_inode.get_ino(),

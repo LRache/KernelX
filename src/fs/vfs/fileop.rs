@@ -221,7 +221,7 @@ pub fn create_file(
 pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysResult<Arc<dyn FileOps>> {
     let superblock = vfs().superblock_table.lock().get(dentry.sno()).ok_or(Errno::ENOENT)?;
     let raw_inode = superblock.create_temp(mode)?;
-    let inode = vfs().cache.insert(
+    let inode = vfs().cache.get_or_insert(
         &Index {
             sno: dentry.sno(),
             ino: raw_inode.get_ino(),
@@ -242,7 +242,7 @@ pub fn create_memfd(
     let sno = memfd_superblock_sno()?;
     let superblock = vfs().superblock_table.lock().get(sno).ok_or(Errno::ENOENT)?;
     let raw_inode = superblock.create_temp(mode)?;
-    let inode = vfs().cache.insert(
+    let inode = vfs().cache.get_or_insert(
         &Index {
             sno,
             ino: raw_inode.get_ino(),
