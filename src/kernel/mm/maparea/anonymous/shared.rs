@@ -289,7 +289,7 @@ impl Area for SharedAnonymousArea {
                 });
             }
             if tlb_changed {
-                arch::flush_tlb_all();
+                pagetable.lock().flush_tlb();
             }
             for frame_index in 0..self.page_count {
                 if let Some(page) = self.page(frame_index) {

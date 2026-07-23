@@ -246,6 +246,31 @@ impl ArchTrait for Arch {
         sbi_driver::remote_sfence_vma_all().unwrap_or_else(|error| panic!("SBI remote SFENCE.VMA failed: {error}"));
     }
 
+    fn flush_tlb_cpu_mask(cpu_mask: usize) {
+        if cpu_mask == 0 {
+            return;
+        }
+
+        debug_assert_eq!(
+            cpu_mask
+                & 1usize
+                    .checked_shl(current::hart_id().try_into().expect("hart ID does not fit in u32"))
+                    .expect("hart ID exceeds TLB CPU mask width"),
+            0,
+            "targeted TLB flush mask contains the current hart"
+        );
+
+        // SAFETY: Page-table writes are complete before this function is
+        // called. The fence publishes them before remote invalidation.
+        unsafe {
+            core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
+        }
+
+        #[cfg(not(feature = "no-smp"))]
+        sbi_driver::remote_sfence_vma(cpu_mask)
+            .unwrap_or_else(|error| panic!("SBI targeted remote SFENCE.VMA failed: {error}"));
+    }
+
     fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize {
         let offset = paddr & arch::PGMASK;
         let pbase = paddr - offset;

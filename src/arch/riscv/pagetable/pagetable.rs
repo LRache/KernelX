@@ -1,4 +1,4 @@
-use crate::arch::{PageTableTrait, flush_tlb_all};
+use crate::arch::{PageTableTrait, flush_tlb_cpu_mask};
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
 use core::sync::atomic::{Ordering, fence};
@@ -17,6 +17,9 @@ pub trait PageAllocator {
 pub struct PageTableImpls<T: PageAllocator> {
     pub root: usize,
     has_shared_kernel_mappings: bool,
+    /// CPUs that may use this page table again without first performing a
+    /// local TLB invalidation. Protected by the owning page-table lock.
+    active_cpu_mask: usize,
     _marker: core::marker::PhantomData<T>,
 }
 
@@ -35,6 +38,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
         Self {
             root,
             has_shared_kernel_mappings: false,
+            active_cpu_mask: 0,
             _marker: core::marker::PhantomData,
         }
     }
@@ -183,6 +187,26 @@ impl<T: PageAllocator> PageTableImpls<T> {
         (MODE_SV39 << 60) | ppn
     }
 
+    pub fn activate_cpu(&mut self, cpu_id: usize) {
+        self.active_cpu_mask |= 1usize
+            .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
+            .expect("CPU ID exceeds page-table CPU mask width");
+    }
+
+    pub fn deactivate_cpu(&mut self, cpu_id: usize) {
+        self.active_cpu_mask &= !1usize
+            .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
+            .expect("CPU ID exceeds page-table CPU mask width");
+    }
+
+    pub fn active_cpu_mask(&self) -> usize {
+        self.active_cpu_mask
+    }
+
+    pub fn flush_tlb(&self) {
+        flush_tlb_cpu_mask(self.active_cpu_mask);
+    }
+
     #[allow(dead_code)]
     pub fn is_mapped(&self, uaddr: usize) -> bool {
         self.find_pte(uaddr).is_some()
@@ -285,7 +309,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
                 pte.set_flags(flags | PTEFlags::A);
                 pte.write_back()
                     .expect("Failed to write back PTE when marking page accessed");
-                flush_tlb_all();
+                self.flush_tlb();
                 return true;
             }
         }
@@ -299,7 +323,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
                 pte.set_flags(flags | PTEFlags::D | PTEFlags::A);
                 pte.write_back()
                     .expect("Failed to write back PTE when marking page dirty");
-                flush_tlb_all();
+                self.flush_tlb();
                 return true;
             }
         }
@@ -343,7 +367,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
-        flush_tlb_all();
+        self.flush_tlb();
     }
 
     // fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
@@ -362,7 +386,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
-        flush_tlb_all();
+        self.flush_tlb();
     }
 
     fn mmap_replace_with_check_and_ad(
@@ -384,7 +408,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_ppn(Addr::from_kaddr(replacement_kaddr).ppn());
         pte.write_back()
             .expect("Failed to write back PTE on checked mmap_replace");
-        flush_tlb_all();
+        self.flush_tlb();
         Some((old_flags.contains(PTEFlags::A), old_flags.contains(PTEFlags::D)))
     }
 
@@ -396,7 +420,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
 
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {
         if self.mmap_replace_perm_no_flush(uaddr, perm) {
-            flush_tlb_all();
+            self.flush_tlb();
         }
     }
 
@@ -407,13 +431,13 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         perm: MapPerm,
     ) -> Option<(bool, bool)> {
         let access_dirty = self.mmap_replace_perm_with_check_and_ad_no_flush(uaddr, expected_kaddr, perm)?;
-        flush_tlb_all();
+        self.flush_tlb();
         Some(access_dirty)
     }
 
     fn munmap_raw(&mut self, vaddr: usize) -> Result<(), ()> {
         self.munmap_no_flush(vaddr)?;
-        flush_tlb_all();
+        self.flush_tlb();
         Ok(())
     }
 
@@ -421,7 +445,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         // Using atomic operation is unnecessary here because the page table is
         // write-locked during munmap_with_check.
         if self.munmap_with_check_no_flush(uaddr, kaddr) {
-            flush_tlb_all();
+            self.flush_tlb();
             true
         } else {
             false
@@ -430,7 +454,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
 
     fn munmap_with_check_and_ad(&mut self, uaddr: usize, expected_kaddr: usize) -> Option<(bool, bool)> {
         let access_dirty = self.munmap_with_check_and_ad_no_flush(uaddr, expected_kaddr)?;
-        flush_tlb_all();
+        self.flush_tlb();
         Some(access_dirty)
     }
 
@@ -442,7 +466,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
             pte.set_flags(flags.difference(PTEFlags::A | PTEFlags::D))
                 .write_back()
                 .expect("Failed to write back PTE when taking access and dirty bits");
-            flush_tlb_all();
+            self.flush_tlb();
             (accessed, dirty)
         })
     }
@@ -492,6 +516,7 @@ impl PageTable {
         Self {
             root: 0,
             has_shared_kernel_mappings: false,
+            active_cpu_mask: 0,
             _marker: core::marker::PhantomData,
         }
     }

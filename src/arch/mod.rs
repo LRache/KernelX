@@ -76,6 +76,7 @@ arch_export! {
     dma_direct_paddr(kaddr: usize, len: usize) -> Option<usize>;
     map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm) -> ();
     flush_tlb_all() -> ();
+    flush_tlb_cpu_mask(cpu_mask: usize) -> ();
     mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize;
 
     get_time_us() -> u64;

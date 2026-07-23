@@ -159,6 +159,13 @@ impl ArchTrait for Arch {
         }
     }
 
+    fn flush_tlb_cpu_mask(cpu_mask: usize) {
+        assert_eq!(
+            cpu_mask, 0,
+            "LoongArch targeted remote TLB invalidation is not implemented"
+        );
+    }
+
     fn mmio_phys_to_kaddr(paddr: usize, _size: usize) -> usize {
         const DMW0_MASK: usize = 0x8000_0000_0000_0000;
         debug_assert!(paddr < (1usize << 48), "PA {:#x} outside PALEN=48", paddr);

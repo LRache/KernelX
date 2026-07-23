@@ -601,7 +601,7 @@ impl Area for UserStack {
             }
 
             if tlb_changed {
-                arch::flush_tlb_all();
+                pagetable.lock().flush_tlb();
             }
 
             for state in frames.values() {

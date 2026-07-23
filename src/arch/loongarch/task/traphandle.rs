@@ -14,6 +14,11 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn usertrap_handler() -> ! {
+    // User execution has stopped. Kernel paths do not directly use user
+    // virtual addresses, and the return path invalidates the local TLB before
+    // the address space can be used again.
+    current::addrspace().deactivate_cpu(current::hart_id());
+
     trap::trap_enter();
 
     // Save FPU/LSX state if either FPE or SXE was enabled for this task.
@@ -198,6 +203,9 @@ pub fn return_to_user() -> ! {
 
     csr::write::<{ csr::num::PGDL }>(uc.user_pgd);
 
+    // Publish this CPU under the page-table lock before the local invalidation
+    // makes the user address space usable again.
+    current::addrspace().activate_cpu(current::hart_id());
     crate::arch::flush_tlb_all();
 
     csr::write::<{ csr::num::ERA }>(uc.get_user_entry());

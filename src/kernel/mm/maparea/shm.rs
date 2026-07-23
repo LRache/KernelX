@@ -116,7 +116,7 @@ impl Area for ShmArea {
             tlb_changed |= pagetable.lock().munmap_with_check_no_flush(uaddr, frames[i].get_page());
         }
         if tlb_changed {
-            arch::flush_tlb_all();
+            pagetable.lock().flush_tlb();
         }
     }
 

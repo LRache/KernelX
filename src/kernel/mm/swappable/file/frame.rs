@@ -62,7 +62,7 @@ impl FilePage {
         self.frame.collect_mapped_access_dirty()
     }
 
-    pub fn collect_mapped_access_dirty_no_flush(&self) -> (bool, bool) {
+    pub fn collect_mapped_access_dirty_no_flush(&self) -> (bool, usize) {
         self.frame.collect_mapped_access_dirty_no_flush()
     }
 

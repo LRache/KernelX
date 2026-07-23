@@ -74,19 +74,19 @@ impl InodePageCache {
     }
 
     fn dirty_pages(&self) -> Vec<(usize, FilePageIdentityPin)> {
-        let mut tlb_changed = false;
+        let mut cpu_mask = 0;
         let dirty_pages = self
             .mapping()
             .pages_snapshot()
             .into_iter()
             .filter_map(|(page_index, page)| {
-                let (dirty, page_tlb_changed) = page.collect_mapped_access_dirty_no_flush();
-                tlb_changed |= page_tlb_changed;
+                let (dirty, page_cpu_mask) = page.collect_mapped_access_dirty_no_flush();
+                cpu_mask |= page_cpu_mask;
                 dirty.then_some((page_index, page))
             })
             .collect();
-        if tlb_changed {
-            arch::flush_tlb_all();
+        if cpu_mask != 0 {
+            arch::flush_tlb_cpu_mask(cpu_mask);
         }
         dirty_pages
     }

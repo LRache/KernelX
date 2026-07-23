@@ -348,7 +348,7 @@ impl Area for SharedFileMapArea {
                 }
             }
             if tlb_changed {
-                arch::flush_tlb_all();
+                pagetable.lock().flush_tlb();
             }
             for (_, state) in self.states.iter() {
                 if let SharedFilePage::Swappable(page) = state {

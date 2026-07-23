@@ -35,10 +35,10 @@ impl FileBackend {
         &self,
         entries: &[FileMapEntry],
         frame: &PhysPageFrame,
-        operation: impl Fn(&AddrSpace, usize, usize) -> Option<AccessDirty>,
-    ) -> Option<AccessDirty> {
+        operation: impl Fn(&AddrSpace, usize, usize) -> Option<(AccessDirty, usize)>,
+    ) -> Option<(AccessDirty, usize)> {
         let expected_kpage = frame.get_page();
-        let mut result: Option<AccessDirty> = None;
+        let mut result: Option<(AccessDirty, usize)> = None;
 
         for entry in entries {
             let Some(uaddr) = entry.page_uaddr(self.page_index) else {
@@ -47,10 +47,11 @@ impl FileBackend {
             let Some(addrspace) = entry.addrspace().upgrade() else {
                 continue;
             };
-            if let Some(access_dirty) = operation(&addrspace, uaddr, expected_kpage) {
-                let result = result.get_or_insert_default();
-                result.accessed |= access_dirty.accessed;
-                result.dirty |= access_dirty.dirty;
+            if let Some((access_dirty, cpu_mask)) = operation(&addrspace, uaddr, expected_kpage) {
+                let (result_access_dirty, result_cpu_mask) = result.get_or_insert_default();
+                result_access_dirty.accessed |= access_dirty.accessed;
+                result_access_dirty.dirty |= access_dirty.dirty;
+                *result_cpu_mask |= cpu_mask;
             }
         }
 
@@ -61,14 +62,19 @@ impl FileBackend {
 impl SwappableBackendOps for FileBackend {
     type SwappedOutContext = Arc<[FileMapEntry]>;
 
-    fn inspect_access_dirty_no_flush(&self, frame: &PhysPageFrame) -> (Self::SwappedOutContext, AccessDirty, bool) {
+    fn inspect_access_dirty_no_flush(&self, frame: &PhysPageFrame) -> (Self::SwappedOutContext, AccessDirty, usize) {
         let snapshot = self.state.rmap.snapshot();
-        let access_dirty = self.collect_access_dirty(&snapshot, frame, AddrSpace::take_access_dirty_if_maps_no_flush);
-        let tlb_changed = access_dirty.is_some();
-        (snapshot, access_dirty.unwrap_or_default(), tlb_changed)
+        let (access_dirty, cpu_mask) = self
+            .collect_access_dirty(&snapshot, frame, AddrSpace::take_access_dirty_if_maps_no_flush)
+            .unwrap_or_default();
+        (snapshot, access_dirty, cpu_mask)
     }
 
-    fn unmap_no_flush(&self, snapshot: &Self::SwappedOutContext, frame: &PhysPageFrame) -> Option<AccessDirty> {
+    fn unmap_no_flush(
+        &self,
+        snapshot: &Self::SwappedOutContext,
+        frame: &PhysPageFrame,
+    ) -> Option<(AccessDirty, usize)> {
         self.collect_access_dirty(snapshot, frame, AddrSpace::unmap_if_maps_no_flush)
     }
 

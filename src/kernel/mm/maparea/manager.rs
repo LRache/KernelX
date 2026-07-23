@@ -53,7 +53,7 @@ impl Manager {
             })
             .collect();
         if tlb_changed {
-            arch::flush_tlb_all();
+            self_pagetable.lock().flush_tlb();
         }
 
         Self {
@@ -384,7 +384,7 @@ impl Manager {
             self.areas.insert(middle.ubase(), middle);
         }
         if tlb_changed {
-            arch::flush_tlb_all();
+            pagetable.lock().flush_tlb();
         }
 
         Ok(())

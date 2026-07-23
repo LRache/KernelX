@@ -405,6 +405,14 @@ impl AddrSpace {
         &self.pagetable
     }
 
+    pub(crate) fn activate_cpu(&self, cpu_id: usize) {
+        self.pagetable.lock().activate_cpu(cpu_id);
+    }
+
+    pub(crate) fn deactivate_cpu(&self, cpu_id: usize) {
+        self.pagetable.lock().deactivate_cpu(cpu_id);
+    }
+
     pub fn add_map_manager_watcher(&self, watcher: Arc<dyn MapManagerWatcher>) {
         self.map_manager.lock().add_watcher(watcher);
     }
@@ -435,18 +443,20 @@ impl AddrSpace {
         map_manager.cleanup(&self.pagetable);
     }
 
-    pub fn take_access_dirty_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<AccessDirty> {
-        self.pagetable
-            .lock()
-            .take_access_dirty_bit_with_check_no_flush(uaddr, expected_kpage)
-            .map(AccessDirty::from)
+    pub fn take_access_dirty_if_maps_no_flush(
+        &self,
+        uaddr: usize,
+        expected_kpage: usize,
+    ) -> Option<(AccessDirty, usize)> {
+        let mut pagetable = self.pagetable.lock();
+        let access_dirty = pagetable.take_access_dirty_bit_with_check_no_flush(uaddr, expected_kpage)?;
+        Some((AccessDirty::from(access_dirty), pagetable.active_cpu_mask()))
     }
 
-    pub fn unmap_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<AccessDirty> {
-        self.pagetable
-            .lock()
-            .munmap_with_check_and_ad_no_flush(uaddr, expected_kpage)
-            .map(AccessDirty::from)
+    pub fn unmap_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<(AccessDirty, usize)> {
+        let mut pagetable = self.pagetable.lock();
+        let access_dirty = pagetable.munmap_with_check_and_ad_no_flush(uaddr, expected_kpage)?;
+        Some((AccessDirty::from(access_dirty), pagetable.active_cpu_mask()))
     }
 
     pub(crate) fn mmap_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)

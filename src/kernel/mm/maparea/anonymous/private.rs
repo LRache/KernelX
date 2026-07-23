@@ -403,7 +403,7 @@ impl Area for PrivateAnonymousArea {
                 });
             }
             if tlb_changed {
-                arch::flush_tlb_all();
+                pagetable.lock().flush_tlb();
             }
             for (_, state) in self.frames.iter() {
                 let page = match state {

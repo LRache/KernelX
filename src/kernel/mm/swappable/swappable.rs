@@ -20,7 +20,7 @@ pub struct TlbInvalidationLock(SleepLock<()>);
  *   --------------------------   --------------------------   ---------------------------
  *   begin(P): pending = true
  *   clear A's PTE for P
- *   flush_tlb_all()
+ *   flush target CPUs
  *                              begin(P): pending is true
  *                              (assertion catches this today)
  *                              clear B's PTE, no flush yet
@@ -30,7 +30,7 @@ pub struct TlbInvalidationLock(SleepLock<()>);
  *   no PTE, then releases P's
  *   resident frame
  *                                                            stale TLB accesses frame
- *                              flush_tlb_all() // too late
+ *                              flush target CPUs // too late
  *
  * If the overlapping begin were allowed, the boolean mark could not record
  * that it belongs to both batches. A's finish would therefore expose P to
@@ -53,7 +53,7 @@ pub struct TlbInvalidationLock(SleepLock<()>);
  *   no PTE, then releases P's
  *   resident frame
  *                                                            stale TLB accesses frame
- *                              flush_tlb_all() // too late
+ *                              flush target CPUs // too late
  *
  * The fault on CPU 1 may materialize P while A holds the family lock, but Batch B
  * cannot begin invalidating P until A completes its second scan. Consequently,
@@ -95,12 +95,12 @@ impl From<(bool, bool)> for AccessDirty {
 pub trait SwappableBackendOps: Clone + Send + Sync + Sized + 'static {
     type SwappedOutContext;
 
-    fn inspect_access_dirty_no_flush(&self, frame: &PhysPageFrame) -> (Self::SwappedOutContext, AccessDirty, bool);
+    fn inspect_access_dirty_no_flush(&self, frame: &PhysPageFrame) -> (Self::SwappedOutContext, AccessDirty, usize);
 
     fn inspect_access_dirty(&self, frame: &PhysPageFrame) -> (Self::SwappedOutContext, AccessDirty) {
-        let (context, access_dirty, tlb_changed) = self.inspect_access_dirty_no_flush(frame);
-        if tlb_changed {
-            arch::flush_tlb_all();
+        let (context, access_dirty, cpu_mask) = self.inspect_access_dirty_no_flush(frame);
+        if cpu_mask != 0 {
+            arch::flush_tlb_cpu_mask(cpu_mask);
         }
         (context, access_dirty)
     }
@@ -109,7 +109,7 @@ pub trait SwappableBackendOps: Clone + Send + Sync + Sized + 'static {
     ///
     /// `Some` means at least one PTE changed, so the caller must complete a
     /// TLB invalidation before writing out or releasing the physical frame.
-    fn unmap_no_flush(&self, context: &Self::SwappedOutContext, frame: &PhysPageFrame) -> Option<AccessDirty>;
+    fn unmap_no_flush(&self, context: &Self::SwappedOutContext, frame: &PhysPageFrame) -> Option<(AccessDirty, usize)>;
 
     fn read_in(&self) -> Result<PhysPageFrame, SwapError>;
 
@@ -369,24 +369,24 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
 
     /// Collects PTE A/D bits from mapped copies and returns the merged dirty state.
     pub fn collect_mapped_access_dirty(self: &Arc<Self>) -> bool {
-        let (dirty, tlb_changed) = self.collect_mapped_access_dirty_no_flush();
-        if tlb_changed {
-            arch::flush_tlb_all();
+        let (dirty, cpu_mask) = self.collect_mapped_access_dirty_no_flush();
+        if cpu_mask != 0 {
+            arch::flush_tlb_cpu_mask(cpu_mask);
         }
         dirty
     }
 
     /// Collects PTE A/D bits without flushing so a higher-level scan can batch
     /// all of its page-table updates into one TLB invalidation.
-    pub fn collect_mapped_access_dirty_no_flush(self: &Arc<Self>) -> (bool, bool) {
+    pub fn collect_mapped_access_dirty_no_flush(self: &Arc<Self>) -> (bool, usize) {
         let mut inner = self.inner.lock();
-        let (access_dirty, tlb_changed) = {
+        let (access_dirty, cpu_mask) = {
             let inner = &*inner;
             let SwappableFrameState::In { frame, .. } = &inner.state else {
-                return (false, false);
+                return (false, 0);
             };
-            let (_, access_dirty, tlb_changed) = inner.backend.inspect_access_dirty_no_flush(frame);
-            (access_dirty, tlb_changed)
+            let (_, access_dirty, cpu_mask) = inner.backend.inspect_access_dirty_no_flush(frame);
+            (access_dirty, cpu_mask)
         };
 
         let is_swappable = inner.backend.is_swappable();
@@ -399,7 +399,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
         if is_swappable && (access_dirty.accessed || access_dirty.dirty) {
             self.relink_locked(&inner);
         }
-        (dirty, tlb_changed)
+        (dirty, cpu_mask)
     }
 
     pub fn clear_dirty(self: &Arc<Self>) {
@@ -452,8 +452,10 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
             && let SwappableFrameState::In { frame, .. } = &inner.state
         {
             let (context, _) = inner.backend.inspect_access_dirty(frame);
-            if inner.backend.unmap_no_flush(&context, frame).is_some() {
-                arch::flush_tlb_all();
+            if let Some((_, cpu_mask)) = inner.backend.unmap_no_flush(&context, frame)
+                && cpu_mask != 0
+            {
+                arch::flush_tlb_cpu_mask(cpu_mask);
             }
         }
 
@@ -502,7 +504,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
     /// ------------------------       -----------------
     /// first scan: slot is empty
     ///                                materialize page P
-    /// flush_tlb_all()
+    /// flush target CPUs
     /// second scan: slot contains P
     /// finish(P): pending is false, so do nothing
     /// ```
@@ -532,7 +534,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
         //                                                       allocator reuses P for Q
         //                              stale TLB writes P
         //                              and corrupts page Q
-        //   flush_tlb_all()                                    // Too late
+        //   flush target CPUs                                  // Too late
         //
         // With this mark:
         //
@@ -544,7 +546,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
         //                              stale TLB accesses P
         //                                                       sees TLB flush pending
         //                                                       keeps P resident and stops
-        //   flush_tlb_all()
+        //   flush target CPUs
         //   clear the pending mark
         //                                                       P may now be reclaimed
         inner.tlb_flush_pending = true;
@@ -658,10 +660,12 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
             None
         };
 
-        if final_pte_access_dirty.is_some() {
-            arch::flush_tlb_all();
+        if let Some((_, cpu_mask)) = final_pte_access_dirty
+            && cpu_mask != 0
+        {
+            arch::flush_tlb_cpu_mask(cpu_mask);
         }
-        let dirty = dirty | final_pte_access_dirty.unwrap_or_default().dirty;
+        let dirty = dirty | final_pte_access_dirty.unwrap_or_default().0.dirty;
 
         let write_result = {
             let SwappableFrameInner {

@@ -103,6 +103,11 @@ fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
 pub fn usertrap_handler() -> ! {
     set_stvec_to_kerneltrap_handler();
 
+    // User execution has stopped. Kernel paths do not directly use user
+    // virtual addresses, and the return path performs a local SFENCE.VMA
+    // before the address space can be used again.
+    current::addrspace().deactivate_cpu(current::hart_id());
+
     debug_assert!(
         Sstatus::read().sie() == false,
         "Interrupts should be disabled when handling user traps"
@@ -208,6 +213,9 @@ pub fn return_to_user() -> ! {
         .set_fs(SstatusFs::Clean)
         .write();
 
+    // Publish this CPU under the page-table lock before asm_usertrap_return
+    // performs the local SFENCE.VMA and starts using user translations.
+    current::addrspace().activate_cpu(current::hart_id());
     usertrap_return(user_context);
 }
 

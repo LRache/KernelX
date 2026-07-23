@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use core::fmt;
 use core::ptr::NonNull;
 
-use crate::arch::{PageTableTrait, kaddr_to_paddr, paddr_to_kaddr};
+use crate::arch::{PageTableTrait, flush_tlb_cpu_mask, kaddr_to_paddr, paddr_to_kaddr};
 use crate::kernel::mm::{self, MapPerm};
 
 use super::{PGBITS, PGMASK, PGSIZE};
@@ -257,11 +257,17 @@ impl PTETable {
 
 pub struct PageTable {
     pub root: usize,
+    /// CPUs that may use this page table again without first performing a
+    /// local TLB invalidation. Protected by the owning page-table lock.
+    active_cpu_mask: usize,
 }
 
 impl PageTable {
     pub const fn new() -> Self {
-        Self { root: 0 }
+        Self {
+            root: 0,
+            active_cpu_mask: 0,
+        }
     }
 
     pub fn new_user() -> Self {
@@ -273,7 +279,10 @@ impl PageTable {
     #[allow(dead_code)]
     pub fn from_root(root: usize) -> Self {
         debug_assert!(root != 0, "PageTable root cannot be zero");
-        Self { root }
+        Self {
+            root,
+            active_cpu_mask: 0,
+        }
     }
 
     pub fn create(&mut self) {
@@ -284,6 +293,26 @@ impl PageTable {
     pub fn get_pgd(&self) -> usize {
         debug_assert!(self.root != 0);
         kaddr_to_paddr(self.root) & !PGMASK
+    }
+
+    pub fn activate_cpu(&mut self, cpu_id: usize) {
+        self.active_cpu_mask |= 1usize
+            .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
+            .expect("CPU ID exceeds page-table CPU mask width");
+    }
+
+    pub fn deactivate_cpu(&mut self, cpu_id: usize) {
+        self.active_cpu_mask &= !1usize
+            .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
+            .expect("CPU ID exceeds page-table CPU mask width");
+    }
+
+    pub fn active_cpu_mask(&self) -> usize {
+        self.active_cpu_mask
+    }
+
+    pub fn flush_tlb(&self) {
+        flush_tlb_cpu_mask(self.active_cpu_mask);
     }
 
     pub fn is_mapped(&self, uaddr: usize) -> bool {

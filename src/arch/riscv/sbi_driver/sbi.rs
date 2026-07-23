@@ -94,3 +94,18 @@ pub fn remote_sfence_vma_all() -> SBIRet {
         0,
     )
 }
+
+#[cfg(not(feature = "no-smp"))]
+pub fn remote_sfence_vma(cpu_mask: usize) -> SBIRet {
+    debug_assert!(cpu_mask != 0);
+    sbi_call(
+        RfenceFunction::RemoteSfenceVma as usize,
+        SBIExtension::Rfence as usize,
+        cpu_mask,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+}
