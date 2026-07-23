@@ -304,6 +304,10 @@ impl PhysPageFrame {
         Self::new(alloc_zero())
     }
 
+    pub fn alloc_with_shrink() -> Self {
+        Self::new(alloc_with_shrink())
+    }
+
     pub fn alloc_with_shrink_zeroed() -> Self {
         Self::new(alloc_with_shrink_zero())
     }

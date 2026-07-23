@@ -69,14 +69,14 @@ impl PrivateFileMapArea {
             .checked_add(area_offset)
             .expect("private file mapping address overflow");
 
-        let frame = PhysPageFrame::alloc_with_shrink_zeroed();
-
-        if area_offset < self.file_length {
+        let frame = PhysPageFrame::alloc_with_shrink();
+        let read_len = if area_offset < self.file_length {
             let length = core::cmp::min(self.file_length - area_offset, arch::PGSIZE);
-            if self.file.pread(&mut frame.slice()[..length], file_offset).is_err() {
-                frame.slice().fill(0);
-            }
-        }
+            self.file.pread(&mut frame.slice()[..length], file_offset).unwrap_or(0)
+        } else {
+            0
+        };
+        frame.slice()[read_len..].fill(0);
 
         let logical_page = self
             .page_base
