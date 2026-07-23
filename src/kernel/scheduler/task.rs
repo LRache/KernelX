@@ -16,6 +16,15 @@ pub enum WakeupFailure {
     BlockedUninterruptible,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeupAction {
+    /// The task is no longer running on a CPU and can be enqueued now.
+    Enqueue,
+
+    /// The task is still running on a CPU. Its switch tail will enqueue it.
+    Deferred,
+}
+
 pub trait Task: Send + Sync {
     fn tid(&self) -> Tid;
     fn euid(&self) -> Uid;
@@ -33,14 +42,14 @@ pub trait Task: Send + Sync {
     fn check_kernel_stack_overflow(&self, addr: usize) -> bool;
 
     fn run_if_ready(&self) -> bool;
-    fn state_running_to_ready(&self) -> bool;
+    fn finish_switch(&self) -> bool;
 
     fn block(&self, reason: &str) -> bool;
     fn block_uninterruptible(&self, reason: &str) -> bool;
     fn unblock(&self);
 
-    fn wakeup(&self, event: Event) -> Result<(), WakeupFailure>;
-    fn wakeup_uninterruptible(&self, event: Event) -> bool;
+    fn wakeup(&self, event: Event) -> Result<WakeupAction, WakeupFailure>;
+    fn wakeup_uninterruptible(&self, event: Event) -> Option<WakeupAction>;
     fn take_wakeup_event(&self) -> Option<Event>;
 
     fn pause_system_time(&self) {}

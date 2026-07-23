@@ -12,7 +12,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::Event;
 use crate::kernel::ipc::{KSiFields, PendingSignal, SiCode, SiSigChld, SigInfo, SignalNum, signum};
 use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
-use crate::kernel::scheduler::{Tid, current};
+use crate::kernel::scheduler::{Tid, WakeupAction, current};
 use crate::kernel::syscall::uptr::{UArray, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct};
 use crate::kernel::task::def::TaskCloneFlags;
@@ -422,16 +422,21 @@ fn ptrace_injected_signal(target: &Arc<task::TCB>, signum: SignalNum) -> Pending
 
 fn ptrace_resume(target: Arc<task::TCB>, signal: Option<SignalNum>) -> SysResult<()> {
     let injected = signal.map(|signum| ptrace_injected_signal(&target, signum));
-    target.resume_from_ptrace_stop(injected)?;
-    scheduler::push_task(target);
+    if target.resume_from_ptrace_stop(injected)? == WakeupAction::Enqueue {
+        scheduler::push_task(target);
+    }
     Ok(())
 }
 
 /// Do ptrace(SIGKILL) on the target.
 fn ptrace_kill(target: Arc<task::TCB>) -> SysResult<()> {
     let signal = ptrace_injected_signal(&target, signum::SIGKILL);
-    if target.is_ptrace_stopped() && target.resume_from_ptrace_stop(Some(signal)).is_ok() {
-        scheduler::push_task(target);
+    if target.is_ptrace_stopped()
+        && let Ok(action) = target.resume_from_ptrace_stop(Some(signal))
+    {
+        if action == WakeupAction::Enqueue {
+            scheduler::push_task(target);
+        }
         return Ok(());
     }
 

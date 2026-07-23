@@ -16,7 +16,7 @@ use crate::kernel::event::{Event, FanotifyEventMask, notify_fanotify, timer, wai
 use crate::kernel::ipc::{PendingSignal, SignalNum, SignalSet, SignalStackState};
 use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::mm::{AddrSpace, elf};
-use crate::kernel::scheduler::{KernelStack, Task, Tid, WakeupFailure, current};
+use crate::kernel::scheduler::{KernelStack, Task, Tid, WakeupAction, WakeupFailure, current};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
 use crate::kernel::task::{PCB, WaitStatus, manager};
@@ -85,6 +85,8 @@ impl Eq for TCBState {}
 pub struct TCBStateSet {
     state: TCBState,
     pending_state_change: PendingTCBStateChange,
+    on_cpu: bool,
+    wake_pending: bool,
 
     pub pending_signal: Option<PendingSignal>,
     pub signal_to_wait: SignalSet,
@@ -105,6 +107,16 @@ impl TCBStateSet {
             PendingTCBStateChange::Stop(_) | PendingTCBStateChange::PtraceStop(_)
         )
     }
+
+    fn make_ready(&mut self) -> WakeupAction {
+        if self.on_cpu {
+            self.wake_pending = true;
+            WakeupAction::Deferred
+        } else {
+            self.state = TCBState::Ready;
+            WakeupAction::Enqueue
+        }
+    }
 }
 
 impl Default for TCBStateSet {
@@ -112,6 +124,8 @@ impl Default for TCBStateSet {
         Self {
             state: TCBState::Ready,
             pending_state_change: PendingTCBStateChange::None,
+            on_cpu: false,
+            wake_pending: false,
             pending_signal: None,
             signal_to_wait: SignalSet::empty(),
         }
@@ -641,7 +655,7 @@ impl TCB {
         should_wake
     }
 
-    pub fn resume_from_ptrace_stop(&self, signal: Option<PendingSignal>) -> SysResult<()> {
+    pub fn resume_from_ptrace_stop(&self, signal: Option<PendingSignal>) -> SysResult<WakeupAction> {
         let mut state = self.state.lock();
         if !matches!(state.state, TCBState::PtraceStop(_)) {
             return Err(Errno::ESRCH);
@@ -660,8 +674,7 @@ impl TCB {
             }
         }
 
-        state.state = TCBState::Ready;
-        Ok(())
+        Ok(state.make_ready())
     }
 
     pub fn clear_ptrace_tracer(&self) {
@@ -705,6 +718,8 @@ impl TCB {
             TCBState::Ready | TCBState::Running => {}
             _ => return false,
         }
+        debug_assert!(state.on_cpu);
+        debug_assert!(!state.wake_pending);
         state.state = TCBState::Blocked;
         true
     }
@@ -726,6 +741,8 @@ impl TCB {
             TCBState::Ready | TCBState::Running => {}
             _ => return Err(Errno::EINTR),
         }
+        debug_assert!(state.on_cpu);
+        debug_assert!(!state.wake_pending);
         state.signal_to_wait = signal_set;
         state.state = TCBState::Blocked;
         Ok(None)
@@ -781,16 +798,15 @@ impl TCB {
         state.state == TCBState::Blocked
     }
 
-    pub fn resume_from_stopped(&self) -> bool {
+    pub fn resume_from_stopped(&self) -> Option<WakeupAction> {
         let mut state = self.state.lock();
         if matches!(state.pending_state_change, PendingTCBStateChange::Stop(_)) {
             state.pending_state_change = PendingTCBStateChange::None;
         }
         if state.state != TCBState::Stopped {
-            return false;
+            return None;
         }
-        state.state = TCBState::Ready;
-        true
+        Some(state.make_ready())
     }
 
     /// Called by the task itself to apply pending state changes.
@@ -806,6 +822,7 @@ impl TCB {
                 PendingTCBStateChange::Stop(signum) => match state.state {
                     TCBState::Ready | TCBState::Running => {
                         state.state = TCBState::Stopped;
+                        state.wake_pending = false;
                         Some(PendingTCBStateChange::Stop(signum))
                     }
                     _ => None,
@@ -813,6 +830,7 @@ impl TCB {
                 PendingTCBStateChange::PtraceStop(stop) => match state.state {
                     TCBState::Ready | TCBState::Running | TCBState::Stopped => {
                         state.state = TCBState::PtraceStop(stop);
+                        state.wake_pending = false;
                         Some(PendingTCBStateChange::PtraceStop(stop))
                     }
                     _ => None,
@@ -828,7 +846,9 @@ impl TCB {
                 // Releasing the last address-space user may sleep, so keep this
                 // task schedulable until cleanup has completed.
                 self.addrspace.release_task_user();
-                self.state.lock().state = TCBState::Exited;
+                let mut state = self.state.lock();
+                state.state = TCBState::Exited;
+                state.wake_pending = false;
             }
             Some(PendingTCBStateChange::None) => unreachable!(),
             None => return false,
@@ -952,17 +972,34 @@ impl Task for TCB {
         if state.state != TCBState::Ready {
             return false;
         }
+        debug_assert!(!state.on_cpu);
+        debug_assert!(!state.wake_pending);
         state.state = TCBState::Running;
+        state.on_cpu = true;
         return true;
     }
 
-    fn state_running_to_ready(&self) -> bool {
+    fn finish_switch(&self) -> bool {
         let mut state = self.state.lock();
-        if state.state != TCBState::Running {
-            return false;
+        debug_assert!(state.on_cpu);
+        state.on_cpu = false;
+
+        if state.wake_pending {
+            state.wake_pending = false;
+            if matches!(
+                state.state,
+                TCBState::Blocked | TCBState::BlockedUninterruptible | TCBState::Stopped | TCBState::PtraceStop(_)
+            ) {
+                state.state = TCBState::Ready;
+                return true;
+            }
         }
-        state.state = TCBState::Ready;
-        true
+
+        if state.state == TCBState::Running {
+            state.state = TCBState::Ready;
+            return true;
+        }
+        false
     }
 
     fn block(&self, _reason: &str) -> bool {
@@ -978,6 +1015,8 @@ impl Task for TCB {
             TCBState::Ready | TCBState::Running => {}
             _ => return false,
         }
+        debug_assert!(state.on_cpu);
+        debug_assert!(!state.wake_pending);
         state.state = TCBState::Blocked;
         true
     }
@@ -990,42 +1029,50 @@ impl Task for TCB {
             TCBState::Ready | TCBState::Running => {}
             _ => return false,
         }
+        debug_assert!(state.on_cpu);
+        debug_assert!(!state.wake_pending);
         state.state = TCBState::BlockedUninterruptible;
         true
     }
 
     fn unblock(&self) {
         let mut state = self.state.lock();
-        debug_assert!(state.state == TCBState::Blocked);
+        debug_assert!(state.on_cpu);
+        debug_assert!(matches!(
+            state.state,
+            TCBState::Blocked | TCBState::BlockedUninterruptible
+        ));
         state.state = TCBState::Running;
+        state.wake_pending = false;
     }
 
-    fn wakeup(&self, event: Event) -> Result<(), WakeupFailure> {
+    fn wakeup(&self, event: Event) -> Result<WakeupAction, WakeupFailure> {
         let mut state = self.state.lock();
+        if state.wake_pending {
+            return Err(WakeupFailure::NotBlocked);
+        }
         match state.state {
             TCBState::Blocked => {
-                state.state = TCBState::Ready;
                 *self.wakeup_event.lock() = Some(event);
-                Ok(())
+                Ok(state.make_ready())
             }
             TCBState::BlockedUninterruptible => Err(WakeupFailure::BlockedUninterruptible),
             _ => Err(WakeupFailure::NotBlocked),
         }
     }
 
-    fn wakeup_uninterruptible(&self, event: Event) -> bool {
+    fn wakeup_uninterruptible(&self, event: Event) -> Option<WakeupAction> {
         let mut state = self.state.lock();
-        if !matches!(state.state, TCBState::Blocked | TCBState::BlockedUninterruptible) {
+        if state.wake_pending || !matches!(state.state, TCBState::Blocked | TCBState::BlockedUninterruptible) {
             crate::kwarn!(
                 "Failed to wakeup_uninterruptible task {}, state is not blocked: {:?}",
                 self.tid,
                 state.state
             );
-            return false;
+            return None;
         }
-        state.state = TCBState::Ready;
         *self.wakeup_event.lock() = Some(event);
-        true
+        Some(state.make_ready())
     }
 
     fn take_wakeup_event(&self) -> Option<Event> {

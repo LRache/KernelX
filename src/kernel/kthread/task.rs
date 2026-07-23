@@ -5,7 +5,7 @@ use core::cell::UnsafeCell;
 use crate::arch::KernelContext;
 use crate::kernel::config::KTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::event::Event;
-use crate::kernel::scheduler::{self, KernelStack, Task, Tid, WakeupFailure, current, tid};
+use crate::kernel::scheduler::{self, KernelStack, Task, Tid, WakeupAction, WakeupFailure, current, tid};
 use crate::kernel::task::TCB;
 use crate::kernel::uapi::Uid;
 use crate::klib::SpinLock;
@@ -30,11 +30,17 @@ enum KThreadState {
     Exited,
 }
 
+struct KThreadStateSet {
+    state: KThreadState,
+    on_cpu: bool,
+    wake_pending: bool,
+}
+
 pub struct KThread {
     tid: Tid,
     kcontext: UnsafeCell<KernelContext>,
     kstack: KernelStack<{ KTASK_KSTACK_PAGE_COUNT - 1 }>,
-    state: SpinLock<KThreadState>,
+    state: SpinLock<KThreadStateSet>,
     wakeup_event: SpinLock<Option<Event>>,
     #[cfg(feature = "lockdep")]
     lockstate: crate::klib::ksync::LockState,
@@ -54,7 +60,14 @@ impl KThread {
             tid,
             kcontext: UnsafeCell::new(kcontext),
             kstack,
-            state: SpinLock::new(KThreadState::Ready, "KThread::state"),
+            state: SpinLock::new(
+                KThreadStateSet {
+                    state: KThreadState::Ready,
+                    on_cpu: false,
+                    wake_pending: false,
+                },
+                "KThread::state",
+            ),
             wakeup_event: SpinLock::new(None, "KThread::wakeup_event"),
             #[cfg(feature = "lockdep")]
             lockstate: crate::klib::ksync::LockState::new(),
@@ -104,75 +117,114 @@ impl Task for KThread {
 
     fn run_if_ready(&self) -> bool {
         let mut state = self.state.lock();
-        if *state != KThreadState::Ready {
+        if state.state != KThreadState::Ready {
             return false;
         }
-        *state = KThreadState::Running;
+        debug_assert!(!state.on_cpu);
+        debug_assert!(!state.wake_pending);
+        state.state = KThreadState::Running;
+        state.on_cpu = true;
         true
     }
 
-    fn state_running_to_ready(&self) -> bool {
+    fn finish_switch(&self) -> bool {
         let mut state = self.state.lock();
-        if *state != KThreadState::Running {
-            return false;
+        debug_assert!(state.on_cpu);
+        state.on_cpu = false;
+
+        if state.wake_pending {
+            state.wake_pending = false;
+            if matches!(
+                state.state,
+                KThreadState::Blocked | KThreadState::BlockedUninterruptible
+            ) {
+                state.state = KThreadState::Ready;
+                return true;
+            }
         }
-        *state = KThreadState::Ready;
-        true
+
+        if state.state == KThreadState::Running {
+            state.state = KThreadState::Ready;
+            return true;
+        }
+        false
     }
 
     fn block(&self, _reason: &str) -> bool {
         debug_assert!(current::tid() == self.tid);
         let mut state = self.state.lock();
-        match *state {
+        match state.state {
             KThreadState::Ready | KThreadState::Running => {}
             _ => return false,
         }
-        *state = KThreadState::Blocked;
+        debug_assert!(state.on_cpu);
+        debug_assert!(!state.wake_pending);
+        state.state = KThreadState::Blocked;
         true
     }
 
     fn block_uninterruptible(&self, _reason: &str) -> bool {
         debug_assert!(current::tid() == self.tid);
         let mut state = self.state.lock();
-        match *state {
+        match state.state {
             KThreadState::Ready | KThreadState::Running => {}
             _ => return false,
         }
-        *state = KThreadState::BlockedUninterruptible;
+        debug_assert!(state.on_cpu);
+        debug_assert!(!state.wake_pending);
+        state.state = KThreadState::BlockedUninterruptible;
         true
     }
 
     fn unblock(&self) {
         let mut state = self.state.lock();
+        debug_assert!(state.on_cpu);
         debug_assert!(matches!(
-            *state,
+            state.state,
             KThreadState::Blocked | KThreadState::BlockedUninterruptible
         ));
-        *state = KThreadState::Ready;
+        state.state = KThreadState::Running;
+        state.wake_pending = false;
     }
 
-    fn wakeup(&self, event: Event) -> Result<(), WakeupFailure> {
+    fn wakeup(&self, event: Event) -> Result<WakeupAction, WakeupFailure> {
         let mut state = self.state.lock();
-        match *state {
+        if state.wake_pending {
+            return Err(WakeupFailure::NotBlocked);
+        }
+        match state.state {
             KThreadState::Blocked => {
-                *state = KThreadState::Ready;
                 *self.wakeup_event.lock() = Some(event);
-                Ok(())
+                if state.on_cpu {
+                    state.wake_pending = true;
+                    Ok(WakeupAction::Deferred)
+                } else {
+                    state.state = KThreadState::Ready;
+                    Ok(WakeupAction::Enqueue)
+                }
             }
             KThreadState::BlockedUninterruptible => Err(WakeupFailure::BlockedUninterruptible),
             _ => Err(WakeupFailure::NotBlocked),
         }
     }
 
-    fn wakeup_uninterruptible(&self, event: Event) -> bool {
+    fn wakeup_uninterruptible(&self, event: Event) -> Option<WakeupAction> {
         let mut state = self.state.lock();
-        match *state {
-            KThreadState::Blocked | KThreadState::BlockedUninterruptible => {}
-            _ => return false,
+        if state.wake_pending {
+            return None;
         }
-        *state = KThreadState::Ready;
+        match state.state {
+            KThreadState::Blocked | KThreadState::BlockedUninterruptible => {}
+            _ => return None,
+        }
         *self.wakeup_event.lock() = Some(event);
-        true
+        if state.on_cpu {
+            state.wake_pending = true;
+            Some(WakeupAction::Deferred)
+        } else {
+            state.state = KThreadState::Ready;
+            Some(WakeupAction::Enqueue)
+        }
     }
 
     fn take_wakeup_event(&self) -> Option<Event> {
@@ -180,7 +232,9 @@ impl Task for KThread {
     }
 
     fn set_exited(&self) {
-        *self.state.lock() = KThreadState::Exited;
+        let mut state = self.state.lock();
+        state.state = KThreadState::Exited;
+        state.wake_pending = false;
     }
 
     #[cfg(feature = "lockdep")]

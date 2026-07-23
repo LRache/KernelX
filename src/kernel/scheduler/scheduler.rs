@@ -7,7 +7,7 @@ use crate::kernel::event::Event;
 use crate::kernel::scheduler::task::Task;
 #[cfg(feature = "watchdog")]
 use crate::kernel::scheduler::watchdog;
-use crate::kernel::scheduler::{WakeupFailure, current};
+use crate::kernel::scheduler::{WakeupAction, WakeupFailure, current};
 
 use super::processor::Processor;
 
@@ -49,16 +49,21 @@ pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &'static str) {
 }
 
 pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> Result<(), WakeupFailure> {
-    task.wakeup(event).map(|_| {
+    task.wakeup(event).map(|action| {
+        if action == WakeupAction::Deferred {
+            return;
+        }
         push_task(task);
     })
 }
 
 pub fn wakeup_task_uninterruptible(task: Arc<dyn Task>, event: Event) -> bool {
-    if task.wakeup_uninterruptible(event) {
+    if let Some(action) = task.wakeup_uninterruptible(event) {
         #[cfg(feature = "watchdog")]
         watchdog::remove_blocked_task(task.tid());
-        push_task(task);
+        if action == WakeupAction::Enqueue {
+            push_task(task);
+        }
         true
     } else {
         false
@@ -77,7 +82,7 @@ pub fn run_tasks(processor: &mut Processor) -> ! {
             // TODO: What if the task is exited here?
             processor.switch_to_task(&task);
 
-            if task.state_running_to_ready() {
+            if task.finish_switch() {
                 push_task(task);
             } else {
                 // `Arc<dyn Task>` SHOULD NOT be dropped here.

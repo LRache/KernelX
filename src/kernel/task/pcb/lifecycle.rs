@@ -9,7 +9,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FileEvent, TimerTable, WaitQueue, timer};
 use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, SignalNum, signum};
 use crate::kernel::main::deinit;
-use crate::kernel::scheduler::{self, current, tid};
+use crate::kernel::scheduler::{self, WakeupAction, current, tid};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{self, manager, with_initpcb};
 use crate::klib::{SleepLock, SpinLock};
@@ -310,10 +310,14 @@ impl PCB {
             if tcb.tid() != self.pid {
                 manager::remove(tcb.tid());
             }
-            if tcb.resume_from_stopped() {
-                scheduler::push_task(tcb.clone());
-            } else if tcb.resume_from_ptrace_stop(None).is_ok() {
-                scheduler::push_task(tcb.clone());
+            if let Some(action) = tcb.resume_from_stopped() {
+                if action == WakeupAction::Enqueue {
+                    scheduler::push_task(tcb.clone());
+                }
+            } else if let Ok(action) = tcb.resume_from_ptrace_stop(None) {
+                if action == WakeupAction::Enqueue {
+                    scheduler::push_task(tcb.clone());
+                }
             } else {
                 let _ = scheduler::wakeup_task(tcb.clone(), Event::Signal);
             }

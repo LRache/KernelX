@@ -6,7 +6,7 @@ use crate::kernel::event::Event;
 use crate::kernel::ipc::signal::frame::SigFrame;
 use crate::kernel::ipc::{KSiFields, SiCode, SignalSet, signum};
 use crate::kernel::mm::vdso;
-use crate::kernel::scheduler::{Tid, WakeupFailure};
+use crate::kernel::scheduler::{Tid, WakeupAction, WakeupFailure};
 use crate::kernel::task::{ExitStatus, PCB, TCB};
 use crate::kernel::{config, scheduler};
 
@@ -262,9 +262,11 @@ impl PCB {
         let mut resumed = false;
         let tasks = self.tasks.lock();
         tasks.iter().for_each(|task| {
-            if task.resume_from_stopped() {
+            if let Some(action) = task.resume_from_stopped() {
                 resumed = true;
-                scheduler::push_task(task.clone());
+                if action == WakeupAction::Enqueue {
+                    scheduler::push_task(task.clone());
+                }
             }
         });
         drop(tasks);
@@ -312,7 +314,10 @@ impl PCB {
             if let Some(task) = task {
                 if signum.is_continue() {
                     self.resume_stopped_tasks();
-                } else if signum.is_kill() && task.resume_from_stopped() {
+                } else if signum.is_kill()
+                    && let Some(action) = task.resume_from_stopped()
+                    && action == WakeupAction::Enqueue
+                {
                     // push to ready queue to make it exit by itself.
                     scheduler::push_task(task.clone());
                 }
@@ -333,7 +338,7 @@ impl PCB {
 
         if signum.is_kill() {
             tasks.iter().for_each(|task| {
-                if task.resume_from_stopped() {
+                if task.resume_from_stopped() == Some(WakeupAction::Enqueue) {
                     scheduler::push_task(task.clone());
                 }
             });
