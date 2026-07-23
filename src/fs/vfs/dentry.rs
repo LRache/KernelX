@@ -604,9 +604,9 @@ impl Dentry {
 
         let mut children = self.children.lock();
         if let Some(existing_child) = children.get(name)
-            && existing_child.upgrade().is_some()
+            && let Some(existing_child) = existing_child.upgrade()
         {
-            Ok(existing_child.upgrade().unwrap())
+            Ok(existing_child)
         } else {
             children.insert(name.into(), Arc::downgrade(&new_child));
             Ok(new_child)
