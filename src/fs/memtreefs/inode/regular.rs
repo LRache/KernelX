@@ -561,10 +561,35 @@ impl<T: StaticFsInfo> RegularInode<T> {
             }
         }
 
-        let mut new_parent_meta = new_parent.meta.lock();
+        drop(old_parent_meta);
+
+        let (mut old_parent_meta, mut new_parent_meta) = if self.ino < new_parent.ino {
+            let old_parent_meta = self.meta.lock();
+            // SAFETY: self and new_parent are distinct inode instances in this
+            // branch, and both parent meta locks are acquired in ascending ino
+            // order, so bypassing the same-name lockdep check cannot hide an
+            // AB-BA cycle between these two locks.
+            let new_parent_meta = unsafe { new_parent.meta.lock_unchecked() };
+            (old_parent_meta, new_parent_meta)
+        } else {
+            let new_parent_meta = new_parent.meta.lock();
+            // SAFETY: self and new_parent are distinct inode instances in this
+            // branch, and both parent meta locks are acquired in ascending ino
+            // order, so bypassing the same-name lockdep check cannot hide an
+            // AB-BA cycle between these two locks.
+            let old_parent_meta = unsafe { self.meta.lock_unchecked() };
+            (old_parent_meta, new_parent_meta)
+        };
+        let Meta::Directory(old_children) = &mut old_parent_meta.meta else {
+            return Err(Errno::ENOTDIR);
+        };
         let Meta::Directory(new_children) = &mut new_parent_meta.meta else {
             return Err(Errno::ENOTDIR);
         };
+
+        if old_children.get(old_name) != Some(&old_ino) {
+            return Err(Errno::ENOENT);
+        }
 
         if let Some(&target_ino) = new_children.get(new_name) {
             if target_ino == old_ino {
