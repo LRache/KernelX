@@ -437,9 +437,9 @@ fn select(
     // Blocked before waiting files to avoid losing wakeup events.
     tcb.block("select");
 
-    // Use defer to ensure unblocking if we return early due to error or ready events.
+    // Use defer to cancel the speculative block if we return before sleeping.
     let defer = defer::defer(|| {
-        tcb.unblock();
+        tcb.cancel_block();
     });
 
     let mut ready_count = 0;
@@ -711,7 +711,7 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
     let tcb = current::tcb();
     tcb.block("poll");
     let defer = defer::defer(|| {
-        tcb.unblock();
+        tcb.cancel_block();
     });
 
     let mut poll_files: Vec<(Arc<dyn FileOps>, &mut Pollfd)> = pollfds
