@@ -7,10 +7,18 @@ use spin::mutex::SpinMutex;
 use crate::kernel::scheduler::{Task, TaskRunState, Tid, current};
 
 const WATCHDOG_TICK: Duration = Duration::from_secs(1);
-const WATCHDOG_THRESHOLD_TICKS: u8 = 12;
-const WATCHDOG_REPORT_ALIVE_TICKS: u8 = 15;
+const WATCHDOG_THRESHOLD_TICKS: u64 = 12;
+const WATCHDOG_REPORT_ALIVE_TICKS: u64 = 15;
 
-static BLOCKED_TASKS: SpinMutex<BTreeMap<Tid, (Arc<dyn Task>, u8, &'static str)>> = SpinMutex::new(BTreeMap::new());
+struct BlockedTask {
+    task: Arc<dyn Task>,
+    ticks: u64,
+    reason: &'static str,
+    // PERF_DEBUG(scheduler-time): Concrete lock/object name for attribution.
+    name: Option<&'static str>,
+}
+
+static BLOCKED_TASKS: SpinMutex<BTreeMap<Tid, BlockedTask>> = SpinMutex::new(BTreeMap::new());
 
 #[repr(align(64))]
 struct CacheLineAlignedAtomicUsize(AtomicUsize);
@@ -65,42 +73,48 @@ pub fn transition_task(old: TaskRunState, new: TaskRunState) {
 }
 
 pub fn kwatchdog() {
-    let mut alive_ticks = 0u8;
+    let mut watchdog_ticks = 0u64;
     loop {
         current::sleep(WATCHDOG_TICK);
-        BLOCKED_TASKS
-            .lock()
-            .iter_mut()
-            .for_each(|(tid, (task, ticks, reason))| {
-                let _ = task;
-                *ticks += 1;
-                if *ticks >= WATCHDOG_THRESHOLD_TICKS {
-                    crate::kwarn!(
-                        "Watchdog: Tid {} has been blocked for {} ticks, reason: {}",
-                        tid,
-                        ticks,
-                        reason
-                    );
-
-                    #[cfg(feature = "backtrace")]
-                    {
-                        // The watchdog table only tracks blocked tasks, so their saved context is not running.
-                        let frame_pointer = unsafe { (*task.kcontext_ptr()).frame_pointer() };
-                        crate::klib::backtrace::print_backtrace_from_fp(frame_pointer);
-                    }
-
-                    #[cfg(all(feature = "lockdep", feature = "backtrace"))]
-                    if let Some((name, bt)) = task.lockstate().waiting() {
-                        crate::kwarn!("Task is waiting on lock: {}", name);
-                        crate::kwarn!("Lock was last acquired at:");
-                        crate::klib::backtrace::print_backtrace_chain(&bt);
-                    }
-
-                    *ticks = 0;
+        watchdog_ticks += 1;
+        BLOCKED_TASKS.lock().iter_mut().for_each(|(tid, blocked)| {
+            let _ = &blocked.task;
+            blocked.ticks += 1;
+            if blocked.ticks % WATCHDOG_THRESHOLD_TICKS == 0 {
+                crate::kwarn!(
+                    "Watchdog: Tid {} has been blocked for {} ticks, reason: {}",
+                    tid,
+                    blocked.ticks,
+                    blocked.reason
+                );
+                // PERF_DEBUG(scheduler-time): Report the attributed lock/object.
+                if let Some(name) = blocked.name {
+                    crate::kwarn!("Blocked object name: {}", name);
                 }
-            });
-        alive_ticks = alive_ticks + 1;
-        if alive_ticks >= WATCHDOG_REPORT_ALIVE_TICKS {
+
+                #[cfg(feature = "backtrace")]
+                {
+                    // The watchdog table only tracks blocked tasks, so their saved context is not running.
+                    let frame_pointer = unsafe { (*blocked.task.kcontext_ptr()).frame_pointer() };
+                    crate::klib::backtrace::print_backtrace_from_fp(frame_pointer);
+                }
+
+                #[cfg(all(feature = "lockdep", feature = "backtrace"))]
+                if let Some((name, bt)) = blocked.task.lockstate().waiting() {
+                    crate::kwarn!("Task is waiting on lock: {}", name);
+                    crate::kwarn!("Lock was last acquired at:");
+                    crate::klib::backtrace::print_backtrace_chain(&bt);
+                }
+            }
+        });
+        #[cfg(feature = "scheduler-time-debug")]
+        {
+            if watchdog_ticks % WATCHDOG_THRESHOLD_TICKS == 0 {
+                // PERF_DEBUG(scheduler-time): Periodic temporary performance dump.
+                super::time_debug::dump();
+            }
+        }
+        if watchdog_ticks % WATCHDOG_REPORT_ALIVE_TICKS == 0 {
             let counts = count_tasks();
             crate::kdebug!(
                 "kwatchdog: alive, tasks: ready={}, running={}, blocked={}",
@@ -108,14 +122,22 @@ pub fn kwatchdog() {
                 counts.running,
                 counts.blocked
             );
-            alive_ticks = 0;
         }
     }
 }
 
-pub fn add_blocked_task(task: Arc<dyn Task>, reason: &'static str) {
+// PERF_DEBUG(scheduler-time): name is temporary attribution metadata.
+pub fn add_blocked_task(task: Arc<dyn Task>, reason: &'static str, name: Option<&'static str>) {
     let tid = task.tid();
-    BLOCKED_TASKS.lock().insert(tid, (task, 0, reason));
+    BLOCKED_TASKS.lock().insert(
+        tid,
+        BlockedTask {
+            task,
+            ticks: 0,
+            reason,
+            name,
+        },
+    );
 }
 
 pub fn remove_blocked_task(tid: Tid) {

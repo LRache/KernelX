@@ -222,7 +222,7 @@ impl MsgManager {
                     lrpid: 0,
                 },
                 messages: VecDeque::new(),
-                waiters: WaitQueue::new(),
+                waiters: WaitQueue::new("MsgIdentifier::waiters"),
                 deleted: false,
             },
         );

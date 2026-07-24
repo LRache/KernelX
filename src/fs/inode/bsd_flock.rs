@@ -29,7 +29,7 @@ impl BsdFlockState {
     pub fn new() -> Self {
         Self {
             locks: Vec::new(),
-            waiters: WaitQueue::new(),
+            waiters: WaitQueue::new("BsdFlockState::waiters"),
         }
     }
 

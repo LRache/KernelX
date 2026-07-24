@@ -22,7 +22,7 @@ impl PacketQueue {
     fn new() -> Self {
         Self {
             packets: VecDeque::new(),
-            waiters: WaitQueue::new(),
+            waiters: WaitQueue::new("PacketQueue::waiters"),
             notifier: Arc::new(EpollNotifier::new()),
             bind_count: 0,
         }

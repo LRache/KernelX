@@ -159,8 +159,8 @@ impl PipeState {
     fn new(capacity: usize) -> Self {
         Self {
             fifo: FIFO::new(),
-            read_waiter: WaitQueue::new(),
-            write_waiter: WaitQueue::new(),
+            read_waiter: WaitQueue::new("PipeState::read_waiter"),
+            write_waiter: WaitQueue::new("PipeState::write_waiter"),
             capacity,
             writer_count: 0,
             reader_count: 0,

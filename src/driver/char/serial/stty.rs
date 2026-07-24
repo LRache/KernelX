@@ -26,7 +26,7 @@ impl Stty {
         Stty {
             name,
             serial: SpinLock::new(serial, "Stty::serial"),
-            waiters: SpinLock::new(WaitQueue::new(), "Stty::waiters"),
+            waiters: SpinLock::new(WaitQueue::new("Stty::waiters"), "Stty::waiters"),
             epoll_notifier: Arc::new(EpollNotifier::new()),
             tty: TtyState::new(),
         }

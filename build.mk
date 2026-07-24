@@ -95,6 +95,14 @@ ifeq ($(CONFIG_ENABLE_WATCHDOG),y)
 RUST_FEATURES += watchdog
 endif
 
+ifeq ($(CONFIG_SCHEDULER_TIME_DEBUG),y)
+RUST_FEATURES += scheduler-time-debug
+endif
+
+ifeq ($(CONFIG_SCHEDULER_BLOCK_REASON_DEBUG),y)
+RUST_FEATURES += scheduler-block-reason-debug
+endif
+
 ifeq ($(CONFIG_FANOTIFY),y)
 RUST_FEATURES += fanotify
 endif

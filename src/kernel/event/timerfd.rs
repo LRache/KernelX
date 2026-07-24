@@ -58,7 +58,7 @@ impl TimerFdState {
             interval: Duration::ZERO,
             next_expiry_us: None,
             expirations: 0,
-            waiter: WaitQueue::new(),
+            waiter: WaitQueue::new("TimerFdState::waiter"),
         }
     }
 }

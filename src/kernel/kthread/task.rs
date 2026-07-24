@@ -7,6 +7,9 @@ use crate::kernel::config::KTASK_KSTACK_PAGE_COUNT;
 use crate::kernel::event::Event;
 #[cfg(feature = "watchdog")]
 use crate::kernel::scheduler::TaskRunState;
+// PERF_DEBUG(scheduler-time): Temporary blocked-time stamps.
+#[cfg(feature = "scheduler-block-reason-debug")]
+use crate::kernel::scheduler::time_debug::{self, DebugBlockStamp};
 use crate::kernel::scheduler::{self, KernelStack, Task, Tid, WakeupAction, WakeupFailure, current, tid};
 use crate::kernel::task::TCB;
 use crate::kernel::uapi::Uid;
@@ -46,6 +49,11 @@ struct KThreadStateSet {
     state: KThreadState,
     on_cpu: bool,
     wake_pending: bool,
+    // PERF_DEBUG(scheduler-time): Temporary pending block name and switch-out stamp.
+    #[cfg(feature = "scheduler-block-reason-debug")]
+    debug_block_name: Option<&'static str>,
+    #[cfg(feature = "scheduler-block-reason-debug")]
+    debug_block_stamp: Option<DebugBlockStamp>,
     #[cfg(feature = "watchdog")]
     watchdog_counted: bool,
 }
@@ -57,6 +65,25 @@ impl KThreadStateSet {
             scheduler::watchdog::transition_task(task_run_state(self.state), task_run_state(state));
         }
         self.state = state;
+    }
+
+    fn make_ready(&mut self) -> WakeupAction {
+        // PERF_DEBUG(scheduler-time): Close the blocked interval before wakeup.
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            time_debug::finish_block(self.debug_block_stamp.take());
+        }
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            self.debug_block_name = None;
+        }
+        if self.on_cpu {
+            self.wake_pending = true;
+            WakeupAction::Deferred
+        } else {
+            self.set_state(KThreadState::Ready);
+            WakeupAction::Enqueue
+        }
     }
 }
 
@@ -89,6 +116,11 @@ impl KThread {
                     state: KThreadState::Ready,
                     on_cpu: false,
                     wake_pending: false,
+                    // PERF_DEBUG(scheduler-time): Temporary blocked-time state.
+                    #[cfg(feature = "scheduler-block-reason-debug")]
+                    debug_block_name: None,
+                    #[cfg(feature = "scheduler-block-reason-debug")]
+                    debug_block_stamp: None,
                     #[cfg(feature = "watchdog")]
                     watchdog_counted: false,
                 },
@@ -163,13 +195,19 @@ impl Task for KThread {
         true
     }
 
-    fn finish_switch(&self) -> bool {
+    // PERF_DEBUG(scheduler-time): cpu_id/now_us and debug_block_* updates are
+    // temporary blocked-time accounting.
+    fn finish_switch(&self, cpu_id: usize, now_us: u64) -> bool {
         let mut state = self.state.lock();
         debug_assert!(state.on_cpu);
         state.on_cpu = false;
 
         if state.wake_pending {
             state.wake_pending = false;
+            #[cfg(feature = "scheduler-block-reason-debug")]
+            {
+                state.debug_block_name = None;
+            }
             if matches!(
                 state.state,
                 KThreadState::Blocked | KThreadState::BlockedUninterruptible
@@ -180,13 +218,35 @@ impl Task for KThread {
         }
 
         if state.state == KThreadState::Running {
+            #[cfg(feature = "scheduler-block-reason-debug")]
+            {
+                state.debug_block_name = None;
+            }
             state.set_state(KThreadState::Ready);
             return true;
         }
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            if matches!(
+                state.state,
+                KThreadState::Blocked | KThreadState::BlockedUninterruptible
+            ) {
+                debug_assert!(state.debug_block_stamp.is_none());
+                state.debug_block_stamp = state
+                    .debug_block_name
+                    .take()
+                    .map(|name| DebugBlockStamp::new(cpu_id, now_us, name));
+            } else {
+                state.debug_block_name = None;
+            }
+        }
+        #[cfg(not(feature = "scheduler-block-reason-debug"))]
+        let _ = (cpu_id, now_us);
         false
     }
 
-    fn block(&self, _reason: &str) -> bool {
+    // PERF_DEBUG(scheduler-time): name is retained until switch-out.
+    fn block(&self, name: &'static str) -> bool {
         debug_assert!(current::tid() == self.tid);
         let mut state = self.state.lock();
         match state.state {
@@ -195,11 +255,18 @@ impl Task for KThread {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_name = Some(name);
+        }
+        #[cfg(not(feature = "scheduler-block-reason-debug"))]
+        let _ = name;
         state.set_state(KThreadState::Blocked);
         true
     }
 
-    fn block_uninterruptible(&self, _reason: &str) -> bool {
+    // PERF_DEBUG(scheduler-time): name is retained until switch-out.
+    fn block_uninterruptible(&self, name: &'static str) -> bool {
         debug_assert!(current::tid() == self.tid);
         let mut state = self.state.lock();
         match state.state {
@@ -208,6 +275,12 @@ impl Task for KThread {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_name = Some(name);
+        }
+        #[cfg(not(feature = "scheduler-block-reason-debug"))]
+        let _ = name;
         state.set_state(KThreadState::BlockedUninterruptible);
         true
     }
@@ -219,6 +292,10 @@ impl Task for KThread {
             state.state,
             KThreadState::Blocked | KThreadState::BlockedUninterruptible
         ));
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_name = None;
+        }
         state.set_state(KThreadState::Running);
         state.wake_pending = false;
     }
@@ -231,13 +308,7 @@ impl Task for KThread {
         match state.state {
             KThreadState::Blocked => {
                 *self.wakeup_event.lock() = Some(event);
-                if state.on_cpu {
-                    state.wake_pending = true;
-                    Ok(WakeupAction::Deferred)
-                } else {
-                    state.set_state(KThreadState::Ready);
-                    Ok(WakeupAction::Enqueue)
-                }
+                Ok(state.make_ready())
             }
             KThreadState::BlockedUninterruptible => Err(WakeupFailure::BlockedUninterruptible),
             _ => Err(WakeupFailure::NotBlocked),
@@ -254,13 +325,7 @@ impl Task for KThread {
             _ => return None,
         }
         *self.wakeup_event.lock() = Some(event);
-        if state.on_cpu {
-            state.wake_pending = true;
-            Some(WakeupAction::Deferred)
-        } else {
-            state.set_state(KThreadState::Ready);
-            Some(WakeupAction::Enqueue)
-        }
+        Some(state.make_ready())
     }
 
     fn take_wakeup_event(&self) -> Option<Event> {
@@ -269,6 +334,15 @@ impl Task for KThread {
 
     fn set_exited(&self) {
         let mut state = self.state.lock();
+        // PERF_DEBUG(scheduler-time): Discard temporary accounting state.
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_name = None;
+        }
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_stamp = None;
+        }
         state.set_state(KThreadState::Exited);
         state.wake_pending = false;
     }

@@ -10,6 +10,9 @@ use crate::kernel::scheduler::watchdog;
 use crate::kernel::scheduler::{WakeupAction, WakeupFailure, current};
 
 use super::processor::Processor;
+// PERF_DEBUG(scheduler-time): Temporary running-time accounting.
+#[cfg(feature = "scheduler-time-debug")]
+use super::time_debug;
 
 pub struct Scheduler {
     ready_queue: Mutex<VecDeque<Arc<dyn Task>>>,
@@ -45,7 +48,17 @@ pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
 pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &'static str) {
     task.block_uninterruptible(reason);
     #[cfg(feature = "watchdog")]
-    watchdog::add_blocked_task(task, reason);
+    watchdog::add_blocked_task(task, reason, None);
+}
+
+// PERF_DEBUG(scheduler-time): Preserve the blocked lock/object name for
+// temporary per-name blocked-time attribution.
+pub fn block_task_uninterruptible_named(task: Arc<dyn Task>, reason: &'static str, name: &'static str) {
+    task.block_uninterruptible(name);
+    #[cfg(feature = "watchdog")]
+    watchdog::add_blocked_task(task, reason, Some(name));
+    #[cfg(not(feature = "watchdog"))]
+    let _ = name;
 }
 
 pub fn wakeup_task(task: Arc<dyn Task>, event: Event) -> Result<(), WakeupFailure> {
@@ -81,9 +94,30 @@ pub fn run_tasks(processor: &mut Processor) -> ! {
 
             // TODO: What if the task is exited here?
             task.resume_system_time();
+            // PERF_DEBUG(scheduler-time): Start temporary per-CPU running-time
+            // accounting; cpu_id is also passed to the debug-aware finish_switch.
+            #[cfg(feature = "scheduler-time-debug")]
+            let cpu_id = {
+                let cpu_id = processor.hart_id();
+                time_debug::start_running(cpu_id, arch::get_time_us());
+                cpu_id
+            };
             processor.switch_from_idle(&task);
+            // PERF_DEBUG(scheduler-time): Finish the temporary running interval
+            // and provide its timestamp to blocked-time accounting.
+            #[cfg(feature = "scheduler-time-debug")]
+            let _now_us = {
+                let now_us = arch::get_time_us();
+                time_debug::finish_running(cpu_id, now_us);
+                now_us
+            };
 
-            if task.finish_switch() {
+            #[cfg(feature = "scheduler-block-reason-debug")]
+            let should_requeue = task.finish_switch(cpu_id, _now_us);
+            #[cfg(not(feature = "scheduler-block-reason-debug"))]
+            let should_requeue = task.finish_switch(0, 0);
+
+            if should_requeue {
                 push_task(task);
             } else {
                 // `Arc<dyn Task>` SHOULD NOT be dropped here.

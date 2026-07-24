@@ -12,7 +12,10 @@ impl FanotifyPermission {
     pub(super) fn new() -> Self {
         Self {
             response: SpinLock::new(None, "FanotifyPermission::response"),
-            waiter: SpinLock::new(WaitQueue::new(), "FanotifyPermission::waiter"),
+            waiter: SpinLock::new(
+                WaitQueue::new("FanotifyPermission::waiter"),
+                "FanotifyPermission::waiter",
+            ),
         }
     }
 

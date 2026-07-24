@@ -78,8 +78,8 @@ impl MessagePipeState {
     fn new(capacity: usize) -> Self {
         Self {
             queue: MessageQueue::new(capacity),
-            read_waiter: WaitQueue::new(),
-            write_waiter: WaitQueue::new(),
+            read_waiter: WaitQueue::new("MessagePipeState::read_waiter"),
+            write_waiter: WaitQueue::new("MessagePipeState::write_waiter"),
             writer_count: 0,
             reader_count: 0,
         }

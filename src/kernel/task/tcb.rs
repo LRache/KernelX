@@ -18,6 +18,9 @@ use crate::kernel::mm::maparea::{AuxKey, Auxv};
 use crate::kernel::mm::{AddrSpace, elf};
 #[cfg(feature = "watchdog")]
 use crate::kernel::scheduler::TaskRunState;
+// PERF_DEBUG(scheduler-time): Temporary blocked-time stamps.
+#[cfg(feature = "scheduler-block-reason-debug")]
+use crate::kernel::scheduler::time_debug::{self, DebugBlockStamp};
 use crate::kernel::scheduler::{KernelStack, Task, Tid, WakeupAction, WakeupFailure, current};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::fdtable::{FDFlags, FDTable};
@@ -99,6 +102,11 @@ pub struct TCBStateSet {
     pending_state_change: PendingTCBStateChange,
     on_cpu: bool,
     wake_pending: bool,
+    // PERF_DEBUG(scheduler-time): Temporary pending block name and switch-out stamp.
+    #[cfg(feature = "scheduler-block-reason-debug")]
+    debug_block_name: Option<&'static str>,
+    #[cfg(feature = "scheduler-block-reason-debug")]
+    debug_block_stamp: Option<DebugBlockStamp>,
     #[cfg(feature = "watchdog")]
     watchdog_counted: bool,
 
@@ -131,6 +139,15 @@ impl TCBStateSet {
     }
 
     fn make_ready(&mut self) -> WakeupAction {
+        // PERF_DEBUG(scheduler-time): Close the blocked interval before wakeup.
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            time_debug::finish_block(self.debug_block_stamp.take());
+        }
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            self.debug_block_name = None;
+        }
         if self.on_cpu {
             self.wake_pending = true;
             WakeupAction::Deferred
@@ -148,6 +165,11 @@ impl Default for TCBStateSet {
             pending_state_change: PendingTCBStateChange::None,
             on_cpu: false,
             wake_pending: false,
+            // PERF_DEBUG(scheduler-time): Temporary blocked-time state.
+            #[cfg(feature = "scheduler-block-reason-debug")]
+            debug_block_name: None,
+            #[cfg(feature = "scheduler-block-reason-debug")]
+            debug_block_stamp: None,
             #[cfg(feature = "watchdog")]
             watchdog_counted: false,
             pending_signal: None,
@@ -1023,13 +1045,19 @@ impl Task for TCB {
         return true;
     }
 
-    fn finish_switch(&self) -> bool {
+    // PERF_DEBUG(scheduler-time): cpu_id/now_us and debug_block_* updates are
+    // temporary blocked-time accounting.
+    fn finish_switch(&self, cpu_id: usize, now_us: u64) -> bool {
         let mut state = self.state.lock();
         debug_assert!(state.on_cpu);
         state.on_cpu = false;
 
         if state.wake_pending {
             state.wake_pending = false;
+            #[cfg(feature = "scheduler-block-reason-debug")]
+            {
+                state.debug_block_name = None;
+            }
             if matches!(
                 state.state,
                 TCBState::Blocked | TCBState::BlockedUninterruptible | TCBState::Stopped | TCBState::PtraceStop(_)
@@ -1040,13 +1068,32 @@ impl Task for TCB {
         }
 
         if state.state == TCBState::Running {
+            #[cfg(feature = "scheduler-block-reason-debug")]
+            {
+                state.debug_block_name = None;
+            }
             state.set_state(TCBState::Ready);
             return true;
         }
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            if matches!(state.state, TCBState::Blocked | TCBState::BlockedUninterruptible) {
+                debug_assert!(state.debug_block_stamp.is_none());
+                state.debug_block_stamp = state
+                    .debug_block_name
+                    .take()
+                    .map(|name| DebugBlockStamp::new(cpu_id, now_us, name));
+            } else {
+                state.debug_block_name = None;
+            }
+        }
+        #[cfg(not(feature = "scheduler-block-reason-debug"))]
+        let _ = (cpu_id, now_us);
         false
     }
 
-    fn block(&self, _reason: &str) -> bool {
+    // PERF_DEBUG(scheduler-time): name is retained until switch-out.
+    fn block(&self, name: &'static str) -> bool {
         debug_assert!(
             current::tid() == self.tid,
             "current tid {} != self.tid {}",
@@ -1061,11 +1108,18 @@ impl Task for TCB {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_name = Some(name);
+        }
+        #[cfg(not(feature = "scheduler-block-reason-debug"))]
+        let _ = name;
         state.set_state(TCBState::Blocked);
         true
     }
 
-    fn block_uninterruptible(&self, _reason: &str) -> bool {
+    // PERF_DEBUG(scheduler-time): name is retained until switch-out.
+    fn block_uninterruptible(&self, name: &'static str) -> bool {
         debug_assert!(current::tid() == self.tid);
 
         let mut state = self.state.lock();
@@ -1075,6 +1129,12 @@ impl Task for TCB {
         }
         debug_assert!(state.on_cpu);
         debug_assert!(!state.wake_pending);
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_name = Some(name);
+        }
+        #[cfg(not(feature = "scheduler-block-reason-debug"))]
+        let _ = name;
         state.set_state(TCBState::BlockedUninterruptible);
         true
     }
@@ -1086,6 +1146,10 @@ impl Task for TCB {
             state.state,
             TCBState::Blocked | TCBState::BlockedUninterruptible
         ));
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_name = None;
+        }
         state.set_state(TCBState::Running);
         state.wake_pending = false;
     }
