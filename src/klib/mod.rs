@@ -16,5 +16,6 @@ pub mod utils;
 pub use initcell::InitedCell;
 #[allow(unused_imports)]
 pub use ksync::{BucketSleepLock, BucketSleepLockGuard};
-pub use ksync::{RWLock, SleepLock, SpinLock};
+#[allow(unused_imports)]
+pub use ksync::{RWLock, SleepLock, SleepLockOnStack, SleepRwLockOnStack, SpinLock};
 pub use utils::LazyInitedCell;

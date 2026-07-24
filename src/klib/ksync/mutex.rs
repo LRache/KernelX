@@ -86,6 +86,10 @@ impl<T, R: LockerTrait> Mutex<T, R> {
         self.lock_inner(true)
     }
 
+    pub fn into_inner(self) -> T {
+        self.data.into_inner()
+    }
+
     /// Acquires this lock without running lockdep's pre-acquire chain check.
     ///
     /// # Safety

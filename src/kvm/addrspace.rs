@@ -264,13 +264,13 @@ impl KvmAddrSpace {
                     .unwrap_or(requested_perm);
 
                 if pagetable.is_mapped(user_fault.gpage) {
-                    // SAFETY: The owner MapManager lock is held across host
+                    // SAFETY: The owner MapManager write lock is held across host
                     // translation and this G-stage PTE update. Host unmap/remap/COW
                     // paths notify KVM while holding the same lock before replacing
                     // or releasing the backing page, so they cannot miss this PTE.
                     unsafe { pagetable.mmap_replace_raw(user_fault.gpage, kpage, perm) };
                 } else {
-                    // SAFETY: The owner MapManager lock is held across host
+                    // SAFETY: The owner MapManager write lock is held across host
                     // translation and this G-stage PTE update. Host unmap/remap/COW
                     // paths notify KVM while holding the same lock before replacing
                     // or releasing the backing page, so they cannot miss this PTE.

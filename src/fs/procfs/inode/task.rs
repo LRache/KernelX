@@ -466,7 +466,7 @@ impl InodeOps for TaskMapsInode {
     fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
         let tcb = manager::get(self.tid).ok_or(Errno::ESRCH)?;
         let addrspace = tcb.get_addrspace().clone();
-        let areas = addrspace.with_map_manager_mut(|manager| manager.snapshot());
+        let areas = addrspace.with_map_manager(|manager| manager.snapshot());
 
         read_iter_text(buf, offset, areas.iter(), |area| {
             let perms = Self::perm_string(area.perm, area.shared);

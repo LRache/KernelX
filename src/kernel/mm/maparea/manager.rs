@@ -8,7 +8,7 @@ use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::PrivateAnonymousArea;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
-use crate::klib::SpinLock;
+use crate::klib::{SleepLockOnStack, SpinLock};
 use crate::{ktrace, print};
 
 use super::area::{Area, MapAreaInfo, MemoryFaultSignal, PinPageFrame};
@@ -16,14 +16,23 @@ use super::userbrk::UserBrk;
 use super::userstack::{Auxv, UserStack};
 use super::watcher::{MapChange, MapChangeEvent, MapChangeNotifier, MapManagerWatcher};
 
+type LockedArea = SleepLockOnStack<Box<dyn Area>>;
+
+/// The containing `AddrSpace` protects the Area set with
+/// `SleepRwLockOnStack<Manager>`. Always acquire that outer lock before an
+/// individual `LockedArea` is locked or removed from the set.
 pub struct Manager {
-    areas: BTreeMap<usize, Box<dyn Area>>,
+    areas: BTreeMap<usize, LockedArea>,
     userstack_ubase: usize,
     userbrk: UserBrk,
     watchers: Vec<Arc<dyn MapManagerWatcher>>,
 }
 
 impl Manager {
+    fn lock_area(area: Box<dyn Area>) -> LockedArea {
+        SleepLockOnStack::new(area, "MapManager::area")
+    }
+
     pub fn new() -> Self {
         Self {
             areas: BTreeMap::new(),
@@ -39,8 +48,9 @@ impl Manager {
 
         let new_areas = self
             .areas
-            .iter_mut()
+            .iter()
             .map(|(ubase, area)| {
+                let mut area = area.lock();
                 Self::notify_before_map_change_to(
                     watchers,
                     MapChange {
@@ -49,7 +59,10 @@ impl Manager {
                         event: MapChangeEvent::Remap,
                     },
                 );
-                (*ubase, area.fork(self_pagetable, &mut tlb_changed, addrspace))
+                (
+                    *ubase,
+                    Self::lock_area(area.fork(self_pagetable, &mut tlb_changed, addrspace)),
+                )
             })
             .collect();
         if tlb_changed {
@@ -107,6 +120,7 @@ impl Manager {
 
         // Iterate through existing areas in ascending order to find a gap
         for (&area_base, area) in &self.areas {
+            let area = area.lock();
             let area_end = area_base + area.size();
 
             // Check if candidate address is before this area and has enough space
@@ -164,6 +178,7 @@ impl Manager {
                 break;
             }
 
+            let area = area.lock();
             if area_base + area.size() <= start {
                 continue;
             }
@@ -180,13 +195,14 @@ impl Manager {
             !self.is_map_range_overlapped(uaddr, area.page_count()),
             "Address range is not free"
         );
-        self.areas.insert(uaddr, area);
+        self.areas.insert(uaddr, Self::lock_area(area));
     }
 
     pub fn snapshot(&self) -> Vec<MapAreaInfo> {
         self.areas
             .iter()
             .map(|(&start, area)| {
+                let area = area.lock();
                 let mut info = area.map_area_info();
                 info.start = start;
                 info.end = start + area.size();
@@ -214,6 +230,7 @@ impl Manager {
                 break;
             }
 
+            let area = area.lock();
             if area_base + area.size() <= start {
                 continue;
             }
@@ -255,21 +272,21 @@ impl Manager {
         let new_area_end = uaddr + area.size();
 
         for overlapping_base in self.find_overlapped_areas(uaddr, new_area_end) {
-            let mut middle = self.areas.remove(&overlapping_base).unwrap();
+            let mut middle = self.areas.remove(&overlapping_base).unwrap().into_inner();
             let overlapping_end = overlapping_base + middle.size();
 
             // KEEP Left part [overlapping_base, uaddr)
             if overlapping_base < uaddr {
                 let left;
                 (left, middle) = middle.split(uaddr);
-                self.areas.insert(overlapping_base, left);
+                self.areas.insert(overlapping_base, Self::lock_area(left));
             }
 
             // KEEP Right part [new_area_end, overlapping_end)
             if new_area_end < overlapping_end {
                 let right;
                 (middle, right) = middle.split(new_area_end);
-                self.areas.insert(new_area_end, right);
+                self.areas.insert(new_area_end, Self::lock_area(right));
             }
 
             self.notify_before_map_change(MapChange {
@@ -282,7 +299,7 @@ impl Manager {
         }
 
         // Now we can safely insert the new area
-        self.areas.insert(uaddr, area);
+        self.areas.insert(uaddr, Self::lock_area(area));
     }
 
     pub fn unmap_area(&mut self, uaddr: usize, page_count: usize, pagetable: &SpinLock<PageTable>) -> SysResult<()> {
@@ -294,21 +311,21 @@ impl Manager {
         // Process each intersecting area
         for area_base in self.find_overlapped_areas(uaddr, uaddr_end) {
             // Remove the area from the map
-            let mut middle = self.areas.remove(&area_base).unwrap();
+            let mut middle = self.areas.remove(&area_base).unwrap().into_inner();
             let area_end = area_base + middle.size();
 
             // KEEP Left part [area_base, uaddr)
             if area_base < uaddr {
                 let left;
                 (left, middle) = middle.split(uaddr);
-                self.areas.insert(area_base, left);
+                self.areas.insert(area_base, Self::lock_area(left));
             }
 
             // KEEP Right part [uaddr_end, area_end)
             if uaddr_end < area_end {
                 let right;
                 (middle, right) = middle.split(uaddr_end);
-                self.areas.insert(uaddr_end, right);
+                self.areas.insert(uaddr_end, Self::lock_area(right));
             }
 
             self.notify_before_map_change(MapChange {
@@ -355,24 +372,24 @@ impl Manager {
         let overlapped_areas = self.find_overlapped_areas(uaddr, uaddr_end);
 
         for overlapped_base in overlapped_areas.iter() {
-            self.areas.get(overlapped_base).unwrap().check_set_perm(perm)?;
+            self.areas.get(overlapped_base).unwrap().lock().check_set_perm(perm)?;
         }
 
         let mut tlb_changed = false;
         for overlapped_base in overlapped_areas {
-            let mut middle = self.areas.remove(&overlapped_base).unwrap();
+            let mut middle = self.areas.remove(&overlapped_base).unwrap().into_inner();
             let overlapped_end = overlapped_base + middle.size();
 
             if overlapped_base < uaddr {
                 let left;
                 (left, middle) = middle.split(uaddr);
-                self.areas.insert(overlapped_base, left);
+                self.areas.insert(overlapped_base, Self::lock_area(left));
             }
 
             if uaddr_end < overlapped_end {
                 let right;
                 (middle, right) = middle.split(uaddr_end);
-                self.areas.insert(uaddr_end, right);
+                self.areas.insert(uaddr_end, Self::lock_area(right));
             }
 
             self.notify_before_map_change(MapChange {
@@ -381,7 +398,7 @@ impl Manager {
                 event: MapChangeEvent::PermChange(perm),
             });
             middle.set_perm(perm, pagetable, &mut tlb_changed);
-            self.areas.insert(middle.ubase(), middle);
+            self.areas.insert(middle.ubase(), Self::lock_area(middle));
         }
         if tlb_changed {
             pagetable.lock().flush_tlb();
@@ -412,70 +429,71 @@ impl Manager {
         Ok(top)
     }
 
-    pub fn translate_read(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
-        if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
-            if !area.perm().contains(MapPerm::R) {
-                return None;
-            }
-            area.translate_read(uaddr, addrspace)
-        } else {
-            None
-        }
+    pub fn translate_read(&self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
+        let mut area = {
+            let (_, area) = self.areas.range(..=uaddr).next_back()?;
+            let area = area.lock();
+            area.perm().contains(MapPerm::R).then_some(area)?
+        };
+
+        area.translate_read(uaddr, addrspace)
     }
 
-    pub fn translate_write(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
+    pub fn translate_write(&self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
         let watchers = self.watchers.as_slice();
-        if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
-            if !area.perm().contains(MapPerm::W) {
-                return None;
-            }
-            let map_change_notifier = MapChangeNotifier::new(watchers);
-            area.translate_write(uaddr, addrspace, &map_change_notifier)
-        } else {
-            None
-        }
+        let mut area = {
+            let (_, area) = self.areas.range(..=uaddr).next_back()?;
+            let area = area.lock();
+            area.perm().contains(MapPerm::W).then_some(area)?
+        };
+
+        let map_change_notifier = MapChangeNotifier::new(watchers);
+        area.translate_write(uaddr, addrspace, &map_change_notifier)
     }
 
-    pub fn get_frame(&mut self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
+    pub fn get_frame(&self, uaddr: usize, addrspace: &AddrSpace) -> Option<PinPageFrame> {
         let watchers = self.watchers.as_slice();
-        if let Some((_, area)) = self.areas.range_mut(..=uaddr).next_back() {
-            if !area.perm().contains(MapPerm::W) {
-                return None;
-            }
-            let map_change_notifier = MapChangeNotifier::new(watchers);
-            area.get_frame(uaddr, addrspace, &map_change_notifier)
-        } else {
-            None
-        }
+        let mut area = {
+            let (_, area) = self.areas.range(..=uaddr).next_back()?;
+            let area = area.lock();
+            area.perm().contains(MapPerm::W).then_some(area)?
+        };
+
+        let map_change_notifier = MapChangeNotifier::new(watchers);
+        area.get_frame(uaddr, addrspace, &map_change_notifier)
     }
 
     pub fn try_to_fix_memory_fault(
-        &mut self,
+        &self,
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
     ) -> Result<(), MemoryFaultSignal> {
         let watchers = self.watchers.as_slice();
-        if let Some((_ubase, area)) = self.areas.range_mut(..=uaddr).next_back() {
+        let mut area = {
+            let Some((_ubase, area)) = self.areas.range(..=uaddr).next_back() else {
+                return Err(MemoryFaultSignal::Segv);
+            };
+            let area = area.lock();
             if !access_type.match_perm(area.perm()) {
                 return Err(MemoryFaultSignal::Segv);
             }
-            let map_change_notifier = MapChangeNotifier::new(watchers);
-            match area.try_to_fix_memory_fault(uaddr, access_type, addrspace, &map_change_notifier) {
-                Ok(()) => Ok(()),
-                Err(signal) => {
-                    // crate::kinfo!(
-                    //     "Area {} at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
-                    //     area.type_name(),
-                    //     area.ubase(),
-                    //     uaddr,
-                    //     access_type
-                    // );
-                    Err(signal)
-                }
+            area
+        };
+
+        let map_change_notifier = MapChangeNotifier::new(watchers);
+        match area.try_to_fix_memory_fault(uaddr, access_type, addrspace, &map_change_notifier) {
+            Ok(()) => Ok(()),
+            Err(signal) => {
+                // crate::kinfo!(
+                //     "Area {} at {:#x} failed to fix memory fault at {:#x} for access type {:?}",
+                //     area.type_name(),
+                //     area.ubase(),
+                //     uaddr,
+                //     access_type
+                // );
+                Err(signal)
             }
-        } else {
-            Err(MemoryFaultSignal::Segv)
         }
     }
 
@@ -554,6 +572,7 @@ impl Manager {
         } else {
             print!("Mapped areas:\n");
             for (index, (&base_addr, area)) in self.areas.iter().enumerate() {
+                let area = area.lock();
                 let end_addr = base_addr + area.size();
                 print!(
                     "  {}. {} [{:#x}, {:#x}) {:?} - {}  bytes\n",
@@ -571,7 +590,8 @@ impl Manager {
 
     pub fn cleanup(&mut self, pagetable: &SpinLock<PageTable>) {
         let areas = core::mem::take(&mut self.areas);
-        for (_, mut area) in areas {
+        for (_, area) in areas {
+            let mut area = area.into_inner();
             area.unmap(pagetable);
         }
     }
