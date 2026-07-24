@@ -304,6 +304,12 @@ impl Area for SharedAnonymousArea {
         "shared-anonymous"
     }
 
+    // PERF_DEBUG(map-manager-lock-backing): Remove with Area::debug_backing_id.
+    #[cfg(feature = "map-manager-lock-debug")]
+    fn debug_backing_id(&self) -> usize {
+        Arc::as_ptr(&self.object) as usize
+    }
+
     fn map_area_info(&self) -> MapAreaInfo {
         let mut info = MapAreaInfo::new(self.ubase(), self.ubase() + self.size(), self.perm);
         info.shared = true;

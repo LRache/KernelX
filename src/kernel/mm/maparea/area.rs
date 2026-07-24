@@ -160,6 +160,18 @@ pub trait Area: Send {
         "Area"
     }
 
+    // PERF_DEBUG_BEGIN(map-manager-lock-backing): Temporary backing identity
+    // used to correlate slow calls across different Area instances.
+    /// Returns the identity of storage shared by multiple Area instances.
+    ///
+    /// This is only used by temporary MapManager lock debugging. Zero means
+    /// that the Area has no single shared backing object to identify.
+    #[cfg(feature = "map-manager-lock-debug")]
+    fn debug_backing_id(&self) -> usize {
+        0
+    }
+    // PERF_DEBUG_END(map-manager-lock-backing)
+
     fn map_area_info(&self) -> MapAreaInfo {
         MapAreaInfo::new(self.ubase(), self.ubase() + self.size(), self.perm())
     }

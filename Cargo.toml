@@ -24,6 +24,7 @@ backtrace = []
 watchdog = []
 scheduler-time-debug = []
 scheduler-block-reason-debug = ["scheduler-time-debug"]
+map-manager-lock-debug = []
 fanotify = []
 virtio-block-page-cache = []
 

@@ -103,6 +103,12 @@ ifeq ($(CONFIG_SCHEDULER_BLOCK_REASON_DEBUG),y)
 RUST_FEATURES += scheduler-block-reason-debug
 endif
 
+# PERF_DEBUG(map-manager-lock): Disabled by default; enable temporarily with
+# CONFIG_MAP_MANAGER_LOCK_DEBUG=y.
+ifeq ($(CONFIG_MAP_MANAGER_LOCK_DEBUG),y)
+RUST_FEATURES += map-manager-lock-debug
+endif
+
 ifeq ($(CONFIG_FANOTIFY),y)
 RUST_FEATURES += fanotify
 endif

@@ -136,5 +136,7 @@ pub(crate) fn dump() {
         }
     }
     println!("==========================================");
+    #[cfg(feature = "map-manager-lock-debug")]
+    crate::kernel::mm::maparea::dump_lock_debug_stats();
 }
 // PERF_DEBUG_END(scheduler-time)
