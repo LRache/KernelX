@@ -1,15 +1,86 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::mem;
+
+use smallvec::SmallVec;
 
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
+use crate::kernel::event::Event;
+use crate::kernel::scheduler::{self, Task, current};
 use crate::klib::SpinLock;
 use crate::klib::lru::LRUCache;
 
 use super::{Index, Inode};
 
+struct WaitQueue {
+    state: SpinLock<WaitQueueState>,
+}
+
+struct WaitQueueState {
+    completed: bool,
+    waiters: SmallVec<[Arc<dyn Task>; 4]>,
+}
+
+impl WaitQueue {
+    fn new() -> Self {
+        Self {
+            state: SpinLock::new(
+                WaitQueueState {
+                    completed: false,
+                    waiters: SmallVec::new(),
+                },
+                "InodeCache::waiters",
+            ),
+        }
+    }
+
+    fn wait(&self) {
+        let task = current::task().clone();
+        {
+            let mut state = self.state.lock();
+            if state.completed {
+                return;
+            }
+            scheduler::block_task_uninterruptible_named(
+                task.clone(),
+                "inode_cache_transition",
+                "InodeCache::transition",
+            );
+            state.waiters.push(task);
+        }
+        current::schedule();
+    }
+
+    fn complete(&self) {
+        let waiters = {
+            let mut state = self.state.lock();
+            state.completed = true;
+            mem::take(&mut state.waiters)
+        };
+        for task in waiters {
+            scheduler::wakeup_task_uninterruptible(task, Event::SleepLock);
+        }
+    }
+}
+
+enum CacheEntry {
+    Loading(Arc<WaitQueue>),
+    Ready(Arc<Inode>),
+    Syncing {
+        inode: Option<Arc<Inode>>,
+        waiters: Arc<WaitQueue>,
+    },
+}
+
+struct SyncWork {
+    index: Index,
+    inode: Arc<Inode>,
+    waiters: Arc<WaitQueue>,
+}
+
 pub struct Cache {
-    cache: SpinLock<LRUCache<Index, Arc<Inode>>>,
+    cache: SpinLock<LRUCache<Index, CacheEntry>>,
 }
 
 impl Cache {
@@ -19,70 +90,160 @@ impl Cache {
         }
     }
 
-    fn is_idle(inode: &Arc<Inode>) -> bool {
-        Arc::strong_count(inode) <= 1
+    fn is_idle(entry: &CacheEntry) -> bool {
+        matches!(entry, CacheEntry::Ready(inode) if Arc::strong_count(inode) <= 1)
     }
 
     fn low_watermark() -> usize {
         config::INODE_CACHE_LOW_WATERMARK.min(config::INODE_CACHE_HIGH_WATERMARK.saturating_sub(1))
     }
 
-    fn remove_entry(cache: &mut LRUCache<Index, Arc<Inode>>, index: &Index) -> Option<Arc<Inode>> {
-        let inode = cache.get(index).cloned();
-        if inode.is_some() {
-            cache.remove(index);
-        }
-        inode
-    }
-
-    fn remove_if(&self, mut predicate: impl FnMut(&Index, &Arc<Inode>) -> bool) -> usize {
-        let removed = {
-            let mut cache = self.cache.lock();
-            let mut reclaimable = Vec::new();
-            let _ = cache.try_for_each_mut(|index, inode| -> Result<(), ()> {
-                if predicate(&index, inode) {
-                    reclaimable.push(index);
-                }
-                Ok(())
-            });
-            reclaimable
-                .into_iter()
-                .filter_map(|index| Self::remove_entry(&mut cache, &index))
-                .collect::<Vec<_>>()
-        };
-
-        let count = removed.len();
-        drop(removed);
-        count
-    }
-
-    // Return removed inodes so Drop runs after InodeCache::cache is unlocked.
-    fn reclaim(cache: &mut LRUCache<Index, Arc<Inode>>) -> Vec<Arc<Inode>> {
-        let mut removed = Vec::new();
+    fn start_reclaim(cache: &mut LRUCache<Index, CacheEntry>) -> Vec<SyncWork> {
+        let mut works = Vec::new();
         let mut remaining_to_scan = cache.len();
         let low_watermark = Self::low_watermark();
 
-        while cache.len() > low_watermark && remaining_to_scan > 0 {
+        while cache.len().saturating_sub(works.len()) > low_watermark && remaining_to_scan > 0 {
             remaining_to_scan -= 1;
-            let Some((index, idle)) = cache.tail().map(|(index, inode)| (index, Self::is_idle(inode))) else {
-                break;
+            let Some((index, inode)) = cache.tail().and_then(|(index, entry)| match entry {
+                CacheEntry::Ready(inode) if Arc::strong_count(inode) <= 1 => Some((index, inode.clone())),
+                _ => None,
+            }) else {
+                let Some((index, _)) = cache.tail() else {
+                    break;
+                };
+                cache.access(&index);
+                continue;
             };
 
-            if idle {
-                let Some(inode) = Self::remove_entry(cache, &index) else {
-                    continue;
-                };
-                removed.push(inode);
-            } else {
-                cache.access(&index);
-            }
+            let waiters = Arc::new(WaitQueue::new());
+            cache.put(
+                index,
+                CacheEntry::Syncing {
+                    inode: Some(inode.clone()),
+                    waiters: waiters.clone(),
+                },
+            );
+            works.push(SyncWork { index, inode, waiters });
         }
 
+        works
+    }
+
+    fn finish_reclaim(&self, works: Vec<SyncWork>) -> usize {
+        let mut removed = 0;
+        for work in works {
+            let synced = work.inode.sync().is_ok();
+            if synced {
+                let cached_inode = {
+                    let mut cache = self.cache.lock();
+                    match cache.get_mut(&work.index) {
+                        Some(CacheEntry::Syncing { inode, waiters }) if Arc::ptr_eq(waiters, &work.waiters) => {
+                            inode.take().expect("syncing inode was already taken")
+                        }
+                        _ => unreachable!("inode cache syncing state disappeared"),
+                    }
+                };
+
+                // Keep the Syncing marker published until the old inode has
+                // completed its final Drop, so a loader cannot publish a new
+                // inode for the same index too early.
+                drop(work.inode);
+                drop(cached_inode);
+
+                let mut cache = self.cache.lock();
+                let is_current = matches!(
+                    cache.get(&work.index),
+                    Some(CacheEntry::Syncing {
+                        inode: None,
+                        waiters,
+                    }) if Arc::ptr_eq(waiters, &work.waiters)
+                );
+                if !is_current {
+                    unreachable!("inode cache syncing state disappeared");
+                }
+                cache.remove(&work.index);
+                removed += 1;
+            } else {
+                let mut cache = self.cache.lock();
+                let is_current = matches!(
+                    cache.get(&work.index),
+                    Some(CacheEntry::Syncing { waiters, .. })
+                        if Arc::ptr_eq(waiters, &work.waiters)
+                );
+                if !is_current {
+                    unreachable!("inode cache syncing state disappeared");
+                }
+                cache.put(work.index, CacheEntry::Ready(work.inode.clone()));
+            }
+            work.waiters.complete();
+        }
         removed
     }
 
+    pub fn get_or_load(&self, index: &Index, load: impl FnOnce() -> SysResult<Arc<Inode>>) -> SysResult<Arc<Inode>> {
+        loop {
+            let (waiters, reclaim) = {
+                let mut cache = self.cache.lock();
+                match cache.get(index) {
+                    Some(CacheEntry::Ready(inode)) => return Ok(inode.clone()),
+                    Some(CacheEntry::Loading(waiters)) | Some(CacheEntry::Syncing { waiters, .. }) => {
+                        (Some(waiters.clone()), Vec::new())
+                    }
+                    None => {
+                        let reclaim = if cache.len() >= config::INODE_CACHE_HIGH_WATERMARK {
+                            Self::start_reclaim(&mut cache)
+                        } else {
+                            Vec::new()
+                        };
+                        let waiters = Arc::new(WaitQueue::new());
+                        cache.put(*index, CacheEntry::Loading(waiters.clone()));
+                        (None, reclaim)
+                    }
+                }
+            };
+
+            if let Some(waiters) = waiters {
+                waiters.wait();
+                continue;
+            }
+
+            self.finish_reclaim(reclaim);
+            let result = load();
+            {
+                let mut cache = self.cache.lock();
+                let CacheEntry::Loading(waiters) = cache.get(index).expect("inode cache loading state disappeared")
+                else {
+                    unreachable!("inode cache loading state was replaced");
+                };
+                let waiters = waiters.clone();
+                match &result {
+                    Ok(inode) => cache.put(*index, CacheEntry::Ready(inode.clone())),
+                    Err(_) => {
+                        cache.remove(index);
+                    }
+                }
+                drop(cache);
+                waiters.complete();
+            }
+            return result;
+        }
+    }
+
     pub fn find(&self, index: &Index) -> Option<Arc<Inode>> {
-        self.cache.lock().get(index).cloned()
+        loop {
+            let waiters = {
+                let mut cache = self.cache.lock();
+                match cache.get(index) {
+                    Some(CacheEntry::Ready(inode)) => return Some(inode.clone()),
+                    Some(CacheEntry::Loading(waiters)) | Some(CacheEntry::Syncing { waiters, .. }) => {
+                        Some(waiters.clone())
+                    }
+                    None => return None,
+                }
+            };
+            waiters.expect("cache transition has waiters").wait();
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -90,71 +251,156 @@ impl Cache {
     }
 
     pub fn get_or_insert(&self, index: &Index, inode: Arc<Inode>) -> SysResult<Arc<Inode>> {
-        let (inode, removed) = {
-            let mut cache = self.cache.lock();
-            let mut removed = Vec::new();
-
-            // Recheck while holding the cache lock because the inode was loaded without it.
-            if cache.contains_key(index) {
-                let existing = cache
-                    .get(index)
-                    .cloned()
-                    .expect("inode disappeared while cache is locked");
-                removed.push(inode);
-                (existing, removed)
-            } else {
-                if cache.len() >= config::INODE_CACHE_HIGH_WATERMARK {
-                    removed = Self::reclaim(&mut cache);
+        loop {
+            let (existing, waiters, reclaim) = {
+                let mut cache = self.cache.lock();
+                match cache.get(index) {
+                    Some(CacheEntry::Ready(existing)) => (Some(existing.clone()), None, Vec::new()),
+                    Some(CacheEntry::Loading(waiters)) | Some(CacheEntry::Syncing { waiters, .. }) => {
+                        (None, Some(waiters.clone()), Vec::new())
+                    }
+                    None => {
+                        let reclaim = if cache.len() >= config::INODE_CACHE_HIGH_WATERMARK {
+                            Self::start_reclaim(&mut cache)
+                        } else {
+                            Vec::new()
+                        };
+                        cache.put(*index, CacheEntry::Ready(inode.clone()));
+                        (None, None, reclaim)
+                    }
                 }
+            };
 
-                cache.put(*index, inode.clone());
-                (inode, removed)
+            if let Some(existing) = existing {
+                return Ok(existing);
             }
-        };
-        drop(removed);
-        Ok(inode)
+            if let Some(waiters) = waiters {
+                waiters.wait();
+                continue;
+            }
+
+            self.finish_reclaim(reclaim);
+            return Ok(inode);
+        }
     }
 
     pub fn remove(&self, index: &Index) {
-        let removed = {
-            let mut cache = self.cache.lock();
-            Self::remove_entry(&mut cache, index)
-        };
-        drop(removed);
+        loop {
+            let (removed, waiters) = {
+                let mut cache = self.cache.lock();
+                match cache.get(index) {
+                    Some(CacheEntry::Ready(inode)) => {
+                        let inode = inode.clone();
+                        cache.remove(index);
+                        (Some(inode), None)
+                    }
+                    Some(CacheEntry::Loading(waiters)) | Some(CacheEntry::Syncing { waiters, .. }) => {
+                        (None, Some(waiters.clone()))
+                    }
+                    None => return,
+                }
+            };
+            drop(removed);
+            let Some(waiters) = waiters else {
+                return;
+            };
+            waiters.wait();
+        }
     }
 
     pub fn clear(&self) {
-        let removed = {
-            let mut cache = self.cache.lock();
-            cache.drain()
-        };
-        drop(removed);
+        loop {
+            let (removed, waiters) = {
+                let mut cache = self.cache.lock();
+                let mut waiters = Vec::new();
+                let _ = cache.try_for_each_mut(|_, entry| -> Result<(), ()> {
+                    match entry {
+                        CacheEntry::Loading(queue) | CacheEntry::Syncing { waiters: queue, .. } => {
+                            waiters.push(queue.clone());
+                        }
+                        CacheEntry::Ready(_) => {}
+                    }
+                    Ok(())
+                });
+                if waiters.is_empty() {
+                    (cache.drain(), waiters)
+                } else {
+                    (Vec::new(), waiters)
+                }
+            };
+            drop(removed);
+            if waiters.is_empty() {
+                return;
+            }
+            for waiters in waiters {
+                waiters.wait();
+            }
+        }
     }
 
     pub fn prune_unused(&self) -> usize {
-        let removed = {
+        let works = {
             let mut cache = self.cache.lock();
             if cache.len() <= config::INODE_CACHE_LOW_WATERMARK {
                 Vec::new()
             } else {
-                Self::reclaim(&mut cache)
+                Self::start_reclaim(&mut cache)
             }
         };
-
-        let count = removed.len();
-        drop(removed);
-        count
+        self.finish_reclaim(works)
     }
 
     pub fn remove_superblock(&self, sno: u32) -> usize {
-        self.remove_if(|index, _| index.sno == sno)
+        loop {
+            let (removed, waiters) = {
+                let mut cache = self.cache.lock();
+                let mut indices = Vec::new();
+                let mut waiters = Vec::new();
+                let _ = cache.try_for_each_mut(|index, entry| -> Result<(), ()> {
+                    if index.sno == sno {
+                        match entry {
+                            CacheEntry::Ready(_) => indices.push(index),
+                            CacheEntry::Loading(queue) | CacheEntry::Syncing { waiters: queue, .. } => {
+                                waiters.push(queue.clone());
+                            }
+                        }
+                    }
+                    Ok(())
+                });
+                if waiters.is_empty() {
+                    let removed = indices
+                        .into_iter()
+                        .filter_map(|index| match cache.get(&index) {
+                            Some(CacheEntry::Ready(inode)) => {
+                                let inode = inode.clone();
+                                cache.remove(&index);
+                                Some(inode)
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    (removed, waiters)
+                } else {
+                    (Vec::new(), waiters)
+                }
+            };
+
+            if waiters.is_empty() {
+                let count = removed.len();
+                drop(removed);
+                return count;
+            }
+            for waiters in waiters {
+                waiters.wait();
+            }
+        }
     }
 
     pub fn superblock_busy(&self, sno: u32) -> bool {
         self.cache
             .lock()
-            .try_for_each_mut(|index, inode| -> Result<(), ()> {
-                if index.sno == sno && !Self::is_idle(inode) {
+            .try_for_each_mut(|index, entry| -> Result<(), ()> {
+                if index.sno == sno && !Self::is_idle(entry) {
                     return Err(());
                 }
                 Ok(())
@@ -163,14 +409,28 @@ impl Cache {
     }
 
     pub fn sync(&self) -> SysResult<()> {
-        let inodes = {
-            let mut cache = self.cache.lock();
-            let mut inodes = Vec::new();
-            let _ = cache.try_for_each_mut(|_, inode| -> Result<(), ()> {
-                inodes.push(inode.clone());
-                Ok(())
-            });
-            inodes
+        let inodes = loop {
+            let (inodes, waiters) = {
+                let mut cache = self.cache.lock();
+                let mut inodes = Vec::new();
+                let mut waiters = Vec::new();
+                let _ = cache.try_for_each_mut(|_, entry| -> Result<(), ()> {
+                    match entry {
+                        CacheEntry::Ready(inode) => inodes.push(inode.clone()),
+                        CacheEntry::Loading(queue) | CacheEntry::Syncing { waiters: queue, .. } => {
+                            waiters.push(queue.clone());
+                        }
+                    }
+                    Ok(())
+                });
+                (inodes, waiters)
+            };
+            if waiters.is_empty() {
+                break inodes;
+            }
+            for waiters in waiters {
+                waiters.wait();
+            }
         };
         for inode in inodes {
             inode.sync()?;

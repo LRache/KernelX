@@ -217,7 +217,7 @@ impl VirtualFileSystem {
         self.lookup_parent_dentry_with_depth_and_perm(root, dir, path, &mut symlink_depth, perm)
     }
 
-    pub(crate) fn lookup_parent_dentry_with_depth_and_perm<'a>(
+    pub fn lookup_parent_dentry_with_depth_and_perm<'a>(
         &self,
         root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
@@ -271,7 +271,7 @@ impl VirtualFileSystem {
         Ok(target.get_parent().map(|parent| (parent, Cow::Owned(target.name()))))
     }
 
-    pub(crate) fn lookup_parent_dentry_with_depth_perm_flags<'a>(
+    pub fn lookup_parent_dentry_with_depth_perm_flags<'a>(
         &self,
         root: &Arc<Dentry>,
         dir: &Arc<Dentry>,
@@ -385,16 +385,11 @@ impl VirtualFileSystem {
 
     pub fn load_inode(&self, sno: u32, ino: u32) -> SysResult<Arc<Inode>> {
         let index = inode::Index { sno, ino };
-        if let Some(inode) = self.cache.find(&index) {
-            return Ok(inode);
-        }
-
         let superblock = {
             let superblock_table = self.superblock_table.lock();
             superblock_table.get(sno).ok_or(Errno::ENOENT)?
         };
-        let inode = superblock.get_inode(ino)?;
-        self.cache.get_or_insert(&index, inode)
+        self.cache.get_or_load(&index, || superblock.get_inode(ino))
     }
 }
 
