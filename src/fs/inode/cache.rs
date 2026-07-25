@@ -230,19 +230,11 @@ impl Cache {
         }
     }
 
-    pub fn find(&self, index: &Index) -> Option<Arc<Inode>> {
-        loop {
-            let waiters = {
-                let mut cache = self.cache.lock();
-                match cache.get(index) {
-                    Some(CacheEntry::Ready(inode)) => return Some(inode.clone()),
-                    Some(CacheEntry::Loading(waiters)) | Some(CacheEntry::Syncing { waiters, .. }) => {
-                        Some(waiters.clone())
-                    }
-                    None => return None,
-                }
-            };
-            waiters.expect("cache transition has waiters").wait();
+    pub fn find_ready(&self, index: &Index) -> Option<Arc<Inode>> {
+        let mut cache = self.cache.lock();
+        match cache.get(index) {
+            Some(CacheEntry::Ready(inode)) => Some(inode.clone()),
+            Some(CacheEntry::Loading(_)) | Some(CacheEntry::Syncing { .. }) | None => None,
         }
     }
 

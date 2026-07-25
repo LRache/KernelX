@@ -550,16 +550,22 @@ impl Dentry {
     }
 
     pub fn get_inode(&self) -> Arc<Inode> {
-        let inode = self.inode.lock();
-        match inode.upgrade() {
-            None => {
-                drop(inode);
-                let inode = vfs().load_inode(self.sno(), self.ino()).expect("Failed to load inode");
-                *self.inode.lock() = Arc::downgrade(&inode);
-                inode
+        let index = self.get_inode_index();
+        if let Some(cached) = vfs().cache.find_ready(&index) {
+            let inode = self.inode.lock();
+            if let Some(inode) = inode.upgrade()
+                && Arc::ptr_eq(&inode, &cached)
+            {
+                return inode;
             }
-            Some(inode) => inode,
+            drop(inode);
+            *self.inode.lock() = Arc::downgrade(&cached);
+            return cached;
         }
+
+        let inode = vfs().load_inode(index.sno, index.ino).expect("Failed to load inode");
+        *self.inode.lock() = Arc::downgrade(&inode);
+        inode
     }
 
     pub fn name(&self) -> String {
