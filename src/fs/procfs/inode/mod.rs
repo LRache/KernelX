@@ -3,7 +3,7 @@ mod sys;
 mod task;
 mod taskself;
 
-pub use root::{MemInfoInode, MountsInode, RootInode};
+pub use root::{MemInfoInode, MountsInode, RootInode, UptimeInode};
 pub use sys::{
     DropCachesInode, EntropyAvailInode, PidMaxInode, PipeMaxSizeInode, PipeUserPagesSoftInode, SysDirInode,
     SysFsDirInode, SysKernelDirInode, SysKernelRandomDirInode, SysVmDirInode, TaintedInode, VfsCachePressureInode,

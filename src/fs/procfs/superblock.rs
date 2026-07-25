@@ -51,6 +51,7 @@ impl VfsSuperBlockOps for SuperBlock {
             inode::TaskDirSelfInode::INO => Ok(VfsInode::new(inode::TaskDirSelfInode)),
             inode::MountsInode::INO => Ok(VfsInode::new(inode::MountsInode)),
             inode::MemInfoInode::INO => Ok(VfsInode::new(inode::MemInfoInode)),
+            inode::UptimeInode::INO => Ok(VfsInode::new(inode::UptimeInode)),
             inode::SysDirInode::INO => Ok(VfsInode::new(inode::SysDirInode)),
             inode::SysKernelDirInode::INO => Ok(VfsInode::new(inode::SysKernelDirInode)),
             inode::PidMaxInode::INO => Ok(VfsInode::new(inode::PidMaxInode)),
