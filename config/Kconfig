@@ -230,6 +230,22 @@ config ENABLE_WATCHDOG
 	  Enable a kernel watchdog thread that periodically reports tasks
 	  stuck in uninterruptible sleep. Enables the watchdog Cargo feature.
 
+config SCHEDULER_TIME_DEBUG
+	bool "Enable scheduler time accounting"
+	default n
+	help
+	  Track per-CPU scheduler running time and print scheduler time debug
+	  snapshots from the watchdog and during shutdown.
+
+config SCHEDULER_BLOCK_REASON_DEBUG
+	bool "Enable scheduler blocked-reason time accounting"
+	depends on SCHEDULER_TIME_DEBUG
+	default n
+	help
+	  Track and report per-CPU blocked time grouped by the static blocking
+	  reason. Disabling this does not affect the watchdog's blocked reason
+	  recording and reporting.
+
 endmenu
 
 menu "Experimental Features"

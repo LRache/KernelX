@@ -159,6 +159,8 @@ def build_cargo_info(config: dict[str, str]) -> dict:
         ("LOCKDEP", "lockdep"),
         ("SPINLOCK_CHECK", "spinlock-check"),
         ("ENABLE_WATCHDOG", "watchdog"),
+        ("SCHEDULER_TIME_DEBUG", "scheduler-time-debug"),
+        ("SCHEDULER_BLOCK_REASON_DEBUG", "scheduler-block-reason-debug"),
         ("FANOTIFY", "fanotify"),
         ("VIRTIO_BLOCK_PAGE_CACHE", "virtio-block-page-cache"),
         ("NOLOCK", "nolock"),

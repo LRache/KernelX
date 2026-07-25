@@ -52,7 +52,7 @@ impl PCB {
             umask: SpinLock::new(*parent.umask.lock(), "PCB::umask"),
             file_size_limit: SpinLock::new(*parent.file_size_limit.lock(), "PCB::file_size_limit"),
             child_wait: SleepLock::new(ChildWaitState::new(), "PCB::child_wait"),
-            pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
+            pidfd_waiters: SpinLock::new(WaitQueue::new("PCB::pidfd_waiters"), "PCB::pidfd_waiters"),
             uts,
 
             signal: Signal {
@@ -116,7 +116,7 @@ impl PCB {
             umask: SpinLock::new(0o022, "PCB::umask"),
             file_size_limit: SpinLock::new((usize::MAX, usize::MAX), "PCB::file_size_limit"),
             child_wait: SleepLock::new(ChildWaitState::new(), "PCB::child_wait"),
-            pidfd_waiters: SpinLock::new(WaitQueue::new(), "PCB::pidfd_waiters"),
+            pidfd_waiters: SpinLock::new(WaitQueue::new("PCB::pidfd_waiters"), "PCB::pidfd_waiters"),
             uts: UtsNamespace::new(),
 
             signal: Signal {

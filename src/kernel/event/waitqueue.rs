@@ -19,12 +19,14 @@ impl<T> WaitQueueItem<T> {
 
 pub struct WaitQueue<T> {
     waiters: VecDeque<WaitQueueItem<T>>,
+    name: &'static str,
 }
 
 impl<T> WaitQueue<T> {
-    pub fn new() -> Self {
+    pub fn new(name: &'static str) -> Self {
         Self {
             waiters: VecDeque::new(),
+            name,
         }
     }
 
@@ -34,7 +36,7 @@ impl<T> WaitQueue<T> {
 
     pub fn wait_current(&mut self, arg: T) {
         let current = current::task();
-        current.block("waitqueue");
+        current.block(self.name);
         self.wait(current.clone(), arg);
     }
 

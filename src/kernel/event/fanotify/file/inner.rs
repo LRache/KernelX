@@ -53,7 +53,7 @@ impl FanotifyListener {
             marks: SpinLock::new(Vec::new(), "FanotifyListener::marks"),
             pending: SpinLock::new(Vec::new(), "FanotifyListener::pending"),
             responses: SpinLock::new(Vec::new(), "FanotifyListener::responses"),
-            waiter: SpinLock::new(WaitQueue::new(), "FanotifyListener::waiter"),
+            waiter: SpinLock::new(WaitQueue::new("FanotifyListener::waiter"), "FanotifyListener::waiter"),
             epoll_notifier: Arc::new(EpollNotifier::new()),
         }
     }

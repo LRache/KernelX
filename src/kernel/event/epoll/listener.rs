@@ -126,7 +126,7 @@ impl EpollListenerInner {
         Self {
             entries: BTreeMap::new(),
             ready: VecDeque::new(),
-            waiter: WaitQueue::new(),
+            waiter: WaitQueue::new("EpollListener::waiter"),
         }
     }
 

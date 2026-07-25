@@ -38,8 +38,8 @@ impl EventFd {
                 },
                 "EventFd::flags",
             ),
-            read_waiter: SpinLock::new(WaitQueue::new(), "EventFd::read_waiter"),
-            write_waiter: SpinLock::new(WaitQueue::new(), "EventFd::write_waiter"),
+            read_waiter: SpinLock::new(WaitQueue::new("EventFd::read_waiter"), "EventFd::read_waiter"),
+            write_waiter: SpinLock::new(WaitQueue::new("EventFd::write_waiter"), "EventFd::write_waiter"),
             epoll_notifier: Arc::new(EpollNotifier::new()),
             semaphore,
         }

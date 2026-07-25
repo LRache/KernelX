@@ -69,7 +69,9 @@ impl LockerTrait for SleepLocker {
                 if self.try_lock(name) {
                     return;
                 }
-                scheduler::block_task_uninterruptible(task.clone(), "sleep_lock");
+                // PERF_DEBUG(scheduler-time): Attribute sleep-lock wait time
+                // to the concrete lock name.
+                scheduler::block_task_uninterruptible_named(task.clone(), "sleep_lock", name);
                 waiters.push_back(task.clone());
             }
 

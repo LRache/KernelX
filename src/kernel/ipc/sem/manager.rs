@@ -209,7 +209,7 @@ impl SemManager {
                     nsems,
                 },
                 sems: alloc::vec![Semaphore::new(); nsems],
-                waiters: WaitQueue::new(),
+                waiters: WaitQueue::new("SemIdentifier::waiters"),
                 deleted: false,
             },
         );

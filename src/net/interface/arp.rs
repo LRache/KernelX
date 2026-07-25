@@ -20,7 +20,7 @@ impl ArpTable {
     pub fn new() -> Self {
         Self {
             cache: BTreeMap::new(),
-            waiters: WaitQueue::new(),
+            waiters: WaitQueue::new("ArpTable::waiters"),
         }
     }
 }

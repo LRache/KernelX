@@ -50,10 +50,14 @@ pub trait Task: Send + Sync {
     fn check_kernel_stack_overflow(&self, addr: usize) -> bool;
 
     fn run_if_ready(&self) -> bool;
-    fn finish_switch(&self) -> bool;
+    // PERF_DEBUG(scheduler-time): cpu_id/now_us are temporary switch-out
+    // accounting inputs.
+    fn finish_switch(&self, cpu_id: usize, now_us: u64) -> bool;
 
-    fn block(&self, reason: &str) -> bool;
-    fn block_uninterruptible(&self, reason: &str) -> bool;
+    // PERF_DEBUG(scheduler-time): name is retained only for temporary
+    // blocked-time attribution.
+    fn block(&self, name: &'static str) -> bool;
+    fn block_uninterruptible(&self, name: &'static str) -> bool;
     fn unblock(&self);
     fn cancel_block(&self);
 

@@ -38,7 +38,7 @@ impl PosixFlockState {
     pub fn new() -> Self {
         Self {
             locks: LinkedList::new(),
-            waiters: WaitQueue::new(),
+            waiters: WaitQueue::new("PosixFlockState::waiters"),
         }
     }
 

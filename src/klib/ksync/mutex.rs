@@ -41,7 +41,7 @@ pub struct Mutex<T, R: LockerTrait> {
     data: UnsafeCell<T>,
     locker: R,
 
-    #[cfg(any(feature = "lockdep", feature = "spinlock-check"))]
+    #[cfg(any(feature = "lockdep", feature = "spinlock-check", feature = "watchdog"))]
     name: &'static str,
 
     /// TID of the task currently holding this lock (-1 = unlocked).
@@ -60,7 +60,7 @@ impl<T, R: LockerTrait> Mutex<T, R> {
             data: UnsafeCell::new(data),
             locker,
 
-            #[cfg(any(feature = "lockdep", feature = "spinlock-check"))]
+            #[cfg(any(feature = "lockdep", feature = "spinlock-check", feature = "watchdog"))]
             name,
 
             #[cfg(feature = "lockdep")]
@@ -72,11 +72,11 @@ impl<T, R: LockerTrait> Mutex<T, R> {
     }
 
     fn name(&self) -> &'static str {
-        #[cfg(any(feature = "lockdep", feature = "spinlock-check"))]
+        #[cfg(any(feature = "lockdep", feature = "spinlock-check", feature = "watchdog"))]
         {
             self.name
         }
-        #[cfg(not(any(feature = "lockdep", feature = "spinlock-check")))]
+        #[cfg(not(any(feature = "lockdep", feature = "spinlock-check", feature = "watchdog")))]
         {
             ""
         }
@@ -84,6 +84,10 @@ impl<T, R: LockerTrait> Mutex<T, R> {
 
     pub fn lock(&self) -> LockGuard<'_, T, R> {
         self.lock_inner(true)
+    }
+
+    pub fn into_inner(self) -> T {
+        self.data.into_inner()
     }
 
     /// Acquires this lock without running lockdep's pre-acquire chain check.

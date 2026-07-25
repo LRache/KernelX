@@ -207,7 +207,13 @@ impl LockerTrait for BucketSleepLocker {
                 if self.try_lock(name) {
                     return;
                 }
-                scheduler::block_task_uninterruptible(waiter.as_ref().get_ref().task.clone(), "bucket_sleep_lock");
+                // PERF_DEBUG(scheduler-time): Attribute bucket sleep-lock wait
+                // time to the concrete lock name.
+                scheduler::block_task_uninterruptible_named(
+                    waiter.as_ref().get_ref().task.clone(),
+                    "bucket_sleep_lock",
+                    name,
+                );
                 waiters.push_back(waiter.as_mut());
             }
 

@@ -12,7 +12,7 @@ use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Auxv, MapManagerWatcher, PinPageFrame, ReadChunk, WriteChunk};
 use crate::kernel::mm::swappable::ResidentPageGuard;
 use crate::kernel::mm::{PhysPageFrame, maparea};
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::{SleepRwLockOnStack, SpinLock};
 
 use super::swappable::AccessDirty;
 use super::{MapPerm, MemAccessType, vdso};
@@ -31,7 +31,7 @@ fn create_pagetable() -> PageTable {
 pub struct AddrSpace {
     /// Number of TCBs still using this address space, excluding temporary `Arc`s.
     task_users: AtomicUsize,
-    map_manager: SleepLock<maparea::Manager>,
+    map_manager: SleepRwLockOnStack<maparea::Manager>,
     pagetable: SpinLock<PageTable>,
 }
 
@@ -49,7 +49,7 @@ impl AddrSpace {
     pub fn new_with_pagetable(pagetable: PageTable) -> Arc<Self> {
         let addrspace = Arc::new(AddrSpace {
             task_users: AtomicUsize::new(0),
-            map_manager: SleepLock::new(maparea::Manager::new(), "AddrSpace::map_manager"),
+            map_manager: SleepRwLockOnStack::new(maparea::Manager::new(), "AddrSpace::map_manager"),
             pagetable: SpinLock::new(pagetable, "AddrSpace::pagetable"),
         });
 
@@ -74,26 +74,26 @@ impl AddrSpace {
 
     pub fn fork(self: &Arc<Self>) -> Arc<AddrSpace> {
         let addrspace = Self::new_with_pagetable(create_pagetable());
-        let new_map_manager = self.map_manager.lock().fork(&self.pagetable, &addrspace);
-        *addrspace.map_manager.lock() = new_map_manager;
+        let new_map_manager = self.map_manager.write().fork(&self.pagetable, &addrspace);
+        *addrspace.map_manager.write() = new_map_manager;
 
         addrspace
     }
 
     pub fn create_user_stack(self: &Arc<Self>, argv: &[&str], envp: &[&str], auxv: &Auxv) -> Result<usize, Errno> {
-        let mut map_manager = self.map_manager.lock();
+        let mut map_manager = self.map_manager.write();
         map_manager.create_user_stack(argv, envp, auxv, self)
     }
 
     pub fn map_area(&self, uaddr: usize, area: Box<dyn maparea::Area>) -> Result<(), Errno> {
-        let mut map_manager = self.map_manager.lock();
+        let mut map_manager = self.map_manager.write();
         map_manager.map_area(uaddr, area);
 
         Ok(())
     }
 
     pub fn mmap_area(self: &Arc<Self>, placement: MmapPlacement, mut area: Box<dyn maparea::Area>) -> SysResult<usize> {
-        let mut map_manager = self.map_manager.lock();
+        let mut map_manager = self.map_manager.write();
         let page_count = area.page_count();
         let (ubase, replace) = match placement {
             MmapPlacement::Hint(addr) => {
@@ -124,21 +124,21 @@ impl AddrSpace {
     }
 
     pub fn unmap_area(&self, uaddr: usize, page_count: usize) -> Result<(), Errno> {
-        let mut map_manager = self.map_manager.lock();
+        let mut map_manager = self.map_manager.write();
         map_manager.unmap_area(uaddr, page_count, &self.pagetable)?;
 
         Ok(())
     }
 
     pub fn set_area_perm(&self, uaddr: usize, page_count: usize, perm: MapPerm) -> Result<(), Errno> {
-        let mut map_manager = self.map_manager.lock();
+        let mut map_manager = self.map_manager.write();
         map_manager.set_map_area_perm(uaddr, page_count, perm, &self.pagetable)?;
 
         Ok(())
     }
 
     pub fn increase_userbrk(self: &Arc<Self>, ubrk: usize) -> Result<usize, Errno> {
-        let mut map_manager = self.map_manager.lock();
+        let mut map_manager = self.map_manager.write();
         map_manager.increase_userbrk(ubrk, &self.pagetable, self)
     }
 
@@ -149,7 +149,7 @@ impl AddrSpace {
         }
         let frame = self
             .map_manager
-            .lock()
+            .read()
             .translate_write(uaddr, self)
             .ok_or(Errno::EFAULT)?;
         Ok(WriteChunk::new(frame, offset, len))
@@ -162,14 +162,14 @@ impl AddrSpace {
         }
         let frame = self
             .map_manager
-            .lock()
+            .read()
             .translate_read(uaddr, self)
             .ok_or(Errno::EFAULT)?;
         Ok(ReadChunk::new(frame, offset, len))
     }
 
     pub fn get_frame(self: &Arc<Self>, uaddr: usize) -> SysResult<PinPageFrame> {
-        self.map_manager.lock().get_frame(uaddr, self).ok_or(Errno::EFAULT)
+        self.map_manager.read().get_frame(uaddr, self).ok_or(Errno::EFAULT)
     }
 
     pub fn with_translated_read<F, R>(&self, uaddr: usize, len: usize, f: F) -> SysResult<R>
@@ -414,18 +414,25 @@ impl AddrSpace {
     }
 
     pub fn add_map_manager_watcher(&self, watcher: Arc<dyn MapManagerWatcher>) {
-        self.map_manager.lock().add_watcher(watcher);
+        self.map_manager.write().add_watcher(watcher);
     }
 
     pub fn remove_map_manager_watcher(&self, watcher: &Arc<dyn MapManagerWatcher>) {
-        self.map_manager.lock().remove_watcher(watcher);
+        self.map_manager.write().remove_watcher(watcher);
+    }
+
+    pub fn with_map_manager<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&maparea::Manager) -> R,
+    {
+        f(&self.map_manager.read())
     }
 
     pub fn with_map_manager_mut<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut maparea::Manager) -> R,
     {
-        f(&mut self.map_manager.lock())
+        f(&mut self.map_manager.write())
     }
 
     pub fn try_to_fix_memory_fault(
@@ -433,13 +440,13 @@ impl AddrSpace {
         uaddr: usize,
         access_type: MemAccessType,
     ) -> Result<(), maparea::MemoryFaultSignal> {
-        let map_manager = &mut self.map_manager.lock();
+        let map_manager = &self.map_manager.read();
         map_manager.try_to_fix_memory_fault(uaddr, access_type, self)
     }
 
     pub fn cleanup(&self) {
         // let pagetable = &mut self.pagetable.write();
-        let mut map_manager = self.map_manager.lock();
+        let mut map_manager = self.map_manager.write();
         map_manager.cleanup(&self.pagetable);
     }
 

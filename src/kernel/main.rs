@@ -153,6 +153,11 @@ extern "C" fn main(hartid: usize, bootstrap_end: usize, mem_regions: *const mm::
         fs::init();
         driver::init();
         arch::scan_device();
+        // PERF_DEBUG(scheduler-time): Initialize temporary per-CPU statistics.
+        #[cfg(feature = "scheduler-time-debug")]
+        {
+            scheduler::time_debug::init();
+        }
         #[cfg(feature = "swap-memory")]
         {
             let swap_driver = BOOT_ARGS.get("swap").and_then(|name| {
@@ -197,5 +202,10 @@ pub fn deinit() {
 }
 
 pub fn exit() -> ! {
+    // PERF_DEBUG(scheduler-time): Emit the final temporary statistics snapshot.
+    #[cfg(feature = "scheduler-time-debug")]
+    {
+        scheduler::time_debug::dump();
+    }
     driver::chosen::kpmu::shutdown();
 }

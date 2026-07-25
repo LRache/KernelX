@@ -1,6 +1,9 @@
 mod processor;
 mod scheduler;
 mod task;
+// PERF_DEBUG(scheduler-time): Temporary scheduler performance statistics module.
+#[cfg(feature = "scheduler-time-debug")]
+pub(crate) mod time_debug;
 
 pub mod current;
 pub mod tid;
