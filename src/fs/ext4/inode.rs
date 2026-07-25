@@ -453,6 +453,7 @@ pub struct Ext4Inode {
     cacheable_file: bool,
     cached_size: AtomicUsize,
     fast_cached_write: AtomicBool,
+    io_lock: SleepLock<()>,
     page_cache: SleepLock<InodePageCache>,
 }
 
@@ -476,6 +477,7 @@ impl Ext4Inode {
             cacheable_file,
             cached_size: AtomicUsize::new(cached_size),
             fast_cached_write: AtomicBool::new(fast_cached_write),
+            io_lock: SleepLock::new((), "Ext4Inode::io_lock"),
             page_cache: SleepLock::new(InodePageCache::new(), "Ext4Inode::page_cache"),
         })
     }
@@ -879,6 +881,7 @@ impl InodeOps for Ext4Inode {
         if buf.is_empty() {
             return Ok(0);
         }
+        let _io_guard = self.io_lock.lock();
         if !self.is_cacheable_file() {
             return self.read_raw_at(buf, offset);
         }
@@ -919,6 +922,7 @@ impl InodeOps for Ext4Inode {
         if buf.is_empty() {
             return Ok(0);
         }
+        let _io_guard = self.io_lock.lock();
         if !self.is_cacheable_file() {
             return self.write_raw_at(buf, offset);
         }
@@ -1163,6 +1167,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn load_raw_page(&self, file_page_index: usize) -> SysResult<Option<PhysPageFrame>> {
+        let _io_guard = self.io_lock.lock();
         let offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
         let file_size = self.cached_size.load(Ordering::Relaxed);
         if offset >= file_size {
@@ -1183,6 +1188,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
+        let _io_guard = self.io_lock.lock();
         let offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
         let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
         if offset >= file_size {
@@ -1275,6 +1281,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
+        let _io_guard = self.io_lock.lock();
         self.with_ref(|_superblock, inode_ref| {
             if inode_type(inode_ref) == InodeType::Directory {
                 return Err(Errno::EISDIR);
@@ -1370,6 +1377,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn sync(&self) -> SysResult<()> {
+        let _io_guard = self.io_lock.lock();
         self.flush_dirty_pages()?;
         self.superblock.lock().flush()
     }
