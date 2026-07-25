@@ -5,6 +5,14 @@ use crate::kernel::errno::{Errno, SysResult};
 
 use super::*;
 
+/// Largest supported ext4 block size (64 KiB). Backs the static zero source so
+/// [Context::zero_fs_block] never needs a heap allocation.
+const MAX_BLOCK_SIZE: usize = 65536;
+
+/// Zero-initialised in `.bss`; used as the source for zeroing a freshly
+/// allocated block before its extent is published to disk.
+static ZERO_BLOCK: [u8; MAX_BLOCK_SIZE] = [0u8; MAX_BLOCK_SIZE];
+
 impl Context {
     pub(super) fn group_desc_location(&self, group: u32) -> SysResult<(u64, usize)> {
         if group >= self.groups_count {
@@ -76,11 +84,23 @@ impl Context {
         Ok(buf)
     }
 
-    pub(crate) fn write_fs_block(&self, pblk: u64, buf: &[u8]) -> SysResult<()> {
+    pub fn write_fs_block(&self, pblk: u64, buf: &[u8]) -> SysResult<()> {
         self.write_fs_blocks(pblk, buf)
     }
 
-    pub(crate) fn read_fs_blocks_into(&self, start_pblk: u64, dst: &mut [u8]) -> SysResult<()> {
+    /// Writes a block's worth of zeros to `pblk`. Used to initialise a freshly
+    /// allocated metadata block before the extent mapping that references it is
+    /// published, so a crash between publish and initialisation never exposes
+    /// stale data from a previously freed block.
+    pub fn zero_fs_block(&self, pblk: u64) -> SysResult<()> {
+        let block_size = self.block_size as usize;
+        if block_size > MAX_BLOCK_SIZE {
+            return ret_errno("zero_fs_block: block size exceeds zero buffer", Errno::EINVAL);
+        }
+        self.write_fs_block(pblk, &ZERO_BLOCK[..block_size])
+    }
+
+    pub fn read_fs_blocks_into(&self, start_pblk: u64, dst: &mut [u8]) -> SysResult<()> {
         let block_size = self.block_size as usize;
         if dst.is_empty() {
             return Ok(());

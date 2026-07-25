@@ -7,7 +7,7 @@ use crate::fs::ext4_native::ondisk::{Ext4IncompatFeatures, Ext4RoCompatFeatures,
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps, VfsSuperBlock, VfsSuperBlockOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
-use crate::klib::SleepLock;
+use crate::klib::SleepRwLockOnStack;
 
 pub struct Context {
     pub(super) fsno: u32,
@@ -34,10 +34,13 @@ pub struct Context {
     pub(super) feature_compat: u32,
     pub(super) feature_incompat: Ext4IncompatFeatures,
     pub(super) feature_ro_compat: Ext4RoCompatFeatures,
+
+    // block-allocation cursor: next search starts near the last allocated group
+    pub(super) alloc_hint_group: core::sync::atomic::AtomicU32,
 }
 
 pub struct SuperBlock {
-    context: Arc<SleepLock<Context>>,
+    context: Arc<SleepRwLockOnStack<Context>>,
 }
 
 impl SuperBlockOps for SuperBlock {
@@ -48,7 +51,7 @@ impl SuperBlockOps for SuperBlock {
     }
 
     fn get_inode(&self, ino: u32) -> SysResult<Self::Inode> {
-        let inode = self.context.lock().read_inode(ino)?;
+        let inode = self.context.read().read_inode(ino)?;
         Ok(Inode::new(Arc::downgrade(&self.context), inode))
     }
 
@@ -57,7 +60,7 @@ impl SuperBlockOps for SuperBlock {
     }
 
     fn statfs(&self) -> SysResult<Statfs> {
-        self.context.lock().statfs()
+        self.context.read().statfs()
     }
 
     fn sync(&self) -> SysResult<()> {
@@ -81,7 +84,7 @@ impl FileSystemOps for FileSystem {
         let driver = driver.ok_or_else(|| debug_errno("FileSystem::create: block driver is None", Errno::EINVAL))?;
         let ctx = Context::from_device(fsno, driver)?;
         Ok(VfsSuperBlock::new(SuperBlock {
-            context: Arc::new(SleepLock::new(ctx, "ext4_native::Superblock::context")),
+            context: Arc::new(SleepRwLockOnStack::new(ctx, "ext4_native::Superblock::context")),
         }))
     }
 }

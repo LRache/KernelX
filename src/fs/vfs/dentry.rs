@@ -904,11 +904,13 @@ impl Dentry {
         self.check_sticky_remove_perm(&parent_inode, &child_inode)?;
 
         child_inode.sync()?;
+        let child_lifecycle = child_inode.lifecycle().write();
         if remove_dir {
             parent_inode.rmdir(name)?;
         } else {
             parent_inode.unlink(name)?;
         }
+        drop(child_lifecycle);
 
         self.children.lock().remove(name);
         vfs().cache.remove(&child.get_inode_index());
@@ -975,21 +977,30 @@ impl Dentry {
                     }
                 }
 
-                overwritten_inode.sync()?;
-                Some(Index {
-                    sno: new_parent.sno(),
-                    ino,
-                })
+                Some((
+                    Index {
+                        sno: new_parent.sno(),
+                        ino,
+                    },
+                    overwritten_inode,
+                ))
             }
             Ok(_) | Err(Errno::ENOENT) => None,
             Err(err) => return Err(err),
         };
+        if let Some((_, overwritten_inode)) = &overwritten {
+            overwritten_inode.sync()?;
+        }
+        let overwritten_lifecycle = overwritten
+            .as_ref()
+            .map(|(_, overwritten_inode)| overwritten_inode.lifecycle().write());
 
         old_parent_inode.rename(old_name, &new_parent_inode, new_name)?;
+        drop(overwritten_lifecycle);
 
         self.children.lock().remove(old_name);
         new_parent.children.lock().remove(new_name);
-        if let Some(index) = overwritten {
+        if let Some((index, _)) = overwritten {
             vfs().cache.remove(&index);
         }
 

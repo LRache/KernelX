@@ -339,6 +339,10 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
     pub fn pin_page(self: &Arc<Self>, write: bool) -> Result<SwappableFramePin<B>, SwapError> {
         let mut inner = self.inner.lock();
         self.ensure_resident_locked(&mut inner)?;
+        Ok(self.pin_resident_locked(&mut inner, write))
+    }
+
+    fn pin_resident_locked(self: &Arc<Self>, inner: &mut SwappableFrameInner<B>, write: bool) -> SwappableFramePin<B> {
         let kpage = match &mut inner.state {
             SwappableFrameState::In { frame, dirty, .. } => {
                 *dirty |= write;
@@ -350,13 +354,12 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
         };
         inner.pins = inner.pins.checked_add(1).expect("swappable frame pin count overflow");
         if inner.backend.is_swappable() {
-            self.relink_locked(&inner);
+            self.relink_locked(inner);
         }
-        drop(inner);
-        Ok(SwappableFramePin {
+        SwappableFramePin {
             owner: self.clone(),
             kpage,
-        })
+        }
     }
 
     pub fn lru_node(&self) -> &IntrusiveLruNode<dyn SwappableFrameOps> {
@@ -811,6 +814,10 @@ impl<B: SwappableBackendOps> SwappableFrameGuard<'_, B> {
         if is_swappable {
             self.owner.relink_locked(inner);
         }
+    }
+
+    pub fn pin_page(&mut self, write: bool) -> SwappableFramePin<B> {
+        self.owner.pin_resident_locked(&mut self.inner, write)
     }
 
     /// Takes ownership of the software dirty state collected before writeback.

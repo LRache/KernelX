@@ -15,7 +15,7 @@ use crate::kernel::mm::swappable::{FileMapping, SharedFilePage};
 use crate::kernel::mm::ubuf::UAddrSpaceBuffer;
 use crate::kernel::mm::{AddrSpace, PhysPageFrame};
 use crate::kernel::uapi::{FileFallocateFlags, FileSealFlags, FileStat, Uid};
-use crate::klib::{LazyInitedCell, SpinLock};
+use crate::klib::{LazyInitedCell, SleepRwLockOnStack, SpinLock};
 
 use super::bsd_flock::BsdFlockState;
 use super::posix_flock::PosixFlockState;
@@ -26,6 +26,9 @@ pub type Inode = dyn VfsInodeOps;
 pub struct VfsInode<T: InodeOps> {
     inner: T,
     file_mapping: Option<Arc<FileMapping>>,
+    // Per canonical inode: reads and writes may proceed together, while
+    // truncate and namespace removal require exclusive lifetime ownership.
+    lifecycle: SleepRwLockOnStack<()>,
     lock_state: SpinLock<InodeLockState>,
     seal_state: SpinLock<InodeSealState>,
     fifo_pipe: LazyInitedCell<Arc<PipeInner>>,
@@ -44,6 +47,7 @@ impl<T: InodeOps> VfsInode<T> {
             VfsInode {
                 inner,
                 file_mapping,
+                lifecycle: SleepRwLockOnStack::new((), "VfsInode::lifecycle"),
                 lock_state: SpinLock::new(InodeLockState::new(), "VfsInode::lock_state"),
                 seal_state: SpinLock::new(InodeSealState::new(), "VfsInode::seal_state"),
                 fifo_pipe: LazyInitedCell::new("Inode::fifo_pipe"),
@@ -350,6 +354,8 @@ pub trait VfsInodeOps: DowncastSync {
 
     fn as_seal_ops(&self) -> Option<&dyn InodeSealOps>;
 
+    fn lifecycle(&self) -> &SleepRwLockOnStack<()>;
+
     fn begin_write_open(&self) -> SysResult<()>;
 
     fn end_write_open(&self);
@@ -468,6 +474,10 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
         Some(self)
     }
 
+    fn lifecycle(&self) -> &SleepRwLockOnStack<()> {
+        &self.lifecycle
+    }
+
     fn begin_write_open(&self) -> SysResult<()> {
         self.inner.begin_write_open()?;
 
@@ -531,19 +541,23 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
     }
 
     fn readat(&self, buf: &mut [u8], offset: usize, direct: bool) -> SysResult<usize> {
+        let _lifecycle = self.lifecycle.read();
         self.inner.readat(buf, offset, direct)
     }
 
     fn writeat(&self, buf: &[u8], offset: usize) -> SysResult<usize> {
+        let _lifecycle = self.lifecycle.read();
         self.check_write_seals(offset, buf.len())?;
         self.inner.writeat(buf, offset)
     }
 
     fn read_to_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, direct: bool) -> SysResult<usize> {
+        let _lifecycle = self.lifecycle.read();
         self.inner.read_to_user(ubuf, offset, direct)
     }
 
     fn write_from_user(&self, ubuf: &UAddrSpaceBuffer, offset: usize, direct: bool) -> SysResult<usize> {
+        let _lifecycle = self.lifecycle.read();
         self.check_write_seals(offset, ubuf.length())?;
         self.inner.write_from_user(ubuf, offset, direct)
     }
@@ -623,6 +637,7 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
     }
 
     fn sync(&self) -> SysResult<()> {
+        let _lifecycle = self.lifecycle.read();
         self.inner.sync()
     }
 
@@ -635,11 +650,13 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
     }
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
+        let _lifecycle = self.lifecycle.write();
         self.check_truncate_seals(new_size)?;
         self.inner.truncate(new_size)
     }
 
     fn fallocate(&self, flags: FileFallocateFlags, offset: u64, len: u64) -> SysResult<()> {
+        let _lifecycle = self.lifecycle.write();
         self.check_fallocate_seals(flags, offset, len)?;
         self.inner.fallocate(flags, offset, len)
     }

@@ -12,10 +12,10 @@ use crate::fs::inode::FileType;
 use crate::fs::vfs::{evict_inode, find_cached_inode};
 use crate::fs::{Dentry, Inode as VfsInode, InodeOps, Mode, Owner, VfsInode as VfsInodeWrapper};
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::swappable::{FileMapping, FilePageIdentityPin};
+use crate::kernel::mm::swappable::{FileBackend, FileMapping, FilePageIdentityPin, SwappableFramePin};
 use crate::kernel::mm::{FixedContiguousPhysPageFrame, PhysPageFrame, page};
 use crate::kernel::uapi::{FileStat, Uid};
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::{SleepLock, SleepRwLockOnStack, SpinLock};
 
 use super::ondisk::{
     DirEntry2, Ext4DirEntryFileType, Ext4InodeFlags, debug_errno, lookup_extent_lblk, lookup_lblk, ret_errno,
@@ -73,6 +73,16 @@ impl InodePageCache {
         self.acquire_cached_page(page_index, || Ok(Some(frame)))
     }
 
+    fn insert_frame_pinned(
+        &self,
+        page_index: usize,
+        frame: PhysPageFrame,
+    ) -> SysResult<(FilePageIdentityPin, SwappableFramePin<FileBackend>)> {
+        self.mapping()
+            .acquire_cached_page_pinned(page_index, || Ok(Some(frame)))?
+            .ok_or(Errno::EIO)
+    }
+
     fn dirty_pages(&self) -> Vec<(usize, FilePageIdentityPin)> {
         let mut cpu_mask = 0;
         let dirty_pages = self
@@ -114,7 +124,7 @@ impl InodePageCache {
 }
 
 pub struct Inode {
-    context: Weak<SleepLock<Context>>,
+    context: Weak<SleepRwLockOnStack<Context>>,
     inode: SleepLock<Ext4Inode>,
     page_cache: SleepLock<InodePageCache>,
     dents_cache: SpinLock<Option<Vec<DirResult>>>,
@@ -123,7 +133,7 @@ pub struct Inode {
 }
 
 impl Inode {
-    pub fn new(context: Weak<SleepLock<Context>>, inode: Ext4Inode) -> Self {
+    pub fn new(context: Weak<SleepRwLockOnStack<Context>>, inode: Ext4Inode) -> Self {
         Self {
             context,
             inode: SleepLock::new(inode, "ext4_native::Inode::inode"),
@@ -469,7 +479,7 @@ impl Inode {
 
     fn load_page_to_cache(
         &self,
-        context: &Arc<SleepLock<Context>>,
+        context: &Arc<SleepRwLockOnStack<Context>>,
         page_cache: &InodePageCache,
         file_page_index: usize,
         file_size: usize,
@@ -484,7 +494,7 @@ impl Inode {
         }
 
         page_cache.acquire_cached_page(file_page_index, || {
-            let context = context.lock();
+            let context = context.read();
             let inode = self.inode.lock();
             let len = core::cmp::min(file_size - page_offset, arch::PGSIZE);
             let frame = PhysPageFrame::alloc_zeroed();
@@ -554,7 +564,7 @@ impl Inode {
                 }
 
                 let write_result = if batch.len() == 1 {
-                    let context = context.lock();
+                    let context = context.write();
                     let mut inode = self.inode.lock();
                     let (guard, len) = &batch[0];
                     Self::write_raw_at_locked(&context, &mut inode, &guard.frame().slice()[..*len], batch_offset)
@@ -565,7 +575,7 @@ impl Inode {
                             .copy_from_slice(&guard.frame().slice()[..*len]);
                         buffer_offset += len;
                     }
-                    let context = context.lock();
+                    let context = context.write();
                     let mut inode = self.inode.lock();
                     Self::write_raw_at_locked(&context, &mut inode, &write_buffer.slice()[..batch_len], batch_offset)
                 };
@@ -597,7 +607,7 @@ impl Inode {
 
                 let len = core::cmp::min(file_size - offset, arch::PGSIZE);
                 let write_result = {
-                    let context = context.lock();
+                    let context = context.write();
                     let mut inode = self.inode.lock();
                     Self::write_raw_at_locked(&context, &mut inode, &guard.frame().slice()[..len], offset)
                 };
@@ -635,7 +645,7 @@ impl Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("create_child: context has been dropped", Errno::EIO))?;
-        let context_lock = context.lock();
+        let context_lock = context.write();
         let mut parent = self.inode.lock();
 
         ensure_dir_writable(&parent, op)?;
@@ -660,6 +670,10 @@ impl Inode {
                 Ext4DirEntryFileType::Directory => {
                     let pblk = context_lock.alloc_block()?;
                     child_block = Some(pblk);
+                    // Zero before publishing the extent so a crash between
+                    // insert_extent_1blk and init_dir_block cannot expose
+                    // stale data from a previously freed block.
+                    context_lock.zero_fs_block(pblk)?;
                     context_lock.insert_extent_1blk(child_ino, &mut child, 0, pblk)?;
                     context_lock.init_dir_block(pblk, child_ino, child.i_generation, parent.ino)?;
                     child.i_size = context_lock.block_size as u64;
@@ -707,7 +721,7 @@ impl Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("set_symlink_target: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
+        let context = context.write();
         let mut inode = self.inode.lock();
 
         if (inode.i_mode & S_IFMT) != Mode::S_IFLNK.bits() as u16 {
@@ -761,6 +775,9 @@ impl InodeOps for Inode {
         if buf.is_empty() {
             return Ok(0);
         }
+        if self.deleted.load(Ordering::Acquire) {
+            return ret_errno("readat: inode has been deleted", Errno::EIO);
+        }
         if direct {
             self.flush_dirty_pages()?;
         }
@@ -770,7 +787,7 @@ impl InodeOps for Inode {
             .upgrade()
             .ok_or_else(|| debug_errno("readat: context has been dropped", Errno::EIO))?;
         let file_size = {
-            let context = context.lock();
+            let context = context.read();
             let inode = self.inode.lock();
             if direct || !Self::is_cacheable_file(&inode) {
                 return Self::read_raw_at_locked(&context, &inode, buf, offset);
@@ -795,7 +812,9 @@ impl InodeOps for Inode {
             } else {
                 self.load_page_to_cache(&context, &page_cache, page_index, file_size)?
             };
-            let guard = page.ensure_page().map_err(|_| Errno::EIO)?;
+            let guard = page
+                .ensure_page()
+                .expect("ext4 cached read page must have valid backing");
             guard
                 .frame()
                 .copy_to_slice(page_offset, &mut buf[read_len..read_len + copy_len]);
@@ -815,10 +834,16 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("writeat: context has been dropped", Errno::EIO))?;
+        if self.deleted.load(Ordering::Acquire) {
+            return ret_errno("writeat: inode has been deleted", Errno::EIO);
+        }
+        let page_cache = self.page_cache.lock();
         let (end, old_size) = {
-            let context = context.lock();
-            let mut inode = self.inode.lock();
+            let inode = self.inode.lock();
             if !Self::is_cacheable_file(&inode) {
+                drop(inode);
+                let context = context.write();
+                let mut inode = self.inode.lock();
                 return Self::write_raw_at_locked(&context, &mut inode, buf, offset);
             }
             (
@@ -826,7 +851,6 @@ impl InodeOps for Inode {
                 usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?,
             )
         };
-        let page_cache = self.page_cache.lock();
         let mut written = 0;
         while written < buf.len() {
             let current_offset = offset + written;
@@ -834,44 +858,74 @@ impl InodeOps for Inode {
             let page_offset = current_offset % arch::PGSIZE;
             let copy_len = core::cmp::min(buf.len() - written, arch::PGSIZE - page_offset);
             let page_start = page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
+            let new_size = current_offset + copy_len;
+            let extends_size = new_size > old_size;
 
-            let page = if let Some(page) = page_cache.get_page(page_index) {
-                page
+            let (page, resident_pin) = if let Some(page) = page_cache.get_page(page_index) {
+                let resident_pin = extends_size.then(|| {
+                    page.pin_page(false)
+                        .expect("ext4 cached write page must have valid backing")
+                });
+                (page, resident_pin)
             } else if page_start < old_size && copy_len != arch::PGSIZE {
-                self.load_page_to_cache(&context, &page_cache, page_index, old_size)?
+                let page = self.load_page_to_cache(&context, &page_cache, page_index, old_size)?;
+                let resident_pin = extends_size.then(|| {
+                    page.pin_page(false)
+                        .expect("ext4 cached write page must have valid backing")
+                });
+                (page, resident_pin)
+            } else if extends_size {
+                let (page, resident_pin) = page_cache.insert_frame_pinned(page_index, PhysPageFrame::alloc_zeroed())?;
+                (page, Some(resident_pin))
             } else {
-                page_cache.insert_frame(page_index, PhysPageFrame::alloc_zeroed())?
+                (
+                    page_cache.insert_frame(page_index, PhysPageFrame::alloc_zeroed())?,
+                    None,
+                )
             };
-            let mut guard = page.ensure_page().map_err(|_| Errno::EIO)?;
+            let mut guard = page
+                .ensure_page()
+                .expect("ext4 cached write page must have valid backing");
             guard
                 .frame()
                 .copy_from_slice(page_offset, &buf[written..written + copy_len]);
             guard.mark_dirty();
+            drop(guard);
+
+            // Reclaim writeback bounds the page by i_size. Publish the copied
+            // range before releasing its resident pin so extension data cannot
+            // be skipped and then evicted as if it were still beyond EOF.
+            if let Some(resident_pin) = resident_pin {
+                let mut inode = self.inode.lock();
+                inode.i_size = inode.i_size.max(new_size as u64);
+                drop(inode);
+                drop(resident_pin);
+            }
 
             written += copy_len;
         }
 
-        let context = context.lock();
-        let mut inode = self.inode.lock();
-        if (end as u64) > inode.i_size {
-            inode.i_size = end as u64;
+        if end > old_size {
+            let context = context.write();
+            let mut inode = self.inode.lock();
             context.write_inode(&mut inode)?;
         }
-        drop(inode);
-        drop(context);
         drop(page_cache);
 
         Ok(written)
     }
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
+        if self.deleted.load(Ordering::Acquire) {
+            return ret_errno("truncate: inode has been deleted", Errno::EIO);
+        }
         self.flush_dirty_pages()?;
 
         let context = self
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("truncate: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
+        let context = context.write();
         let mut inode = self.inode.lock();
 
         let mode_type = inode.i_mode & S_IFMT;
@@ -939,7 +993,7 @@ impl InodeOps for Inode {
             self.metadata_dirty.store(true, Ordering::Release);
             return Err(Errno::EIO);
         };
-        let context = context.lock();
+        let context = context.write();
         let mut inode = self.inode.lock();
         if let Err(err) = context.write_inode(&mut inode) {
             self.metadata_dirty.store(true, Ordering::Release);
@@ -980,7 +1034,7 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("unlink: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
+        let context = context.write();
         let mut parent = self.inode.lock();
 
         ensure_dir_writable(&parent, "unlink")?;
@@ -1039,7 +1093,7 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("rmdir: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
+        let context = context.write();
         let mut parent = self.inode.lock();
 
         ensure_dir_writable(&parent, "rmdir")?;
@@ -1102,7 +1156,7 @@ impl InodeOps for Inode {
             Err(err) => return Err(err),
         }
 
-        let context = context.lock();
+        let context = context.write();
         let mut parent = self.inode.lock();
         let mut child = target.inode.lock();
 
@@ -1165,7 +1219,7 @@ impl InodeOps for Inode {
         }
         drop(new_parent_context);
 
-        let context = context.lock();
+        let context = context.write();
         let old_parent_ino = self.get_ino();
         let new_parent_ino = new_parent.get_ino();
         let same_parent = old_parent_ino == new_parent_ino;
@@ -1304,7 +1358,7 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("get_dent: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
+        let context = context.read();
         let inode = self.inode.lock();
 
         ensure_dir_readable(&inode)?;
@@ -1318,7 +1372,7 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("lookup: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
+        let context = context.read();
         let inode = self.inode.lock();
 
         ensure_dir_readable(&inode)?;
@@ -1340,7 +1394,7 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("readlink: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
+        let context = context.read();
         let inode = self.inode.lock();
 
         if (inode.i_mode & S_IFMT) != Mode::S_IFLNK.bits() as u16 {
@@ -1377,7 +1431,10 @@ impl InodeOps for Inode {
             .upgrade()
             .ok_or_else(|| debug_errno("mmap_shared_page: context has been dropped", Errno::EIO))?;
         let frame = PhysPageFrame::alloc_with_shrink_zeroed();
-        let context = context.lock();
+        let context = context.read();
+        if self.deleted.load(Ordering::Acquire) {
+            return ret_errno("load_raw_page: inode has been deleted", Errno::EIO);
+        }
         let inode = self.inode.lock();
 
         let file_size = usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?;
@@ -1403,7 +1460,10 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("writeback_mmap_shared_page: context has been dropped", Errno::EIO))?;
-        let context = context.lock();
+        let context = context.write();
+        if self.deleted.load(Ordering::Acquire) {
+            return ret_errno("writeback_mmap_shared_page: inode has been deleted", Errno::EIO);
+        }
         let mut inode = self.inode.lock();
 
         let file_size = usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?;
@@ -1464,7 +1524,7 @@ impl InodeOps for Inode {
             self.context
                 .upgrade()
                 .ok_or_else(|| debug_errno("fstat: context has been dropped", Errno::EIO))?
-                .lock()
+                .read()
                 .block_size()
         };
         let inode = self.inode.lock();
