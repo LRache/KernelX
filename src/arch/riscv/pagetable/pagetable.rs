@@ -13,7 +13,7 @@ pub(super) const ENTRIES_PER_TABLE: usize = 512;
 
 /// Invalidation ranges larger than this fall back to a full flush so the
 /// per-page fence count stays bounded.
-const FLUSH_RANGE_MAX_PAGES: usize = 32;
+pub(super) const FLUSH_RANGE_MAX_PAGES: usize = 32;
 
 fn cpu_bit(cpu_id: usize) -> usize {
     1usize
@@ -24,8 +24,10 @@ fn cpu_bit(cpu_id: usize) -> usize {
 /// Invalidate `page_count` pages starting at `vaddr` in the local TLB.
 ///
 /// The leading fence publishes the preceding page-table writes before the
-/// translations are invalidated.
-fn local_flush_range(vaddr: usize, page_count: usize) {
+/// translations are invalidated. `sfence.vma vaddr, x0` (no ASID operand)
+/// covers all address spaces including global (G-bit) mappings, so this also
+/// works for kernel addresses.
+pub(super) fn local_flush_range(vaddr: usize, page_count: usize) {
     unsafe {
         core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
         for page in 0..page_count {
@@ -35,7 +37,8 @@ fn local_flush_range(vaddr: usize, page_count: usize) {
     }
 }
 
-/// Invalidate every non-global translation in the local TLB.
+/// Invalidate every translation in the local TLB. `sfence.vma x0, x0`
+/// specifies no ASID, so global (G-bit) mappings are invalidated as well.
 pub(super) fn local_flush_all() {
     unsafe {
         core::arch::asm!("fence rw, rw", "sfence.vma zero, zero", options(nostack, preserves_flags));
@@ -43,8 +46,9 @@ pub(super) fn local_flush_all() {
 }
 
 /// Synchronously invalidate `page_count` pages at `vaddr` on the remote CPUs
-/// in `cpu_mask`. The current CPU must not be present in the mask.
-fn remote_flush_range(cpu_mask: usize, vaddr: usize, page_count: usize) {
+/// in `cpu_mask`. The current CPU must not be present in the mask. The SBI
+/// call returns only after every targeted hart has executed its fence.
+pub(super) fn remote_flush_range(cpu_mask: usize, vaddr: usize, page_count: usize) {
     if cpu_mask == 0 {
         return;
     }

@@ -73,11 +73,6 @@ enum FutexWaitvClockId {
     Monotonic = 1,
 }
 
-fn read_futex_addr(uaddr: UPtr<i32>, key: futex::FutexKey) -> SysResult<futex::FutexAddr> {
-    let value = uaddr.read()?;
-    Ok(futex::FutexAddr::new(key, value))
-}
-
 fn futex_key(uaddr: UPtr<i32>, private: bool) -> SysResult<futex::FutexKey> {
     if private {
         Ok(futex::FutexKey::private(current::addrspace(), uaddr.uaddr()))
@@ -133,23 +128,30 @@ pub fn futex(
             let key = futex_key(uaddr, private)?;
             let task = current::task().clone();
 
-            let mut futex_manager = futex::manager();
-            let addr = read_futex_addr(uaddr, key)?;
+            // Fault-outside-retry: translate and pin the page holding the
+            // futex word before taking any bucket spinlock (this may fault
+            // and sleep). The authoritative compare happens inside
+            // futex::wait through the pinned mapping, which cannot fault.
+            // `word` stays on this stack frame across schedule(), so the
+            // page stays pinned for the whole wait.
+            let expected = val as i32;
+            let word = futex::FutexWord::pin(current::addrspace(), uaddr.uaddr())?;
+            if word.read() != expected {
+                return Err(Errno::EAGAIN);
+            }
 
             if timeout == Some(Duration::ZERO) {
-                futex_manager.touch(addr, val as i32)?;
+                futex::check(key, &word, expected)?;
                 return Err(Errno::ETIMEDOUT);
             }
 
-            futex_manager.wait_current(addr, val as i32, bitset)?;
-            drop(futex_manager);
+            let handle = futex::wait(key, &word, expected, bitset)?;
 
             let timer_id = timeout.map(|timeout| timer::add_timer(task.clone(), timeout));
             current::schedule();
             let event = current::task().take_wakeup_event().unwrap();
             if !matches!(event, Event::Futex) {
-                let mut futex_manager = futex::manager();
-                futex_manager.cancel_wait_all(&task);
+                futex::cancel_wait(&task, &handle);
             }
             if let Some(timer_id) = timer_id {
                 if event != Event::Timeout {
@@ -174,8 +176,7 @@ pub fn futex(
                 return Err(Errno::EINVAL);
             }
             let key = futex_key(uaddr, private)?;
-            let mut futex_manager = futex::manager();
-            futex_manager.wake(key, val, bitset)
+            futex::wake(key, val, bitset)
         }
 
         FutexOp::REQUEUE | FutexOp::CmpRequeue => {
@@ -187,10 +188,13 @@ pub fn futex(
             let key2 = futex_key(UPtr::<i32>::from_uaddr(uaddr2.uaddr()), private)?;
             let wake_count = val;
             let requeue_count = timeout.uaddr();
-            let cmp = (op == FutexOp::CmpRequeue).then_some(val3 as i32);
-            let mut futex_manager = futex::manager();
-            let addr = read_futex_addr(uaddr, key)?;
-            futex_manager.requeue(addr, key2, wake_count, requeue_count, cmp)
+            // Pinned outside the bucket locks (may fault); the CMP_REQUEUE
+            // compare happens inside futex::requeue through the pinned
+            // mapping. Pinning for plain REQUEUE too preserves the previous
+            // behavior of reporting EFAULT for an unreadable uaddr.
+            let word = futex::FutexWord::pin(current::addrspace(), uaddr.uaddr())?;
+            let cmp = (op == FutexOp::CmpRequeue).then_some((&word, val3 as i32));
+            futex::requeue(key, key2, wake_count, requeue_count, cmp)
         }
     }
 }
@@ -241,46 +245,34 @@ pub fn futex_waitv(
 
     let task = current::task().clone();
 
-    // Hold the futex manager lock while reading each futex word and, for a
-    // real wait, until the current task is blocked and linked into every queue.
-    // Without that, this lost-wakeup race is possible:
-    //
-    //   | Task A (waiter)             | Task B (waker)
-    // 0 | read futex == expected      |
-    // 1 |                             | store futex = new_value
-    // 2 |                             | futex_wake()
-    // 3 | enqueue and sleep           |
-    //
-    // The lock makes futex_wake wait until Task A has either fully enqueued
-    // all waitv entries, rolled them back, or confirmed a zero-timeout touch.
-    let mut futex_manager = futex::manager();
-    let mut wait_entries = Vec::new();
-    for (index, (uaddr, key, expected)) in futexes.iter().enumerate() {
-        let addr = match read_futex_addr(*uaddr, *key) {
-            Ok(addr) => addr,
-            Err(err) => {
-                return Err(err);
-            }
-        };
-        futex_manager.touch(addr, *expected)?;
-        wait_entries.push((addr, index));
+    // Pin every futex word outside the bucket locks (each pin may fault and
+    // sleep). futex::waitv then takes all involved bucket locks together and
+    // atomically re-checks every word and links the task into every queue —
+    // the same lost-wakeup guarantee the old global lock provided (see the
+    // comment on futex::waitv). `entries` lives on this stack frame across
+    // schedule(), keeping all pages pinned for the whole wait.
+    let mut entries = Vec::with_capacity(futexes.len());
+    for (uaddr, key, expected) in &futexes {
+        entries.push(futex::WaitvEntry {
+            key: *key,
+            word: futex::FutexWord::pin(current::addrspace(), uaddr.uaddr())?,
+            expected: *expected,
+        });
     }
 
     if timeout == Some(Duration::ZERO) {
+        futex::waitv(&entries, false)?;
         return Err(Errno::ETIMEDOUT);
     }
 
-    task.block("futex_waitv");
-    for (addr, index) in wait_entries {
-        futex_manager.wait_current_waitv_unchecked(addr, u32::MAX, index);
-    }
-    drop(futex_manager);
+    let handles = futex::waitv(&entries, true)?;
 
     let timer_id = timeout.map(|timeout| timer::add_timer(task.clone(), timeout));
     current::schedule();
     let event = current::task().take_wakeup_event().unwrap();
-    let mut futex_manager = futex::manager();
-    futex_manager.cancel_wait_all(&task);
+    for handle in &handles {
+        futex::cancel_wait(&task, handle);
+    }
     if let Some(timer_id) = timer_id {
         if event != Event::Timeout {
             timer::remove_timer(timer_id);

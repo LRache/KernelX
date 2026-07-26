@@ -981,9 +981,7 @@ impl TCB {
                 .is_ok()
             {
                 if let Ok(frame) = self.addrspace.get_frame(tid_address) {
-                    let mut futex_manager = futex::manager();
-                    let _ =
-                        futex_manager.wake(futex::FutexKey::shared(&frame, tid_address & arch::PGMASK), 1, u32::MAX);
+                    let _ = futex::wake(futex::FutexKey::shared(&frame, tid_address & arch::PGMASK), 1, u32::MAX);
                 }
             }
         }

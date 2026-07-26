@@ -291,7 +291,7 @@
 
 - `src/kernel/usync/futex/futex.rs`：全系统 futex 串行在一把 SleepLock 上；用户字比较在锁内做，CoW/换入时在锁内做分配/IO；`cancel_wait_all` 每次超时/EINTR 全表扫描。pthread 锁扩展性塌到单核。
 - **方案**：按 `FutexKey` 哈希分桶 SpinLock（Linux 模式）；桶锁内用非缺页访问读用户字。
-- **状态**：[未修复]
+- **状态**：[已修复]（第二轮优化：64 桶哈希 SpinLock；锁外 translate/pin 用户页 + 锁内经 pin 映射免缺页复查；waiter 携带 `location: Arc<SpinLock<FutexKey>>`（Linux `futex_q->lock_ptr` 模式）使 requeue 与 cancel 竞争安全；waitv 按序取全部涉及桶锁保持原子性；cancel 免全表扫描。顺带：pin 现全程存活于等待期间，H5 的"pin 提前释放"半项修复——key 仍按物理页，H5 的 key 身份问题在 swap 启用前保持开放）
 
 ### P6. 文件系统锁粒度与刷盘放大
 
@@ -313,13 +313,13 @@
 - CoW/缺页路径先 `alloc_with_shrink_zeroed()` 再整页 `copy_from_slice`——每次白付 4KiB memset。[已修复]（优化记录 #C）
 - 全局堆分配器单锁（TLSF）与全局页帧分配器单锁：建议 per-CPU 缓存/批量补充。[未修复]
 - per-area 睡眠锁把大 mmap 并发缺页串行化，且 backing I/O 在锁内。[未修复]
-- 线程创建/销毁的内核栈映射走 `flush_tlb_all()`（本地+SBI 远程全量）且持 `KERNEL_PAGETABLE` 锁——创建（原本未映射）根本不需要 flush。[未修复]
+- 线程创建/销毁的内核栈映射走 `flush_tlb_all()`（本地+SBI 远程全量）且持 `KERNEL_PAGETABLE` 锁——创建（原本未映射）根本不需要 flush。[已修复]（第二轮优化：创建走 `map_fresh_kernel_pages` 仅本地单页 sfence；销毁保留 shootdown 但范围化且 SBI 移出锁外；已验证 VA 复用前销毁冲刷同步完成，其余 map_kernel_pages 调用点（权限翻转/MMIO 重映射）逐一审计保留全量路径）
 - kswapd 为 500ms 轮询而非水位唤醒；brk 每次增长新建 area 不合并；无用户态大页。[未修复]
 
 ### P9. 同步/IPC 杂项
 
 - 自旋锁无 test-and-test-and-set、无 `core::hint::spin_loop()`——争用时缓存行乒乓最大化。[已修复]（修复记录 #1：`spinlock.rs` 与 `rwlock.rs` 均改为先只读自旋+relax 再 CAS）
-- pipe：每次读/写唤醒**全部**对端等待者（惊群）；内核缓冲路径逐字节 `push_back`；`PipeState` 是 SleepLock。[未修复]
+- pipe：每次读/写唤醒**全部**对端等待者（惊群）；内核缓冲路径逐字节 `push_back`（[已修复]——第二轮优化：改为最多两段的批量 slice 拷贝）；`PipeState` 是 SleepLock。[部分修复]
 - epoll 对 level-triggered fd 每次 `epoll_wait` 做 2-3 遍 O(n) 全量轮询，退化为 poll。[未修复]
 - 全局定时器：单锁 BinaryHeap，每 hart 每 tick 都扫，`remove` 是 O(n) retain 重建，每个 sleep 一次 Box 分配；无按最早到期重编程。[未修复]
 - 日志：`KLOG_LOCK` 自旋锁内逐字节 SBI ecall；`print!`/panic 路径绕过行锁交错输出。UART `write` 持锁忙等逐字节 + 每字节取一次 attr 锁。[未修复]
@@ -457,4 +457,4 @@
 | 时间分（120 满分，基线 400s） | 0 | ≈5.7 | 进入得分区间 |
 | TOOLCHAIN / MINIBUILD / COMPILE ok | 全过 | 全过 | 无回归 |
 
-注：正式测评为 8c/**8G**，本次实测为 8c/16G；swap 子系统整场 0 回收（LRU 仅追踪),内存非瓶颈，8G 下结果预计接近。继续压缩耗时的下一批候选：P6 剩余（sb 锁内设备 I/O 移出、readahead——编译负载读大量 .rs/.rlib）、P5（futex 分桶——rustc 多线程内部同步）、P3 剩余（per-hart 队列）、P8 剩余（堆/页帧分配器 per-CPU 缓存）。
+注：测评文档标称 8c/8G，实际测评环境为 8c/**16G**，与本次实测配置一致。swap 子系统整场 0 回收（LRU 仅追踪），内存非瓶颈。继续压缩耗时的下一批候选：P6 剩余（sb 锁内设备 I/O 移出、readahead——编译负载读大量 .rs/.rlib）、P5（futex 分桶——rustc 多线程内部同步）、P3 剩余（per-hart 队列）、P8 剩余（堆/页帧分配器 per-CPU 缓存）。
