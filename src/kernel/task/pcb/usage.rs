@@ -1,7 +1,6 @@
 use core::time::Duration;
 
 use crate::kernel::event::timer;
-use crate::kernel::scheduler::current;
 
 use super::*;
 
@@ -28,12 +27,20 @@ impl PCB {
     }
 
     pub fn tasks_usage_time(&self) -> (Duration, Duration) {
+        // Read the folded accumulator BEFORE the per-thread residuals: a
+        // concurrent context-switch fold moves time from a thread's residual
+        // into the accumulator, and this order can only transiently
+        // undercount — never double count.
         let (mut utime, mut stime) = *self.tasks_time_usage.lock();
         let now = timer::now();
-        let current_is_self = current::has_task() && current::pid() == self.pid();
 
-        if current_is_self {
-            let counter = current::tcb().time_counter.lock();
+        let tasks = self.tasks.lock();
+        for tcb in tasks.iter() {
+            let counter = tcb.time_counter.lock();
+            let (unfolded_user, unfolded_system) = counter.unfolded();
+            utime += unfolded_user;
+            stime += unfolded_system;
+            // Open intervals belong to threads currently on a CPU.
             if let Some(user_start) = counter.user_start {
                 utime += now.checked_sub(user_start).unwrap_or(Duration::ZERO);
             }

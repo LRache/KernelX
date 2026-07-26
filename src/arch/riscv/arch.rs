@@ -187,6 +187,10 @@ impl ArchTrait for Arch {
         SIE::read().set_stie(true).write();
     }
 
+    fn enable_software_interrupt() {
+        SIE::read().set_ssie(true).write();
+    }
+
     fn enable_device_interrupt(hartid: usize) {
         SIE::read().set_seie(true).write();
         plic::enable_interrupt_for_hart(hartid);
@@ -275,6 +279,24 @@ impl ArchTrait for Arch {
             .unwrap_or_else(|error| panic!("SBI targeted remote SFENCE.VMA failed: {error}"));
     }
 
+    fn send_ipi(cpu_mask: usize) {
+        if cpu_mask == 0 {
+            return;
+        }
+
+        debug_assert_eq!(
+            cpu_mask
+                & 1usize
+                    .checked_shl(current::hart_id().try_into().expect("hart ID does not fit in u32"))
+                    .expect("hart ID exceeds IPI CPU mask width"),
+            0,
+            "wakeup IPI mask contains the current hart"
+        );
+
+        #[cfg(not(feature = "no-smp"))]
+        sbi_driver::send_ipi(cpu_mask).unwrap_or_else(|error| panic!("SBI send IPI failed: {error}"));
+    }
+
     fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize {
         let offset = paddr & arch::PGMASK;
         let pbase = paddr - offset;
@@ -290,7 +312,9 @@ impl ArchTrait for Arch {
     }
 
     fn get_time_us() -> u64 {
-        csr::time::read() * 1000000 / (time_frequency() as u64)
+        let t = csr::time::read();
+        let f = time_frequency() as u64;
+        t / f * 1_000_000 + (t % f) * 1_000_000 / f
     }
 
     fn set_next_time_event_us(interval: u64) {
@@ -308,7 +332,7 @@ impl ArchTrait for Arch {
 
     fn write_volatile<T>(dst: *mut T, val: T) {
         unsafe {
-            core::arch::asm!("fence w, i", options(nostack, preserves_flags));
+            core::arch::asm!("fence w, o", options(nostack, preserves_flags));
             core::ptr::write_volatile(dst, val);
         }
     }

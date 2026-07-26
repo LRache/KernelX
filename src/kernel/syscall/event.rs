@@ -525,10 +525,11 @@ fn select(
     match event {
         Event::Poll { event, waker } => {
             debug_assert!(waker < files_to_select.len());
-            waiting_files.iter().enumerate().for_each(|(i, file)| {
-                if i != waker {
-                    file.wait_event_cancel();
-                }
+            // Cancel every registration, including the waker's: files that
+            // register on multiple queues may still hold entries on the
+            // queues that did not fire.
+            waiting_files.iter().for_each(|file| {
+                file.wait_event_cancel();
             });
 
             set_select_fd_by_event(
@@ -801,9 +802,12 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
 
     debug_assert!(waker < poll_files.len());
 
+    // Cancel every registration, including the waker's: files that register
+    // on multiple queues may still hold entries on the queues that did not
+    // fire, and those would deliver stale events later.
     poll_files.iter_mut().enumerate().for_each(|(i, (file, pfd))| {
+        file.wait_event_cancel();
         if i != waker {
-            file.wait_event_cancel();
             pfd.revents = PollEventSet::empty();
         }
     });

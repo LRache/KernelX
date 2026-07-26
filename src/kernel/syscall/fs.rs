@@ -471,7 +471,7 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
             } else {
                 vfs::load_dentry_at(root, parent, &path)?
             };
-            let inode = dentry.get_inode();
+            let inode = dentry.get_inode()?;
             if open_flags.contains(OpenFlags::O_DIRECTORY) && inode.inode_type()? != FileType::Directory {
                 return Err(Errno::ENOTDIR);
             }
@@ -482,7 +482,7 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
             } else {
                 vfs::load_dentry_at(root, parent, &path)?
             };
-            if dentry.get_inode().inode_type()? != FileType::Directory {
+            if dentry.get_inode()?.inode_type()? != FileType::Directory {
                 return Err(Errno::ENOTDIR);
             }
             if open_flags.contains(OpenFlags::O_NOFOLLOW) {
@@ -530,7 +530,7 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
                     let time = driver::chosen::kclock::now()?;
                     update_file_times(file.as_ref(), &time, false)?;
                     update_file_times(file.as_ref(), &time, true)?;
-                    let parent_inode = parent_dentry.get_inode();
+                    let parent_inode = parent_dentry.get_inode()?;
                     parent_inode.update_mtime(&time)?;
                     parent_inode.update_ctime(&time)?;
                     Ok(file)
@@ -662,7 +662,7 @@ fn do_openat_with_lookup_flags(
             } else {
                 vfs::load_dentry_at_with_flags(root, parent, &path, lookup_flags)?
             };
-            let inode = dentry.get_inode();
+            let inode = dentry.get_inode()?;
             if open_flags.contains(OpenFlags::O_DIRECTORY) && inode.inode_type()? != FileType::Directory {
                 return Err(Errno::ENOTDIR);
             }
@@ -673,7 +673,7 @@ fn do_openat_with_lookup_flags(
             } else {
                 vfs::load_dentry_at_with_flags(root, parent, &path, lookup_flags)?
             };
-            if dentry.get_inode().inode_type()? != FileType::Directory {
+            if dentry.get_inode()?.inode_type()? != FileType::Directory {
                 return Err(Errno::ENOTDIR);
             }
             if open_flags.contains(OpenFlags::O_NOFOLLOW) {
@@ -721,7 +721,7 @@ fn do_openat_with_lookup_flags(
                     let time = driver::chosen::kclock::now()?;
                     update_file_times(file.as_ref(), &time, false)?;
                     update_file_times(file.as_ref(), &time, true)?;
-                    let parent_inode = parent_dentry.get_inode();
+                    let parent_inode = parent_dentry.get_inode()?;
                     parent_inode.update_mtime(&time)?;
                     parent_inode.update_ctime(&time)?;
                     Ok(file)
@@ -2054,7 +2054,7 @@ fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFl
             return Err(Errno::EROFS);
         }
 
-        let inode = dentry.get_inode();
+        let inode = dentry.get_inode()?;
         let mode = inode.mode()?;
         let (uid, gid) = inode.owner()?;
         if !mode.check_perm(&perm, uid, gid) {
@@ -2272,7 +2272,7 @@ pub fn fanotify_mark(
     }
     .get_mount_to();
 
-    let inode = dentry.get_inode();
+    let inode = dentry.get_inode()?;
     let target_is_dir = inode.inode_type()? == FileType::Directory;
     if flags.contains(FanotifyMarkFlags::FAN_MARK_ONLYDIR) && !target_is_dir {
         return Err(Errno::ENOTDIR);
@@ -2415,7 +2415,7 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
         }
 
         if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| cwd.get_inode().fstat())?
+            current::with_cwd(|cwd| cwd.get_inode()?.fstat())?
         } else {
             current::fdtable().lock().get(dirfd)?.fstat()?
         }
@@ -2440,7 +2440,7 @@ pub fn fstatat(dirfd: usize, uptr_path: UString, uptr_stat: UPtr<FileStat>, flag
             current::with_root(|root| helper(&root, &dir))
         }?;
 
-        dentry.get_inode().fstat()?
+        dentry.get_inode()?.fstat()?
     };
 
     uptr_stat.write(fstat)?;
@@ -2512,7 +2512,7 @@ pub fn statx(dirfd: usize, uptr_path: UString, flags: usize, mask: usize, uptr_b
         }
 
         if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| cwd.get_inode().fstat())?
+            current::with_cwd(|cwd| cwd.get_inode()?.fstat())?
         } else {
             current::fdtable().lock().get(dirfd)?.fstat()?
         }
@@ -2536,7 +2536,7 @@ pub fn statx(dirfd: usize, uptr_path: UString, flags: usize, mask: usize, uptr_b
             current::with_root(|root| helper(&root, &dir))
         }?;
 
-        dentry.get_inode().fstat()?
+        dentry.get_inode()?.fstat()?
     };
 
     uptr_buf.write(Statx::from(fstat))?;
@@ -2598,7 +2598,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
         }
     };
     let dentry = dentry.get_mount_to();
-    let inode = dentry.get_inode();
+    let inode = dentry.get_inode()?;
 
     let now = driver::chosen::kclock::now()?;
     let (atime, mtime, allow_write_perm) = if uptr_times.is_null() {
@@ -2972,7 +2972,7 @@ fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
         return Err(Errno::EROFS);
     }
 
-    let inode = dentry.get_inode();
+    let inode = dentry.get_inode()?;
     let (inode_uid, inode_gid) = inode.owner()?;
     let pcb = current::pcb();
     let fsuid = pcb.fsuid();
@@ -2997,7 +2997,7 @@ fn do_chown(dentry: &Arc<Dentry>, uid: Option<Uid>, gid: Option<Uid>) -> Syscall
         return Err(Errno::EROFS);
     }
 
-    let inode = dentry.get_inode();
+    let inode = dentry.get_inode()?;
     let (inode_uid, inode_gid) = inode.owner()?;
     let pcb = current::pcb();
     let fsuid = pcb.fsuid();
@@ -3144,7 +3144,7 @@ pub fn truncate64(uptr_path: UString, length: usize) -> SyscallRet {
 
     let length = truncate_length(length)?;
     let dentry = current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &path))?;
-    let inode = dentry.get_inode();
+    let inode = dentry.get_inode()?;
     let mode = inode.mode()?;
     if (mode & Mode::S_IFMT) == Mode::S_IFDIR {
         return Err(Errno::EISDIR);
@@ -3440,7 +3440,7 @@ pub fn mount(
         } else {
             match current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &source)) {
                 Ok(dentry) => {
-                    let inode = dentry.get_inode();
+                    let inode = dentry.get_inode()?;
                     Some(inode.block_driver()?.ok_or(Errno::ENOTBLK)?)
                 }
                 Err(e) => {
@@ -3476,6 +3476,10 @@ pub fn umount2(uptr_target: UString, flags: usize) -> SyscallRet {
 }
 
 pub fn syncfs(fd: usize) -> SyscallRet {
-    let _ = fd;
+    // Validate the fd, then flush all filesystems (a superset of Linux's
+    // single-filesystem semantics). This is the full-flush + device-barrier
+    // entry point, together with sync(2) and unmount.
+    let _ = current::fdtable().lock().get(fd)?;
+    vfs::sync_all()?;
     Ok(0)
 }

@@ -52,9 +52,8 @@ fn init_chosen_char_device(
         return;
     }
 
-    match vfs::load_dentry(name) {
-        Ok(dentry) => {
-            let inode = dentry.get_inode();
+    match vfs::load_dentry(name).and_then(|dentry| dentry.get_inode()) {
+        Ok(inode) => {
             match inode.char_driver() {
                 Ok(Some(driver)) => {
                     register(driver);

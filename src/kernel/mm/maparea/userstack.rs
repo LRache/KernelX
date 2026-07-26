@@ -162,7 +162,8 @@ impl UserStack {
             return Some(());
         }
 
-        let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
+        // No zeroing: the full-page copy below overwrites every byte.
+        let new_frame = PhysPageFrame::alloc_with_shrink();
         let mut old_guard = old_page.ensure_page().ok()?;
         new_frame.slice().copy_from_slice(old_guard.frame().slice());
         let new_page = SwappablePageFrame::new_mapped(

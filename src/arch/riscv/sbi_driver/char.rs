@@ -46,7 +46,7 @@ impl CharDriverOps for SBIConsoleDriver {
     }
 
     fn wait_event_cancel(&self) {
-        unimplemented!()
+        // wait_event never registers a waiter, so there is nothing to cancel.
     }
 }
 

@@ -315,6 +315,19 @@ impl PageTable {
         flush_tlb_cpu_mask(self.active_cpu_mask);
     }
 
+    /// Snapshot of the CPUs the caller must fence after a `_no_flush`
+    /// page-table update. LoongArch performs its full local invalidation on
+    /// every return to user space, so no deferred-flush bookkeeping is needed.
+    pub fn begin_deferred_flush(&mut self) -> usize {
+        self.active_cpu_mask
+    }
+
+    /// Ranged invalidation is not implemented on LoongArch; fall back to the
+    /// full flush.
+    pub fn flush_tlb_range(&mut self, _vaddr: usize, _page_count: usize) {
+        self.flush_tlb();
+    }
+
     pub fn is_mapped(&self, uaddr: usize) -> bool {
         self.find_pte(uaddr).is_some()
     }

@@ -90,7 +90,10 @@ impl Fanotify {
 
     pub fn dentry_context(dentry: &Arc<Dentry>) -> FanotifyEventContext {
         FanotifyEventContext {
-            is_dir: matches!(dentry.get_inode().inode_type(), Ok(FileType::Directory)),
+            is_dir: matches!(
+                dentry.get_inode().and_then(|inode| inode.inode_type()),
+                Ok(FileType::Directory)
+            ),
         }
     }
 
@@ -98,7 +101,12 @@ impl Fanotify {
         let dentry = file.and_then(|file| file.get_dentry());
         FanotifyEventContext {
             is_dir: dentry
-                .map(|dentry| matches!(dentry.get_inode().inode_type(), Ok(FileType::Directory)))
+                .map(|dentry| {
+                    matches!(
+                        dentry.get_inode().and_then(|inode| inode.inode_type()),
+                        Ok(FileType::Directory)
+                    )
+                })
                 .unwrap_or(false),
         }
     }

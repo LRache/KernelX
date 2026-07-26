@@ -102,6 +102,9 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
     vfs::load_dentry("/dev/null").unwrap();
     vfs::load_dentry("/dev/zero").unwrap();
 
+    ensure_mountpoint("/tmp").unwrap();
+    mount("/tmp", "tmpfs").unwrap();
+
     mount_second_device_if_enabled();
 
     kinfo!("Init filesystem mounted successfully!");

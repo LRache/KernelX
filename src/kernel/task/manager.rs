@@ -87,9 +87,17 @@ pub fn with_initpcb<F, R>(f: F) -> R
 where
     F: FnOnce(&Arc<PCB>) -> R,
 {
-    let tcbs = TCBS.lock();
-    let tcb = tcbs.get(&INIT_UTASK_TID).expect("Init process not created yet");
-    f(tcb.parent())
+    // Release the TCBS lock before running the closure: callers lock other
+    // structures (e.g. `PCB::child_wait`) that are elsewhere held while
+    // acquiring TCBS, so holding TCBS across the closure could deadlock.
+    let initpcb = {
+        let tcbs = TCBS.lock();
+        tcbs.get(&INIT_UTASK_TID)
+            .expect("Init process not created yet")
+            .parent()
+            .clone()
+    };
+    f(&initpcb)
 }
 
 pub fn insert(tcb: Arc<TCB>) {

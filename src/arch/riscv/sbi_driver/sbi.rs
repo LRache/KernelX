@@ -4,12 +4,20 @@ type SBIRet = Result<usize, isize>;
 enum SBIExtension {
     Hsm = 0x48534d,
     #[cfg(not(feature = "no-smp"))]
+    Ipi = 0x735049,
+    #[cfg(not(feature = "no-smp"))]
     Rfence = 0x52464e43,
 }
 
 #[repr(usize)]
 enum HsmFunction {
     HartStart = 0,
+}
+
+#[cfg(not(feature = "no-smp"))]
+#[repr(usize)]
+enum IpiFunction {
+    SendIpi = 0,
 }
 
 #[cfg(not(feature = "no-smp"))]
@@ -79,6 +87,22 @@ pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> SBIRet {
     )
 }
 
+/// Send a supervisor software interrupt (SSIP) to the harts in `cpu_mask`.
+#[cfg(not(feature = "no-smp"))]
+pub fn send_ipi(cpu_mask: usize) -> SBIRet {
+    debug_assert!(cpu_mask != 0);
+    sbi_call(
+        IpiFunction::SendIpi as usize,
+        SBIExtension::Ipi as usize,
+        cpu_mask,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+}
+
 #[cfg(not(feature = "no-smp"))]
 pub fn remote_sfence_vma_all() -> SBIRet {
     // A hart-mask base of -1 selects every SBI-available hart. A zero start
@@ -105,6 +129,24 @@ pub fn remote_sfence_vma(cpu_mask: usize) -> SBIRet {
         0,
         0,
         0,
+        0,
+        0,
+    )
+}
+
+/// Remote SFENCE.VMA restricted to `[start, start + size)`. A zero start and
+/// size request invalidation of the entire address space; the SBI
+/// implementation may also widen large ranges to a full flush.
+#[cfg(not(feature = "no-smp"))]
+pub fn remote_sfence_vma_range(cpu_mask: usize, start: usize, size: usize) -> SBIRet {
+    debug_assert!(cpu_mask != 0);
+    sbi_call(
+        RfenceFunction::RemoteSfenceVma as usize,
+        SBIExtension::Rfence as usize,
+        cpu_mask,
+        0,
+        start,
+        size,
         0,
         0,
     )

@@ -31,7 +31,7 @@ impl CPUInfo {
     }
 }
 
-static CPU_INFO: InitedCell<Vec<CPUInfo>> = InitedCell::uninit();
+static CPU_INFO: InitedCell<Vec<(usize, CPUInfo)>> = InitedCell::uninit();
 static TIME_FREQ: InitedCell<u32> = InitedCell::uninit();
 
 pub fn load_cpu_node(cpus_node: &FdtNode) {
@@ -47,9 +47,9 @@ pub fn load_cpu_node(cpus_node: &FdtNode) {
             continue;
         }
 
-        if child.property("reg").and_then(|p| p.as_usize()).is_none() {
+        let Some(hart_id) = child.property("reg").and_then(|p| p.as_usize()) else {
             continue;
-        }
+        };
 
         let isa_support = child.property("riscv,isa").and_then(|p| p.as_str()).unwrap_or("");
         let extensions: Vec<&str> = isa_support.split('_').collect();
@@ -61,12 +61,15 @@ pub fn load_cpu_node(cpus_node: &FdtNode) {
         let float_supported = base.contains('f') || has_extension(child, &extensions, "f");
         let double_supported = base.contains('d') || has_extension(child, &extensions, "d");
 
-        cpus.push(CPUInfo {
-            svadu_enabled,
-            zbc_supported,
-            float_supported,
-            double_supported,
-        });
+        cpus.push((
+            hart_id,
+            CPUInfo {
+                svadu_enabled,
+                zbc_supported,
+                float_supported,
+                double_supported,
+            },
+        ));
     }
     CPU_INFO.init(cpus);
 
@@ -93,5 +96,9 @@ pub fn core_count() -> usize {
 }
 
 pub fn get_cpu_info(hart_id: usize) -> &'static CPUInfo {
-    &CPU_INFO[hart_id]
+    CPU_INFO
+        .iter()
+        .find(|(id, _)| *id == hart_id)
+        .map(|(_, info)| info)
+        .unwrap_or_else(|| panic!("unknown hart ID {}", hart_id))
 }

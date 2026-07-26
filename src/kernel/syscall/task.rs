@@ -617,10 +617,14 @@ fn do_clone(args: &CloneArgs) -> SyscallRet {
 
     if args.flags.contains(CloneFlags::VFORK) {
         child.set_parent_waiting_vfork(Some(current::task().clone()));
+
+        // Mark the parent blocked before publishing the child so a child that
+        // reaches execve/exit on another hart cannot miss the wakeup.
+        current::task().block_uninterruptible("vfork");
         scheduler::push_task(child);
+        current::schedule();
 
-        let event = current::block_uninterruptible("vfork");
-
+        let event = current::task().take_wakeup_event().unwrap();
         match event {
             Event::VFork => {}
             _ => unreachable!(),
@@ -819,7 +823,7 @@ fn open_execveat_file(
 ) -> SysResult<Arc<RandomAccessFile>> {
     let file = if flags.contains(ExecveAtFlags::AT_SYMLINK_NOFOLLOW) {
         let dentry = vfs::load_dentry_at_nofollow_with_perm(root, dir, path, perm)?;
-        let inode = dentry.get_inode();
+        let inode = dentry.get_inode()?;
         if inode.inode_type()? == FileType::Symlink {
             return Err(Errno::ELOOP);
         }
@@ -1151,7 +1155,7 @@ pub fn chdir(uptr_path: UString) -> SysResult<usize> {
 pub fn fchdir(fd: usize) -> SysResult<usize> {
     let file = current::fdtable().lock().get(fd)?;
     let dentry = file.get_dentry().ok_or(Errno::ENOTDIR)?;
-    if !dentry.get_inode().check_perm(&Perm::current(PermFlags::X))? {
+    if !dentry.get_inode()?.check_perm(&Perm::current(PermFlags::X))? {
         return Err(Errno::EACCES);
     }
     current::pcb().set_cwd(&dentry);

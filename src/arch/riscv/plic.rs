@@ -71,6 +71,7 @@ impl PLIC {
     pub fn claim_irq(&mut self, hart_id: usize) -> Option<u32> {
         self.get_context_id(hart_id)
             .map(|context_id| self.claim_context_irq(context_id))
+            .filter(|&irq| irq != 0)
     }
 
     fn complete_context_irq(&self, context_id: usize, irq: u32) {

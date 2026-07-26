@@ -904,7 +904,7 @@ impl Manager {
             self.areas.insert(middle.ubase(), Self::lock_area(middle));
         }
         if tlb_changed {
-            pagetable.lock().flush_tlb();
+            pagetable.lock().flush_tlb_range(uaddr, page_count);
         }
 
         Ok(())

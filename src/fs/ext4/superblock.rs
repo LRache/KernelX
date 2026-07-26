@@ -48,6 +48,7 @@ pub(super) struct SuperBlockInner {
     pub(super) fs: Box<ext4_fs>,
     bdev: Ext4BlockDevice,
     inode_ref_cache: Vec<CachedInodeRef>,
+    unlinked_inos: Vec<u32>,
 }
 
 impl SuperBlockInner {
@@ -110,6 +111,7 @@ impl SuperBlockInner {
             fs,
             bdev,
             inode_ref_cache: Vec::new(),
+            unlinked_inos: Vec::new(),
         })
     }
 
@@ -208,6 +210,25 @@ impl SuperBlockInner {
         Ok(())
     }
 
+    /// Record that `ino` has lost its last on-disk link while in-memory
+    /// references may still be alive. The actual truncate + free is deferred
+    /// to the drop of the corresponding `Ext4Inode`.
+    pub(crate) fn mark_unlinked(&mut self, ino: u32) {
+        if !self.unlinked_inos.contains(&ino) {
+            self.unlinked_inos.push(ino);
+        }
+    }
+
+    /// Consume the deferred-free mark for `ino`, returning whether it was set.
+    pub(crate) fn take_unlinked(&mut self, ino: u32) -> bool {
+        if let Some(position) = self.unlinked_inos.iter().position(|&unlinked| unlinked == ino) {
+            self.unlinked_inos.swap_remove(position);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn alloc_inode(&mut self, filetype: i32) -> SysResult<ext4_inode_ref> {
         let mut result: ext4_inode_ref = unsafe { mem::zeroed() };
         unsafe {
@@ -217,8 +238,11 @@ impl SuperBlockInner {
         Ok(result)
     }
 
-    pub(crate) fn flush(&mut self) -> SysResult<()> {
-        self.drop_inode_ref_cache()?;
+    /// Write every dirty bcache buffer plus the on-disk superblock to the
+    /// device and issue a device barrier. Leaves the inode-ref cache intact;
+    /// dirty metadata still held only in cached inode-refs must be pushed to
+    /// the bcache first (via `invalidate_inode_ref` / `drop_inode_ref_cache`).
+    pub(crate) fn flush_device(&mut self) -> SysResult<()> {
         unsafe {
             ext4_result(ext4_block_cache_flush(self.bdev.inner.as_mut()))?;
             if !self.fs.read_only {
@@ -227,6 +251,16 @@ impl SuperBlockInner {
         }
         self.bdev.flush_driver().map_err(|_| Errno::EIO)?;
         Ok(())
+    }
+
+    /// Full flush: push all cached inode-refs into the bcache, then write the
+    /// whole bcache + superblock to the device with a barrier. Reserved for
+    /// sync(2)/syncfs, remount-ro and unmount; per-inode writeback (inode
+    /// cache eviction, `Ext4Inode::drop`) must use `invalidate_inode_ref`
+    /// only, without any device flush.
+    pub(crate) fn flush(&mut self) -> SysResult<()> {
+        self.drop_inode_ref_cache()?;
+        self.flush_device()
     }
 }
 

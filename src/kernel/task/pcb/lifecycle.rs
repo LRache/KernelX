@@ -12,7 +12,7 @@ use crate::kernel::main::deinit;
 use crate::kernel::scheduler::{self, WakeupAction, current, tid};
 use crate::kernel::task::def::TaskCloneFlags;
 use crate::kernel::task::{self, manager, with_initpcb};
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::SpinLock;
 
 use super::*;
 
@@ -46,12 +46,12 @@ impl PCB {
             exec_path: SpinLock::new(parent.exec_path.lock().clone(), "PCB::exec_path"),
             exec_inode: SpinLock::new(exec_inode, "PCB::exec_inode"),
 
-            tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
+            tasks: SpinLock::new(Vec::new(), "PCB::tasks"),
             root: SpinLock::new(inherit.root.lock().clone(), "PCB::root"),
             cwd: SpinLock::new(inherit.cwd.lock().clone(), "PCB::cwd"),
             umask: SpinLock::new(*parent.umask.lock(), "PCB::umask"),
             file_size_limit: SpinLock::new(*parent.file_size_limit.lock(), "PCB::file_size_limit"),
-            child_wait: SleepLock::new(ChildWaitState::new(), "PCB::child_wait"),
+            child_wait: SpinLock::new(ChildWaitState::new(), "PCB::child_wait"),
             pidfd_waiters: SpinLock::new(WaitQueue::new("PCB::pidfd_waiters"), "PCB::pidfd_waiters"),
             uts,
 
@@ -110,12 +110,12 @@ impl PCB {
             exec_path: SpinLock::new(String::new(), "PCB::exec_path"),
             exec_inode: SpinLock::new(None, "PCB::exec_inode"),
 
-            tasks: SleepLock::new(Vec::new(), "PCB::tasks"),
+            tasks: SpinLock::new(Vec::new(), "PCB::tasks"),
             root: SpinLock::new(root, "PCB::root"),
             cwd: SpinLock::new(cwd.clone(), "PCB::cwd"),
             umask: SpinLock::new(0o022, "PCB::umask"),
             file_size_limit: SpinLock::new((usize::MAX, usize::MAX), "PCB::file_size_limit"),
-            child_wait: SleepLock::new(ChildWaitState::new(), "PCB::child_wait"),
+            child_wait: SpinLock::new(ChildWaitState::new(), "PCB::child_wait"),
             pidfd_waiters: SpinLock::new(WaitQueue::new("PCB::pidfd_waiters"), "PCB::pidfd_waiters"),
             uts: UtsNamespace::new(),
 
@@ -173,11 +173,13 @@ impl PCB {
         *state = State::Recycled;
         drop(state);
 
-        let mut tasks = self.tasks.lock();
+        // Take the TCBs out under the lock but drop them outside it: their
+        // destructors may sleep (address space, fd table).
+        let tasks = core::mem::take(&mut *self.tasks.lock());
         tasks.iter().for_each(|tcb| {
             manager::remove(tcb.tid());
         });
-        tasks.clear();
+        drop(tasks);
         status
     }
 
@@ -223,10 +225,14 @@ impl PCB {
     }
 
     pub fn remove_task(&self, tcb: &TCB) {
-        let mut tasks = self.tasks.lock();
-        if let Some(pos) = tasks.iter().position(|t| t.tid() == tcb.tid()) {
-            tasks.swap_remove(pos);
-        }
+        let removed = {
+            let mut tasks = self.tasks.lock();
+            tasks
+                .iter()
+                .position(|t| t.tid() == tcb.tid())
+                .map(|pos| tasks.swap_remove(pos))
+        };
+        drop(removed);
     }
 
     pub fn exec(
@@ -242,14 +248,33 @@ impl PCB {
 
         let (first_task, exec_path, exec_inode) = tcb.new_exec(file, invoked_path, argv, envp)?;
 
-        {
+        // Swap in the new leader under the lock, then process the drained
+        // TCBs outside it so their final drops cannot happen under a spin lock.
+        let drained = {
             let mut tasks = self.tasks.lock();
-            tasks.drain(..).for_each(|tcb| {
-                tcb.set_dead();
-                manager::remove(tcb.tid());
-            });
+            let drained: Vec<_> = tasks.drain(..).collect();
             tasks.push(first_task.clone());
-        }
+            drained
+        };
+        drained.into_iter().for_each(|t| {
+            t.set_dead();
+            manager::remove(t.tid());
+            if t.tid() == tcb.tid() {
+                return;
+            }
+            t.wake_parent_waiting_vfork();
+            if let Some(action) = t.resume_from_stopped() {
+                if action == WakeupAction::Enqueue {
+                    scheduler::push_task(t.clone());
+                }
+            } else if let Ok(action) = t.resume_from_ptrace_stop(None) {
+                if action == WakeupAction::Enqueue {
+                    scheduler::push_task(t.clone());
+                }
+            } else {
+                let _ = scheduler::wakeup_task(t.clone(), Event::Signal);
+            }
+        });
 
         self.timers.clear();
 
@@ -302,7 +327,9 @@ impl PCB {
 
         // crate::kinfo!("pcb {} exited with code {}", self.pid(), code);
 
-        let tasks = self.tasks.lock();
+        // Snapshot the task list so the per-task work (closing fd tables may
+        // sleep) runs without holding the `tasks` spin lock.
+        let tasks = self.tasks.lock().clone();
         tasks.iter().for_each(|tcb| {
             tcb.fdtable().lock().close_all();
             tcb.set_dead();
@@ -323,11 +350,11 @@ impl PCB {
             }
         });
 
-        // NOTE: Dropping `tasks` here would release ownership of each TCB and
-        // trigger their destructors, which may perform async I/O. That is not
-        // permitted inside a scheduler context. Instead, we leave the TCBs alive
-        // and defer their cleanup to when this process is waited on (e.g. waitpid),
-        // at which point it is safe to reclaim the resources.
+        // NOTE: `self.tasks` keeps its TCBs alive here; releasing the last
+        // reference to a TCB would trigger destructors that may perform async
+        // I/O, which is not permitted inside a scheduler context. Their cleanup
+        // is deferred to when this process is waited on (e.g. waitpid), at
+        // which point it is safe to reclaim the resources.
         drop(tasks);
         self.timers.clear();
         self.itimers.lock().iter().for_each(|itimer| {

@@ -289,7 +289,7 @@ impl Area for SharedAnonymousArea {
                 });
             }
             if tlb_changed {
-                pagetable.lock().flush_tlb();
+                pagetable.lock().flush_tlb_range(self.ubase, self.page_count);
             }
             for frame_index in 0..self.page_count {
                 if let Some(page) = self.page(frame_index) {

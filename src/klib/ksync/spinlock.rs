@@ -109,7 +109,11 @@ impl LockerTrait for SpinLocker {
                 core::sync::atomic::Ordering::Relaxed,
             )
             .is_err()
-        {}
+        {
+            while self.lock.load(core::sync::atomic::Ordering::Relaxed) {
+                core::hint::spin_loop();
+            }
+        }
         #[cfg(feature = "spinlock-check")]
         self.track_acquire(name);
     }

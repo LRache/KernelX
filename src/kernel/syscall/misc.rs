@@ -114,7 +114,7 @@ pub struct RLimit {
 }
 
 #[repr(usize)]
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, Clone, Copy, TryFromPrimitive)]
 enum RLimitResource {
     CPU = 0,
     FSIZE = 1,
@@ -236,7 +236,13 @@ pub fn prlimit64(
         | RLimitResource::NICE
         | RLimitResource::RTPRIO
         | RLimitResource::RTTIME) => {
-            crate::kwarn!("prlimit64: RLIMIT_{:?} is not implemented", resource);
+            // Warn once per resource; rustc/cargo call this on every process
+            // spawn and the repeated serial output floods the console.
+            static WARNED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+            let bit = 1usize << (resource as usize);
+            if WARNED.fetch_or(bit, core::sync::atomic::Ordering::Relaxed) & bit == 0 {
+                crate::kwarn!("prlimit64: RLIMIT_{:?} is not implemented", resource);
+            }
 
             if !uptr_old_limit.is_null() {
                 let old_limit = RLimit {

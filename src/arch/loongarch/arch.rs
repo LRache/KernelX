@@ -106,6 +106,10 @@ impl ArchTrait for Arch {
         csr::xchg::<{ csr::num::ECFG }>(bit, bit);
     }
 
+    fn enable_software_interrupt() {
+        // No scheduler wakeup IPI on LoongArch yet; nothing to enable.
+    }
+
     fn enable_device_interrupt(_hartid: usize) {
         let bit = 1usize << eiointc::parent_line();
         csr::xchg::<{ csr::num::ECFG }>(bit, bit);
@@ -168,6 +172,11 @@ impl ArchTrait for Arch {
             cpu_mask, 0,
             "LoongArch targeted remote TLB invalidation is not implemented"
         );
+    }
+
+    fn send_ipi(_cpu_mask: usize) {
+        // No-op: idle harts still wake on the periodic timer interrupt, which
+        // preserves the pre-IPI scheduling behavior on LoongArch.
     }
 
     fn mmio_phys_to_kaddr(paddr: usize, _size: usize) -> usize {

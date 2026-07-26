@@ -67,8 +67,10 @@ arch_export! {
     enable_interrupt  () -> ();
     disable_interrupt () -> ();
     enable_timer_interrupt() -> ();
+    enable_software_interrupt() -> ();
     enable_device_interrupt(hartid: usize) -> ();
     enable_device_interrupt_irq(irq: u32) -> ();
+    send_ipi(cpu_mask: usize) -> ();
 
     get_kernel_stack_top() -> usize;
 
