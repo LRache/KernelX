@@ -1,255 +1,192 @@
 ---
 name: kernelx-local-test-qperf
-description: Use when working in the KernelX repository on local kernel configuration, common testsuit run configs, boot/QEMU parameters, qperf performance profiling, or large qperf report analysis through summary.md and profile.sqlite. Covers the repo-specific Kconfig to Make to Cargo feature pipeline, common run-test configs, the RISC-V qperf workflow, compact report generation, bounded hotspot queries, and separation of real kernel hotspots from unresolved symbols or sampling noise.
+description: Interpret existing KernelX qperf artifacts, including timestamped report directories, summary.md, profile.sqlite, folded stacks, unresolved.tsv, raw qperf.bin, FlameGraphs, and matching ELFs. Use when Codex must validate profile quality, explain self versus inclusive samples, recover unresolved symbols, separate trap-entry sampling bias from real kernel work, trace hotspots into the current KernelX source, or rank performance hypotheses. This skill analyzes already-produced data; it does not configure KernelX, launch QEMU, run qperf, or generate new samples.
 ---
 
-# KernelX Local Test And Qperf Workflow
+# KernelX Qperf Data Interpretation
 
-Use this skill inside `/home/rache/code/KernelX` when the task involves local kernel configuration, running the common testsuit image setup, explaining boot/QEMU parameters, or using/analyzing qperf artifacts.
+## Scope
 
-## Configuration Model
+Analyze existing qperf evidence. Do not:
 
-KernelX configuration flows through:
+- run `make run-qperf`, QEMU, tests, or benchmarks
+- change Kconfig or QEMU parameters to produce another profile
+- present profiling setup instructions unless the user explicitly asks for them
+- modify kernel code when the user only asks for analysis
+
+Using bounded report queries, symbolizing an existing raw trace, and reading matching source code are analysis steps, not profile generation.
+
+## Evidence Hierarchy
+
+Keep every conclusion scoped to one timestamped artifact set:
+
+1. `<name>.report/summary.md`
+2. `<name>.report/manifest.json`
+3. `<name>.report/profile.sqlite`
+4. `<name>.report/top-stacks.folded`
+5. `<name>.report/full-aggregated.folded`
+6. `<name>.unresolved.tsv`
+7. timestamp-matching `qperf.bin` and kernel ELF
+8. `<name>.console.log`, syscall log, or workload output
+9. current KernelX source corresponding to the profiled ELF
+
+Do not compare profiles until their workload, architecture, CPU count, sampling settings, kernel revision, and artifact identity are comparable.
+
+## Sampling Model
+
+Understand the current qperf plugin before interpreting percentages:
+
+- It uses a host monotonic-clock interval per vCPU.
+- It installs callbacks only on high-half kernel instructions.
+- Time spent in userspace or `wfi` can exceed the interval without producing a sample.
+- The next executed kernel instruction then receives the sample.
+
+Consequences:
+
+- `asm_usertrap_entry` can represent preceding userspace residency, not expensive trap assembly.
+- `asm_kerneltrap_entry` can represent preceding idle time or an interrupt boundary.
+- A trap-entry-heavy profile is not an unbiased kernel CPU-time profile.
+- After removing entry-biased samples, call the remainder an **effective kernel-work subset**, not total CPU time.
+- qperf does not measure time blocked on sleep locks or device I/O, so it cannot prove lock contention or quantify off-CPU latency by itself.
+
+## Profile Integrity
+
+Start with `summary.md` and verify:
+
+- the named folded input and timestamp
+- input SHA-256 against the actual folded file
+- input records, total samples, and database samples agree
+- unique-stack count and stack-depth distribution
+- unresolved-frame and unresolved-leaf percentages
+- top-stack coverage
+- CPU distribution
+
+Use the report query interface rather than loading the SQLite database or large folded files directly:
+
+```bash
+python3 scripts/qperf_report.py query <report>/profile.sqlite stats
+python3 scripts/qperf_report.py query <report>/profile.sqlite top --metric self --limit 50
+python3 scripts/qperf_report.py query <report>/profile.sqlite top --metric inclusive --limit 50
+python3 scripts/qperf_report.py query <report>/profile.sqlite stacks --contains <symbol> --limit 20
+python3 scripts/qperf_report.py query <report>/profile.sqlite callers --symbol <symbol> --limit 20
+python3 scripts/qperf_report.py query <report>/profile.sqlite callees --symbol <symbol> --limit 20
+```
+
+Treat `subsystems.tsv` as overlapping stack-presence classification. A sample may belong to trap, memory, VFS, and ext4_native simultaneously; subsystem percentages do not form an exclusive 100% partition.
+
+## Metric Semantics
+
+- **Self samples** attribute a sample to its leaf frame.
+- **Inclusive samples** count samples whose stack contains the function.
+- Inclusive values overlap across callers and callees and must not be added.
+- A compiler helper such as `wrapping_offset`, `set_bytes_words`, or `copy_forward_aligned_words` is usually an implementation leaf. Attribute it through its complete parent stack to `memset`, `memcpy`, page initialization, user copy, or another real operation.
+- A high-level root such as `usertrap_handler`, `syscall`, or `memory_fault` describes workload shape; it is not automatically the optimization target.
+- Top individual stacks and top functions answer different questions. Use both before naming a bottleneck.
+
+When excluding sampling noise, always publish both denominators:
 
 ```text
-config/Kconfig
-  -> config/.config
-  -> config/config.mk
-  -> build.mk
-  -> Cargo.toml features / Rust #[cfg(feature = "...")]
+raw samples
+  - classified entry/noise samples
+  = effective kernel-work samples
 ```
 
-When adding or editing a `CONFIG_*` feature, check every relevant layer:
+Recompute percentages against the effective denominator, label them explicitly, and retain raw percentages for auditability.
 
-- `config/Kconfig` declares the option, default, dependency, and help text.
-- `config/config.mk` passes generated `.config` values into the build.
-- `build.mk` maps `CONFIG_*` to `RUST_FEATURES`, `RUSTFLAGS`, and build env.
-- `Cargo.toml` declares the feature if Rust code uses `#[cfg(feature = "...")]`.
-- Rust modules, stubs, and macro-generated types compile in both enabled and disabled states.
-- `.github/workflows/ci.yml` needs explicit `CONFIG_*` flags only when CI should exercise that option.
+## Unresolved Symbols
 
-For macro-generated feature surfaces such as `bitflags!`, gate the whole macro/module if the type must disappear when the feature is disabled.
+Do not equate `??` with lost samples. Distinguish:
 
-## Common Config Commands
+1. sample exists but the function name is missing
+2. raw IP was discarded during folded conversion
+3. unwinding stopped early
+4. no sample was collected
 
-Use Kconfig helpers:
+Use `<name>.unresolved.tsv` first when present. Entries such as `??@0x...` preserve enough evidence for `addr2line`, `nm`, or range-based symbol lookup.
 
-```bash
-make defconfig
-make menuconfig
-make savedefconfig
-make exportconfig
-make importconfig
-```
+If substantial `??` remains and the timestamp-matching raw data and ELF still exist:
 
-The common local run-test configs live in `config/riscv` and `config/loongarch`. Prefer importing them directly before running testsuit images:
+- verify their mtimes and build identity before using them
+- decode the raw current IP distribution
+- map top IPs with the ELF
+- use sized text symbols from `nm` for assembly without DWARF function names
+- account for the RISC-V early physical-to-virtual alias when applicable
+- preserve unresolved addresses rather than collapsing them back to plain `??`
 
-```bash
-make importconfig ARCH=riscv
-make importconfig ARCH=loongarch
-```
+The repository symbolizer in `scripts/qperf_symbolize.rs` can reinterpret an existing raw trace. Build it with `make -f scripts/qperf.mk qperf-symbolizer`. It deduplicates addresses, batches `addr2line`, falls back to sized text symbols, supports the RISC-V address map, and emits unresolved IP counts. Running it on existing artifacts is appropriate; running QEMU to obtain new samples is outside this skill.
 
-`make importconfig` rewrites `config/.config`. For the common run-test workflow, do not preserve the old `.config` unless the user explicitly cares about a temporary custom configuration. If they do care, save it manually first:
+A folded-only `main;??` cannot be repaired if the raw IP has already been discarded and no matching `qperf.bin` remains. State that limitation instead of guessing.
 
-```bash
-make exportconfig EXPORT_CONFIG=config/<name>
-```
+## Trap And Idle Classification
 
-For one-off checks, prefer make variable overrides when possible so `config/.config` is not rewritten:
+When raw IPs resolve to entry assembly:
 
-```bash
-make check CONFIG_FANOTIFY=n
-make check CONFIG_LOCKDEP=y CONFIG_SPINLOCK_CHECK=y
-make run QEMU_ARGS='CONFIG_QEMU_SNAPSHOT=y CONFIG_QEMU_MEMORY=1G'
-```
+1. obtain exact symbol ranges from the matching ELF
+2. classify samples by current IP, not merely by whether a deeper stack contains a trap function
+3. separate `kerneltrap_entry`, `usertrap_entry`, and trap return
+4. inspect the remaining unknown samples independently
+5. compare raw and filtered CPU distributions
 
-For QEMU-only config changes, inspect the generated command before launching QEMU:
+Do not remove an entire stack merely because it contains a trap handler. Real page-fault and syscall work legitimately descends from trap handling. Filter only the entry-biased current-IP samples supported by raw evidence.
 
-```bash
-make -f scripts/qemu.mk -n qemu-run CONFIG_QEMU_SNAPSHOT=y
-```
+Sampling frequency near the kernel timer frequency can amplify entry bias, but a non-aligned frequency does not eliminate the kernel-only sampling effect. Treat frequency as one sanity check, not a complete explanation.
 
-## Important Config Families
+## Hotspot Attribution
 
-Platform/toolchain:
+For each candidate hotspot:
 
-- `CONFIG_RISCV64`, `CONFIG_LOONGARCH64`
-- `CONFIG_ARCH`, `CONFIG_ARCH_BITS`
-- `CONFIG_RUST_TARGET`
-- `CONFIG_SYSROOT`
-- `CONFIG_OBJCOPY`, `CONFIG_AR`, `CONFIG_READELF`
+1. Read representative complete stacks.
+2. Separate workload roots from leaf costs.
+3. Quantify both inclusive path presence and self cost.
+4. Check whether the samples are concentrated on one CPU or spread across CPUs.
+5. Trace the path into the current source.
+6. Identify the exact repeated operation: allocation, zeroing, copying, bitmap scan, checksum, lookup, locking, device submission, or writeback.
+7. State whether the profile proves the cost or only suggests a hypothesis.
 
-Build mode:
+Common KernelX interpretations:
 
-- `CONFIG_COMPILE_MODE_DEBUG`
-- `CONFIG_COMPILE_MODE_RELEASE`
-- `CONFIG_COMPILE_MODE`
-- `CONFIG_NO_SMP`
-- `CONFIG_NOLOCK`
+- `PrivateFileMapArea::load_page -> pread -> ext4_native::readat` plus `memset` and `memcpy` indicates private file-fault page initialization and copying. Inspect whether pages are cleared before being completely overwritten and whether file-cache pages are copied into anonymous private pages.
+- `alloc_blocks -> test_bit` indicates bitmap scanning. Inspect whether allocation repeatedly starts at group/bit zero and whether a cursor or word-at-a-time scan would reduce work.
+- CRC leaf samples matter only in proportion to the effective work subset. Do not inherit an old “checksum dominates” conclusion when the current profile says otherwise.
+- BTree search, atomics, and allocator helpers are often distributed secondary costs. Confirm their parent paths before proposing a subsystem rewrite.
+- Device read/write functions show executed submission work, not the time the task slept waiting for completion.
 
-Debug and observability:
+## Source Cross-Check
 
-- `CONFIG_LOG_LEVEL_*`
-- `CONFIG_LOG_SYSCALL`
-- `CONFIG_LOG_SYSCALL_CPU_TIME`
-- `CONFIG_WARN_UNIMPLEMENTED_SYSCALL`
-- `CONFIG_BACKTRACE`
-- `CONFIG_DWARF`
-- `CONFIG_LOCKDEP`
-- `CONFIG_SPINLOCK_CHECK`
-- `CONFIG_ENABLE_WATCHDOG`
+Prefer the narrow source surface implied by the stack:
 
-Experimental/runtime features:
+- private file faults: `src/kernel/mm/maparea/filemap/private.rs`
+- anonymous faults: `src/kernel/mm/maparea/anonymous/`
+- ext4-native cached I/O and writeback: `src/fs/ext4_native/inode.rs`
+- ext4-native allocation and metadata: `src/fs/ext4_native/ondisk/`
+- VFS path lookup and creation: `src/fs/vfs/`
+- syscall wrappers: `src/kernel/syscall/fs.rs`
+- page allocation: `src/kernel/mm/page.rs`
+- qperf sampling semantics: `tools/qperf/src/profiler.rs`
 
-- `CONFIG_ENABLE_SWAP_MEMORY`
-- `CONFIG_KVM`
-- `CONFIG_FANOTIFY`
-- `CONFIG_VIRTIO_BLOCK_PAGE_CACHE`
+Tie every optimization idea to a concrete source operation and preserve the distinction between runtime evidence and source-based inference.
 
-QEMU and boot:
+## Recommendation Ranking
 
-- `CONFIG_QEMU_MACHINE`
-- `CONFIG_QEMU_BIOS`
-- `CONFIG_QEMU_MEMORY`
-- `CONFIG_QEMU_CPUS`
-- `CONFIG_QEMU_DEBUG_CONSOLE_DEVICE`
-- `CONFIG_QEMU_DEBUG_CONSOLE_LOG`
-- `CONFIG_DISK_IMAGE`
-- `CONFIG_QEMU_SNAPSHOT`
-- `CONFIG_SECOND_DISK_IMAGE`
-- `CONFIG_SECOND_DEVICE`
-- `CONFIG_SECOND_FSTYPE`
-- `CONFIG_SECOND_MOUNTPOINT`
-- `CONFIG_DEFAULT_BOOTARGS`
-- `CONFIG_BOOTARGS`
-- `CONFIG_INITPATH`
-- `CONFIG_INITARGS`
-- `CONFIG_INITCWD`
-- `CONFIG_ROOT_DEVICE`
-- `CONFIG_ROOT_FSTYPE`
+Rank recommendations using:
 
-## Boot Arguments
+1. measured coverage in the effective work subset
+2. confidence that the leaf represents real work rather than sampling/symbolization bias
+3. semantic and safety risk
+4. implementation scope
+5. whether qperf can measure the expected improvement
 
-`scripts/qemu.mk` converts QEMU config into `-append` bootargs. Common parameters:
+Prefer a narrow fast path or removal of redundant work before a broad redesign. Label feature-disabling changes, such as disabling metadata checksums, as benchmark controls unless the user explicitly accepts the semantic tradeoff.
 
-- `kdebug_console=` selects the kernel debug-console device, often `/dev/hvc0`.
-- `root=` selects the root block device, such as `virtio_block0` or `virtio_mmio@10001000`.
-- `rootfstype=` selects the root filesystem type, usually `ext4`.
-- `init=` selects the init program, often `/init` or `/testcode/runtest.sh`.
-- `initargs=` passes init arguments.
-- `initcwd=` sets init's working directory.
-- `tty=` selects the user terminal device.
-- `rtc=` selects the RTC device.
+## Response Contract
 
-Remember that `CONFIG_BOOTARGS` is only the extra raw bootarg string. `CONFIG_INITPATH`, `CONFIG_INITARGS`, `CONFIG_INITCWD`, `CONFIG_ROOT_DEVICE`, and `CONFIG_ROOT_FSTYPE` are appended separately by `scripts/qemu.mk`.
+Produce an analysis with:
 
-## Running The Common Testsuit Setup
+1. **Bottom line** — the real dominant path and the largest distortion
+2. **Data quality** — exact artifact, SHA/sample consistency, unresolved coverage, and filtering
+3. **Effective hotspots** — raw and filtered percentages with clear denominators
+4. **Call path** — a compact source-grounded chain
+5. **Ranked actions** — low-risk first, broader redesigns later
+6. **Limits** — missing workload output, raw IPs, off-CPU data, or revision identity
 
-For the common local testsuit image run, import the arch config and run:
-
-```bash
-make importconfig ARCH=riscv
-make run
-```
-
-or:
-
-```bash
-make importconfig ARCH=loongarch
-make run
-```
-
-The local `config/riscv` and `config/loongarch` configs are intended for repeated testsuit runs. They set release-oriented build options, QEMU memory, testsuit `sdcard-*.img`, `/testcode/runtest.sh`, and `CONFIG_QEMU_SNAPSHOT=y`.
-
-`CONFIG_QEMU_SNAPSHOT=y` means guest writes go to temporary QEMU overlays and are discarded when QEMU exits. This is the preferred mode for repeated tests because it reduces the chance of dirtying shared base images.
-
-## Qperf Workflow
-
-LoongArch qperf is unstable in this repo. For qperf profiling, use the RISC-V config and RISC-V QEMU path unless the user explicitly asks to investigate LoongArch qperf itself:
-
-```bash
-make importconfig ARCH=riscv
-make run-qperf
-```
-
-Use the top-level wrapper:
-
-```bash
-make run-qperf
-```
-
-It rebuilds the kernel with `CONFIG_BACKTRACE=y CONFIG_DWARF=y`, builds `tools/qperf`, runs QEMU with the TCG plugin, runs the analyzer, emits FlameGraph output, and runs `scripts/qperf_report.py` to build an LLM-oriented report and SQLite query index.
-
-Default outputs:
-
-- Raw samples: `build/<arch>64/qperf.bin`
-- Folded stacks: `output/qperf/kernelx-qperf-<timestamp>.folded`
-- FlameGraph SVG: `output/qperf/kernelx-qperf-<timestamp>.svg`
-- Console log: `output/qperf/kernelx-qperf-<timestamp>.console.log`
-- LLM summary: `output/qperf/kernelx-qperf-<timestamp>.report/summary.md`
-- Query index: `output/qperf/kernelx-qperf-<timestamp>.report/profile.sqlite`
-- Bounded TSV/folded views and the lossless aggregate: other files under the matching `.report/` directory
-
-Useful overrides:
-
-```bash
-make run-qperf QEMU_ARGS='CONFIG_QEMU_SNAPSHOT=y'
-make run-qperf QEMU_ARGS='QPERF_FREQ=101'
-make run-qperf QEMU_ARGS='QPERF_FOLDED=output/qperf/my-run.folded QPERF_SVG=output/qperf/my-run.svg'
-```
-
-Read the active `QPERF_FREQ` from `scripts/qemu.mk` or the Make override. Keep it away from the 100Hz timer cadence when possible; `137` is a useful example. Treat a trap-heavy profile as suspicious even with a non-aligned frequency and verify it against raw samples before assigning blame.
-
-Analyze qperf artifacts progressively:
-
-1. Start with the exact timestamped `.report/summary.md`. Confirm its input SHA-256, total samples, unique stacks, top-stack coverage, CPU distribution, and unresolved-symbol percentage.
-2. If the matching report does not exist, generate it without running QEMU again:
-
-   ```bash
-   python3 scripts/qperf_report.py build output/qperf/<name>.folded
-   ```
-
-3. Use bounded SQLite queries before reading large folded or TSV files:
-
-   ```bash
-   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite stats
-   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite top --metric inclusive --limit 50
-   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite top --metric self --limit 50
-   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite stacks --contains <symbol> --limit 20
-   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite callers --symbol <symbol> --limit 20
-   python3 scripts/qperf_report.py query output/qperf/<name>.report/profile.sqlite callees --symbol <symbol> --limit 20
-   ```
-
-4. Treat `subsystems.tsv` as overlapping stack-presence classification. One sample may contribute to trap, memory, VFS, and ext4_native simultaneously, so subsystem percentages do not sum to 100%.
-5. Read `top-stacks.folded` when the bounded queries need exact stack evidence. Read `full-aggregated.folded` only when the top view is insufficient.
-6. If `summary.md` reports substantial `??` or `main;??` coverage, inspect raw `qperf.bin` and map top IPs with the matching ELF before assigning blame. The report database cannot recover instruction pointers already discarded by folded symbolization.
-7. Cross-check selected hotspots against source paths, commonly ext4 metadata/checksum/allocation paths, syscall completion/timestamp paths, tmpfs/memtreefs paths, MM fault/TLB paths, or workload startup/lookup/stat/fsync behavior.
-
-The SQLite database stores normalized symbol names, weighted unique stacks, ordered frames, sample-weighted caller/callee edges, CPU totals, subsystem totals, and profile metadata. It does not store raw IPs, sample chronology, source lines, or per-stack CPU identity. Do not load the database directly into model context; use the bounded query commands and consume their text output.
-
-Do not treat disabling semantic filesystem features such as metadata checksums as the default fix. Use those changes as benchmark controls unless the user explicitly asks for such a tradeoff.
-
-## Validation Rules
-
-Respect the repository's local instruction: do not run tests or runtime commands unless the user explicitly asks. For code changes, still run the required static checks when allowed:
-
-```bash
-cargo fmt
-make check
-```
-
-For feature-gate changes, validate both sides when applicable:
-
-```bash
-make check CONFIG_<SYMBOL>=y
-make check CONFIG_<SYMBOL>=n
-```
-
-For lock/scheduler/watchdog-related config, expand the matrix only when relevant:
-
-```bash
-make check CONFIG_LOCKDEP=y
-make check CONFIG_SPINLOCK_CHECK=y
-make check CONFIG_LOCKDEP=y CONFIG_SPINLOCK_CHECK=y
-make check CONFIG_NO_SMP=y CONFIG_LOCKDEP=y CONFIG_SPINLOCK_CHECK=y
-```
+Never present unresolved frames, overlapping inclusive percentages, or subsystem presence as exclusive CPU-time attribution.

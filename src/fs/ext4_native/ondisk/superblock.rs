@@ -213,6 +213,22 @@ impl Context {
                 Errno::EINVAL,
             );
         }
+        // The block bitmap is exactly one filesystem block, so a group cannot
+        // hold more blocks than fit in its bitmap. Reject corrupted/malicious
+        // geometry early instead of overflowing the bitmap scan at alloc time.
+        if blocks_per_group
+            > block_size.checked_mul(8).ok_or_else(|| {
+                debug_errno(
+                    "from_device: block_size * 8 overflow for bitmap capacity check",
+                    Errno::EINVAL,
+                )
+            })?
+        {
+            return ret_errno(
+                "from_device: blocks_per_group exceeds block bitmap capacity",
+                Errno::EINVAL,
+            );
+        }
 
         let inode_size = sb.inode_size()?;
         if inode_size < 128 || inode_size > block_size as u16 {
@@ -266,6 +282,7 @@ impl Context {
             feature_compat,
             feature_incompat,
             feature_ro_compat,
+            alloc_hint_group: core::sync::atomic::AtomicU32::new(0),
         })
     }
 

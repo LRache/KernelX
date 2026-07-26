@@ -58,6 +58,7 @@ impl InodeOps for RootInode {
             "mounts" => Ok(MountsInode::INO),
             "meminfo" => Ok(MemInfoInode::INO),
             "sys" => Ok(SysDirInode::INO),
+            "uptime" => Ok(UptimeInode::INO),
             _ => {
                 let tid = name.parse::<Tid>().map_err(|_| Errno::ENOENT)?;
                 Self::task_dir_ino_from_tid(tid)
@@ -66,7 +67,7 @@ impl InodeOps for RootInode {
     }
 
     fn get_dent(&self, index: usize) -> SysResult<Option<(DirResult, usize)>> {
-        const SPECIAL_ENTRIES: usize = 6; // ., .., self, mounts, meminfo, sys
+        const SPECIAL_ENTRIES: usize = 7; // ., .., self, mounts, meminfo, sys, uptime
         let d = match index {
             0 => Some(DirResult {
                 ino: Self::INO,
@@ -97,6 +98,11 @@ impl InodeOps for RootInode {
                 ino: SysDirInode::INO,
                 name: "sys".into(),
                 file_type: FileType::Directory,
+            }),
+            6 => Some(DirResult {
+                ino: UptimeInode::INO,
+                name: "uptime".into(),
+                file_type: FileType::Regular,
             }),
             i => manager::tcbs()
                 .lock()
@@ -205,6 +211,53 @@ impl InodeOps for MemInfoInode {
         let mut content = String::with_capacity(128);
         let _ = writeln!(content, "MemTotal:       {} kB", total_kb);
         let _ = writeln!(content, "MemAvailable:   {} kB", available_kb);
+
+        let bytes = content.as_bytes();
+        if offset >= bytes.len() {
+            return Ok(0);
+        }
+        let len = core::cmp::min(buf.len(), bytes.len() - offset);
+        buf[..len].copy_from_slice(&bytes[offset..offset + len]);
+        Ok(len)
+    }
+
+    fn writeat(&self, _buf: &[u8], _offset: usize) -> SysResult<usize> {
+        Err(Errno::EROFS)
+    }
+
+    fn mode(&self) -> SysResult<Mode> {
+        Ok(Mode::S_IFREG | Mode::S_IRUSR | Mode::S_IRGRP | Mode::S_IROTH)
+    }
+
+    fn wrap_file(&self, inode: Arc<Inode>, dentry: Option<Arc<Dentry>>, flags: FileFlags) -> Arc<dyn FileOps> {
+        Arc::new(RandomAccessFile::new(inode, dentry.unwrap(), flags))
+    }
+
+    fn size(&self) -> SysResult<u64> {
+        Ok(0)
+    }
+}
+
+pub struct UptimeInode;
+
+impl UptimeInode {
+    pub const INO: u32 = 17;
+}
+
+impl InodeOps for UptimeInode {
+    fn get_ino(&self) -> u32 {
+        Self::INO
+    }
+
+    fn type_name(&self) -> &'static str {
+        "procfs_uptime"
+    }
+
+    fn readat(&self, buf: &mut [u8], offset: usize, _direct: bool) -> SysResult<usize> {
+        let uptime = arch::uptime();
+        let mut content = String::with_capacity(32);
+        // TODO: Report the accumulated CPU idle time in the second field.
+        let _ = writeln!(content, "{}.{:02} 0.00", uptime.as_secs(), uptime.subsec_millis() / 10);
 
         let bytes = content.as_bytes();
         if offset >= bytes.len() {

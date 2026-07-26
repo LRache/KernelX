@@ -92,7 +92,12 @@ impl Context {
             return Ok(Vec::new());
         }
 
-        for group in 0..self.groups_count {
+        let hint = self
+            .alloc_hint_group
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .min(self.groups_count.saturating_sub(1));
+        for offset in 0..self.groups_count {
+            let group = hint.wrapping_add(offset) % self.groups_count;
             let mut gd = self.read_group_desc(group)?;
             if gd.free_blocks_count == 0 {
                 continue;
@@ -102,40 +107,27 @@ impl Context {
             let group_first_block = self.group_first_block(group)?;
             let alloc_limit = max_blocks.min(gd.free_blocks_count as usize);
             let mut blocks = Vec::with_capacity(alloc_limit);
-            for bit in 0..self.blocks_per_group {
+            let mut bit = 0u32;
+            while (blocks.len() as u32) < alloc_limit as u32 {
+                let Some(free) = first_free_bit(&bitmap.raw, bit, self.blocks_per_group) else {
+                    break;
+                };
                 let pblk = group_first_block
-                    .checked_add(bit as u64)
+                    .checked_add(free as u64)
                     .ok_or_else(|| debug_errno("alloc_blocks: physical block calculation overflow", Errno::EINVAL))?;
-                if pblk >= self.blocks_count || test_bit(&bitmap, bit) {
-                    continue;
-                }
-
-                blocks.push(pblk);
-                if blocks.len() == alloc_limit {
+                if pblk >= self.blocks_count {
                     break;
                 }
+                blocks.push(pblk);
+                bit = free + 1;
             }
             if blocks.is_empty() {
                 continue;
             }
 
-            let zero = vec![0u8; blocks.len() * self.block_size as usize];
-            let mut segment_start = 0;
-            while segment_start < blocks.len() {
-                let mut segment_end = segment_start + 1;
-                while segment_end < blocks.len() && blocks[segment_end] == blocks[segment_end - 1] + 1 {
-                    segment_end += 1;
-                }
-                self.write_fs_blocks(
-                    blocks[segment_start],
-                    &zero[..(segment_end - segment_start) * self.block_size as usize],
-                )?;
-                segment_start = segment_end;
-            }
-
             for &pblk in &blocks {
-                let (_, bit) = self.block_group_bit(pblk)?;
-                set_bit(&mut bitmap, bit);
+                let (_, b) = self.block_group_bit(pblk)?;
+                set_bit(&mut bitmap, b);
             }
 
             let allocated = u32::try_from(blocks.len())
@@ -149,6 +141,8 @@ impl Context {
                 self.write_group_desc(group, &mut gd)?;
             }
             self.dec_superblock_free_blocks(blocks.len() as u64)?;
+            self.alloc_hint_group
+                .store(group, core::sync::atomic::Ordering::Relaxed);
             return Ok(blocks);
         }
 
@@ -514,6 +508,10 @@ impl Context {
         let original = dir_inode.clone();
         let new_pblk = self.alloc_block()?;
         let result = (|| -> SysResult<()> {
+            // Zero before publishing the extent so a crash between
+            // insert_extent_1blk/write_inode and write_dir_block cannot
+            // expose stale data from a previously freed block.
+            self.zero_fs_block(new_pblk)?;
             self.insert_extent_1blk(dir_ino, dir_inode, total_blocks, new_pblk)?;
             dir_inode.i_size = dir_inode
                 .i_size
@@ -884,6 +882,10 @@ impl Context {
         let new_pblk = self.alloc_block()?;
 
         let result = (|| -> SysResult<()> {
+            // Zero before publishing the extent so a crash between
+            // insert_extent_1blk and the dir block writes cannot expose
+            // stale data from a previously freed block.
+            self.zero_fs_block(new_pblk)?;
             self.insert_extent_1blk(dir_ino, dir_inode, new_lblk, new_pblk)?;
             dir_inode.i_size = dir_inode
                 .i_size
@@ -1329,9 +1331,37 @@ impl Context {
                 )
             })?;
         }
-
         Ok(total)
     }
+}
+
+/// Finds the first clear bit at or after `start_bit`, but before `max_bit`, by
+/// skipping fully-set bytes (`0xff`) instead of testing one bit at a time.
+fn first_free_bit(bitmap: &[u8], start_bit: u32, max_bit: u32) -> Option<u32> {
+    if start_bit >= max_bit {
+        return None;
+    }
+    let mut byte_idx = (start_bit / 8) as usize;
+    let byte_count = max_bit.div_ceil(8) as usize;
+    while byte_idx < byte_count && byte_idx < bitmap.len() {
+        let byte = bitmap[byte_idx];
+        if byte != 0xff {
+            let base = (byte_idx as u32) * 8;
+            // Only bits in [start_bit, max_bit) are valid for this scan; mask
+            // out bits below the start of the window for the first byte.
+            for b in 0..8u32 {
+                let bit = base + b;
+                if bit < start_bit || bit >= max_bit {
+                    continue;
+                }
+                if (byte & (1u8 << b)) == 0 {
+                    return Some(bit);
+                }
+            }
+        }
+        byte_idx += 1;
+    }
+    None
 }
 
 fn extent_data_blocks(extents: &[ExtentLeaf]) -> SysResult<u64> {

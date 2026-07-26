@@ -6,6 +6,7 @@ use crate::kernel::errno::SysResult;
 use crate::kernel::mm::PhysPageFrame;
 use crate::klib::SleepLock;
 
+use super::super::swappable::SwappableFramePin;
 use super::backend::{FileBackend, FileBackendState};
 use super::frame::{FilePage, FilePageIdentityPin, FilePageMappingPin, FileSwappableFrame};
 use super::rmap::{FileMapRegistration, FileRmap};
@@ -79,20 +80,7 @@ impl FileMapping {
         file_page_index: usize,
         load: impl FnOnce() -> SysResult<Option<PhysPageFrame>>,
     ) -> SysResult<Option<FilePageIdentityPin>> {
-        let page = {
-            let mut pages = self.pages.lock();
-            let page = if let Some(page) = pages.get(&file_page_index) {
-                page.clone()
-            } else {
-                let page = FilePage::new(FileSwappableFrame::new_out(
-                    FileBackend::new(self.backend.clone(), file_page_index),
-                    0,
-                ));
-                pages.insert(file_page_index, page.clone());
-                page
-            };
-            page.pin_identity()
-        };
+        let page = self.acquire_cached_identity(file_page_index);
 
         match page.ensure_page_with(|_| load()) {
             Ok(Some(_guard)) => {}
@@ -103,6 +91,43 @@ impl FileMapping {
             Err(err) => return Err(err),
         }
         Ok(Some(page))
+    }
+
+    /// Acquire and resident-pin a page for a cache operation.
+    ///
+    /// The resident pin is taken before the page's inner lock is released, so
+    /// reclaim cannot evict a newly loaded page between acquisition and pinning.
+    pub fn acquire_cached_page_pinned(
+        &self,
+        file_page_index: usize,
+        load: impl FnOnce() -> SysResult<Option<PhysPageFrame>>,
+    ) -> SysResult<Option<(FilePageIdentityPin, SwappableFramePin<FileBackend>)>> {
+        let page = self.acquire_cached_identity(file_page_index);
+
+        let resident_pin = match page.ensure_page_with(|_| load()) {
+            Ok(Some(mut guard)) => guard.pin_page(false),
+            Ok(None) => {
+                self.remove_invalid_page(file_page_index, &page);
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+        };
+        Ok(Some((page, resident_pin)))
+    }
+
+    fn acquire_cached_identity(&self, file_page_index: usize) -> FilePageIdentityPin {
+        let mut pages = self.pages.lock();
+        let page = if let Some(page) = pages.get(&file_page_index) {
+            page.clone()
+        } else {
+            let page = FilePage::new(FileSwappableFrame::new_out(
+                FileBackend::new(self.backend.clone(), file_page_index),
+                0,
+            ));
+            pages.insert(file_page_index, page.clone());
+            page
+        };
+        page.pin_identity()
     }
 
     pub fn cached_page(&self, file_page_index: usize) -> Option<FilePageIdentityPin> {

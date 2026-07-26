@@ -13,6 +13,7 @@ use crate::kernel::scheduler::current;
 use crate::kernel::task::CapabilitySet;
 use crate::klib::SleepLock;
 
+const PIPE_BUF: usize = 4096;
 const PIPE_CAPACITY: usize = arch::PGSIZE * config::PIPE_BUFFER_PAGES;
 type PipeBuffer = FixedContiguousPhysPageFrame<{ config::PIPE_BUFFER_PAGES }>;
 
@@ -113,15 +114,16 @@ impl FIFO {
         true
     }
 
-    fn push_back_ubuf(&mut self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
-        let n = core::cmp::min(ubuf.length(), PIPE_CAPACITY - self.length);
+    fn push_back_ubuf(&mut self, ubuf: &UAddrSpaceBuffer, capacity: usize) -> SysResult<usize> {
+        debug_assert!(capacity <= PIPE_CAPACITY);
+        let n = core::cmp::min(ubuf.length(), capacity.saturating_sub(self.length));
         if n == 0 {
             return Ok(0);
         }
 
         for kbuf in ubuf.iter() {
             let kbuf = kbuf?;
-            let max_to_push = core::cmp::min(kbuf.len(), PIPE_CAPACITY - self.length);
+            let max_to_push = core::cmp::min(kbuf.len(), capacity.saturating_sub(self.length));
             let tail = self.tail;
             if tail + max_to_push <= PIPE_CAPACITY {
                 self.data_mut()[tail..tail + max_to_push].copy_from_slice(&kbuf[..max_to_push]);
@@ -134,6 +136,9 @@ impl FIFO {
                 self.tail = part2;
             }
             self.length += max_to_push;
+            if self.length >= capacity {
+                break;
+            }
         }
 
         Ok(n)
@@ -316,9 +321,37 @@ impl PipeInner {
             return Err(Errno::EPIPE);
         }
 
-        if buf.len() >= state.capacity {
+        if buf.len() > PIPE_BUF {
             // Large write (> PIPE_BUF): write as much as fits, non-atomic
-            let to_write = core::cmp::min(buf.len(), PIPE_CAPACITY - state.fifo.len());
+            loop {
+                if state.reader_count == 0 {
+                    drop(state);
+                    let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, 0, KSiFields::Empty, None);
+                    return Err(Errno::EPIPE);
+                }
+                if state.fifo.len() < state.capacity {
+                    break;
+                }
+                if !blocked {
+                    return Err(Errno::EAGAIN);
+                }
+
+                state.write_waiter.wait_current(Event::WriteReady);
+                drop(state);
+                current::schedule();
+
+                match current::task().take_wakeup_event().unwrap() {
+                    Event::WriteReady => {}
+                    Event::Signal => {
+                        self.wait_event_cancel();
+                        return Err(Errno::EINTR);
+                    }
+                    _ => unreachable!(),
+                }
+                state = self.state.lock();
+            }
+
+            let to_write = core::cmp::min(buf.len(), state.capacity.saturating_sub(state.fifo.len()));
             for i in 0..to_write {
                 state.fifo.push_back(buf[i]);
             }
@@ -413,9 +446,38 @@ impl PipeInner {
             return Err(Errno::EPIPE);
         }
 
-        if ubuf.length() >= state.capacity {
-            // Large write: write as much as fits, non-atomic
-            let n = state.fifo.push_back_ubuf(ubuf)?;
+        if ubuf.length() > PIPE_BUF {
+            // Large write (> PIPE_BUF): write as much as fits, non-atomic
+            loop {
+                if state.reader_count == 0 {
+                    drop(state);
+                    let _ = current::pcb().send_signal(signum::SIGPIPE, SiCode::EMPTY, 0, KSiFields::Empty, None);
+                    return Err(Errno::EPIPE);
+                }
+                if state.fifo.len() < state.capacity {
+                    break;
+                }
+                if !blocked {
+                    return Err(Errno::EAGAIN);
+                }
+
+                state.write_waiter.wait_current(Event::WriteReady);
+                drop(state);
+                current::schedule();
+
+                match current::task().take_wakeup_event().unwrap() {
+                    Event::WriteReady => {}
+                    Event::Signal => {
+                        self.wait_event_cancel();
+                        return Err(Errno::EINTR);
+                    }
+                    _ => unreachable!(),
+                }
+                state = self.state.lock();
+            }
+
+            let capacity = state.capacity;
+            let n = state.fifo.push_back_ubuf(ubuf, capacity)?;
             state.read_waiter.wake_all(|e| e);
             drop(state);
             self.read_notifier.notify(FileEvent::READ_READY);
@@ -451,7 +513,8 @@ impl PipeInner {
                 state = self.state.lock();
             }
 
-            state.fifo.push_back_ubuf(ubuf)?;
+            let capacity = state.capacity;
+            state.fifo.push_back_ubuf(ubuf, capacity)?;
             state.read_waiter.wake_all(|e| e);
             drop(state);
             self.read_notifier.notify(FileEvent::READ_READY);

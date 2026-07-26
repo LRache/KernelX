@@ -1152,6 +1152,7 @@ impl Task for TCB {
         }
         state.set_state(TCBState::Running);
         state.wake_pending = false;
+        self.wakeup_event.lock().take();
     }
 
     fn cancel_block(&self) {

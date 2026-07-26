@@ -71,5 +71,5 @@ pub fn evict_inode(sno: u32, ino: u32) {
 }
 
 pub fn find_cached_inode(sno: u32, ino: u32) -> Option<Arc<crate::fs::Inode>> {
-    vfs().cache.find(&Index { sno, ino })
+    vfs().cache.find_ready(&Index { sno, ino })
 }
