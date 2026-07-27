@@ -21,6 +21,10 @@ pub enum CloneABI {
     Backwards,
 }
 
+/// Low-level page-table entry operations.
+///
+/// These methods only update page tables. The owner of the mapping transaction
+/// is responsible for any required TLB invalidation.
 pub trait PageTableTrait {
     unsafe fn mmap_raw(&mut self, uaddr: usize, kaddr: usize, perm: MapPerm);
     fn mmap(&mut self, uaddr: usize, frame: &Arc<PhysPageFrame>, perm: MapPerm) {
@@ -45,7 +49,7 @@ pub trait PageTableTrait {
         perm: MapPerm,
     ) -> Option<(bool, bool)>;
 
-    fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm);
+    fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) -> bool;
     fn mmap_replace_perm_with_check_and_ad(
         &mut self,
         uaddr: usize,
@@ -63,11 +67,7 @@ pub trait PageTableTrait {
 
     #[allow(dead_code)]
     fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)>;
-    fn take_access_dirty_bit_with_check_no_flush(
-        &mut self,
-        uaddr: usize,
-        expected_kaddr: usize,
-    ) -> Option<(bool, bool)>;
+    fn take_access_dirty_bit_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> Option<(bool, bool)>;
 }
 
 pub trait ArchTrait {
