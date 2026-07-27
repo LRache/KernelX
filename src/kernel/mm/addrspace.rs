@@ -456,13 +456,13 @@ impl AddrSpace {
         expected_kpage: usize,
     ) -> Option<(AccessDirty, usize)> {
         let mut pagetable = self.pagetable.lock();
-        let access_dirty = pagetable.take_access_dirty_bit_with_check_no_flush(uaddr, expected_kpage)?;
+        let access_dirty = pagetable.take_access_dirty_bit_with_check(uaddr, expected_kpage)?;
         Some((AccessDirty::from(access_dirty), pagetable.active_cpu_mask()))
     }
 
     pub fn unmap_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<(AccessDirty, usize)> {
         let mut pagetable = self.pagetable.lock();
-        let access_dirty = pagetable.munmap_with_check_and_ad_no_flush(uaddr, expected_kpage)?;
+        let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, expected_kpage)?;
         Some((AccessDirty::from(access_dirty), pagetable.active_cpu_mask()))
     }
 
@@ -474,6 +474,7 @@ impl AddrSpace {
         // held until after the PTE is installed. The owning Area already
         // registered this address range before acquiring the guard.
         unsafe { self.pagetable.lock().mmap_raw(uaddr, guard.frame().get_page(), perm) };
+        self.pagetable.lock().flush_tlb();
     }
 
     pub(crate) fn mmap_replace_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)
@@ -487,6 +488,7 @@ impl AddrSpace {
                 .lock()
                 .mmap_replace_raw(uaddr, guard.frame().get_page(), perm)
         };
+        self.pagetable.lock().flush_tlb();
     }
 
     pub(crate) fn mmap_replace_swappable_if_maps<E, R>(
@@ -500,22 +502,38 @@ impl AddrSpace {
         E: ResidentPageGuard,
         R: ResidentPageGuard,
     {
+        self.mmap_replace_swappable_if_frame(uaddr, expected.frame(), replacement, perm)
+    }
+
+    pub(crate) fn mmap_replace_swappable_if_frame<R>(
+        &self,
+        uaddr: usize,
+        expected: &PhysPageFrame,
+        replacement: &R,
+        perm: MapPerm,
+    ) -> Option<AccessDirty>
+    where
+        R: ResidentPageGuard,
+    {
         let mut pagetable = self.pagetable.lock();
         let access_dirty = match pagetable.mmap_replace_with_check_and_ad(
             uaddr,
-            expected.frame().get_page(),
+            expected.get_page(),
             replacement.frame().get_page(),
             perm,
         ) {
             Some(access_dirty) => AccessDirty::from(access_dirty),
             None if pagetable.mapped_flag(uaddr).is_none() => {
-                // SAFETY: Both page guards remain live while the same page-table
-                // lock verifies that the slot is empty and installs the frame.
+                // SAFETY: The expected frame reference and replacement guard
+                // remain live while the same page-table lock verifies that the
+                // slot is empty and installs the replacement frame.
                 unsafe { pagetable.mmap_raw(uaddr, replacement.frame().get_page(), perm) };
-                return Some(AccessDirty::default());
+                AccessDirty::default()
             }
             None => return None,
         };
+        drop(pagetable);
+        self.pagetable.lock().flush_tlb();
         Some(access_dirty)
     }
 }

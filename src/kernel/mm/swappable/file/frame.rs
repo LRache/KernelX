@@ -135,6 +135,12 @@ impl FilePageMappingPin {
     }
 }
 
+impl Clone for FilePageMappingPin {
+    fn clone(&self) -> Self {
+        Self::new(self.page.clone())
+    }
+}
+
 impl Deref for FilePageMappingPin {
     type Target = FilePage;
 
@@ -149,6 +155,7 @@ impl Drop for FilePageMappingPin {
     }
 }
 
+#[derive(Clone)]
 pub enum SharedFilePage {
     Stable(Arc<PhysPageFrame>),
     Swappable(FilePageMappingPin),
