@@ -71,6 +71,7 @@ impl ELFArea {
         let page = frame.get_page();
 
         pagetable.lock().mmap(self.ubase + area_offset, &frame, self.perm);
+        pagetable.lock().flush_tlb();
         self.frames[page_index] = Frame::Allocated(frame);
 
         page
@@ -105,6 +106,7 @@ impl ELFArea {
         let new_frame = Arc::new(new_frame);
 
         addrspace.pagetable().lock().mmap_replace(uaddr, &new_frame, self.perm);
+        addrspace.pagetable().lock().flush_tlb();
         self.frames[page_index] = Frame::Allocated(new_frame);
     }
 
@@ -116,6 +118,7 @@ impl ELFArea {
             .pagetable()
             .lock()
             .mmap_replace(uaddr, frame, self.perm - MapPerm::W);
+        addrspace.pagetable().lock().flush_tlb();
 
         page
     }
@@ -200,7 +203,7 @@ impl Area for ELFArea {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
                     let uaddr = self.ubase + page_index * arch::PGSIZE;
-                    *tlb_changed |= self_pagetable.lock().mmap_replace_perm_no_flush(uaddr, cow_perm);
+                    *tlb_changed |= self_pagetable.lock().mmap_replace_perm(uaddr, cow_perm);
                     Frame::Cow(frame.clone())
                 }
             };
@@ -311,7 +314,7 @@ impl Area for ELFArea {
                 // `translate_read` or `translate_write` but never accessed afterwards.
                 tlb_changed |= pagetable
                     .lock()
-                    .munmap_with_check_no_flush(self.ubase + page_index * arch::PGSIZE, frame.get_page());
+                    .munmap_with_check(self.ubase + page_index * arch::PGSIZE, frame.get_page());
             }
         }
         if tlb_changed {
@@ -329,10 +332,10 @@ impl Area for ELFArea {
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match frame {
                 Frame::Allocated(_) => {
-                    *tlb_changed |= pagetable.lock().mmap_replace_perm_no_flush(uaddr, perm);
+                    *tlb_changed |= pagetable.lock().mmap_replace_perm(uaddr, perm);
                 }
                 Frame::Cow(_) => {
-                    *tlb_changed |= pagetable.lock().mmap_replace_perm_no_flush(uaddr, cow_perm);
+                    *tlb_changed |= pagetable.lock().mmap_replace_perm(uaddr, cow_perm);
                 }
                 Frame::Unallocated => {}
             }

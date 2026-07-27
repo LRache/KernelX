@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::arch;
-use crate::arch::PageTable;
+use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{
@@ -460,7 +460,7 @@ impl Area for UserStack {
             };
             let uaddr = config::USER_STACK_TOP - (index + 1) * arch::PGSIZE;
             page.with_resident_and_record_ad(false, |frame| {
-                let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad_no_flush(
+                let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad(
                     uaddr,
                     frame.get_page(),
                     MapPerm::R | MapPerm::U,
@@ -592,9 +592,7 @@ impl Area for UserStack {
                 };
                 let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
                 page.begin_tlb_invalidation(token, |frame| {
-                    let access_dirty = pagetable
-                        .lock()
-                        .munmap_with_check_and_ad_no_flush(uaddr, frame.get_page());
+                    let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, frame.get_page());
                     tlb_changed |= access_dirty.is_some();
                     access_dirty.map(AccessDirty::from)
                 });

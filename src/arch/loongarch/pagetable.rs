@@ -431,75 +431,6 @@ impl PageTable {
 
         ptetable.free();
     }
-
-    pub(crate) fn mmap_replace_perm_no_flush(&mut self, uaddr: usize, perm: MapPerm) -> bool {
-        let mut flags: PTEFlags = perm.into();
-        flags |= PTEFlags::P;
-        if perm.contains(MapPerm::W) {
-            flags |= PTEFlags::D;
-        }
-
-        let Some(mut pte) = self.find_pte(uaddr) else {
-            return false;
-        };
-        pte.set_flags(flags);
-        pte.write_back().expect("Failed to write back PTE on mmap_replace_perm");
-        true
-    }
-
-    pub(crate) fn mmap_replace_perm_with_check_and_ad_no_flush(
-        &mut self,
-        uaddr: usize,
-        expected_kaddr: usize,
-        perm: MapPerm,
-    ) -> Option<(bool, bool)> {
-        let mut pte = self.find_pte(uaddr)?;
-        if pte.ppn().to_addr().kaddr() != expected_kaddr {
-            return None;
-        }
-
-        let old_flags = pte.flags();
-        let mut flags: PTEFlags = perm.into();
-        flags |= PTEFlags::P;
-        if perm.contains(MapPerm::W) {
-            flags |= PTEFlags::D;
-        }
-        pte.set_flags(flags)
-            .write_back()
-            .expect("Failed to write back PTE on checked mmap_replace_perm");
-        Some((old_flags.contains(PTEFlags::P), old_flags.contains(PTEFlags::D)))
-    }
-
-    pub(crate) fn munmap_with_check_no_flush(&mut self, uaddr: usize, expected_kaddr: usize) -> bool {
-        let Some(mut pte) = self.find_pte(uaddr) else {
-            return false;
-        };
-        if pte.ppn().to_addr().kaddr() != expected_kaddr {
-            return false;
-        }
-
-        pte.set_flags(PTEFlags::empty())
-            .write_back()
-            .expect("Failed to write back PTE on munmap_with_check");
-        true
-    }
-
-    pub(crate) fn munmap_with_check_and_ad_no_flush(
-        &mut self,
-        uaddr: usize,
-        expected_kaddr: usize,
-    ) -> Option<(bool, bool)> {
-        let mut pte = self.find_pte(uaddr)?;
-        if pte.ppn().to_addr().kaddr() != expected_kaddr {
-            return None;
-        }
-
-        let flags = pte.flags();
-        pte.set_flags(PTEFlags::empty())
-            .write_back()
-            .expect("Failed to write back PTE on munmap_with_check_and_ad");
-        Some((flags.contains(PTEFlags::P), flags.contains(PTEFlags::D)))
-    }
 }
 
 impl Drop for PageTable {
@@ -588,8 +519,19 @@ impl PageTableTrait for PageTable {
         Some((old_flags.contains(PTEFlags::P), old_flags.contains(PTEFlags::D)))
     }
 
-    fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {
-        self.mmap_replace_perm_no_flush(uaddr, perm);
+    fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) -> bool {
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::P;
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::D;
+        }
+
+        let Some(mut pte) = self.find_pte(uaddr) else {
+            return false;
+        };
+        pte.set_flags(flags);
+        pte.write_back().expect("Failed to write back PTE on mmap_replace_perm");
+        true
     }
 
     fn mmap_replace_perm_with_check_and_ad(
@@ -598,7 +540,21 @@ impl PageTableTrait for PageTable {
         expected_kaddr: usize,
         perm: MapPerm,
     ) -> Option<(bool, bool)> {
-        self.mmap_replace_perm_with_check_and_ad_no_flush(uaddr, expected_kaddr, perm)
+        let mut pte = self.find_pte(uaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let old_flags = pte.flags();
+        let mut flags: PTEFlags = perm.into();
+        flags |= PTEFlags::P;
+        if perm.contains(MapPerm::W) {
+            flags |= PTEFlags::D;
+        }
+        pte.set_flags(flags)
+            .write_back()
+            .expect("Failed to write back PTE on checked mmap_replace_perm");
+        Some((old_flags.contains(PTEFlags::P), old_flags.contains(PTEFlags::D)))
     }
 
     fn munmap_raw(&mut self, uaddr: usize) -> Result<(), ()> {
@@ -612,11 +568,30 @@ impl PageTableTrait for PageTable {
     }
 
     fn munmap_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> bool {
-        self.munmap_with_check_no_flush(uaddr, expected_kaddr)
+        let Some(mut pte) = self.find_pte(uaddr) else {
+            return false;
+        };
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return false;
+        }
+
+        pte.set_flags(PTEFlags::empty())
+            .write_back()
+            .expect("Failed to write back PTE on munmap_with_check");
+        true
     }
 
     fn munmap_with_check_and_ad(&mut self, uaddr: usize, expected_kaddr: usize) -> Option<(bool, bool)> {
-        self.munmap_with_check_and_ad_no_flush(uaddr, expected_kaddr)
+        let mut pte = self.find_pte(uaddr)?;
+        if pte.ppn().to_addr().kaddr() != expected_kaddr {
+            return None;
+        }
+
+        let flags = pte.flags();
+        pte.set_flags(PTEFlags::empty())
+            .write_back()
+            .expect("Failed to write back PTE on munmap_with_check_and_ad");
+        Some((flags.contains(PTEFlags::P), flags.contains(PTEFlags::D)))
     }
 
     fn take_access_dirty_bit(&mut self, uaddr: usize) -> Option<(bool, bool)> {
@@ -631,11 +606,7 @@ impl PageTableTrait for PageTable {
         })
     }
 
-    fn take_access_dirty_bit_with_check_no_flush(
-        &mut self,
-        uaddr: usize,
-        expected_kaddr: usize,
-    ) -> Option<(bool, bool)> {
+    fn take_access_dirty_bit_with_check(&mut self, uaddr: usize, expected_kaddr: usize) -> Option<(bool, bool)> {
         let mut pte = self.find_pte(uaddr)?;
         if pte.ppn().to_addr().kaddr() != expected_kaddr {
             return None;

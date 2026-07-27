@@ -1,5 +1,5 @@
-use crate::arch::flush_tlb_all;
 use crate::arch::riscv::{KERNEL_MMIO_START, KERNEL_STACK_ARENA_END, PGSIZE};
+use crate::arch::{PageTableTrait, flush_tlb_all};
 use crate::kernel::mm::MapPerm;
 use crate::klib::{InitedCell, SpinLock};
 
@@ -88,7 +88,7 @@ pub unsafe fn unmap_kernel_addr(kstart: usize, size: usize) {
 
     let mut pagetable = KERNEL_PAGETABLE.lock();
     while kaddr < kend {
-        pagetable.munmap_no_flush(kaddr).expect("page must be mapped");
+        pagetable.munmap_raw(kaddr).expect("page must be mapped");
         kaddr += PGSIZE;
     }
 

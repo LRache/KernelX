@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::arch;
-use crate::arch::PageTable;
+use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::maparea::nofilemap::{AnonMapFamilyRegistration, FrameState, SwappablePageFrame};
 use crate::kernel::mm::maparea::{Area, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal, PinPageFrame};
 use crate::kernel::mm::swappable::AccessDirty;
@@ -229,7 +229,7 @@ impl Area for PrivateAnonymousArea {
                     if self.perm.contains(MapPerm::W) {
                         let uaddr = self.ubase + frame_index * arch::PGSIZE;
                         page.with_resident_and_record_ad(false, |frame| {
-                            let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad_no_flush(
+                            let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad(
                                 uaddr,
                                 frame.get_page(),
                                 cow_perm,
@@ -378,7 +378,7 @@ impl Area for PrivateAnonymousArea {
                 let access_dirty =
                     pagetable
                         .lock()
-                        .mmap_replace_perm_with_check_and_ad_no_flush(uaddr, frame.get_page(), frame_perm);
+                        .mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), frame_perm);
                 *tlb_changed |= access_dirty.is_some();
                 let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                 ((), AccessDirty { accessed, dirty })
@@ -395,9 +395,7 @@ impl Area for PrivateAnonymousArea {
                 };
                 let uaddr = self.ubase + frame_index * arch::PGSIZE;
                 page.begin_tlb_invalidation(token, |frame| {
-                    let access_dirty = pagetable
-                        .lock()
-                        .munmap_with_check_and_ad_no_flush(uaddr, frame.get_page());
+                    let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, frame.get_page());
                     tlb_changed |= access_dirty.is_some();
                     access_dirty.map(AccessDirty::from)
                 });

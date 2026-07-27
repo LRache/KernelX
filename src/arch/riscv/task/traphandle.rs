@@ -30,7 +30,11 @@ fn handle_external_interrupt() {
 pub fn handle_interrupt(interrupt: Interrupt) {
     match interrupt {
         Interrupt::Software => {
-            kinfo!("Software interrupt occurred");
+            // SAFETY: Clearing SSIP only acknowledges the current hart's
+            // supervisor software interrupt and does not access memory.
+            unsafe {
+                core::arch::asm!("csrc sip, {mask}", mask = in(reg) 1usize << 1, options(nostack, preserves_flags));
+            }
         }
         Interrupt::Timer => {
             trap::timer_interrupt();
@@ -91,13 +95,21 @@ pub fn set_stvec_to_kerneltrap_handler() {
 }
 
 fn svadu_mark_page_accessed(uaddr: usize) -> bool {
-    let mut pagetable = current::addrspace().pagetable().lock();
-    pagetable.mark_page_accessed(uaddr)
+    let addrspace = current::addrspace();
+    let changed = addrspace.pagetable().lock().mark_page_accessed(uaddr);
+    if changed {
+        addrspace.pagetable().lock().flush_tlb();
+    }
+    changed
 }
 
 fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
-    let mut pagetable = current::addrspace().pagetable().lock();
-    pagetable.mark_page_accessed_and_dirty(uaddr)
+    let addrspace = current::addrspace();
+    let changed = addrspace.pagetable().lock().mark_page_accessed_and_dirty(uaddr);
+    if changed {
+        addrspace.pagetable().lock().flush_tlb();
+    }
+    changed
 }
 
 pub fn usertrap_handler() -> ! {

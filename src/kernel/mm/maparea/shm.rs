@@ -105,6 +105,7 @@ impl Area for ShmArea {
             .pagetable()
             .lock()
             .mmap(uaddr & !arch::PGMASK, frame, self.perm);
+        addrspace.pagetable().lock().flush_tlb();
         Ok(())
     }
 
@@ -113,7 +114,7 @@ impl Area for ShmArea {
         let frames = self.frames.frames.lock();
         for i in 0..frames.len() {
             let uaddr = self.ubase + i * arch::PGSIZE;
-            tlb_changed |= pagetable.lock().munmap_with_check_no_flush(uaddr, frames[i].get_page());
+            tlb_changed |= pagetable.lock().munmap_with_check(uaddr, frames[i].get_page());
         }
         if tlb_changed {
             pagetable.lock().flush_tlb();

@@ -176,16 +176,15 @@ impl Area for SharedFileMapArea {
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match page {
                 SharedFilePage::Stable(frame) => {
-                    *tlb_changed |= pagetable.lock().mmap_replace_perm_no_flush(uaddr, perm);
+                    *tlb_changed |= pagetable.lock().mmap_replace_perm(uaddr, perm);
                     let _ = frame;
                 }
                 SharedFilePage::Swappable(page) => {
                     page.with_resident_and_record_ad(false, |frame| {
-                        let access_dirty = pagetable.lock().mmap_replace_perm_with_check_and_ad_no_flush(
-                            uaddr,
-                            frame.get_page(),
-                            perm,
-                        );
+                        let access_dirty =
+                            pagetable
+                                .lock()
+                                .mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), perm);
                         *tlb_changed |= access_dirty.is_some();
                         let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                         ((), AccessDirty { accessed, dirty })
@@ -272,7 +271,10 @@ impl Area for SharedFileMapArea {
             .map_err(|_| MemoryFaultSignal::Bus)?
             .ok_or(MemoryFaultSignal::Bus)?;
         match page {
-            SharedFilePage::Stable(frame) => addrspace.pagetable().lock().mmap_replace(uaddr, frame, perm),
+            SharedFilePage::Stable(frame) => {
+                addrspace.pagetable().lock().mmap_replace(uaddr, frame, perm);
+                addrspace.pagetable().lock().flush_tlb();
+            }
             SharedFilePage::Swappable(page) => {
                 let guard = page.ensure_page().map_err(|_| MemoryFaultSignal::Bus)?;
                 addrspace.mmap_replace_swappable(uaddr, &guard, perm);
@@ -333,14 +335,12 @@ impl Area for SharedFileMapArea {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
                 match page {
                     SharedFilePage::Stable(frame) => {
-                        tlb_changed |= pagetable.lock().munmap_with_check_no_flush(uaddr, frame.get_page());
+                        tlb_changed |= pagetable.lock().munmap_with_check(uaddr, frame.get_page());
                     }
                     SharedFilePage::Swappable(page) => {
                         let token = token.expect("swappable file page must have a file mapping registration");
                         page.begin_tlb_invalidation(token, |frame| {
-                            let access_dirty = pagetable
-                                .lock()
-                                .munmap_with_check_and_ad_no_flush(uaddr, frame.get_page());
+                            let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, frame.get_page());
                             tlb_changed |= access_dirty.is_some();
                             access_dirty.map(AccessDirty::from)
                         });
