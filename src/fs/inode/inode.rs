@@ -420,6 +420,14 @@ pub trait VfsInodeOps: DowncastSync {
 
     fn sync(&self) -> SysResult<()>;
 
+    /// Durable variant of [`VfsInodeOps::sync`] for fsync(2)/fdatasync(2):
+    /// additionally commits this inode's data to the underlying device
+    /// (device barrier). Filesystems without a cheaper primitive fall back
+    /// to plain `sync`.
+    fn fsync(&self) -> SysResult<()> {
+        self.sync()
+    }
+
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize>;
 
     fn fstat(&self) -> SysResult<FileStat>;
@@ -639,6 +647,11 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
     fn sync(&self) -> SysResult<()> {
         let _lifecycle = self.lifecycle.read();
         self.inner.sync()
+    }
+
+    fn fsync(&self) -> SysResult<()> {
+        let _lifecycle = self.lifecycle.read();
+        self.inner.fsync()
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {
@@ -905,6 +918,12 @@ pub trait InodeOps: Send + Sync + Sized + 'static {
         Ok(())
     }
 
+    /// Durable variant of [`InodeOps::sync`] for fsync(2); see
+    /// [`VfsInodeOps::fsync`].
+    fn fsync(&self) -> SysResult<()> {
+        self.sync()
+    }
+
     fn ioctl(&self, _request: usize, _arg: usize, _addrspace: &AddrSpace) -> SysResult<usize> {
         Err(Errno::ENOTTY)
     }
@@ -1098,6 +1117,10 @@ impl<T: InodeOps> InodeOps for Arc<T> {
 
     fn sync(&self) -> SysResult<()> {
         self.as_ref().sync()
+    }
+
+    fn fsync(&self) -> SysResult<()> {
+        self.as_ref().fsync()
     }
 
     fn ioctl(&self, request: usize, arg: usize, addrspace: &AddrSpace) -> SysResult<usize> {

@@ -256,7 +256,6 @@ fn unlink_from_parent(
 ) -> SysResult<()> {
     let child_ino = lookup_child(parent_ref, name)?;
     let mut child_ref = superblock.read_inode_ref(child_ino)?;
-    let mut child_freed = false;
 
     let result = (|| {
         let child_type = inode_type(&mut child_ref);
@@ -283,8 +282,7 @@ fn unlink_from_parent(
             }
             parent_ref.dirty = true;
             child_ref.dirty = true;
-            free_unlinked_inode(&mut child_ref)?;
-            child_freed = true;
+            superblock.mark_unlinked(child_ino);
         } else {
             if inode_nlink(&child_ref) > 0 {
                 unsafe {
@@ -294,8 +292,7 @@ fn unlink_from_parent(
             }
 
             if inode_nlink(&child_ref) == 0 {
-                free_unlinked_inode(&mut child_ref)?;
-                child_freed = true;
+                superblock.mark_unlinked(child_ino);
             }
         }
 
@@ -310,9 +307,6 @@ fn unlink_from_parent(
         }
         Ok(()) => {
             put_result?;
-            if child_freed {
-                superblock.invalidate_inode_ref(child_ino)?;
-            }
             Ok(())
         }
     }
@@ -453,6 +447,7 @@ pub struct Ext4Inode {
     cacheable_file: bool,
     cached_size: AtomicUsize,
     fast_cached_write: AtomicBool,
+    io_lock: SleepLock<()>,
     page_cache: SleepLock<InodePageCache>,
 }
 
@@ -476,6 +471,7 @@ impl Ext4Inode {
             cacheable_file,
             cached_size: AtomicUsize::new(cached_size),
             fast_cached_write: AtomicBool::new(fast_cached_write),
+            io_lock: SleepLock::new((), "Ext4Inode::io_lock"),
             page_cache: SleepLock::new(InodePageCache::new(), "Ext4Inode::page_cache"),
         })
     }
@@ -716,6 +712,30 @@ impl Ext4Inode {
         }
         Ok(())
     }
+
+    /// Perform the truncate + free that was deferred by `mark_unlinked` once
+    /// the last in-memory reference to this inode is dropped.
+    fn free_unlinked(&self) -> SysResult<()> {
+        let mut superblock = self.superblock.lock();
+        let mut inode_ref = superblock.read_inode_ref(self.ino)?;
+        let result = free_unlinked_inode(&mut inode_ref);
+        let put_result = superblock.put_inode_ref(&mut inode_ref);
+
+        match result {
+            Err(err) => {
+                let _ = put_result;
+                Err(err)
+            }
+            Ok(()) => {
+                put_result?;
+                // Push the freed inode's metadata into the bcache but do not
+                // force it to the device: a deleted file needs no durability
+                // barrier, the dirty blocks go out with the next full flush
+                // (sync/umount) or bcache eviction.
+                superblock.invalidate_inode_ref(self.ino)
+            }
+        }
+    }
 }
 
 impl InodeOps for Ext4Inode {
@@ -792,17 +812,16 @@ impl InodeOps for Ext4Inode {
                 Ok(child_ino)
             })();
 
-            let put_result = superblock.put_inode_ref(&mut child_ref);
             match create_result {
                 Err(err) => {
                     unsafe {
                         let _ = ext4_fs_free_inode(&mut child_ref);
                     }
-                    let _ = put_result;
+                    let _ = superblock.put_inode_ref(&mut child_ref);
                     Err(err)
                 }
                 Ok(child_ino) => {
-                    put_result?;
+                    superblock.put_inode_ref(&mut child_ref)?;
                     Ok(child_ino)
                 }
             }
@@ -879,6 +898,7 @@ impl InodeOps for Ext4Inode {
         if buf.is_empty() {
             return Ok(0);
         }
+        let _io_guard = self.io_lock.lock();
         if !self.is_cacheable_file() {
             return self.read_raw_at(buf, offset);
         }
@@ -919,6 +939,7 @@ impl InodeOps for Ext4Inode {
         if buf.is_empty() {
             return Ok(0);
         }
+        let _io_guard = self.io_lock.lock();
         if !self.is_cacheable_file() {
             return self.write_raw_at(buf, offset);
         }
@@ -1001,8 +1022,9 @@ impl InodeOps for Ext4Inode {
                 return Err(Errno::ENOTDIR);
             }
 
+            // Relatime-like behavior: path resolution must not dirty the
+            // directory inode, otherwise every lookup turns into a write.
             let ino = lookup_child(inode_ref, name)?;
-            inode_set_atime(inode_ref, &now());
             Ok(ino)
         })
     }
@@ -1155,6 +1177,15 @@ impl InodeOps for Ext4Inode {
     }
 
     fn size(&self) -> SysResult<u64> {
+        // For regular files `cached_size` is maintained at every
+        // size-changing site (new/finish_cached_write/truncate; fallocate
+        // extends via truncate), so fstat/lseek/append can read it without
+        // taking the global superblock lock. Directories and special inodes
+        // change size inside lwext4 (dir entry add/remove, symlink) without
+        // updating the cache, so they keep reading through the inode-ref.
+        if self.is_cacheable_file() {
+            return Ok(self.cached_size.load(Ordering::Relaxed) as u64);
+        }
         self.with_ref(|_superblock, inode_ref| Ok(inode_size(inode_ref)))
     }
 
@@ -1163,6 +1194,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn load_raw_page(&self, file_page_index: usize) -> SysResult<Option<PhysPageFrame>> {
+        let _io_guard = self.io_lock.lock();
         let offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
         let file_size = self.cached_size.load(Ordering::Relaxed);
         if offset >= file_size {
@@ -1183,6 +1215,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn writeback_mmap_shared_page(&self, file_page_index: usize, frame: &PhysPageFrame) -> SysResult<()> {
+        let _io_guard = self.io_lock.lock();
         let offset = file_page_index.checked_mul(arch::PGSIZE).ok_or(Errno::EFBIG)?;
         let file_size = usize::try_from(self.size()?).map_err(|_| Errno::EFBIG)?;
         if offset >= file_size {
@@ -1217,7 +1250,7 @@ impl InodeOps for Ext4Inode {
                     &mut rcnt,
                 ))?;
             }
-            inode_set_atime(inode_ref, &now());
+            // Relatime-like behavior: reading a symlink does not dirty it.
             Ok(Some(rcnt))
         })
     }
@@ -1275,6 +1308,7 @@ impl InodeOps for Ext4Inode {
     }
 
     fn truncate(&self, new_size: u64) -> SysResult<()> {
+        let _io_guard = self.io_lock.lock();
         self.with_ref(|_superblock, inode_ref| {
             if inode_type(inode_ref) == InodeType::Directory {
                 return Err(Errno::EISDIR);
@@ -1370,8 +1404,24 @@ impl InodeOps for Ext4Inode {
     }
 
     fn sync(&self) -> SysResult<()> {
+        let _io_guard = self.io_lock.lock();
         self.flush_dirty_pages()?;
-        self.superblock.lock().flush()
+        // Per-inode writeback only: push this inode's cached inode-ref (and
+        // any merged dirty state) into the bcache. No full bcache flush and
+        // no device barrier here — those are reserved for fsync(2), sync(2)
+        // and unmount (see SuperBlockInner::flush/flush_device).
+        self.superblock.lock().invalidate_inode_ref(self.ino)
+    }
+
+    fn fsync(&self) -> SysResult<()> {
+        let _io_guard = self.io_lock.lock();
+        self.flush_dirty_pages()?;
+        let mut superblock = self.superblock.lock();
+        // Durable: this inode's metadata into the bcache, then all dirty
+        // bcache buffers + superblock to the device with a barrier. Does not
+        // drop the other cached inode-refs.
+        superblock.invalidate_inode_ref(self.ino)?;
+        superblock.flush_device()
     }
 
     fn open_file(
@@ -1395,8 +1445,15 @@ impl InodeOps for Ext4Inode {
 
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
+        if self.superblock.lock().take_unlinked(self.ino) {
+            let _ = self.free_unlinked();
+            return;
+        }
+
+        // Per-inode writeback only (pages + cached inode-ref into the
+        // bcache); no full bcache flush and no device barrier on eviction.
         if self.flush_dirty_pages().is_ok() {
-            let _ = self.superblock.lock().flush();
+            let _ = self.superblock.lock().invalidate_inode_ref(self.ino);
         }
     }
 }

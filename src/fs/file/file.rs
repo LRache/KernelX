@@ -252,7 +252,7 @@ impl FileOps for RandomAccessFile {
     }
 
     fn fsync(&self) -> SysResult<()> {
-        self.inode.sync()
+        self.inode.fsync()
     }
 
     fn ftruncate(&self, new_size: u64) -> SysResult<()> {
@@ -279,7 +279,7 @@ impl FileOps for RandomAccessFile {
 
         if dent.name == ".." {
             if let Some(parent) = self.dentry.get_parent() {
-                dent.ino = parent.get_inode().get_ino();
+                dent.ino = parent.get_inode()?.get_ino();
             }
         }
 

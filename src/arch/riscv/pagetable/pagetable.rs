@@ -1,6 +1,7 @@
 use crate::arch::{PageTableTrait, flush_tlb_cpu_mask};
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
+use crate::kernel::scheduler::current;
 use core::sync::atomic::{Ordering, fence};
 
 use super::kernelpagetable::{install_shared_kernel_mappings, is_shared_kernel_root};
@@ -9,6 +10,67 @@ use super::pte::{Addr, PTE, PTEFlags, PTETable};
 const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
 pub(super) const ENTRIES_PER_TABLE: usize = 512;
+
+/// Invalidation ranges larger than this fall back to a full flush so the
+/// per-page fence count stays bounded.
+pub(super) const FLUSH_RANGE_MAX_PAGES: usize = 32;
+
+fn cpu_bit(cpu_id: usize) -> usize {
+    1usize
+        .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
+        .expect("CPU ID exceeds page-table CPU mask width")
+}
+
+/// Invalidate `page_count` pages starting at `vaddr` in the local TLB.
+///
+/// The leading fence publishes the preceding page-table writes before the
+/// translations are invalidated. `sfence.vma vaddr, x0` (no ASID operand)
+/// covers all address spaces including global (G-bit) mappings, so this also
+/// works for kernel addresses.
+pub(super) fn local_flush_range(vaddr: usize, page_count: usize) {
+    unsafe {
+        core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
+        for page in 0..page_count {
+            let addr = vaddr + page * crate::arch::PGSIZE;
+            core::arch::asm!("sfence.vma {}, zero", in(reg) addr, options(nostack, preserves_flags));
+        }
+    }
+}
+
+/// Invalidate every translation in the local TLB. `sfence.vma x0, x0`
+/// specifies no ASID, so global (G-bit) mappings are invalidated as well.
+pub(super) fn local_flush_all() {
+    unsafe {
+        core::arch::asm!("fence rw, rw", "sfence.vma zero, zero", options(nostack, preserves_flags));
+    }
+}
+
+/// Synchronously invalidate `page_count` pages at `vaddr` on the remote CPUs
+/// in `cpu_mask`. The current CPU must not be present in the mask. The SBI
+/// call returns only after every targeted hart has executed its fence.
+pub(super) fn remote_flush_range(cpu_mask: usize, vaddr: usize, page_count: usize) {
+    if cpu_mask == 0 {
+        return;
+    }
+
+    debug_assert_eq!(
+        cpu_mask & cpu_bit(current::hart_id()),
+        0,
+        "targeted ranged TLB flush mask contains the current hart"
+    );
+
+    // SAFETY: Page-table writes are complete before this function is called.
+    // The fence publishes them before the remote invalidation.
+    unsafe {
+        core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
+    }
+
+    #[cfg(not(feature = "no-smp"))]
+    crate::arch::riscv::sbi_driver::remote_sfence_vma_range(cpu_mask, vaddr, page_count * crate::arch::PGSIZE)
+        .unwrap_or_else(|error| panic!("SBI ranged remote SFENCE.VMA failed: {error}"));
+    #[cfg(feature = "no-smp")]
+    let _ = (vaddr, page_count);
+}
 
 pub trait PageAllocator {
     fn alloc_zero() -> usize;
@@ -20,6 +82,12 @@ pub struct PageTableImpls<T: PageAllocator> {
     /// CPUs that may use this page table again without first performing a
     /// local TLB invalidation. Protected by the owning page-table lock.
     active_cpu_mask: usize,
+    /// CPUs that owe a full local TLB invalidation before the next user-mode
+    /// execution on this page table. Bits are set by invalidations that could
+    /// not fence the CPU synchronously and consumed by `activate_cpu`, which
+    /// runs on every return-to-user before the satp restore. Protected by the
+    /// owning page-table lock, like `active_cpu_mask`.
+    stale_cpu_mask: usize,
     _marker: core::marker::PhantomData<T>,
 }
 
@@ -39,6 +107,12 @@ impl<T: PageAllocator> PageTableImpls<T> {
             root,
             has_shared_kernel_mappings: false,
             active_cpu_mask: 0,
+            // A new page table may reuse the root frame of a destroyed one,
+            // producing a bit-identical satp. Every CPU therefore owes a full
+            // local flush before its first user execution on this table, or
+            // the satp compare-and-skip return path could retain another
+            // address space's translations.
+            stale_cpu_mask: !0,
             _marker: core::marker::PhantomData,
         }
     }
@@ -188,23 +262,76 @@ impl<T: PageAllocator> PageTableImpls<T> {
     }
 
     pub fn activate_cpu(&mut self, cpu_id: usize) {
-        self.active_cpu_mask |= 1usize
-            .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
-            .expect("CPU ID exceeds page-table CPU mask width");
+        let bit = cpu_bit(cpu_id);
+        self.active_cpu_mask |= bit;
+        if self.stale_cpu_mask & bit != 0 {
+            self.stale_cpu_mask &= !bit;
+            // This CPU missed at least one invalidation while it was not
+            // active on this page table. The assembly return path only
+            // fences when it has to change satp, so when satp already points
+            // at this page table the owed invalidation must happen here,
+            // before user code can consume stale translations.
+            let current_satp: usize;
+            unsafe {
+                core::arch::asm!("csrr {}, satp", out(reg) current_satp, options(nomem, nostack, preserves_flags));
+            }
+            if current_satp == self.get_satp() {
+                local_flush_all();
+            }
+        }
     }
 
     pub fn deactivate_cpu(&mut self, cpu_id: usize) {
-        self.active_cpu_mask &= !1usize
-            .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
-            .expect("CPU ID exceeds page-table CPU mask width");
+        self.active_cpu_mask &= !cpu_bit(cpu_id);
     }
 
+    #[allow(dead_code)]
     pub fn active_cpu_mask(&self) -> usize {
         self.active_cpu_mask
     }
 
-    pub fn flush_tlb(&self) {
+    /// Invalidate every translation of this address space: the active CPUs
+    /// are fenced synchronously, every other CPU (including the current one)
+    /// performs its full local flush lazily in `activate_cpu`.
+    pub fn flush_tlb(&mut self) {
+        // Active CPUs receive a synchronous full fence below, which also
+        // discharges any older deferred obligation. Everyone else now owes a
+        // full local flush.
+        self.stale_cpu_mask = !self.active_cpu_mask;
         flush_tlb_cpu_mask(self.active_cpu_mask);
+    }
+
+    /// Invalidate existing translations for `page_count` pages starting at
+    /// `vaddr`: a ranged local fence for the current CPU, a ranged remote
+    /// fence for the CPUs actively using this page table, and a deferred full
+    /// flush (consumed by `activate_cpu`) for every other CPU.
+    pub fn flush_tlb_range(&mut self, vaddr: usize, page_count: usize) {
+        if page_count == 0 {
+            return;
+        }
+        if page_count > FLUSH_RANGE_MAX_PAGES {
+            self.flush_tlb();
+            return;
+        }
+
+        // CPUs that are fenced neither locally (the current one) nor remotely
+        // (the active ones) now owe a full flush. The current and active
+        // CPUs' pending bits are deliberately left untouched: a ranged fence
+        // does not discharge a previously owed full flush.
+        self.stale_cpu_mask |= !(self.active_cpu_mask | cpu_bit(current::hart_id()));
+        local_flush_range(vaddr, page_count);
+        remote_flush_range(self.active_cpu_mask, vaddr, page_count);
+    }
+
+    /// Start an invalidation whose remote fence the caller issues later,
+    /// outside the page-table lock: marks every CPU as owing a full local
+    /// flush and returns the mask of CPUs the caller must pass to
+    /// `flush_tlb_cpu_mask` before relying on the invalidation (for example
+    /// before releasing the frame). A CPU that activates this page table
+    /// after the snapshot self-heals in `activate_cpu`.
+    pub fn begin_deferred_flush(&mut self) -> usize {
+        self.stale_cpu_mask = !0;
+        self.active_cpu_mask
     }
 
     #[allow(dead_code)]
@@ -309,7 +436,10 @@ impl<T: PageAllocator> PageTableImpls<T> {
                 pte.set_flags(flags | PTEFlags::A);
                 pte.write_back()
                     .expect("Failed to write back PTE when marking page accessed");
-                self.flush_tlb();
+                // Setting A/D bits only relaxes fault conditions; no CPU can
+                // hold a cached translation that becomes wrong, so a local
+                // fence for the faulting CPU is sufficient.
+                local_flush_range(uaddr, 1);
                 return true;
             }
         }
@@ -323,7 +453,8 @@ impl<T: PageAllocator> PageTableImpls<T> {
                 pte.set_flags(flags | PTEFlags::D | PTEFlags::A);
                 pte.write_back()
                     .expect("Failed to write back PTE when marking page dirty");
-                self.flush_tlb();
+                // See mark_page_accessed: an A/D upgrade needs no shootdown.
+                local_flush_range(uaddr, 1);
                 return true;
             }
         }
@@ -367,7 +498,11 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
-        self.flush_tlb();
+        // Invalid -> valid transition: no CPU can hold a stale valid
+        // translation for this page, so no remote shootdown and no deferred
+        // flush marking are needed. The local fence orders the PTE write
+        // before the retried access and drops a cached invalid entry.
+        local_flush_range(uaddr, 1);
     }
 
     // fn mmap_paddr(&mut self, kaddr: usize, paddr: usize, perm: MapPerm) {
@@ -386,7 +521,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_flags(flags);
         pte.set_ppn(Addr::from_kaddr(kaddr).ppn());
         pte.write_back().expect("Failed to write back PTE");
-        self.flush_tlb();
+        self.flush_tlb_range(uaddr, 1);
     }
 
     fn mmap_replace_with_check_and_ad(
@@ -408,7 +543,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         pte.set_ppn(Addr::from_kaddr(replacement_kaddr).ppn());
         pte.write_back()
             .expect("Failed to write back PTE on checked mmap_replace");
-        self.flush_tlb();
+        self.flush_tlb_range(uaddr, 1);
         Some((old_flags.contains(PTEFlags::A), old_flags.contains(PTEFlags::D)))
     }
 
@@ -420,7 +555,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
 
     fn mmap_replace_perm(&mut self, uaddr: usize, perm: MapPerm) {
         if self.mmap_replace_perm_no_flush(uaddr, perm) {
-            self.flush_tlb();
+            self.flush_tlb_range(uaddr, 1);
         }
     }
 
@@ -431,13 +566,13 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         perm: MapPerm,
     ) -> Option<(bool, bool)> {
         let access_dirty = self.mmap_replace_perm_with_check_and_ad_no_flush(uaddr, expected_kaddr, perm)?;
-        self.flush_tlb();
+        self.flush_tlb_range(uaddr, 1);
         Some(access_dirty)
     }
 
     fn munmap_raw(&mut self, vaddr: usize) -> Result<(), ()> {
         self.munmap_no_flush(vaddr)?;
-        self.flush_tlb();
+        self.flush_tlb_range(vaddr, 1);
         Ok(())
     }
 
@@ -445,7 +580,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
         // Using atomic operation is unnecessary here because the page table is
         // write-locked during munmap_with_check.
         if self.munmap_with_check_no_flush(uaddr, kaddr) {
-            self.flush_tlb();
+            self.flush_tlb_range(uaddr, 1);
             true
         } else {
             false
@@ -454,7 +589,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
 
     fn munmap_with_check_and_ad(&mut self, uaddr: usize, expected_kaddr: usize) -> Option<(bool, bool)> {
         let access_dirty = self.munmap_with_check_and_ad_no_flush(uaddr, expected_kaddr)?;
-        self.flush_tlb();
+        self.flush_tlb_range(uaddr, 1);
         Some(access_dirty)
     }
 
@@ -466,7 +601,7 @@ impl<T: PageAllocator> PageTableTrait for PageTableImpls<T> {
             pte.set_flags(flags.difference(PTEFlags::A | PTEFlags::D))
                 .write_back()
                 .expect("Failed to write back PTE when taking access and dirty bits");
-            self.flush_tlb();
+            self.flush_tlb_range(uaddr, 1);
             (accessed, dirty)
         })
     }
@@ -517,6 +652,10 @@ impl PageTable {
             root: 0,
             has_shared_kernel_mappings: false,
             active_cpu_mask: 0,
+            // See from_root: a fresh page table may reuse a recycled root
+            // frame, so every CPU owes a full local flush before its first
+            // user execution on it.
+            stale_cpu_mask: !0,
             _marker: core::marker::PhantomData,
         }
     }

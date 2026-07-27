@@ -59,7 +59,11 @@ impl<const MAPPED_PAGE_COUNT: usize> KernelStack<MAPPED_PAGE_COUNT> {
 
         let base = KERNEL_STACK_ADDRESS_ALLOCATOR.lock().alloc(page_count);
         let frames = core::array::from_fn(|_| PhysPageFrame::alloc_zeroed());
-        kernelpagetable::map_kernel_pages(
+        // The VA range is guaranteed unmapped on every hart: fresh arena
+        // addresses were never mapped, and recycled ones only return to the
+        // allocator after `Drop` completes its global shootdown. No remote
+        // TLB flush is therefore needed on the create path.
+        kernelpagetable::map_fresh_kernel_pages(
             base + PGSIZE,
             frames.iter().map(|frame| arch::kaddr_to_paddr(frame.get_page())),
             MapPerm::RW,
@@ -82,8 +86,12 @@ impl<const MAPPED_PAGE_COUNT: usize> Drop for KernelStack<MAPPED_PAGE_COUNT> {
         let mapped_base = self.base + PGSIZE;
         let mapped_size = MAPPED_PAGE_COUNT * PGSIZE;
         // SAFETY: This stack is no longer reachable by a task when its owning
-        // task object is dropped, and the unmap completes its global TLB
-        // invalidation before the backing frames and VA slot are recycled.
+        // task object is dropped, and `unmap_kernel_addr` completes its global
+        // TLB shootdown before returning. Ordering is load-bearing: the VA
+        // slot is released and the backing frames drop only after the
+        // shootdown, so neither can be reused while any hart could still hold
+        // a stale translation. This ordering also lets `KernelStack::new` skip
+        // the remote flush entirely (see `map_fresh_kernel_pages`).
         unsafe { arch::unmap_kernel_addr(mapped_base, mapped_size) };
         KERNEL_STACK_ADDRESS_ALLOCATOR
             .lock()

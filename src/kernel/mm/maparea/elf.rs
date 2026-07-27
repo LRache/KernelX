@@ -315,7 +315,7 @@ impl Area for ELFArea {
             }
         }
         if tlb_changed {
-            pagetable.lock().flush_tlb();
+            pagetable.lock().flush_tlb_range(self.ubase, self.frames.len());
         }
         for frame in &mut self.frames {
             *frame = Frame::Unallocated;

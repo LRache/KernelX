@@ -183,6 +183,11 @@ pub struct TimeCounter {
     pub system_time: Duration,
     pub user_start: Option<Duration>,
     pub system_start: Option<Duration>,
+    /// Portion of `user_time`/`system_time` already folded into the owning
+    /// PCB's process-wide accumulator. Folding happens on context switch, so
+    /// the per-syscall trap path never touches the process-shared lock.
+    folded_user_time: Duration,
+    folded_system_time: Duration,
 }
 
 impl TimeCounter {
@@ -192,7 +197,25 @@ impl TimeCounter {
             system_time: Duration::ZERO,
             user_start: None,
             system_start: Some(timer::now()),
+            folded_user_time: Duration::ZERO,
+            folded_system_time: Duration::ZERO,
         }
+    }
+
+    /// (user, system) time accumulated since the last fold into the PCB.
+    pub fn unfolded(&self) -> (Duration, Duration) {
+        (
+            self.user_time.checked_sub(self.folded_user_time).unwrap_or_default(),
+            self.system_time.checked_sub(self.folded_system_time).unwrap_or_default(),
+        )
+    }
+
+    /// Take the unfolded (user, system) time and mark it as folded.
+    fn take_unfolded(&mut self) -> (Duration, Duration) {
+        let unfolded = self.unfolded();
+        self.folded_user_time = self.user_time;
+        self.folded_system_time = self.system_time;
+        unfolded
     }
 
     fn pause_system_time(&mut self, now: Duration) -> Duration {
@@ -834,13 +857,22 @@ impl TCB {
     }
 
     pub fn check_cpu_timers(&self) {
+        // Called on every syscall entry/exit; one relaxed load skips the
+        // timer-table locking entirely while no CPU-clock timer exists.
+        if !self.parent.timers.has_task_cpu_timers() {
+            return;
+        }
         self.parent.timers.check_process_cpu();
         self.parent.timers.check_thread_cpu(self.tid);
     }
 
     fn pause_user_task_system_time(&self) {
-        let delta = self.time_counter.lock().pause_system_time(timer::now());
-        self.parent.add_task_time(Duration::ZERO, delta);
+        let (user_delta, system_delta) = {
+            let mut counter = self.time_counter.lock();
+            counter.pause_system_time(timer::now());
+            counter.take_unfolded()
+        };
+        self.parent.add_task_time(user_delta, system_delta);
         self.check_cpu_timers();
     }
 
@@ -949,9 +981,7 @@ impl TCB {
                 .is_ok()
             {
                 if let Ok(frame) = self.addrspace.get_frame(tid_address) {
-                    let mut futex_manager = futex::manager();
-                    let _ =
-                        futex_manager.wake(futex::FutexKey::shared(&frame, tid_address & arch::PGMASK), 1, u32::MAX);
+                    let _ = futex::wake(futex::FutexKey::shared(&frame, tid_address & arch::PGMASK), 1, u32::MAX);
                 }
             }
         }
@@ -975,7 +1005,10 @@ impl TCB {
 
     pub fn wake_parent_waiting_vfork(&self) {
         if let Some(parent) = self.parent_waiting_vfork.lock().take() {
-            scheduler::wakeup_task_uninterruptible(parent, Event::VFork);
+            let parent_tid = parent.tid();
+            if !scheduler::wakeup_task_uninterruptible(parent, Event::VFork) {
+                crate::kwarn!("Failed to wake vfork parent {} of task {}", parent_tid, self.tid);
+            }
         }
     }
 
@@ -1102,6 +1135,13 @@ impl Task for TCB {
         );
 
         let mut state = self.state.lock();
+        if state.pending_signal.is_some() {
+            // Refuse to sleep with an undelivered signal: stay runnable and
+            // stash Event::Signal so the subsequent schedule() returns
+            // immediately and the wait site takes its EINTR path.
+            *self.wakeup_event.lock() = Some(Event::Signal);
+            return false;
+        }
         match state.state {
             TCBState::Ready | TCBState::Running => {}
             _ => return false,
@@ -1152,6 +1192,17 @@ impl Task for TCB {
         }
         state.set_state(TCBState::Running);
         state.wake_pending = false;
+        self.wakeup_event.lock().take();
+    }
+
+    fn cancel_block(&self) {
+        let mut state = self.state.lock();
+        debug_assert!(state.on_cpu);
+        if matches!(state.state, TCBState::Blocked | TCBState::BlockedUninterruptible) {
+            state.set_state(TCBState::Running);
+        }
+        state.wake_pending = false;
+        drop(state);
         self.wakeup_event.lock().take();
     }
 

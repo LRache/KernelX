@@ -428,7 +428,7 @@ impl Mount {
 
 impl Dentry {
     pub fn check_search_perm(&self, perm: &Perm) -> SysResult<()> {
-        let inode = self.get_inode();
+        let inode = self.get_inode()?;
         if inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
         }
@@ -443,7 +443,7 @@ impl Dentry {
     }
 
     fn check_child_mutation_perm(&self) -> SysResult<()> {
-        let inode = self.get_inode();
+        let inode = self.get_inode()?;
         if inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
         }
@@ -549,23 +549,23 @@ impl Dentry {
             .ok_or(Errno::EOPNOTSUPP)
     }
 
-    pub fn get_inode(&self) -> Arc<Inode> {
+    pub fn get_inode(&self) -> SysResult<Arc<Inode>> {
         let index = self.get_inode_index();
         if let Some(cached) = vfs().cache.find_ready(&index) {
             let inode = self.inode.lock();
             if let Some(inode) = inode.upgrade()
                 && Arc::ptr_eq(&inode, &cached)
             {
-                return inode;
+                return Ok(inode);
             }
             drop(inode);
             *self.inode.lock() = Arc::downgrade(&cached);
-            return cached;
+            return Ok(cached);
         }
 
-        let inode = vfs().load_inode(index.sno, index.ino).expect("Failed to load inode");
+        let inode = vfs().load_inode(index.sno, index.ino)?;
         *self.inode.lock() = Arc::downgrade(&inode);
-        inode
+        Ok(inode)
     }
 
     pub fn name(&self) -> String {
@@ -602,7 +602,7 @@ impl Dentry {
             return Ok(child);
         }
 
-        let lookup_ino = self.get_inode().lookup(name)?;
+        let lookup_ino = self.get_inode()?.lookup(name)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
 
@@ -645,7 +645,7 @@ impl Dentry {
         perm: &Perm,
     ) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.get_parent() {
-            let inode = self.get_inode();
+            let inode = self.get_inode()?;
             if let Some(target) = inode.follow_magic_link()? {
                 if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
                     return Err(Errno::ELOOP);
@@ -676,7 +676,7 @@ impl Dentry {
         flags: LookupFlags,
     ) -> SysResult<Arc<Dentry>> {
         if let Some(p) = self.get_parent() {
-            let inode = self.get_inode();
+            let inode = self.get_inode()?;
             if let Some(target) = inode.follow_magic_link()? {
                 if *symlink_depth >= config::MAX_SYMLINK_DEPTH {
                     return Err(Errno::ELOOP);
@@ -727,7 +727,7 @@ impl Dentry {
     }
 
     pub fn bind_mount(self: &Arc<Self>, source: &Arc<Dentry>, source_root: &Arc<Dentry>) -> Arc<Mount> {
-        let source_inode = source.get_inode();
+        let source_inode = source.inode.lock().clone();
         let (mount_parent, mountpoint) = self.new_mount_context();
         let mount = Arc::new(Mount::new(MountKind::Bind, Some(&mount_parent), Some(&mountpoint)));
         let mounted_root = Arc::new(Dentry {
@@ -736,7 +736,7 @@ impl Dentry {
             parent: mountpoint.get_parent(),
             mount_location: SpinLock::new(None, "Dentry::mount_location"),
             children: SpinLock::new(BTreeMap::new(), "Dentry::children"),
-            inode: SpinLock::new(Arc::downgrade(&source_inode), "Dentry::inode"),
+            inode: SpinLock::new(source_inode, "Dentry::inode"),
             mount_stack: SpinLock::new(Vec::new(), "Dentry::mount_stack"),
             mount: mount.clone(),
         });
@@ -833,7 +833,7 @@ impl Dentry {
             Err(err) => return Err(err),
         }
 
-        let parent_inode = self.get_inode();
+        let parent_inode = self.get_inode()?;
         let parent_mode = parent_inode.mode()?;
         let parent_gid = parent_inode.owner()?.1;
         let mut mode = mode;
@@ -883,7 +883,7 @@ impl Dentry {
         self.check_child_mutation_perm()?;
         let child = self.lookup(name)?;
 
-        let parent_inode = self.get_inode();
+        let parent_inode = self.get_inode()?;
         if parent_inode.inode_type()? != FileType::Directory {
             return Err(Errno::ENOTDIR);
         }
@@ -892,7 +892,7 @@ impl Dentry {
             return Err(Errno::EBUSY);
         }
 
-        let child_inode = child.get_inode();
+        let child_inode = child.get_inode()?;
         let child_is_dir = child_inode.inode_type()? == FileType::Directory;
         if remove_dir && !child_is_dir {
             return Err(Errno::ENOTDIR);
@@ -903,7 +903,9 @@ impl Dentry {
 
         self.check_sticky_remove_perm(&parent_inode, &child_inode)?;
 
-        child_inode.sync()?;
+        // No sync of the child here: durability of data belonging to a file
+        // that is being deleted is meaningless, and deferred orphan freeing
+        // (see Ext4Inode::drop) keeps still-open fds working after unlink.
         let child_lifecycle = child_inode.lifecycle().write();
         if remove_dir {
             parent_inode.rmdir(name)?;
@@ -943,8 +945,8 @@ impl Dentry {
             Err(err) => return Err(err),
         }
 
-        let target_inode = target.get_inode();
-        self.get_inode().link(name, &target_inode)?;
+        let target_inode = target.get_inode()?;
+        self.get_inode()?.link(name, &target_inode)?;
 
         Ok(())
     }
@@ -959,11 +961,11 @@ impl Dentry {
             return Ok(());
         }
 
-        let old_parent_inode = self.get_inode();
+        let old_parent_inode = self.get_inode()?;
         let old_ino = old_parent_inode.lookup(old_name)?;
         let old_inode = vfs().load_inode(self.sno(), old_ino)?;
         let old_is_dir = old_inode.inode_type()? == FileType::Directory;
-        let new_parent_inode = new_parent.get_inode();
+        let new_parent_inode = new_parent.get_inode()?;
         let overwritten = match new_parent_inode.lookup(new_name) {
             Ok(ino) if ino != old_ino => {
                 let overwritten_inode = vfs().load_inode(new_parent.sno(), ino)?;
@@ -1010,7 +1012,7 @@ impl Dentry {
     pub fn readlink(&self, child: &str, buf: &mut [u8]) -> SysResult<Option<usize>> {
         self.check_search_perm(&Perm::current(PermFlags::X))?;
 
-        let lookup_ino = self.get_inode().lookup(child)?;
+        let lookup_ino = self.get_inode()?.lookup(child)?;
         let lookup_sno = self.sno();
         let inode = vfs().load_inode(lookup_sno, lookup_ino)?;
         inode.readlink(buf)

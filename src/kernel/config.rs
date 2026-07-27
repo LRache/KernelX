@@ -27,7 +27,7 @@ pub const KERNEL_TRAP_STACK_PAGE_COUNT: usize = 8;
 pub const KERNEL_PAGE_SHRINK_WATERLEVEL_LOW: usize = 70; // LOW Threshold% for kernel page shrinker
 pub const KERNEL_PAGE_SHRINK_WATERLEVEL_HIGH: usize = 85; // HIGH Threshold% for kernel page shrinker
 
-pub const INODE_CACHE_HIGH_WATERMARK: usize = 512; // Start reclaiming when inode cache reaches this size
+pub const INODE_CACHE_HIGH_WATERMARK: usize = 4096; // Start reclaiming when inode cache reaches this size
 pub const INODE_CACHE_LOW_WATERMARK: usize = INODE_CACHE_HIGH_WATERMARK / 4 * 3; // Reclaim idle inodes down to this size
 pub const INODE_CACHE_RECLAIM_INTERVAL_MS: u64 = 500; // Background inode cache reclaim interval
 

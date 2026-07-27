@@ -300,6 +300,20 @@ impl Task for KThread {
         state.wake_pending = false;
     }
 
+    fn cancel_block(&self) {
+        let mut state = self.state.lock();
+        debug_assert!(state.on_cpu);
+        if matches!(
+            state.state,
+            KThreadState::Blocked | KThreadState::BlockedUninterruptible
+        ) {
+            state.set_state(KThreadState::Running);
+        }
+        state.wake_pending = false;
+        drop(state);
+        self.wakeup_event.lock().take();
+    }
+
     fn wakeup(&self, event: Event) -> Result<WakeupAction, WakeupFailure> {
         let mut state = self.state.lock();
         if state.wake_pending {

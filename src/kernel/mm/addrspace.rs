@@ -457,13 +457,16 @@ impl AddrSpace {
     ) -> Option<(AccessDirty, usize)> {
         let mut pagetable = self.pagetable.lock();
         let access_dirty = pagetable.take_access_dirty_bit_with_check_no_flush(uaddr, expected_kpage)?;
-        Some((AccessDirty::from(access_dirty), pagetable.active_cpu_mask()))
+        // The caller must fence the returned CPU mask before relying on the
+        // invalidation; CPUs outside it self-heal on their next activation.
+        Some((AccessDirty::from(access_dirty), pagetable.begin_deferred_flush()))
     }
 
     pub fn unmap_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<(AccessDirty, usize)> {
         let mut pagetable = self.pagetable.lock();
         let access_dirty = pagetable.munmap_with_check_and_ad_no_flush(uaddr, expected_kpage)?;
-        Some((AccessDirty::from(access_dirty), pagetable.active_cpu_mask()))
+        // See take_access_dirty_if_maps_no_flush for the fence contract.
+        Some((AccessDirty::from(access_dirty), pagetable.begin_deferred_flush()))
     }
 
     pub(crate) fn mmap_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)

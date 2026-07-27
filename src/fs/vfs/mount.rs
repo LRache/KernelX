@@ -128,7 +128,7 @@ impl VirtualFileSystem {
         let (parent_mount, mountpoint) = target.new_mount_context();
         let parent_is_shared = parent_mount.is_shared();
         let propagation_targets = self.propagation_targets(&parent_mount, &mountpoint)?;
-        let source_is_dir = source.get_inode().inode_type()? == FileType::Directory;
+        let source_is_dir = source.get_inode()?.inode_type()? == FileType::Directory;
         Self::check_bind_target_type(source_is_dir, &target)?;
         for propagation_target in &propagation_targets {
             Self::check_bind_target_type(source_is_dir, &propagation_target.dentry)?;
@@ -195,7 +195,7 @@ impl VirtualFileSystem {
             return Ok(());
         }
 
-        let source_is_dir = mounted_root.get_inode().inode_type()? == FileType::Directory;
+        let source_is_dir = mounted_root.get_inode()?.inode_type()? == FileType::Directory;
         Self::check_bind_target_type(source_is_dir, &target)?;
 
         let (target_parent, target_mountpoint) = target.new_mount_context();
@@ -276,7 +276,7 @@ impl VirtualFileSystem {
     }
 
     fn check_bind_target_type(source_is_dir: bool, target: &Arc<Dentry>) -> SysResult<()> {
-        let target_is_dir = target.get_inode().inode_type()? == FileType::Directory;
+        let target_is_dir = target.get_inode()?.inode_type()? == FileType::Directory;
         if source_is_dir && !target_is_dir {
             return Err(Errno::ENOTDIR);
         }
@@ -360,7 +360,7 @@ impl VirtualFileSystem {
             }
             let mounted_root = mount.root().ok_or(Errno::EINVAL)?;
             let source_root = mount.source_root().ok_or(Errno::EINVAL)?;
-            let is_dir = mounted_root.get_inode().inode_type()? == FileType::Directory;
+            let is_dir = mounted_root.get_inode()?.inode_type()? == FileType::Directory;
             recursive_sources.push((
                 index,
                 RecursiveBindSource {

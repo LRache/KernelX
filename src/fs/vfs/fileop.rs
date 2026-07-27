@@ -61,7 +61,7 @@ fn memfd_superblock_sno() -> SysResult<u32> {
 }
 
 fn new_file(dentry: Arc<Dentry>, flags: FileFlags, perm: &Perm) -> SysResult<Arc<dyn FileOps>> {
-    let inode = dentry.get_inode();
+    let inode = dentry.get_inode()?;
     let mode = inode.mode()?;
 
     if flags.writable && (mode & Mode::S_IFMT) == Mode::S_IFDIR {
@@ -185,7 +185,7 @@ pub fn openat_file_nofollow(
     perm: &Perm,
 ) -> SysResult<Arc<dyn FileOps>> {
     let dentry = vfs().lookup_dentry_nofollow(root, dir, path)?;
-    if dentry.get_inode().inode_type()? == FileType::Symlink {
+    if dentry.get_inode()?.inode_type()? == FileType::Symlink {
         return Err(Errno::ELOOP);
     }
     new_file(dentry, flags, perm)
@@ -200,7 +200,7 @@ pub fn openat_file_nofollow_with_lookup_flags(
     lookup_flags: LookupFlags,
 ) -> SysResult<Arc<dyn FileOps>> {
     let dentry = vfs().lookup_dentry_nofollow_with_perm_and_flags(root, dir, path, perm, lookup_flags)?;
-    if dentry.get_inode().inode_type()? == FileType::Symlink {
+    if dentry.get_inode()?.inode_type()? == FileType::Symlink {
         return Err(Errno::ELOOP);
     }
     new_file(dentry, flags, perm)

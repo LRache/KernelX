@@ -52,15 +52,13 @@ impl FIFO {
         unsafe { core::slice::from_raw_parts(self.data.ptr(), PIPE_CAPACITY) }
     }
 
-    fn pop_front(&mut self) -> Option<u8> {
-        if self.length == 0 {
-            return None;
-        }
-        let head = self.head;
-        let byte = self.data_mut()[head];
-        self.head = (self.head + 1) % PIPE_CAPACITY;
-        self.length -= 1;
-        Some(byte)
+    /// Pop up to `buf.len()` bytes into `buf` with at most two slice copies
+    /// (the ring wraps at most once). Returns the number of bytes copied.
+    fn pop_front_slice(&mut self, buf: &mut [u8]) -> usize {
+        let n = self.peek_front(buf);
+        self.head = (self.head + n) % PIPE_CAPACITY;
+        self.length -= n;
+        n
     }
 
     fn pop_front_ubuf(&mut self, ubuf: &UAddrSpaceBuffer) -> SysResult<usize> {
@@ -103,15 +101,29 @@ impl FIFO {
         n
     }
 
-    fn push_back(&mut self, byte: u8) -> bool {
-        if self.length == PIPE_CAPACITY {
-            return false;
+    /// Append up to `min(buf.len(), capacity - length)` bytes from `buf` with
+    /// at most two slice copies (the ring wraps at most once). Returns the
+    /// number of bytes pushed.
+    fn push_back_slice(&mut self, buf: &[u8], capacity: usize) -> usize {
+        debug_assert!(capacity <= PIPE_CAPACITY);
+        let n = core::cmp::min(buf.len(), capacity.saturating_sub(self.length));
+        if n == 0 {
+            return 0;
         }
+
         let tail = self.tail;
-        self.data_mut()[tail] = byte;
-        self.tail = (tail + 1) % PIPE_CAPACITY;
-        self.length += 1;
-        true
+        if tail + n <= PIPE_CAPACITY {
+            self.data_mut()[tail..tail + n].copy_from_slice(&buf[..n]);
+            self.tail = (tail + n) % PIPE_CAPACITY;
+        } else {
+            let part1 = PIPE_CAPACITY - tail;
+            self.data_mut()[tail..PIPE_CAPACITY].copy_from_slice(&buf[..part1]);
+            let part2 = n - part1;
+            self.data_mut()[0..part2].copy_from_slice(&buf[part1..n]);
+            self.tail = part2;
+        }
+        self.length += n;
+        n
     }
 
     fn push_back_ubuf(&mut self, ubuf: &UAddrSpaceBuffer, capacity: usize) -> SysResult<usize> {
@@ -214,13 +226,15 @@ impl PipeInner {
             return Ok(0);
         }
 
-        // Phase 1: wait until at least one byte is available
+        // Phase 1: wait until data is available, then bulk-drain whatever is
+        // immediately available in the same critical section.
         let notify_write_ready;
+        let mut total_read;
         loop {
             let mut state = self.state.lock();
             if state.fifo.len() > 0 {
                 let was_write_ready = state.fifo.len() < state.capacity;
-                buf[0] = state.fifo.pop_front().unwrap();
+                total_read = state.fifo.pop_front_slice(buf);
                 notify_write_ready = !was_write_ready;
                 break;
             }
@@ -246,18 +260,13 @@ impl PipeInner {
             }
         }
 
-        // Phase 2: drain as much as is immediately available
-        let mut total_read = 1;
+        // Phase 2: drain any further data that became available meanwhile.
         while total_read < buf.len() {
             let mut state = self.state.lock();
             if state.fifo.len() == 0 {
                 break;
             }
-            let to_read = core::cmp::min(buf.len() - total_read, state.fifo.len());
-            for _ in 0..to_read {
-                buf[total_read] = state.fifo.pop_front().unwrap();
-                total_read += 1;
-            }
+            total_read += state.fifo.pop_front_slice(&mut buf[total_read..]);
         }
 
         self.state.lock().write_waiter.wake_all(|e| e);
@@ -351,10 +360,8 @@ impl PipeInner {
                 state = self.state.lock();
             }
 
-            let to_write = core::cmp::min(buf.len(), state.capacity.saturating_sub(state.fifo.len()));
-            for i in 0..to_write {
-                state.fifo.push_back(buf[i]);
-            }
+            let capacity = state.capacity;
+            let to_write = state.fifo.push_back_slice(buf, capacity);
             state.read_waiter.wake_all(|e| e);
             drop(state);
             self.read_notifier.notify(FileEvent::READ_READY);
@@ -390,9 +397,10 @@ impl PipeInner {
                 state = self.state.lock();
             }
 
-            for c in buf {
-                state.fifo.push_back(*c);
-            }
+            // The wait loop above guaranteed room for the whole atomic write.
+            let capacity = state.capacity;
+            let pushed = state.fifo.push_back_slice(buf, capacity);
+            debug_assert_eq!(pushed, buf.len());
             state.read_waiter.wake_all(|e| e);
             drop(state);
             self.read_notifier.notify(FileEvent::READ_READY);

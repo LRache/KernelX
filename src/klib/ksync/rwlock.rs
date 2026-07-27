@@ -117,7 +117,9 @@ impl State {
 
         #[cfg(not(feature = "no-smp"))]
         while !self.try_read_lock() {
-            spin_loop();
+            while self.value.load(core::sync::atomic::Ordering::Relaxed) & WRITE_LOCKED != 0 {
+                spin_loop();
+            }
         }
     }
 
@@ -134,7 +136,9 @@ impl State {
 
         #[cfg(not(feature = "no-smp"))]
         while !self.try_write_lock() {
-            spin_loop();
+            while self.value.load(core::sync::atomic::Ordering::Relaxed) != 0 {
+                spin_loop();
+            }
         }
     }
 

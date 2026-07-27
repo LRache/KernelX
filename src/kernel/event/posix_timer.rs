@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use num_enum::TryFromPrimitive;
 
@@ -77,12 +78,23 @@ impl Default for TimerNotify {
 
 pub struct TimerTable {
     entries: SpinLock<Vec<Option<Arc<Timer>>>>,
+    /// Number of CLOCK_PROCESS_CPUTIME_ID / CLOCK_THREAD_CPUTIME_ID timers in
+    /// the table. Lets the per-syscall CPU-timer check bail out with a single
+    /// relaxed load instead of locking and snapshotting the entries.
+    task_cpu_timers: AtomicUsize,
 }
 
 impl TimerTable {
     pub fn new() -> Self {
         Self {
             entries: SpinLock::new(Vec::new(), "TimerTable::entries"),
+            task_cpu_timers: AtomicUsize::new(0),
+        }
+    }
+
+    fn on_removed(&self, timer: &Arc<Timer>) {
+        if timer.clock_id.is_task_cpu() {
+            self.task_cpu_timers.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -93,6 +105,9 @@ impl TimerTable {
             .position(|timer| timer.is_none())
             .unwrap_or(entries.len());
         let timer = f(timerid);
+        if timer.clock_id.is_task_cpu() {
+            self.task_cpu_timers.fetch_add(1, Ordering::Relaxed);
+        }
 
         if timerid == entries.len() {
             entries.push(Some(timer.clone()));
@@ -108,21 +123,31 @@ impl TimerTable {
     }
 
     pub fn remove(&self, timerid: usize) -> Option<Arc<Timer>> {
-        self.entries.lock().get_mut(timerid).and_then(|timer| timer.take())
+        let timer = self.entries.lock().get_mut(timerid).and_then(|timer| timer.take());
+        if let Some(timer) = &timer {
+            self.on_removed(timer);
+        }
+        timer
     }
 
     pub fn remove_if_same(&self, timerid: usize, timer: &Arc<Timer>) -> bool {
-        let mut entries = self.entries.lock();
-        if entries
-            .get(timerid)
-            .and_then(|slot| slot.as_ref())
-            .map_or(false, |stored| Arc::ptr_eq(stored, timer))
-        {
-            entries[timerid] = None;
-            true
-        } else {
-            false
+        let removed = {
+            let mut entries = self.entries.lock();
+            if entries
+                .get(timerid)
+                .and_then(|slot| slot.as_ref())
+                .map_or(false, |stored| Arc::ptr_eq(stored, timer))
+            {
+                entries[timerid] = None;
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.on_removed(timer);
         }
+        removed
     }
 
     pub fn clear(&self) {
@@ -133,14 +158,31 @@ impl TimerTable {
             .filter_map(|timer| timer.take())
             .collect();
 
-        timers.iter().for_each(|timer| timer.delete());
+        timers.iter().for_each(|timer| {
+            self.on_removed(timer);
+            timer.delete();
+        });
+    }
+
+    /// Cheap gate for the per-syscall trap path: true when any
+    /// CPU-clock (process/thread CPU time) timer exists in this table.
+    /// Wall-clock timers are driven by the global timer heap and never
+    /// depend on this check.
+    pub fn has_task_cpu_timers(&self) -> bool {
+        self.task_cpu_timers.load(Ordering::Relaxed) != 0
     }
 
     pub fn check_process_cpu(&self) {
+        if !self.has_task_cpu_timers() {
+            return;
+        }
         self.snapshot().iter().for_each(|timer| timer.check_process_cpu());
     }
 
     pub fn check_thread_cpu(&self, tid: Pid) {
+        if !self.has_task_cpu_timers() {
+            return;
+        }
         self.snapshot().iter().for_each(|timer| timer.check_thread_cpu(tid));
     }
 

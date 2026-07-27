@@ -57,6 +57,15 @@ pub mod sscratch {
     }
 }
 
+pub mod sip {
+    /// Clear the supervisor software interrupt pending bit (SSIP).
+    pub fn clear_ssoft() {
+        unsafe {
+            core::arch::asm!("csrc sip, {}", in(reg) 1usize << 1);
+        }
+    }
+}
+
 pub mod time {
     pub fn read() -> u64 {
         let value: usize;

@@ -101,10 +101,15 @@ impl Area for ShmArea {
         }
 
         let frame = &frames[page_index];
-        addrspace
-            .pagetable()
-            .lock()
-            .mmap(uaddr & !arch::PGMASK, frame, self.perm);
+        let page_uaddr = uaddr & !arch::PGMASK;
+        let mut pagetable = addrspace.pagetable().lock();
+        if pagetable.mapped_flag(page_uaddr).is_none() {
+            pagetable.mmap(page_uaddr, frame, self.perm);
+        } else {
+            // Spurious fault: another task already installed this page (or a
+            // stale TLB entry brought us here). Re-install idempotently.
+            pagetable.mmap_replace(page_uaddr, frame, self.perm);
+        }
         Ok(())
     }
 
@@ -116,7 +121,7 @@ impl Area for ShmArea {
             tlb_changed |= pagetable.lock().munmap_with_check_no_flush(uaddr, frames[i].get_page());
         }
         if tlb_changed {
-            pagetable.lock().flush_tlb();
+            pagetable.lock().flush_tlb_range(self.ubase, frames.len());
         }
     }
 

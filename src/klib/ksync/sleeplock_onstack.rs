@@ -96,8 +96,9 @@ impl LockerTrait for SleepLockerOnStack {
                 // SAFETY: the waiter was pinned while linked and remains alive
                 // until its blocked task is woken below.
                 let waiter = unsafe { waiter.as_ref() };
+                let task = waiter.task();
                 waiter.grant();
-                Some(waiter.task())
+                Some(task)
             } else {
                 self.set_unlocked();
                 None

@@ -93,7 +93,8 @@ impl PrivateAnonymousArea {
         // Allocate before taking the old page lock: allocation may invoke
         // reclaim, which must never select this page and wait on a lock
         // held by the allocating task itself.
-        let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
+        // No zeroing: the full-page copy below overwrites every byte.
+        let new_frame = PhysPageFrame::alloc_with_shrink();
         let mut old_guard = old_page.ensure_page().ok()?;
         // Copy the content BEFORE installing the new frame into the PTE,
         // otherwise a concurrent fault on `uaddr` from another task/CPU
@@ -403,7 +404,7 @@ impl Area for PrivateAnonymousArea {
                 });
             }
             if tlb_changed {
-                pagetable.lock().flush_tlb();
+                pagetable.lock().flush_tlb_range(self.ubase, self.frames.len());
             }
             for (_, state) in self.frames.iter() {
                 let page = match state {

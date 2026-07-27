@@ -65,9 +65,19 @@ asm_usertrap_entry:
     jr t0
     .size asm_usertrap_entry, . - asm_usertrap_entry
 
-asm_usertrap_return:     
+asm_usertrap_return:
     STORE(tp, 32)
-    
+
+    # Switch the address space only when satp actually changes. When satp is
+    # unchanged, any owed local invalidation was already performed by the
+    # deferred-flush protocol (PageTable::activate_cpu runs before this code
+    # on every return-to-user path). t0/t1 are restored below.
+    LOAD(t0, 34)
+    csrr t1, satp
+    beq t0, t1, 1f
+    csrw satp, t0
+    sfence.vma zero, zero
+1:
     LOAD(ra, 1)
     LOAD(sp, 2)
     LOAD(gp, 3)
@@ -100,12 +110,6 @@ asm_usertrap_return:
     LOAD(t4, 29)
     LOAD(t5, 30)
     LOAD(t6, 31)
-
-    # load the target user page table
-    LOAD(a0, 34)
-    sfence.vma
-    csrw satp, a0
-    sfence.vma
 
     # restore the a0
     csrr a0, sscratch

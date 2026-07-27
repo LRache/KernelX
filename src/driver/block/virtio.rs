@@ -191,8 +191,9 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             let mut driver = self.driver.lock();
             unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) }
         };
-        complete_result.map_err(|_| ())?;
+        // Completion wakeups are chained; wake the next waiter even on error.
         self.wake_next();
+        complete_result.map_err(|_| ())?;
 
         if resp.status() == RespStatus::OK {
             Ok(())
@@ -224,8 +225,9 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             let mut driver = self.driver.lock();
             unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) }
         };
-        complete_result.map_err(|_| ())?;
+        // Completion wakeups are chained; wake the next waiter even on error.
         self.wake_next();
+        complete_result.map_err(|_| ())?;
 
         if resp.status() == RespStatus::OK {
             Ok(())

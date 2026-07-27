@@ -169,87 +169,32 @@ impl ShmManager {
         })
     }
 
-    // Called on shmat. `make_area` is a closure that constructs the concrete Area
-    // given (uaddr, Arc<ShmFrames>, perm, shmid); this avoids a circular import
-    // between this module and mm::maparea::shm.
-    pub fn attach(
-        &mut self,
-        shmid: usize,
-        pid: Tid,
-        uid: u32,
-        gid: u32,
-        addrspace: &AddrSpace,
-        shmaddr: usize,
-        shmflg: ShmFlag,
-    ) -> SysResult<usize> {
+    /// First half of shmat: validate the segment and take a reference so it
+    /// cannot be destroyed while the caller performs the address-space mapping
+    /// with the manager lock released. The reference is either transferred to
+    /// the newly mapped `ShmArea` (whose drop releases it via `on_area_drop`)
+    /// or rolled back with `on_area_drop` if the mapping fails.
+    fn prepare_attach(&mut self, shmid: usize, uid: u32, gid: u32, readonly: bool) -> SysResult<Arc<ShmFrames>> {
         let shm = self.shms.get_mut(&shmid).ok_or(Errno::EINVAL)?;
         if shm.deleted {
             return Err(Errno::EINVAL);
         }
-        if !has_shm_perm(shm, uid, gid, shmflg.contains(ShmFlag::SHM_RDONLY)) {
+        if !has_shm_perm(shm, uid, gid, readonly) {
             return Err(Errno::EACCES);
         }
-        let page_count = shm.frames.page_count();
-        let frames = shm.frames.clone();
-
-        // Permissions
-        let mut perm = MapPerm::R | MapPerm::U;
-        if !shmflg.contains(ShmFlag::SHM_RDONLY) {
-            perm |= MapPerm::W;
-        }
-        if shmflg.contains(ShmFlag::SHM_EXEC) {
-            perm |= MapPerm::X;
-        }
-
-        let shmaddr = if shmflg.contains(ShmFlag::SHM_RND) {
-            // Round down to page boundary
-            shmaddr & !(PGSIZE - 1)
-        } else {
-            shmaddr
-        };
-        if shmaddr % PGSIZE != 0 || shmaddr >= arch::USEREND {
-            return Err(Errno::EINVAL);
-        }
-        if shmaddr == 0 && shmflg.contains(ShmFlag::SHM_REMAP) {
-            return Err(Errno::EINVAL);
-        }
-
-        let uaddr = addrspace.with_map_manager_mut(|map_manager| {
-            // Determine address
-            let uaddr = if shmaddr == 0 {
-                map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)?
-            } else if shmflg.contains(ShmFlag::SHM_RND) {
-                // SHM_RND: round down to page boundary
-                let aligned_addr = shmaddr & !(PGSIZE - 1);
-                if map_manager.is_map_range_overlapped(aligned_addr, page_count) {
-                    return Err(Errno::EINVAL);
-                }
-                aligned_addr
-            } else {
-                // No SHM_RND: address must already be page-aligned
-                if shmaddr & (PGSIZE - 1) != 0 {
-                    return Err(Errno::EINVAL);
-                }
-                if map_manager.is_map_range_overlapped(shmaddr, page_count) {
-                    return Err(Errno::EINVAL);
-                }
-                shmaddr
-            };
-
-            // let area = make_area(uaddr, frames, perm, shmid);
-            let area = Box::new(ShmArea::new(uaddr, frames, perm, shmid));
-            map_manager.map_area(uaddr, area);
-
-            Ok(uaddr)
-        })?;
-
-        let shm = self.shms.get_mut(&shmid).unwrap();
         shm.ref_count += 1;
-        shm.ds.lpid = pid;
-        shm.ds.atime = 0;
-        self.attach_map.insert((pid, uaddr), shmid);
+        Ok(shm.frames.clone())
+    }
 
-        Ok(uaddr)
+    /// Second half of shmat: record the successful mapping. The reference taken
+    /// by `prepare_attach` keeps the segment alive until this point even if it
+    /// was marked for removal in between.
+    fn commit_attach(&mut self, shmid: usize, pid: Tid, uaddr: usize) {
+        if let Some(shm) = self.shms.get_mut(&shmid) {
+            shm.ds.lpid = pid;
+            shm.ds.atime = 0;
+        }
+        self.attach_map.insert((pid, uaddr), shmid);
     }
 
     /// Decrement ref_count for `shmid`. Called from `ShmArea::drop`.
@@ -330,9 +275,67 @@ pub fn attach_shm(
     shmaddr: usize,
     shmflg: ShmFlag,
 ) -> SysResult<usize> {
-    SHM_MANAGER
-        .lock()
-        .attach(shmid, pid, uid, gid, addrspace, shmaddr, shmflg)
+    let readonly = shmflg.contains(ShmFlag::SHM_RDONLY);
+
+    let shmaddr = if shmflg.contains(ShmFlag::SHM_RND) {
+        // Round down to page boundary
+        shmaddr & !(PGSIZE - 1)
+    } else {
+        shmaddr
+    };
+    if shmaddr % PGSIZE != 0 || shmaddr >= arch::USEREND {
+        return Err(Errno::EINVAL);
+    }
+    if shmaddr == 0 && shmflg.contains(ShmFlag::SHM_REMAP) {
+        return Err(Errno::EINVAL);
+    }
+
+    // Permissions
+    let mut perm = MapPerm::R | MapPerm::U;
+    if !readonly {
+        perm |= MapPerm::W;
+    }
+    if shmflg.contains(ShmFlag::SHM_EXEC) {
+        perm |= MapPerm::X;
+    }
+
+    // Validate and take a reference under the manager lock, then release it
+    // before touching the address space: mapping takes the map_manager sleep
+    // lock, and `ShmArea` fork/drop take SHM_MANAGER under that same lock in
+    // the reverse order.
+    let frames = SHM_MANAGER.lock().prepare_attach(shmid, uid, gid, readonly)?;
+    let page_count = frames.page_count();
+
+    let mapped = addrspace.with_map_manager_mut(|map_manager| {
+        // Determine address
+        let uaddr = if shmaddr == 0 {
+            map_manager.find_mmap_ubase(page_count).ok_or(Errno::ENOMEM)?
+        } else {
+            if map_manager.is_map_range_overlapped(shmaddr, page_count) {
+                return Err(Errno::EINVAL);
+            }
+            shmaddr
+        };
+
+        let area = Box::new(ShmArea::new(uaddr, frames, perm, shmid));
+        map_manager.map_area(uaddr, area);
+
+        Ok(uaddr)
+    });
+
+    let mut manager = SHM_MANAGER.lock();
+    match mapped {
+        Ok(uaddr) => {
+            manager.commit_attach(shmid, pid, uaddr);
+            Ok(uaddr)
+        }
+        Err(errno) => {
+            // The mapping never materialized, so release the reference taken
+            // by `prepare_attach`.
+            manager.on_area_drop(shmid);
+            Err(errno)
+        }
+    }
 }
 
 pub fn detach_shm_by_addr(pid: Tid, shmaddr: usize, addr_space: &AddrSpace) -> SysResult<()> {

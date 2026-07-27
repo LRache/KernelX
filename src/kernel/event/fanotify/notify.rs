@@ -101,7 +101,8 @@ fn fanotify_listener_events_for_file(file: &Arc<dyn FileOps>, mask: FanotifyEven
     let filesystem_fanotify = dentry.and_then(|dentry| dentry.superblock_fanotify());
     let parent_fanotify = dentry
         .and_then(|dentry| dentry.get_parent())
-        .and_then(|parent| parent.get_inode().fanotify());
+        .and_then(|parent| parent.get_inode().ok())
+        .and_then(|inode| inode.fanotify());
 
     fanotify_listener_events(
         mask,
@@ -114,10 +115,13 @@ fn fanotify_listener_events_for_file(file: &Arc<dyn FileOps>, mask: FanotifyEven
 }
 
 fn fanotify_listener_events_for_dentry(dentry: &Arc<Dentry>, mask: FanotifyEventMask) -> Vec<FanotifyListenerEvent> {
-    let inode_fanotify = dentry.get_inode().fanotify();
+    let inode_fanotify = dentry.get_inode().ok().and_then(|inode| inode.fanotify());
     let mount_fanotify = dentry.get_mount().fanotify();
     let filesystem_fanotify = dentry.superblock_fanotify();
-    let parent_fanotify = dentry.get_parent().and_then(|parent| parent.get_inode().fanotify());
+    let parent_fanotify = dentry
+        .get_parent()
+        .and_then(|parent| parent.get_inode().ok())
+        .and_then(|inode| inode.fanotify());
 
     fanotify_listener_events(
         mask,

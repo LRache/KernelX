@@ -159,7 +159,10 @@ impl InodeOps for MountsInode {
             let mut line = String::with_capacity(50);
             let path = dentry.get_path();
             let mount_to = dentry.clone().get_mount_to();
-            let mount_type = mount_to.get_inode().type_name();
+            let mount_type = mount_to
+                .get_inode()
+                .map(|inode| inode.type_name())
+                .unwrap_or("unknown");
             let _ = writeln!(
                 line,
                 "{} {} {} {} 0 0",

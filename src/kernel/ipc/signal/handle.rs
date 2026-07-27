@@ -246,7 +246,9 @@ impl TCB {
 impl PCB {
     fn stop_tasks_from_signal(&self, pending: PendingSignal) {
         let signum = pending.signum;
-        let tasks = self.tasks.lock();
+        // Snapshot: request_ptrace_stop may notify the tracer's PCB, which
+        // must not happen while holding this process' `tasks` lock.
+        let tasks = self.tasks.lock().clone();
         tasks.iter().for_each(|task| {
             if task.is_traced() {
                 if task.request_ptrace_stop(signum, Some(pending)) {

@@ -22,11 +22,14 @@ asm_kernel_switch:
     csrr t0, satp
     sd t0, 120(a0)
 
-    ld t0, 120(a1)
-    sfence.vma
-    csrw satp, t0
-    sfence.vma
-    
+    # Switch satp only when it changes (kernel threads, idle and same-process
+    # threads keep it). Stale user translations are handled by the deferred
+    # flush in PageTable::activate_cpu before the next return to user mode.
+    ld t1, 120(a1)
+    beq t0, t1, 1f
+    csrw satp, t1
+    sfence.vma zero, zero
+1:
     # load context
     ld ra, 0(a1)
     ld sp, 8(a1)

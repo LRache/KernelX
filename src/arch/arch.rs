@@ -91,8 +91,13 @@ pub trait ArchTrait {
     fn enable_interrupt();
     fn disable_interrupt();
     fn enable_timer_interrupt();
+    fn enable_software_interrupt();
     fn enable_device_interrupt(hartid: usize);
     fn enable_device_interrupt_irq(irq: u32);
+    /// Send a wakeup inter-processor interrupt to the CPUs in `cpu_mask`.
+    /// The only required effect is breaking the target CPUs out of
+    /// `wait_for_interrupt`; the handler side has no work to do.
+    fn send_ipi(cpu_mask: usize);
 
     #[allow(dead_code)]
     fn get_kernel_stack_top() -> usize;

@@ -193,12 +193,6 @@ pub fn schedule() {
     task().resume_system_time();
 }
 
-pub fn block_uninterruptible(reason: &'static str) -> Event {
-    task().block_uninterruptible(reason);
-    schedule();
-    task().take_wakeup_event().unwrap()
-}
-
 pub fn sleep(durations: Duration) -> Event {
     task().block("sleep");
     timer::add_timer(task().clone(), durations);

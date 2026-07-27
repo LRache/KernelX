@@ -812,9 +812,7 @@ impl InodeOps for Inode {
             } else {
                 self.load_page_to_cache(&context, &page_cache, page_index, file_size)?
             };
-            let guard = page
-                .ensure_page()
-                .expect("ext4 cached read page must have valid backing");
+            let guard = page.ensure_page().map_err(|_| Errno::EIO)?;
             guard
                 .frame()
                 .copy_to_slice(page_offset, &mut buf[read_len..read_len + copy_len]);
@@ -862,17 +860,19 @@ impl InodeOps for Inode {
             let extends_size = new_size > old_size;
 
             let (page, resident_pin) = if let Some(page) = page_cache.get_page(page_index) {
-                let resident_pin = extends_size.then(|| {
-                    page.pin_page(false)
-                        .expect("ext4 cached write page must have valid backing")
-                });
+                let resident_pin = if extends_size {
+                    Some(page.pin_page(false).map_err(|_| Errno::EIO)?)
+                } else {
+                    None
+                };
                 (page, resident_pin)
             } else if page_start < old_size && copy_len != arch::PGSIZE {
                 let page = self.load_page_to_cache(&context, &page_cache, page_index, old_size)?;
-                let resident_pin = extends_size.then(|| {
-                    page.pin_page(false)
-                        .expect("ext4 cached write page must have valid backing")
-                });
+                let resident_pin = if extends_size {
+                    Some(page.pin_page(false).map_err(|_| Errno::EIO)?)
+                } else {
+                    None
+                };
                 (page, resident_pin)
             } else if extends_size {
                 let (page, resident_pin) = page_cache.insert_frame_pinned(page_index, PhysPageFrame::alloc_zeroed())?;
@@ -883,9 +883,7 @@ impl InodeOps for Inode {
                     None,
                 )
             };
-            let mut guard = page
-                .ensure_page()
-                .expect("ext4 cached write page must have valid backing");
+            let mut guard = page.ensure_page().map_err(|_| Errno::EIO)?;
             guard
                 .frame()
                 .copy_from_slice(page_offset, &buf[written..written + copy_len]);

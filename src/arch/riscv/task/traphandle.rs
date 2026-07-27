@@ -30,7 +30,9 @@ fn handle_external_interrupt() {
 pub fn handle_interrupt(interrupt: Interrupt) {
     match interrupt {
         Interrupt::Software => {
-            kinfo!("Software interrupt occurred");
+            // Scheduler wakeup IPI: clearing SSIP is the entire handler — the
+            // interrupt only exists to break an idle hart out of `wfi`.
+            sip::clear_ssoft();
         }
         Interrupt::Timer => {
             trap::timer_interrupt();
@@ -100,12 +102,24 @@ fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
     pagetable.mark_page_accessed_and_dirty(uaddr)
 }
 
+fn handle_user_memory_fault(uaddr: usize, access_type: MemAccessType) {
+    trap::memory_fault(uaddr, access_type);
+    // The fault handler may have found the translation already valid (for
+    // example when another hart materialized the page first and the handler
+    // changed nothing). The return path no longer fences unconditionally, so
+    // drop any locally cached stale or invalid entry for this address before
+    // the access is retried.
+    unsafe {
+        core::arch::asm!("sfence.vma {}, zero", in(reg) uaddr, options(nostack, preserves_flags));
+    }
+}
+
 pub fn usertrap_handler() -> ! {
     set_stvec_to_kerneltrap_handler();
 
     // User execution has stopped. Kernel paths do not directly use user
-    // virtual addresses, and the return path performs a local SFENCE.VMA
-    // before the address space can be used again.
+    // virtual addresses, and `activate_cpu` performs any owed local
+    // SFENCE.VMA before the address space can be used again.
     current::addrspace().deactivate_cpu(current::hart_id());
 
     debug_assert!(
@@ -137,19 +151,19 @@ pub fn usertrap_handler() -> ! {
             scause::Trap::InstPageFault => {
                 let addr = stval::read();
                 if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
-                    trap::memory_fault(addr, MemAccessType::Execute);
+                    handle_user_memory_fault(addr, MemAccessType::Execute);
                 }
             }
             scause::Trap::LoadPageFault => {
                 let addr = stval::read();
                 if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
-                    trap::memory_fault(addr, MemAccessType::Read);
+                    handle_user_memory_fault(addr, MemAccessType::Read);
                 }
             }
             scause::Trap::StorePageFault => {
                 let addr = stval::read();
                 if cpu_info.svadu_enabled() || !svadu_mark_page_accessed_and_dirty(addr) {
-                    trap::memory_fault(addr, MemAccessType::Write);
+                    handle_user_memory_fault(addr, MemAccessType::Write);
                 }
             }
             scause::Trap::IllegalInst => {
@@ -214,7 +228,9 @@ pub fn return_to_user() -> ! {
         .write();
 
     // Publish this CPU under the page-table lock before asm_usertrap_return
-    // performs the local SFENCE.VMA and starts using user translations.
+    // starts using user translations. activate_cpu performs the owed local
+    // SFENCE.VMA when this CPU missed an invalidation while it was inactive;
+    // asm_usertrap_return only fences when it has to change satp.
     current::addrspace().activate_cpu(current::hart_id());
     usertrap_return(user_context);
 }

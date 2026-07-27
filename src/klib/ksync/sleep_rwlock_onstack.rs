@@ -240,8 +240,9 @@ impl<T> SleepRwLockOnStack<T> {
                 // SAFETY: the waiter was pinned while linked and is removed
                 // before its task is granted ownership and woken.
                 let waiter = unsafe { waiter.as_ref() };
+                let task = waiter.task();
                 waiter.grant();
-                scheduler::wakeup_task_uninterruptible(waiter.task(), Event::SleepLock);
+                scheduler::wakeup_task_uninterruptible(task, Event::SleepLock);
             }
             WaitKind::Read => {
                 let reader_count = waiters.front_run_len(&WaitKind::Read);
@@ -256,8 +257,9 @@ impl<T> SleepRwLockOnStack<T> {
                     // SAFETY: the waiter was pinned while linked and is removed
                     // before its task is granted ownership and woken.
                     let waiter = unsafe { waiter.as_ref() };
+                    let task = waiter.task();
                     waiter.grant();
-                    scheduler::wakeup_task_uninterruptible(waiter.task(), Event::SleepLock);
+                    scheduler::wakeup_task_uninterruptible(task, Event::SleepLock);
                 }
                 if waiters.front().is_none() {
                     self.state.fetch_and(!CONTENDED, Ordering::Release);

@@ -5,6 +5,7 @@ use crate::kernel::event::timer;
 use crate::kernel::ipc::{KSiFields, SiCode, signum};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::mm::maparea::MemoryFaultSignal;
+use crate::kernel::scheduler;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall;
 
@@ -24,11 +25,12 @@ pub fn trap_enter() {
     counter.user_time += user_delta;
     drop(counter);
 
-    tcb.parent().add_task_time(user_delta, core::time::Duration::ZERO);
+    // The delta stays in the per-TCB counter; it is folded into the
+    // process-shared PCB accumulator on context switch, not per syscall.
     tcb.check_cpu_timers();
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", debug_assertions))]
 fn assert_user_satp_matches_addrspace() {
     let tcb = current::tcb();
     let user_satp = tcb.user_context().user_satp;
@@ -57,7 +59,6 @@ pub fn trap_return() {
     counter.system_time += system_delta;
     drop(counter);
 
-    tcb.parent().add_task_time(core::time::Duration::ZERO, system_delta);
     tcb.check_cpu_timers();
 
     #[cfg(feature = "lockdep")]
@@ -75,7 +76,7 @@ pub fn trap_return() {
 
     tcb.pop_ucontext_syscall_retreg();
 
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(all(target_arch = "riscv64", debug_assertions))]
     assert_user_satp_matches_addrspace();
 
     if tcb.apply_pending_state_change() {
@@ -86,7 +87,11 @@ pub fn trap_return() {
 pub fn timer_interrupt() {
     timer::interrupt();
 
-    if current::has_task() {
+    // With an empty ready queue there is nothing to switch to, so skip the
+    // schedule round-trip (two kernel_switches plus queue locking) and keep
+    // running the current task. Timer callbacks above still ran and may have
+    // enqueued work, in which case the queue is non-empty here.
+    if current::has_task() && scheduler::has_ready_tasks() {
         current::schedule();
     }
 }

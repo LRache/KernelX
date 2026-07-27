@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::usize;
 
 use crate::driver::char::serial::SerialOps;
@@ -51,11 +52,20 @@ impl DriverOps for Stty {
     }
 
     fn handle_interrupt(&self) {
-        let mut serial = self.serial.lock();
+        // Drain the FIFO under the `serial` lock, but process the bytes and
+        // deliver signals with the lock released: signal delivery may log to
+        // the console, which takes `serial` again.
+        let mut input = Vec::new();
+        {
+            let mut serial = self.serial.lock();
+            while let Some(c) = serial.getchar() {
+                input.push(c);
+            }
+        }
 
-        while let Some(c) = serial.getchar() {
+        for c in input {
             let event = self.tty.process_input_byte(c, |c| {
-                let _ = serial.putchar(c);
+                let _ = self.serial.lock().putchar(c);
             });
             if matches!(event, Some(TtyInputEvent::Interrupt)) && current::has_task() {
                 let _ = current::pcb().send_signal(signum::SIGQUIT, SiCode::EMPTY, 0, KSiFields::Empty, None);

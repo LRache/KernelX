@@ -21,7 +21,7 @@ use crate::kernel::ipc::{PendingSignalQueue, SignalActionTable, SignalNum};
 use crate::kernel::scheduler::Task;
 use crate::kernel::scheduler::tid::Tid;
 use crate::kernel::uapi::Uid;
-use crate::klib::{SleepLock, SpinLock};
+use crate::klib::SpinLock;
 
 use super::UtsNamespace;
 use super::tcb::TCB;
@@ -57,12 +57,16 @@ pub struct PCB {
     exec_path: SpinLock<String>,
     exec_inode: SpinLock<Option<Arc<Inode>>>,
 
-    pub tasks: SleepLock<Vec<Arc<TCB>>>,
+    // Signal delivery may lock `tasks` from interrupt context (tty, timer
+    // expiry), so it must stay a spin lock and its holders must not sleep.
+    pub tasks: SpinLock<Vec<Arc<TCB>>>,
     root: SpinLock<Arc<Dentry>>,
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
     file_size_limit: SpinLock<(usize, usize)>,
-    child_wait: SleepLock<ChildWaitState>,
+    // Reached from interrupt-context signal delivery via wake_waiting_tasks
+    // (SIGCONT/SIGCHLD notification), so it must stay a spin lock as well.
+    child_wait: SpinLock<ChildWaitState>,
     pidfd_waiters: SpinLock<WaitQueue<Event>>,
     uts: UtsNamespace,
 
