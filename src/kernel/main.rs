@@ -187,6 +187,7 @@ extern "C" fn main(hartid: usize, bootstrap_end: usize, mem_regions: *const mm::
     // kinfo!("Initializing KernelX...");
 
     arch::set_next_time_event_us(10000);
+    arch::enable_software_interrupt();
     arch::enable_timer_interrupt();
     arch::enable_device_interrupt(hartid);
 

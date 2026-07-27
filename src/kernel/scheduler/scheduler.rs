@@ -1,6 +1,5 @@
 use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
-use spin::Mutex;
 
 use crate::arch;
 use crate::kernel::event::Event;
@@ -8,30 +7,66 @@ use crate::kernel::scheduler::task::Task;
 #[cfg(feature = "watchdog")]
 use crate::kernel::scheduler::watchdog;
 use crate::kernel::scheduler::{WakeupAction, WakeupFailure, current};
+use crate::klib::SpinLock;
 
 use super::processor::Processor;
 // PERF_DEBUG(scheduler-time): Temporary running-time accounting.
 #[cfg(feature = "scheduler-time-debug")]
 use super::time_debug;
 
+struct SchedulerState {
+    ready_queue: VecDeque<Arc<dyn Task>>,
+    idle_harts: usize,
+}
+
 pub struct Scheduler {
-    ready_queue: Mutex<VecDeque<Arc<dyn Task>>>,
+    state: SpinLock<SchedulerState>,
 }
 
 impl Scheduler {
     const fn new() -> Self {
         Self {
-            ready_queue: Mutex::new(VecDeque::new()),
+            state: SpinLock::new(
+                SchedulerState {
+                    ready_queue: VecDeque::new(),
+                    idle_harts: 0,
+                },
+                "Scheduler::state",
+            ),
         }
     }
 
     fn push_task(&self, task: Arc<dyn Task>) {
-        let mut ready_queue = self.ready_queue.lock();
-        ready_queue.push_back(task);
+        let target_hart_mask = {
+            let current_hart = current::hart_id();
+            let current_hart_mask = 1usize << current_hart;
+            let mut state = self.state.lock();
+            state.ready_queue.push_back(task);
+
+            let idle_harts = state.idle_harts & !current_hart_mask;
+            if idle_harts == 0 {
+                None
+            } else {
+                let target_hart_mask = 1usize << idle_harts.trailing_zeros();
+                state.idle_harts &= !target_hart_mask;
+                Some(target_hart_mask)
+            }
+        };
+
+        if let Some(target_hart_mask) = target_hart_mask {
+            arch::send_ipi(target_hart_mask);
+        }
     }
 
-    fn fetch_next_task(&self) -> Option<Arc<dyn Task>> {
-        self.ready_queue.lock().pop_front()
+    fn fetch_next_task(&self, hart_id: usize) -> Option<Arc<dyn Task>> {
+        let hart_mask = 1usize << hart_id;
+        let mut state = self.state.lock();
+        state.idle_harts &= !hart_mask;
+        let task = state.ready_queue.pop_front();
+        if task.is_none() {
+            state.idle_harts |= hart_mask;
+        }
+        task
     }
 }
 
@@ -41,8 +76,8 @@ pub fn push_task(task: Arc<dyn Task>) {
     SCHEDULER.push_task(task);
 }
 
-pub fn fetch_next_task() -> Option<Arc<dyn Task>> {
-    SCHEDULER.fetch_next_task()
+pub fn fetch_next_task(hart_id: usize) -> Option<Arc<dyn Task>> {
+    SCHEDULER.fetch_next_task(hart_id)
 }
 
 pub fn block_task_uninterruptible(task: Arc<dyn Task>, reason: &'static str) {
@@ -87,7 +122,7 @@ pub fn run_tasks(processor: &mut Processor) -> ! {
     current::set(processor);
     loop {
         arch::disable_interrupt();
-        if let Some(task) = fetch_next_task() {
+        if let Some(task) = fetch_next_task(processor.hart_id()) {
             if !task.run_if_ready() {
                 continue;
             }
@@ -124,8 +159,8 @@ pub fn run_tasks(processor: &mut Processor) -> ! {
                 // debug_assert!(Arc::strong_count(&task) != 1)
             }
         } else {
-            arch::enable_interrupt();
             arch::wait_for_interrupt();
+            arch::enable_interrupt();
         }
     }
 }

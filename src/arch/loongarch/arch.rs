@@ -90,6 +90,8 @@ impl ArchTrait for Arch {
     }
 
     fn wait_for_interrupt() {
+        Self::enable_interrupt();
+        // SAFETY: `idle 0` only suspends this core until an interrupt arrives.
         unsafe { core::arch::asm!("idle 0", options(nostack, preserves_flags)) };
     }
 
@@ -100,6 +102,8 @@ impl ArchTrait for Arch {
     fn disable_interrupt() {
         csr::xchg::<{ csr::num::CRMD }>(0, csr::crmd::IE);
     }
+
+    fn enable_software_interrupt() {}
 
     fn enable_timer_interrupt() {
         let bit = 1usize << csr::ecfg::LINE_TIMER;
@@ -116,6 +120,10 @@ impl ArchTrait for Arch {
             pch_pic::enable_irq(irq);
         }
         eiointc::enable_irq(irq);
+    }
+
+    fn send_ipi(cpu_mask: usize) {
+        debug_assert_eq!(cpu_mask, 0);
     }
 
     #[inline(always)]

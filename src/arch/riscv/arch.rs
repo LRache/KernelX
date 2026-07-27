@@ -172,6 +172,9 @@ impl ArchTrait for Arch {
     }
 
     fn wait_for_interrupt() {
+        // SAFETY: `wfi` only suspends instruction execution until an interrupt
+        // becomes pending. Global interrupts remain disabled until it returns,
+        // so a wakeup cannot be handled and cleared immediately before `wfi`.
         unsafe { core::arch::asm!("wfi") };
     }
 
@@ -181,6 +184,10 @@ impl ArchTrait for Arch {
 
     fn disable_interrupt() {
         Sstatus::read().set_sie(false).write();
+    }
+
+    fn enable_software_interrupt() {
+        SIE::read().set_ssie(true).write();
     }
 
     fn enable_timer_interrupt() {
@@ -194,6 +201,24 @@ impl ArchTrait for Arch {
 
     fn enable_device_interrupt_irq(irq: u32) {
         plic::enable_irq_for_all_harts(irq);
+    }
+
+    fn send_ipi(cpu_mask: usize) {
+        if cpu_mask == 0 {
+            return;
+        }
+
+        debug_assert_eq!(
+            cpu_mask
+                & 1usize
+                    .checked_shl(current::hart_id().try_into().expect("hart ID does not fit in u32"))
+                    .expect("hart ID exceeds IPI CPU mask width"),
+            0,
+            "IPI mask contains the current hart"
+        );
+
+        #[cfg(not(feature = "no-smp"))]
+        sbi_driver::send_ipi(cpu_mask).unwrap_or_else(|error| panic!("SBI send IPI failed: {error}"));
     }
 
     fn get_kernel_stack_top() -> usize {

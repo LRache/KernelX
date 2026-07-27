@@ -4,6 +4,8 @@ type SBIRet = Result<usize, isize>;
 enum SBIExtension {
     Hsm = 0x48534d,
     #[cfg(not(feature = "no-smp"))]
+    Ipi = 0x735049,
+    #[cfg(not(feature = "no-smp"))]
     Rfence = 0x52464e43,
 }
 
@@ -16,6 +18,12 @@ enum HsmFunction {
 #[repr(usize)]
 enum RfenceFunction {
     RemoteSfenceVma = 1,
+}
+
+#[cfg(not(feature = "no-smp"))]
+#[repr(usize)]
+enum IpiFunction {
+    SendIpi = 0,
 }
 
 fn sbi_call(
@@ -73,6 +81,21 @@ pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> SBIRet {
         hartid,
         start_addr,
         opaque,
+        0,
+        0,
+        0,
+    )
+}
+
+#[cfg(not(feature = "no-smp"))]
+pub fn send_ipi(cpu_mask: usize) -> SBIRet {
+    debug_assert!(cpu_mask != 0);
+    sbi_call(
+        IpiFunction::SendIpi as usize,
+        SBIExtension::Ipi as usize,
+        cpu_mask,
+        0,
+        0,
         0,
         0,
         0,
