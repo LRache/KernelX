@@ -215,7 +215,7 @@ impl Area for PrivateAnonymousArea {
     fn fork(
         &mut self,
         self_pagetable: &SpinLock<PageTable>,
-        tlb_changed: &mut bool,
+        tlb_cpu_mask: &mut usize,
         addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
@@ -229,12 +229,12 @@ impl Area for PrivateAnonymousArea {
                     if self.perm.contains(MapPerm::W) {
                         let uaddr = self.ubase + frame_index * arch::PGSIZE;
                         page.with_resident_and_record_ad(false, |frame| {
-                            let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad(
-                                uaddr,
-                                frame.get_page(),
-                                cow_perm,
-                            );
-                            *tlb_changed |= access_dirty.is_some();
+                            let mut pagetable = self_pagetable.lock();
+                            let access_dirty =
+                                pagetable.mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), cow_perm);
+                            if access_dirty.is_some() {
+                                *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                            }
                             let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                             ((), AccessDirty { accessed, dirty })
                         });
@@ -357,7 +357,7 @@ impl Area for PrivateAnonymousArea {
         self.ubase
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_changed: &mut bool) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_cpu_mask: &mut usize) {
         if perm == self.perm {
             return;
         }
@@ -375,11 +375,11 @@ impl Area for PrivateAnonymousArea {
                 perm
             };
             page.with_resident_and_record_ad(false, |frame| {
-                let access_dirty =
-                    pagetable
-                        .lock()
-                        .mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), frame_perm);
-                *tlb_changed |= access_dirty.is_some();
+                let mut pagetable = pagetable.lock();
+                let access_dirty = pagetable.mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), frame_perm);
+                if access_dirty.is_some() {
+                    *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                }
                 let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                 ((), AccessDirty { accessed, dirty })
             });
@@ -388,21 +388,22 @@ impl Area for PrivateAnonymousArea {
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         self.family_registration.with_tlb_invalidation_batch(|token| {
-            let mut tlb_changed = false;
+            let mut tlb_cpu_mask = 0;
             for (frame_index, state) in self.frames.iter() {
                 let page = match state {
                     FrameState::Allocated(page) | FrameState::Cow(page) => page,
                 };
                 let uaddr = self.ubase + frame_index * arch::PGSIZE;
                 page.begin_tlb_invalidation(token, |frame| {
-                    let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, frame.get_page());
-                    tlb_changed |= access_dirty.is_some();
+                    let mut pagetable = pagetable.lock();
+                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
+                    if access_dirty.is_some() {
+                        tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                     access_dirty.map(AccessDirty::from)
                 });
             }
-            if tlb_changed {
-                pagetable.lock().flush_tlb();
-            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
             for (_, state) in self.frames.iter() {
                 let page = match state {
                     FrameState::Allocated(page) | FrameState::Cow(page) => page,

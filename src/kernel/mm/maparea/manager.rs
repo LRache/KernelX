@@ -547,7 +547,7 @@ impl Manager {
 
     pub fn fork(&mut self, self_pagetable: &SpinLock<PageTable>, addrspace: &Arc<AddrSpace>) -> Manager {
         let watchers = self.watchers.as_slice();
-        let mut tlb_changed = false;
+        let mut tlb_cpu_mask = 0;
 
         let new_areas = self
             .areas
@@ -564,13 +564,11 @@ impl Manager {
                 );
                 (
                     *ubase,
-                    Self::lock_area(area.fork(self_pagetable, &mut tlb_changed, addrspace)),
+                    Self::lock_area(area.fork(self_pagetable, &mut tlb_cpu_mask, addrspace)),
                 )
             })
             .collect();
-        if tlb_changed {
-            self_pagetable.lock().flush_tlb();
-        }
+        arch::flush_tlb_cpu_mask(tlb_cpu_mask);
 
         Self {
             areas: new_areas,
@@ -878,7 +876,7 @@ impl Manager {
             self.areas.get(overlapped_base).unwrap().lock().check_set_perm(perm)?;
         }
 
-        let mut tlb_changed = false;
+        let mut tlb_cpu_mask = 0;
         for overlapped_base in overlapped_areas {
             let mut middle = self.areas.remove(&overlapped_base).unwrap().into_inner();
             let overlapped_end = overlapped_base + middle.size();
@@ -900,12 +898,10 @@ impl Manager {
                 page_count: middle.page_count(),
                 event: MapChangeEvent::PermChange(perm),
             });
-            middle.set_perm(perm, pagetable, &mut tlb_changed);
+            middle.set_perm(perm, pagetable, &mut tlb_cpu_mask);
             self.areas.insert(middle.ubase(), Self::lock_area(middle));
         }
-        if tlb_changed {
-            pagetable.lock().flush_tlb();
-        }
+        arch::flush_tlb_cpu_mask(tlb_cpu_mask);
 
         Ok(())
     }

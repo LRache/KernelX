@@ -180,7 +180,7 @@ impl Area for SharedAnonymousArea {
     fn fork(
         &mut self,
         _self_pagetable: &SpinLock<PageTable>,
-        _tlb_changed: &mut bool,
+        _tlb_cpu_mask: &mut usize,
         addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area> {
         Box::new(SharedAnonymousArea {
@@ -249,7 +249,7 @@ impl Area for SharedAnonymousArea {
         (self, Box::new(right))
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_changed: &mut bool) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_cpu_mask: &mut usize) {
         if perm == self.perm {
             return;
         }
@@ -261,10 +261,11 @@ impl Area for SharedAnonymousArea {
             };
             let uaddr = self.ubase + frame_index * arch::PGSIZE;
             page.with_resident_and_record_ad(false, |frame| {
-                let access_dirty = pagetable
-                    .lock()
-                    .mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), perm);
-                *tlb_changed |= access_dirty.is_some();
+                let mut pagetable = pagetable.lock();
+                let access_dirty = pagetable.mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), perm);
+                if access_dirty.is_some() {
+                    *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                }
                 let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                 ((), AccessDirty { accessed, dirty })
             });
@@ -273,21 +274,22 @@ impl Area for SharedAnonymousArea {
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         self.family_registration.with_tlb_invalidation_batch(|token| {
-            let mut tlb_changed = false;
+            let mut tlb_cpu_mask = 0;
             for frame_index in 0..self.page_count {
                 let Some(page) = self.page(frame_index) else {
                     continue;
                 };
                 let uaddr = self.ubase + frame_index * arch::PGSIZE;
                 page.begin_tlb_invalidation(token, |frame| {
-                    let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, frame.get_page());
-                    tlb_changed |= access_dirty.is_some();
+                    let mut pagetable = pagetable.lock();
+                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
+                    if access_dirty.is_some() {
+                        tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                     access_dirty.map(AccessDirty::from)
                 });
             }
-            if tlb_changed {
-                pagetable.lock().flush_tlb();
-            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
             for frame_index in 0..self.page_count {
                 if let Some(page) = self.page(frame_index) {
                     page.finish_tlb_invalidation(token);

@@ -1,6 +1,6 @@
 use crate::arch::UserContextTrait;
 use crate::arch::loongarch::csr::ecode::Ecode;
-use crate::arch::loongarch::{UserContext, csr, eiointc, pch_pic};
+use crate::arch::loongarch::{UserContext, csr, eiointc, iocsr, pch_pic};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -115,6 +115,10 @@ fn handle_interrupt(estat: usize) -> usize {
         trap::timer_interrupt();
     }
 
+    if is & (1 << csr::ecfg::LINE_IPI) != 0 {
+        iocsr::handle_ipi();
+    }
+
     let device_line = eiointc::parent_line();
     if is & (1 << device_line) != 0 {
         while let Some(irq) = eiointc::claim_irq() {
@@ -126,7 +130,7 @@ fn handle_interrupt(estat: usize) -> usize {
         }
     }
 
-    is & !(1 << csr::ecfg::LINE_TIMER) & !(1 << device_line)
+    is & !(1 << csr::ecfg::LINE_TIMER) & !(1 << csr::ecfg::LINE_IPI) & !(1 << device_line)
 }
 
 fn handle_memory_fault(access: MemAccessType) {

@@ -327,7 +327,7 @@ config QEMU_MEMORY
 
 config QEMU_CPUS
 	int "Number of CPUs"
-	range 1 8
+	range 1 12
 	default 1
 	help
 	  Number of CPU cores for QEMU virtual machine.

@@ -1,4 +1,4 @@
-use crate::arch::{PageTableTrait, flush_tlb_cpu_mask};
+use crate::arch::PageTableTrait;
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
 use core::sync::atomic::{Ordering, fence};
@@ -201,10 +201,6 @@ impl<T: PageAllocator> PageTableImpls<T> {
 
     pub fn active_cpu_mask(&self) -> usize {
         self.active_cpu_mask
-    }
-
-    pub fn flush_tlb(&self) {
-        flush_tlb_cpu_mask(self.active_cpu_mask);
     }
 
     #[allow(dead_code)]

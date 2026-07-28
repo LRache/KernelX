@@ -6,14 +6,16 @@ use elf::abi;
 
 use crate::arch::arch::{Arch, ArchTrait, CloneABI, UserContextTrait};
 use crate::driver::chosen;
+use crate::kernel::config;
 use crate::kernel::errno::SysResult;
 use crate::kernel::mm::{self, MapPerm};
+use crate::kernel::scheduler::current;
 use crate::klib::initcell::InitedCell;
 use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
 
 use super::boot::EarlyUart;
 use super::context::KernelContext;
-use super::{csr, eiointc, fdt, pch_pic, task, trap};
+use super::{csr, eiointc, fdt, iocsr, pch_pic, task, trap};
 
 const DMW1_MASK: usize = 0x9000_0000_0000_0000;
 const PA_MASK: usize = (1 << 48) - 1;
@@ -55,14 +57,43 @@ impl ArchTrait for Arch {
         csr::write::<{ csr::num::TLBREHI }>(12usize << TLBREHI_PS_SHIFT);
     }
 
-    fn setup_all_cores(_current_core: usize) {}
+    fn setup_all_cores(current_core: usize) {
+        #[cfg(feature = "no-smp")]
+        let _ = current_core;
+
+        #[cfg(not(feature = "no-smp"))]
+        {
+            unsafe extern "C" {
+                static __la_others_entry: u8;
+            }
+
+            crate::kinfo!("Starting other harts...");
+            for hartid in 0..fdt::cpu_count() {
+                if hartid == current_core {
+                    continue;
+                }
+
+                let stack = task::KernelStack::<{ config::SCHEDULER_KSTACK_PAGE_COUNT - 1 }>::new();
+                let stack_top = stack.get_top();
+                iocsr::start_core(
+                    hartid,
+                    Self::kaddr_to_paddr(core::ptr::addr_of!(__la_others_entry) as usize),
+                    stack_top,
+                );
+                crate::kinfo!("Hart {} start signal sent", hartid);
+                // The secondary hart keeps using this bootstrap stack as its
+                // scheduler stack for the lifetime of the kernel.
+                core::mem::forget(stack);
+            }
+        }
+    }
 
     fn clone_abi() -> CloneABI {
         CloneABI::Normal
     }
 
     fn cpu_count() -> usize {
-        1
+        if cfg!(feature = "no-smp") { 1 } else { fdt::cpu_count() }
     }
 
     #[inline(always)]
@@ -103,7 +134,14 @@ impl ArchTrait for Arch {
         csr::xchg::<{ csr::num::CRMD }>(0, csr::crmd::IE);
     }
 
-    fn enable_software_interrupt() {}
+    fn enable_software_interrupt() {
+        #[cfg(not(feature = "no-smp"))]
+        {
+            iocsr::enable_ipi();
+            let bit = 1usize << csr::ecfg::LINE_IPI;
+            csr::xchg::<{ csr::num::ECFG }>(bit, bit);
+        }
+    }
 
     fn enable_timer_interrupt() {
         let bit = 1usize << csr::ecfg::LINE_TIMER;
@@ -123,7 +161,31 @@ impl ArchTrait for Arch {
     }
 
     fn send_ipi(cpu_mask: usize) {
-        debug_assert_eq!(cpu_mask, 0);
+        if cpu_mask == 0 {
+            return;
+        }
+
+        debug_assert_eq!(
+            cpu_mask
+                & 1usize
+                    .checked_shl(current::hart_id().try_into().expect("hart ID does not fit in u32"))
+                    .expect("hart ID exceeds IPI CPU mask width"),
+            0,
+            "IPI mask contains the current hart"
+        );
+
+        #[cfg(not(feature = "no-smp"))]
+        {
+            let valid_cpu_mask = usize::MAX >> (usize::BITS as usize - Self::cpu_count());
+            debug_assert_eq!(cpu_mask & !valid_cpu_mask, 0, "IPI mask contains an unavailable hart");
+
+            let mut targets = cpu_mask;
+            while targets != 0 {
+                let hartid = targets.trailing_zeros() as usize;
+                iocsr::send_ipi(hartid, iocsr::IpiVector::Wake);
+                targets &= targets - 1;
+            }
+        }
     }
 
     #[inline(always)]
@@ -172,10 +234,29 @@ impl ArchTrait for Arch {
     }
 
     fn flush_tlb_cpu_mask(cpu_mask: usize) {
-        assert_eq!(
-            cpu_mask, 0,
-            "LoongArch targeted remote TLB invalidation is not implemented"
+        if cpu_mask == 0 {
+            return;
+        }
+
+        debug_assert_eq!(
+            cpu_mask
+                & 1usize
+                    .checked_shl(current::hart_id().try_into().expect("hart ID does not fit in u32"))
+                    .expect("hart ID exceeds TLB CPU mask width"),
+            0,
+            "targeted TLB flush mask contains the current hart"
         );
+
+        #[cfg(not(feature = "no-smp"))]
+        {
+            let valid_cpu_mask = usize::MAX >> (usize::BITS as usize - Self::cpu_count());
+            debug_assert_eq!(
+                cpu_mask & !valid_cpu_mask,
+                0,
+                "TLB flush mask contains an unavailable hart"
+            );
+            iocsr::flush_tlb_cpu_mask(cpu_mask);
+        }
     }
 
     fn mmio_phys_to_kaddr(paddr: usize, _size: usize) -> usize {

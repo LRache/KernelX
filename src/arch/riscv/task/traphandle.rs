@@ -1,8 +1,8 @@
-use crate::arch::UserContextTrait;
 use crate::arch::riscv::cpu::get_cpu_info;
 use crate::arch::riscv::csr::scause::Interrupt;
 use crate::arch::riscv::csr::*;
 use crate::arch::riscv::{UserContext, plic};
+use crate::arch::{self, UserContextTrait};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::scheduler::current;
 use crate::kernel::trap;
@@ -96,19 +96,25 @@ pub fn set_stvec_to_kerneltrap_handler() {
 
 fn svadu_mark_page_accessed(uaddr: usize) -> bool {
     let addrspace = current::addrspace();
-    let changed = addrspace.pagetable().lock().mark_page_accessed(uaddr);
-    if changed {
-        addrspace.pagetable().lock().flush_tlb();
-    }
+    let (changed, cpu_mask) = {
+        let mut pagetable = addrspace.pagetable().lock();
+        let changed = pagetable.mark_page_accessed(uaddr);
+        let cpu_mask = if changed { pagetable.active_cpu_mask() } else { 0 };
+        (changed, cpu_mask)
+    };
+    arch::flush_tlb_cpu_mask(cpu_mask);
     changed
 }
 
 fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
     let addrspace = current::addrspace();
-    let changed = addrspace.pagetable().lock().mark_page_accessed_and_dirty(uaddr);
-    if changed {
-        addrspace.pagetable().lock().flush_tlb();
-    }
+    let (changed, cpu_mask) = {
+        let mut pagetable = addrspace.pagetable().lock();
+        let changed = pagetable.mark_page_accessed_and_dirty(uaddr);
+        let cpu_mask = if changed { pagetable.active_cpu_mask() } else { 0 };
+        (changed, cpu_mask)
+    };
+    arch::flush_tlb_cpu_mask(cpu_mask);
     changed
 }
 

@@ -162,7 +162,7 @@ impl Area for SharedFileMapArea {
         Ok(())
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_changed: &mut bool) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_cpu_mask: &mut usize) {
         let old_writable = self.perm.contains(MapPerm::W);
         let new_writable = perm.contains(MapPerm::W);
         if old_writable != new_writable {
@@ -176,16 +176,19 @@ impl Area for SharedFileMapArea {
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match page {
                 SharedFilePage::Stable(frame) => {
-                    *tlb_changed |= pagetable.lock().mmap_replace_perm(uaddr, perm);
+                    let mut pagetable = pagetable.lock();
+                    if pagetable.mmap_replace_perm(uaddr, perm) {
+                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                     let _ = frame;
                 }
                 SharedFilePage::Swappable(page) => {
                     page.with_resident_and_record_ad(false, |frame| {
-                        let access_dirty =
-                            pagetable
-                                .lock()
-                                .mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), perm);
-                        *tlb_changed |= access_dirty.is_some();
+                        let mut pagetable = pagetable.lock();
+                        let access_dirty = pagetable.mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), perm);
+                        if access_dirty.is_some() {
+                            *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        }
                         let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                         ((), AccessDirty { accessed, dirty })
                     });
@@ -205,7 +208,7 @@ impl Area for SharedFileMapArea {
     fn fork(
         &mut self,
         _self_pagetable: &SpinLock<PageTable>,
-        _tlb_changed: &mut bool,
+        _tlb_cpu_mask: &mut usize,
         addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area> {
         let is_writable = self.perm.contains(MapPerm::W);
@@ -272,8 +275,12 @@ impl Area for SharedFileMapArea {
             .ok_or(MemoryFaultSignal::Bus)?;
         match page {
             SharedFilePage::Stable(frame) => {
-                addrspace.pagetable().lock().mmap_replace(uaddr, frame, perm);
-                addrspace.pagetable().lock().flush_tlb();
+                let cpu_mask = {
+                    let mut pagetable = addrspace.pagetable().lock();
+                    pagetable.mmap_replace(uaddr, frame, perm);
+                    pagetable.active_cpu_mask()
+                };
+                arch::flush_tlb_cpu_mask(cpu_mask);
             }
             SharedFilePage::Swappable(page) => {
                 let guard = page.ensure_page().map_err(|_| MemoryFaultSignal::Bus)?;
@@ -330,26 +337,30 @@ impl Area for SharedFileMapArea {
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         let invalidate = |token: Option<&TlbInvalidationToken>| {
-            let mut tlb_changed = false;
+            let mut tlb_cpu_mask = 0;
             for (page_index, page) in self.states.iter() {
                 let uaddr = self.ubase + page_index * arch::PGSIZE;
                 match page {
                     SharedFilePage::Stable(frame) => {
-                        tlb_changed |= pagetable.lock().munmap_with_check(uaddr, frame.get_page());
+                        let mut pagetable = pagetable.lock();
+                        if pagetable.munmap_with_check(uaddr, frame.get_page()) {
+                            tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        }
                     }
                     SharedFilePage::Swappable(page) => {
                         let token = token.expect("swappable file page must have a file mapping registration");
                         page.begin_tlb_invalidation(token, |frame| {
-                            let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, frame.get_page());
-                            tlb_changed |= access_dirty.is_some();
+                            let mut pagetable = pagetable.lock();
+                            let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
+                            if access_dirty.is_some() {
+                                tlb_cpu_mask |= pagetable.active_cpu_mask();
+                            }
                             access_dirty.map(AccessDirty::from)
                         });
                     }
                 }
             }
-            if tlb_changed {
-                pagetable.lock().flush_tlb();
-            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
             for (_, state) in self.states.iter() {
                 if let SharedFilePage::Swappable(page) = state {
                     let token = token.expect("swappable file page must have a file mapping registration");

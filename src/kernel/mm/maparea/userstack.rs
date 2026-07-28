@@ -442,7 +442,7 @@ impl Area for UserStack {
     fn fork(
         &mut self,
         self_pagetable: &SpinLock<PageTable>,
-        tlb_changed: &mut bool,
+        tlb_cpu_mask: &mut usize,
         addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area> {
         let mut new_frames = BTreeMap::new();
@@ -460,12 +460,12 @@ impl Area for UserStack {
             };
             let uaddr = config::USER_STACK_TOP - (index + 1) * arch::PGSIZE;
             page.with_resident_and_record_ad(false, |frame| {
-                let access_dirty = self_pagetable.lock().mmap_replace_perm_with_check_and_ad(
-                    uaddr,
-                    frame.get_page(),
-                    MapPerm::R | MapPerm::U,
-                );
-                *tlb_changed |= access_dirty.is_some();
+                let mut pagetable = self_pagetable.lock();
+                let access_dirty =
+                    pagetable.mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), MapPerm::R | MapPerm::U);
+                if access_dirty.is_some() {
+                    *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                }
                 let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                 ((), AccessDirty { accessed, dirty })
             });
@@ -585,22 +585,23 @@ impl Area for UserStack {
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         let frames = core::mem::take(&mut self.frames);
         self.family_registration.with_tlb_invalidation_batch(|token| {
-            let mut tlb_changed = false;
+            let mut tlb_cpu_mask = 0;
             for (&page_index, state) in &frames {
                 let page = match state {
                     FrameState::Allocated(page) | FrameState::Cow(page) => page,
                 };
                 let uaddr = config::USER_STACK_TOP - (page_index + 1) * arch::PGSIZE;
                 page.begin_tlb_invalidation(token, |frame| {
-                    let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, frame.get_page());
-                    tlb_changed |= access_dirty.is_some();
+                    let mut pagetable = pagetable.lock();
+                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
+                    if access_dirty.is_some() {
+                        tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                     access_dirty.map(AccessDirty::from)
                 });
             }
 
-            if tlb_changed {
-                pagetable.lock().flush_tlb();
-            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
 
             for state in frames.values() {
                 let page = match state {

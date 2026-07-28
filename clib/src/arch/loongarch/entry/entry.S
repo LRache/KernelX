@@ -85,13 +85,50 @@ _entry:
     b       4b
     .size _entry, . - _entry
 
-/* Secondary-core entry stub for SMP; weak until we have real bring-up. */
+/* QEMU's flash-resident slave boot code jumps here with paging disabled
+ * after mailbox 0 receives this entry address and an IPI wakes the core.
+ * Mailbox 1 carries the private scheduler/bootstrap stack top. */
     .section .text.entry
     .global __la_others_entry
-    .weak __la_others_entry
+    .type __la_others_entry, @function
 __la_others_entry:
-1:  idle 0
-    b 1b
+    csrrd   $s0, 0x20                  /* $s0 = physical CPU ID */
+
+    lu12i.w $t0, 1
+    ori     $t0, $t0, 0x28            /* IOCSR_MBUF1 */
+    iocsrrd.d $s1, $t0                 /* $s1 = stack top */
+    iocsrwr.d $zero, $t0               /* clear mailbox 1 */
+    addi.d  $t0, $t0, -8               /* IOCSR_MBUF0 */
+    iocsrwr.d $zero, $t0               /* clear entry mailbox */
+
+    /* Install the same direct-map windows as the boot core. */
+    ori     $t0, $zero, 0x1
+    lu52i.d $t0, $t0, -2048
+    csrwr   $t0, 0x180                  /* CSR_DMW0 */
+
+    ori     $t0, $zero, 0x11
+    lu52i.d $t0, $t0, -1792
+    csrwr   $t0, 0x181                  /* CSR_DMW1 */
+
+    pcaddi  $t0, 3
+    lu52i.d $t0, $t0, -1792
+    jr      $t0
+1:
+    ori     $t0, $zero, 0xb0
+    csrwr   $t0, 0x0                    /* CSR_CRMD: DA=0, PG=1 */
+
+    move    $sp, $s1
+    move    $a0, $s0
+    move    $a1, $zero
+    move    $a2, $zero
+    move    $a3, $zero
+
+    la.global $t0, main
+    jirl    $zero, $t0, 0
+
+2:  idle    0
+    b       2b
+    .size __la_others_entry, . - __la_others_entry
 
 /* Written by _entry after BSS clear; read by fdt.rs as the global
  * `la_boot_cmdline_pa`. In `.data` so BSS zero-pass leaves it alone. */

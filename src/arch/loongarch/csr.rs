@@ -111,6 +111,8 @@ pub mod ecfg {
 
     /// Bit in LIE[12:0] for the timer.
     pub const LINE_TIMER: usize = 11;
+    /// Bit in LIE[12:0] for inter-processor interrupts.
+    pub const LINE_IPI: usize = 12;
     /// Bit in LIE[12:0] for HWI0 (EIOINTC fanout on QEMU virt).
     pub const LINE_HWI0: usize = 2;
     pub const HWI_COUNT: usize = 8;

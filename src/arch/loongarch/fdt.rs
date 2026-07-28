@@ -1,3 +1,4 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
 use fdt::Fdt;
 use fdt::node::FdtNode;
 
@@ -8,6 +9,8 @@ use crate::{arch, kinfo, kwarn};
 use super::{csr, eiointc, pch_pic};
 
 const FDT_BASE_PA: usize = 0x100000;
+
+static CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
 
 const EIOINTC_COMPATIBLE: &[&str] = &[
     "loongson,ls2k2000-eiointc",
@@ -38,6 +41,7 @@ pub fn load_device_tree() -> Result<(), ()> {
         kwarn!("loongarch: FDT parse error: {:?}", e);
     })?;
 
+    init_cpu_topology(&fdt);
     init_interrupt_controllers(&fdt);
 
     let root = fdt.find_node("/").ok_or_else(|| {
@@ -62,6 +66,49 @@ pub fn load_device_tree() -> Result<(), ()> {
 
     kinfo!("loongarch: FDT walk complete");
     Ok(())
+}
+
+fn init_cpu_topology(fdt: &Fdt) {
+    let Some(cpus) = fdt.find_node("/cpus") else {
+        kwarn!("loongarch: FDT has no /cpus node; using the boot CPU only");
+        return;
+    };
+
+    let mut cpu_mask = 0usize;
+    for cpu in cpus.children() {
+        if cpu.property("device_type").and_then(|property| property.as_str()) != Some("cpu") {
+            continue;
+        }
+        let Some(hartid) = cpu
+            .reg()
+            .and_then(|mut regions| regions.next())
+            .map(|region| region.starting_address as usize)
+        else {
+            continue;
+        };
+        let hart_mask = 1usize
+            .checked_shl(hartid.try_into().expect("LoongArch CPU ID does not fit in u32"))
+            .expect("LoongArch CPU ID exceeds the kernel CPU mask width");
+        cpu_mask |= hart_mask;
+    }
+
+    if cpu_mask == 0 {
+        kwarn!("loongarch: FDT contains no usable CPU nodes; using the boot CPU only");
+        return;
+    }
+
+    let cpu_count = cpu_mask.count_ones() as usize;
+    let expected_mask = usize::MAX >> (usize::BITS as usize - cpu_count);
+    assert_eq!(
+        cpu_mask, expected_mask,
+        "LoongArch CPU IDs must be contiguous and start at zero"
+    );
+    CPU_COUNT.store(cpu_count, Ordering::Release);
+    kinfo!("loongarch: detected {} CPU(s)", cpu_count);
+}
+
+pub fn cpu_count() -> usize {
+    CPU_COUNT.load(Ordering::Acquire)
 }
 
 fn init_interrupt_controllers(fdt: &Fdt) {

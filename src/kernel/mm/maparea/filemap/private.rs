@@ -338,7 +338,7 @@ impl Area for PrivateFileMapArea {
     fn fork(
         &mut self,
         self_pagetable: &SpinLock<PageTable>,
-        tlb_changed: &mut bool,
+        tlb_cpu_mask: &mut usize,
         addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
@@ -370,11 +370,11 @@ impl Area for PrivateFileMapArea {
                 )
                 .expect("private file fork address overflow");
             page.with_resident_and_record_ad(false, |resident| {
-                let access_dirty =
-                    self_pagetable
-                        .lock()
-                        .mmap_replace_perm_with_check_and_ad(uaddr, resident.get_page(), cow_perm);
-                *tlb_changed |= access_dirty.is_some();
+                let mut pagetable = self_pagetable.lock();
+                let access_dirty = pagetable.mmap_replace_perm_with_check_and_ad(uaddr, resident.get_page(), cow_perm);
+                if access_dirty.is_some() {
+                    *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                }
                 let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                 ((), AccessDirty { accessed, dirty })
             });
@@ -446,11 +446,12 @@ impl Area for PrivateFileMapArea {
         let page_uaddr = self.page_uaddr(page_index).ok_or(MemoryFaultSignal::Segv)?;
         match self.frames.get(page_index).ok_or(MemoryFaultSignal::Bus)? {
             PrivateFilePage::Source(SharedFilePage::Stable(frame)) => {
-                addrspace
-                    .pagetable()
-                    .lock()
-                    .mmap_replace(page_uaddr, frame, self.perm - MapPerm::W);
-                addrspace.pagetable().lock().flush_tlb();
+                let cpu_mask = {
+                    let mut pagetable = addrspace.pagetable().lock();
+                    pagetable.mmap_replace(page_uaddr, frame, self.perm - MapPerm::W);
+                    pagetable.active_cpu_mask()
+                };
+                arch::flush_tlb_cpu_mask(cpu_mask);
             }
             PrivateFilePage::Source(SharedFilePage::Swappable(page)) => {
                 let guard = page.ensure_page().map_err(|_| MemoryFaultSignal::Bus)?;
@@ -555,7 +556,7 @@ impl Area for PrivateFileMapArea {
         (self, Box::new(new_area))
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_changed: &mut bool) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_cpu_mask: &mut usize) {
         self.perm = perm;
 
         for (page_index, state) in self.frames.iter() {
@@ -569,21 +570,24 @@ impl Area for PrivateFileMapArea {
                 .expect("private file permission address overflow");
             match state {
                 PrivateFilePage::Source(SharedFilePage::Stable(frame)) => {
-                    let access_dirty = pagetable.lock().mmap_replace_perm_with_check_and_ad(
-                        uaddr,
-                        frame.get_page(),
-                        perm - MapPerm::W,
-                    );
-                    *tlb_changed |= access_dirty.is_some();
+                    let mut pagetable = pagetable.lock();
+                    let access_dirty =
+                        pagetable.mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), perm - MapPerm::W);
+                    if access_dirty.is_some() {
+                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                 }
                 PrivateFilePage::Source(SharedFilePage::Swappable(frame)) => {
                     frame.with_resident_and_record_ad(false, |resident| {
-                        let access_dirty = pagetable.lock().mmap_replace_perm_with_check_and_ad(
+                        let mut pagetable = pagetable.lock();
+                        let access_dirty = pagetable.mmap_replace_perm_with_check_and_ad(
                             uaddr,
                             resident.get_page(),
                             perm - MapPerm::W,
                         );
-                        *tlb_changed |= access_dirty.is_some();
+                        if access_dirty.is_some() {
+                            *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        }
                         let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                         ((), AccessDirty { accessed, dirty })
                     });
@@ -594,11 +598,12 @@ impl Area for PrivateFileMapArea {
                         FrameState::Cow(frame) => (frame, perm - MapPerm::W),
                     };
                     frame.with_resident_and_record_ad(false, |resident| {
+                        let mut pagetable = pagetable.lock();
                         let access_dirty =
-                            pagetable
-                                .lock()
-                                .mmap_replace_perm_with_check_and_ad(uaddr, resident.get_page(), page_perm);
-                        *tlb_changed |= access_dirty.is_some();
+                            pagetable.mmap_replace_perm_with_check_and_ad(uaddr, resident.get_page(), page_perm);
+                        if access_dirty.is_some() {
+                            *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        }
                         let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                         ((), AccessDirty { accessed, dirty })
                     });
@@ -609,7 +614,7 @@ impl Area for PrivateFileMapArea {
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
         let unmap_source_pages = |token: Option<&TlbInvalidationToken>| {
-            let mut tlb_changed = false;
+            let mut tlb_cpu_mask = 0;
             for (page_index, state) in self.frames.iter() {
                 let PrivateFilePage::Source(source) = state else {
                     continue;
@@ -619,21 +624,25 @@ impl Area for PrivateFileMapArea {
                     .expect("private file source unmap address overflow");
                 match source {
                     SharedFilePage::Stable(frame) => {
-                        tlb_changed |= pagetable.lock().munmap_with_check(uaddr, frame.get_page());
+                        let mut pagetable = pagetable.lock();
+                        if pagetable.munmap_with_check(uaddr, frame.get_page()) {
+                            tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        }
                     }
                     SharedFilePage::Swappable(page) => {
                         let token = token.expect("swappable source page must have a file mapping registration");
                         page.begin_tlb_invalidation(token, |resident| {
-                            let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, resident.get_page());
-                            tlb_changed |= access_dirty.is_some();
+                            let mut pagetable = pagetable.lock();
+                            let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, resident.get_page());
+                            if access_dirty.is_some() {
+                                tlb_cpu_mask |= pagetable.active_cpu_mask();
+                            }
                             access_dirty.map(AccessDirty::from)
                         });
                     }
                 }
             }
-            if tlb_changed {
-                pagetable.lock().flush_tlb();
-            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
             for (_, state) in self.frames.iter() {
                 if let PrivateFilePage::Source(SharedFilePage::Swappable(page)) = state {
                     let token = token.expect("swappable source page must have a file mapping registration");
@@ -648,7 +657,7 @@ impl Area for PrivateFileMapArea {
         }
 
         self.family_registration.with_tlb_invalidation_batch(|token| {
-            let mut tlb_changed = false;
+            let mut tlb_cpu_mask = 0;
             for (page_index, state) in self.frames.iter() {
                 let page = match state {
                     PrivateFilePage::Anonymous(FrameState::Allocated(page))
@@ -659,14 +668,15 @@ impl Area for PrivateFileMapArea {
                     .page_uaddr(page_index)
                     .expect("private file unmap address overflow");
                 page.begin_tlb_invalidation(token, |resident| {
-                    let access_dirty = pagetable.lock().munmap_with_check_and_ad(uaddr, resident.get_page());
-                    tlb_changed |= access_dirty.is_some();
+                    let mut pagetable = pagetable.lock();
+                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, resident.get_page());
+                    if access_dirty.is_some() {
+                        tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                     access_dirty.map(AccessDirty::from)
                 });
             }
-            if tlb_changed {
-                pagetable.lock().flush_tlb();
-            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
             for (_, state) in self.frames.iter() {
                 let page = match state {
                     PrivateFilePage::Anonymous(FrameState::Allocated(page))

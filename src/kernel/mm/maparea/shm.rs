@@ -73,7 +73,7 @@ impl Area for ShmArea {
     fn fork(
         &mut self,
         _self_pagetable: &SpinLock<PageTable>,
-        _tlb_changed: &mut bool,
+        _tlb_cpu_mask: &mut usize,
         _addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area> {
         // Forked child gets its own ShmArea; increment ref_count to match.
@@ -101,24 +101,26 @@ impl Area for ShmArea {
         }
 
         let frame = &frames[page_index];
-        addrspace
-            .pagetable()
-            .lock()
-            .mmap(uaddr & !arch::PGMASK, frame, self.perm);
-        addrspace.pagetable().lock().flush_tlb();
+        let cpu_mask = {
+            let mut pagetable = addrspace.pagetable().lock();
+            pagetable.mmap(uaddr & !arch::PGMASK, frame, self.perm);
+            pagetable.active_cpu_mask()
+        };
+        arch::flush_tlb_cpu_mask(cpu_mask);
         Ok(())
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let mut tlb_changed = false;
+        let mut tlb_cpu_mask = 0;
         let frames = self.frames.frames.lock();
         for i in 0..frames.len() {
             let uaddr = self.ubase + i * arch::PGSIZE;
-            tlb_changed |= pagetable.lock().munmap_with_check(uaddr, frames[i].get_page());
+            let mut pagetable = pagetable.lock();
+            if pagetable.munmap_with_check(uaddr, frames[i].get_page()) {
+                tlb_cpu_mask |= pagetable.active_cpu_mask();
+            }
         }
-        if tlb_changed {
-            pagetable.lock().flush_tlb();
-        }
+        arch::flush_tlb_cpu_mask(tlb_cpu_mask);
     }
 
     fn type_name(&self) -> &'static str {

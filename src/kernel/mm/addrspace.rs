@@ -470,25 +470,29 @@ impl AddrSpace {
     where
         G: ResidentPageGuard,
     {
-        // SAFETY: The guard keeps the logical page resident and its page lock
-        // held until after the PTE is installed. The owning Area already
-        // registered this address range before acquiring the guard.
-        unsafe { self.pagetable.lock().mmap_raw(uaddr, guard.frame().get_page(), perm) };
-        self.pagetable.lock().flush_tlb();
+        let cpu_mask = {
+            let mut pagetable = self.pagetable.lock();
+            // SAFETY: The guard keeps the logical page resident and its page lock
+            // held until after the PTE is installed. The owning Area already
+            // registered this address range before acquiring the guard.
+            unsafe { pagetable.mmap_raw(uaddr, guard.frame().get_page(), perm) };
+            pagetable.active_cpu_mask()
+        };
+        arch::flush_tlb_cpu_mask(cpu_mask);
     }
 
     pub(crate) fn mmap_replace_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)
     where
         G: ResidentPageGuard,
     {
-        // SAFETY: The guard keeps the replacement frame resident for the
-        // complete PTE update, and the Area retains the logical page owner.
-        unsafe {
-            self.pagetable
-                .lock()
-                .mmap_replace_raw(uaddr, guard.frame().get_page(), perm)
+        let cpu_mask = {
+            let mut pagetable = self.pagetable.lock();
+            // SAFETY: The guard keeps the replacement frame resident for the
+            // complete PTE update, and the Area retains the logical page owner.
+            unsafe { pagetable.mmap_replace_raw(uaddr, guard.frame().get_page(), perm) };
+            pagetable.active_cpu_mask()
         };
-        self.pagetable.lock().flush_tlb();
+        arch::flush_tlb_cpu_mask(cpu_mask);
     }
 
     pub(crate) fn mmap_replace_swappable_if_maps<E, R>(
@@ -532,8 +536,9 @@ impl AddrSpace {
             }
             None => return None,
         };
+        let cpu_mask = pagetable.active_cpu_mask();
         drop(pagetable);
-        self.pagetable.lock().flush_tlb();
+        arch::flush_tlb_cpu_mask(cpu_mask);
         Some(access_dirty)
     }
 }

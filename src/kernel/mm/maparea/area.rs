@@ -120,7 +120,7 @@ pub trait Area: Send {
     fn fork(
         &mut self,
         self_pagetable: &SpinLock<PageTable>,
-        tlb_changed: &mut bool,
+        tlb_cpu_mask: &mut usize,
         addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area>;
 
@@ -148,7 +148,7 @@ pub trait Area: Send {
         Ok(())
     }
 
-    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>, _tlb_changed: &mut bool) {
+    fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>, _tlb_cpu_mask: &mut usize) {
         unimplemented!("set_perm not implemented for the area type: {}", self.type_name());
     }
 

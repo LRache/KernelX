@@ -70,8 +70,12 @@ impl ELFArea {
 
         let page = frame.get_page();
 
-        pagetable.lock().mmap(self.ubase + area_offset, &frame, self.perm);
-        pagetable.lock().flush_tlb();
+        let cpu_mask = {
+            let mut pagetable = pagetable.lock();
+            pagetable.mmap(self.ubase + area_offset, &frame, self.perm);
+            pagetable.active_cpu_mask()
+        };
+        arch::flush_tlb_cpu_mask(cpu_mask);
         self.frames[page_index] = Frame::Allocated(frame);
 
         page
@@ -105,8 +109,12 @@ impl ELFArea {
 
         let new_frame = Arc::new(new_frame);
 
-        addrspace.pagetable().lock().mmap_replace(uaddr, &new_frame, self.perm);
-        addrspace.pagetable().lock().flush_tlb();
+        let cpu_mask = {
+            let mut pagetable = addrspace.pagetable().lock();
+            pagetable.mmap_replace(uaddr, &new_frame, self.perm);
+            pagetable.active_cpu_mask()
+        };
+        arch::flush_tlb_cpu_mask(cpu_mask);
         self.frames[page_index] = Frame::Allocated(new_frame);
     }
 
@@ -114,11 +122,12 @@ impl ELFArea {
         let page = frame.get_page();
         let uaddr = self.ubase + page_index * arch::PGSIZE;
 
-        addrspace
-            .pagetable()
-            .lock()
-            .mmap_replace(uaddr, frame, self.perm - MapPerm::W);
-        addrspace.pagetable().lock().flush_tlb();
+        let cpu_mask = {
+            let mut pagetable = addrspace.pagetable().lock();
+            pagetable.mmap_replace(uaddr, frame, self.perm - MapPerm::W);
+            pagetable.active_cpu_mask()
+        };
+        arch::flush_tlb_cpu_mask(cpu_mask);
 
         page
     }
@@ -185,7 +194,7 @@ impl Area for ELFArea {
     fn fork(
         &mut self,
         self_pagetable: &SpinLock<PageTable>,
-        tlb_changed: &mut bool,
+        tlb_cpu_mask: &mut usize,
         _addrspace: &Arc<AddrSpace>,
     ) -> Box<dyn Area> {
         let cow_perm = self.perm - MapPerm::W;
@@ -203,7 +212,10 @@ impl Area for ELFArea {
                 Frame::Unallocated => Frame::Unallocated,
                 Frame::Allocated(frame) | Frame::Cow(frame) => {
                     let uaddr = self.ubase + page_index * arch::PGSIZE;
-                    *tlb_changed |= self_pagetable.lock().mmap_replace_perm(uaddr, cow_perm);
+                    let mut pagetable = self_pagetable.lock();
+                    if pagetable.mmap_replace_perm(uaddr, cow_perm) {
+                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                     Frame::Cow(frame.clone())
                 }
             };
@@ -307,35 +319,40 @@ impl Area for ELFArea {
     }
 
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let mut tlb_changed = false;
+        let mut tlb_cpu_mask = 0;
         for (page_index, frame) in self.frames.iter().enumerate() {
             if let Frame::Allocated(frame) | Frame::Cow(frame) = frame {
                 // The page may not be mapped to the page table if it was loaded by
                 // `translate_read` or `translate_write` but never accessed afterwards.
-                tlb_changed |= pagetable
-                    .lock()
-                    .munmap_with_check(self.ubase + page_index * arch::PGSIZE, frame.get_page());
+                let mut pagetable = pagetable.lock();
+                if pagetable.munmap_with_check(self.ubase + page_index * arch::PGSIZE, frame.get_page()) {
+                    tlb_cpu_mask |= pagetable.active_cpu_mask();
+                }
             }
         }
-        if tlb_changed {
-            pagetable.lock().flush_tlb();
-        }
+        arch::flush_tlb_cpu_mask(tlb_cpu_mask);
         for frame in &mut self.frames {
             *frame = Frame::Unallocated;
         }
     }
 
-    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_changed: &mut bool) {
+    fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_cpu_mask: &mut usize) {
         self.perm = perm;
         let cow_perm = perm - MapPerm::W;
         self.frames.iter().enumerate().for_each(|(page_index, frame)| {
             let uaddr = self.ubase + page_index * arch::PGSIZE;
             match frame {
                 Frame::Allocated(_) => {
-                    *tlb_changed |= pagetable.lock().mmap_replace_perm(uaddr, perm);
+                    let mut pagetable = pagetable.lock();
+                    if pagetable.mmap_replace_perm(uaddr, perm) {
+                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                 }
                 Frame::Cow(_) => {
-                    *tlb_changed |= pagetable.lock().mmap_replace_perm(uaddr, cow_perm);
+                    let mut pagetable = pagetable.lock();
+                    if pagetable.mmap_replace_perm(uaddr, cow_perm) {
+                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    }
                 }
                 Frame::Unallocated => {}
             }

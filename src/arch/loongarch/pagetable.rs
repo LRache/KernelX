@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use core::fmt;
 use core::ptr::NonNull;
 
-use crate::arch::{PageTableTrait, flush_tlb_cpu_mask, kaddr_to_paddr, paddr_to_kaddr};
+use crate::arch::{PageTableTrait, kaddr_to_paddr, paddr_to_kaddr};
 use crate::kernel::mm::{self, MapPerm};
 
 use super::{PGBITS, PGMASK, PGSIZE};
@@ -309,10 +309,6 @@ impl PageTable {
 
     pub fn active_cpu_mask(&self) -> usize {
         self.active_cpu_mask
-    }
-
-    pub fn flush_tlb(&self) {
-        flush_tlb_cpu_mask(self.active_cpu_mask);
     }
 
     pub fn is_mapped(&self, uaddr: usize) -> bool {
