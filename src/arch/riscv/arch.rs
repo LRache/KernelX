@@ -89,7 +89,7 @@ impl ArchTrait for Arch {
             stack_top = core::ptr::addr_of!(__ktrap_temp_stack_end) as usize;
         }
         current::processor().set_kernel_trap_stack_top(stack_top);
-        task::traphandle::set_stvec_to_kerneltrap_handler();
+        task::traphandle::install_kerneltrap_handler();
     }
 
     fn setup_all_cores(current_core: usize) {

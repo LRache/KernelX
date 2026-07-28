@@ -84,7 +84,7 @@ pub fn restore_float_registers(fpregs: &[u64; 33]) {
     }
 }
 
-pub fn set_stvec_to_kerneltrap_handler() {
+pub fn install_kerneltrap_handler() {
     unsafe extern "C" {
         fn asm_kerneltrap_entry() -> !;
     }
@@ -119,7 +119,7 @@ fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
 }
 
 pub fn usertrap_handler() -> ! {
-    set_stvec_to_kerneltrap_handler();
+    install_kerneltrap_handler();
 
     // User execution has stopped. Kernel paths do not directly use user
     // virtual addresses, and the return path performs a local SFENCE.VMA
