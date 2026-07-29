@@ -519,10 +519,13 @@ impl Inode {
 
         let file_size = usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?;
         drop(inode);
-        let write_buffer = page::try_alloc_contiguous(WRITEBACK_BATCH_PAGES)
-            .map(FixedContiguousPhysPageFrame::<WRITEBACK_BATCH_PAGES>::new);
         let page_cache = self.page_cache.lock();
         let dirty_pages = page_cache.dirty_pages();
+        if dirty_pages.is_empty() {
+            return Ok(());
+        }
+        let write_buffer = page::try_alloc_contiguous(WRITEBACK_BATCH_PAGES)
+            .map(FixedContiguousPhysPageFrame::<WRITEBACK_BATCH_PAGES>::new);
         if let Some(write_buffer) = write_buffer {
             let mut index = 0;
             let mut batch = Vec::with_capacity(WRITEBACK_BATCH_PAGES);

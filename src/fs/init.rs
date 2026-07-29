@@ -109,4 +109,5 @@ pub fn mount_init_fs(device_name: &str, fs_type: &str) {
 
 pub fn fini() {
     vfs::unmount_all().unwrap();
+    vfs::fini();
 }

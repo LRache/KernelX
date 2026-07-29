@@ -31,3 +31,7 @@ pub fn init() {
 
     VFS.init(vfs);
 }
+
+pub(super) fn fini() {
+    VFS.cache.print_perf_info();
+}

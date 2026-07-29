@@ -56,14 +56,13 @@ fn kinit() {
     #[cfg(feature = "watchdog")]
     kthread::spawn(scheduler::watchdog::kwatchdog);
     kthread::spawn(vfs::inode_cache_reclaimer);
+    kthread::spawn(mm::swappable::kswapd);
 
     kinfo!("KernelX initialized successfully!");
 
     print!("{}{}{}\n", "\x1b[94m", LOGO, "\x1b[0m");
 
     kinfo!("Welcome to use KernelX!");
-
-    crate::kernel::mm::swappable::spawn_kswapd();
 }
 
 #[unsafe(link_section = ".text.init")]

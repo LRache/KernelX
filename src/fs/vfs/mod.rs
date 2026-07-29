@@ -25,3 +25,7 @@ static VFS: InitedCell<VirtualFileSystem> = InitedCell::uninit();
 pub(super) fn vfs() -> &'static VirtualFileSystem {
     &VFS
 }
+
+pub(super) fn fini() {
+    init::fini();
+}

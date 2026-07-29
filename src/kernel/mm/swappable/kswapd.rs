@@ -4,7 +4,7 @@ use super::shrink;
 use crate::kernel::mm::page;
 use crate::kernel::scheduler::current;
 
-fn kswapd() {
+pub fn kswapd() {
     loop {
         // sleep 0.5s
         current::sleep(Duration::from_millis(500));
@@ -13,8 +13,4 @@ fn kswapd() {
         }
         shrink(1024, 0);
     }
-}
-
-pub fn spawn_kswapd() {
-    crate::kernel::kthread::spawn(kswapd);
 }

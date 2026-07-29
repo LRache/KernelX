@@ -152,21 +152,106 @@ impl Context {
     pub fn free_block(&self, pblk: u64) -> SysResult<()> {
         let (group, bit) = self.block_group_bit(pblk)?;
         let mut gd = self.read_group_desc(group)?;
-        let mut bitmap = self.read_block_bitmap(group)?;
+        let mut bitmap = self.read_block_bitmap_with_group_desc(group, &gd)?;
 
         if !test_bit(&bitmap, bit) {
             return ret_errno("free_block: block bitmap bit already clear", Errno::EIO);
         }
 
         clear_bit(&mut bitmap, bit);
-        self.write_block_bitmap(group, &mut gd, &bitmap)?;
-
         gd.free_blocks_count = gd
             .free_blocks_count
             .checked_add(1)
             .ok_or_else(|| debug_errno("free_block: free_blocks_count overflow", Errno::EIO))?;
-        self.write_group_desc(group, &mut gd)?;
-        self.inc_superblock_free_blocks()
+        self.write_block_bitmap(group, &mut gd, &bitmap)?;
+        if !self.metadata_csum {
+            self.write_group_desc(group, &mut gd)?;
+        }
+        self.inc_superblock_free_blocks(1)
+    }
+
+    fn free_blocks_by_group(&self, blocks: &mut [u64]) -> SysResult<()> {
+        match blocks {
+            [] => return Ok(()),
+            [pblk] => return self.free_block(*pblk),
+            _ => {}
+        }
+
+        blocks.sort_unstable();
+        if blocks.windows(2).any(|pair| pair[0] == pair[1]) {
+            return ret_errno("free_blocks_by_group: duplicate physical block", Errno::EIO);
+        }
+
+        let total = u64::try_from(blocks.len())
+            .map_err(|_| debug_errno("free_blocks_by_group: block count does not fit u64", Errno::EIO))?;
+        self.read_superblock()?
+            .free_blocks_count()?
+            .checked_add(total)
+            .ok_or_else(|| {
+                debug_errno(
+                    "free_blocks_by_group: superblock free_blocks_count overflow",
+                    Errno::EIO,
+                )
+            })?;
+
+        // Validate every group before the first bitmap write while retaining only range indexes.
+        let mut group_ranges = Vec::new();
+        let mut start = 0;
+        while start < blocks.len() {
+            let (group, _) = self.block_group_bit(blocks[start])?;
+            let mut end = start + 1;
+            while end < blocks.len() {
+                let (next_group, _) = self.block_group_bit(blocks[end])?;
+                if next_group != group {
+                    break;
+                }
+                end += 1;
+            }
+
+            let freed = u32::try_from(end - start)
+                .map_err(|_| debug_errno("free_blocks_by_group: group block count does not fit u32", Errno::EIO))?;
+            let gd = self.read_group_desc(group)?;
+            gd.free_blocks_count
+                .checked_add(freed)
+                .ok_or_else(|| debug_errno("free_blocks_by_group: group free_blocks_count overflow", Errno::EIO))?;
+            let bitmap = self.read_block_bitmap_with_group_desc(group, &gd)?;
+            for &pblk in &blocks[start..end] {
+                let (_, bit) = self.block_group_bit(pblk)?;
+                if !test_bit(&bitmap, bit) {
+                    return ret_errno("free_blocks_by_group: block bitmap bit already clear", Errno::EIO);
+                }
+            }
+
+            group_ranges.push((group, start, end));
+            start = end;
+        }
+
+        // Re-read one group at a time instead of retaining every bitmap from validation.
+        for (group, start, end) in group_ranges {
+            let freed = u32::try_from(end - start)
+                .map_err(|_| debug_errno("free_blocks_by_group: group block count does not fit u32", Errno::EIO))?;
+            let mut gd = self.read_group_desc(group)?;
+            let mut bitmap = self.read_block_bitmap_with_group_desc(group, &gd)?;
+            for &pblk in &blocks[start..end] {
+                let (_, bit) = self.block_group_bit(pblk)?;
+                if !test_bit(&bitmap, bit) {
+                    return ret_errno("free_blocks_by_group: block bitmap bit already clear", Errno::EIO);
+                }
+                clear_bit(&mut bitmap, bit);
+            }
+
+            gd.free_blocks_count = gd
+                .free_blocks_count
+                .checked_add(freed)
+                .ok_or_else(|| debug_errno("free_blocks_by_group: group free_blocks_count overflow", Errno::EIO))?;
+            self.write_block_bitmap(group, &mut gd, &bitmap)?;
+            if !self.metadata_csum {
+                self.write_group_desc(group, &mut gd)?;
+            }
+            self.inc_superblock_free_blocks(u64::from(freed))?;
+        }
+
+        Ok(())
     }
 
     pub fn alloc_inode(&self, is_dir: bool) -> SysResult<u32> {
@@ -420,12 +505,10 @@ impl Context {
         let mut old_extent_blocks = Vec::new();
         self.collect_extent_leaves(ino, inode.i_generation, &root, &mut extents, &mut old_extent_blocks)?;
 
-        let (new_extents, blocks_to_free) = remove_extent_leaves(&extents, first_lblk, last_lblk_inclusive)?;
+        let (new_extents, mut blocks_to_free) = remove_extent_leaves(&extents, first_lblk, last_lblk_inclusive)?;
         self.rebuild_extent_tree(ino, inode, tree_generation, &new_extents, &old_extent_blocks)?;
 
-        for pblk in blocks_to_free {
-            self.free_block(pblk)?;
-        }
+        self.free_blocks_by_group(&mut blocks_to_free)?;
 
         self.update_i_blocks_from_extent_delta(inode, &extents, old_extent_blocks.len(), &new_extents)?;
         Ok(())
@@ -1255,11 +1338,11 @@ impl Context {
         self.write_superblock(&mut sb)
     }
 
-    fn inc_superblock_free_blocks(&self) -> SysResult<()> {
+    fn inc_superblock_free_blocks(&self, count: u64) -> SysResult<()> {
         let mut sb = self.read_superblock()?;
         let free = sb
             .free_blocks_count()?
-            .checked_add(1)
+            .checked_add(count)
             .ok_or_else(|| debug_errno("inc_superblock_free_blocks: overflow", Errno::EIO))?;
         sb.set_free_blocks_count(free)?;
         self.write_superblock(&mut sb)

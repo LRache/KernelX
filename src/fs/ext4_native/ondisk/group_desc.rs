@@ -41,11 +41,6 @@ impl Context {
         self.write_fs_block(gdt_pblk, &block)
     }
 
-    pub fn read_block_bitmap(&self, group: u32) -> SysResult<Ext4BitmapBlock> {
-        let gd = self.read_group_desc(group)?;
-        self.read_block_bitmap_with_group_desc(group, &gd)
-    }
-
     pub(super) fn read_block_bitmap_with_group_desc(
         &self,
         group: u32,

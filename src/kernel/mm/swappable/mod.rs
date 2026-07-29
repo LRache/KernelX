@@ -10,7 +10,7 @@ mod swappable;
 mod swapper;
 
 pub use file::{FileBackend, FileMapRegistration, FileMapping, FilePageIdentityPin, SharedFilePage};
-pub use kswapd::spawn_kswapd;
+pub use kswapd::kswapd;
 pub use nofile::{AnonMapFamilyRegistration, AnonymousSwappableFrame, AnonymousSwappableFramePin};
 #[cfg(feature = "swap-memory")]
 pub(crate) use swappable::SwapError;

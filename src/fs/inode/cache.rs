@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::mem;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use smallvec::SmallVec;
 
@@ -81,12 +82,16 @@ struct SyncWork {
 
 pub struct Cache {
     cache: SpinLock<LRUCache<Index, CacheEntry>>,
+    background_reclaimed: AtomicUsize,
+    foreground_reclaimed: AtomicUsize,
 }
 
 impl Cache {
     pub fn new() -> Self {
         Self {
             cache: SpinLock::new(LRUCache::new(), "InodeCache::cache"),
+            background_reclaimed: AtomicUsize::new(0),
+            foreground_reclaimed: AtomicUsize::new(0),
         }
     }
 
@@ -208,7 +213,8 @@ impl Cache {
                 continue;
             }
 
-            self.finish_reclaim(reclaim);
+            let reclaimed = self.finish_reclaim(reclaim);
+            self.foreground_reclaimed.fetch_add(reclaimed, Ordering::Relaxed);
             let result = load();
             {
                 let mut cache = self.cache.lock();
@@ -271,7 +277,8 @@ impl Cache {
                 continue;
             }
 
-            self.finish_reclaim(reclaim);
+            let reclaimed = self.finish_reclaim(reclaim);
+            self.foreground_reclaimed.fetch_add(reclaimed, Ordering::Relaxed);
             return Ok(inode);
         }
     }
@@ -333,13 +340,24 @@ impl Cache {
     pub fn prune_unused(&self) -> usize {
         let works = {
             let mut cache = self.cache.lock();
-            if cache.len() <= config::INODE_CACHE_LOW_WATERMARK {
+            if cache.len() < config::INODE_CACHE_HIGH_WATERMARK {
                 Vec::new()
             } else {
                 Self::start_reclaim(&mut cache)
             }
         };
-        self.finish_reclaim(works)
+        let reclaimed = self.finish_reclaim(works);
+        self.background_reclaimed.fetch_add(reclaimed, Ordering::Relaxed);
+        reclaimed
+    }
+
+    pub(in crate::fs) fn print_perf_info(&self) {
+        crate::kinfo!("Inode Cache Reclaimer Performance Info:");
+        crate::kinfo!(
+            "  Reclaimed inodes: background={}, foreground_sync={}",
+            self.background_reclaimed.load(Ordering::Relaxed),
+            self.foreground_reclaimed.load(Ordering::Relaxed),
+        );
     }
 
     pub fn remove_superblock(&self, sno: u32) -> usize {
