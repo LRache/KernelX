@@ -254,9 +254,10 @@ pub fn kerneltrap_handler() {
     // kinfo!("Kernel trap handler invoked, caused by: {:?}", cause);
     match cause {
         scause::Cause::Trap(trap) => match trap {
-            scause::Trap::StorePageFault => {
+            scause::Trap::InstPageFault | scause::Trap::LoadPageFault | scause::Trap::StorePageFault => {
                 let stval = stval::read();
-                if current::has_task() {
+                crate::klib::backtrace::print_backtrace();
+                if trap == scause::Trap::StorePageFault && current::has_task() {
                     let task = current::task();
                     if task.check_kernel_stack_overflow(stval) {
                         panic!(
