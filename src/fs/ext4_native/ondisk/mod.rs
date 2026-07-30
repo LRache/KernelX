@@ -14,7 +14,7 @@ pub use defs::{
 };
 pub use group_desc::{clear_bit, set_bit, test_bit};
 pub(crate) use inode::{lookup_extent_lblk, lookup_lblk};
-pub(crate) use util::{debug_errno, ret_errno};
+pub(crate) use util::{debug_errno, mount_errno, mount_ret_errno, ret_errno};
 
 pub(super) use super::ctx::Context;
 use defs::*;

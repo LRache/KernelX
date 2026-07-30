@@ -156,7 +156,7 @@ impl Context {
         let off = EXT4_SUPERBLOCK_OFFSET;
         driver
             .read_at(off, &mut raw)
-            .map_err(|_| debug_errno("from_device: failed to read superblock from device", Errno::EIO))?;
+            .map_err(|_| mount_errno("from_device: failed to read superblock from device", Errno::EIO))?;
 
         let sb = Ext4Superblock::parse_raw(raw)?;
         let feature_incompat = sb.feature_incompat()?;
@@ -164,13 +164,13 @@ impl Context {
         let feature_compat = sb.feature_compat()?;
 
         if !SUPPORTED_INCOMPAT.contains(feature_incompat) {
-            return ret_errno(
+            return mount_ret_errno(
                 &format!("from_device: unsupported incompat feature bits: {:?}", feature_incompat),
                 Errno::EOPNOTSUPP,
             );
         }
         if !SUPPORTED_RO_COMPAT.contains(feature_ro_compat) {
-            return ret_errno(
+            return mount_ret_errno(
                 &format!(
                     "from_device: unsupported ro_compat feature bits: {:?}",
                     feature_ro_compat
@@ -182,7 +182,7 @@ impl Context {
         let metadata_csum = feature_ro_compat.contains(Ext4RoCompatFeatures::METADATA_CSUM);
         if metadata_csum {
             if sb.checksum_type()? != EXT4_CHECKSUM_CRC32C {
-                return ret_errno(
+                return mount_ret_errno(
                     "from_device: metadata_csum enabled but checksum_type is not crc32c",
                     Errno::EIO,
                 );
@@ -193,13 +193,13 @@ impl Context {
         let log_block_size = sb.log_block_size()?;
         let sh = 10u32
             .checked_add(log_block_size)
-            .ok_or_else(|| debug_errno("from_device: block size shift overflow", Errno::EINVAL))?;
+            .ok_or_else(|| mount_errno("from_device: block size shift overflow", Errno::EINVAL))?;
         let block_size = 1u32
             .checked_shl(sh)
-            .ok_or_else(|| debug_errno("from_device: invalid block size shift", Errno::EINVAL))?;
+            .ok_or_else(|| mount_errno("from_device: invalid block size shift", Errno::EINVAL))?;
 
         if !(1024..=65536).contains(&block_size) || !block_size.is_power_of_two() {
-            return ret_errno(
+            return mount_ret_errno(
                 "from_device: block size is out of supported range or not power of two",
                 Errno::EINVAL,
             );
@@ -208,7 +208,7 @@ impl Context {
         let blocks_per_group = sb.blocks_per_group()?;
         let inodes_per_group = sb.inodes_per_group()?;
         if blocks_per_group == 0 || inodes_per_group == 0 {
-            return ret_errno(
+            return mount_ret_errno(
                 "from_device: blocks_per_group or inodes_per_group is zero",
                 Errno::EINVAL,
             );
@@ -218,13 +218,13 @@ impl Context {
         // geometry early instead of overflowing the bitmap scan at alloc time.
         if blocks_per_group
             > block_size.checked_mul(8).ok_or_else(|| {
-                debug_errno(
+                mount_errno(
                     "from_device: block_size * 8 overflow for bitmap capacity check",
                     Errno::EINVAL,
                 )
             })?
         {
-            return ret_errno(
+            return mount_ret_errno(
                 "from_device: blocks_per_group exceeds block bitmap capacity",
                 Errno::EINVAL,
             );
@@ -232,13 +232,13 @@ impl Context {
 
         let inode_size = sb.inode_size()?;
         if inode_size < 128 || inode_size > block_size as u16 {
-            return ret_errno("from_device: inode_size is invalid for block size", Errno::EINVAL);
+            return mount_ret_errno("from_device: inode_size is invalid for block size", Errno::EINVAL);
         }
 
         let sb_desc_size = sb.desc_size()?;
         let desc_size = if sb_desc_size < 32 { 32 } else { sb_desc_size };
         if !(32..=64).contains(&desc_size) || (desc_size % 4) != 0 {
-            return ret_errno(
+            return mount_ret_errno(
                 "from_device: desc_size must be in [32,64] and aligned to 4",
                 Errno::EINVAL,
             );
@@ -246,15 +246,15 @@ impl Context {
 
         let blocks_count = sb.blocks_count()?;
         if blocks_count == 0 {
-            return ret_errno("from_device: blocks_count is zero", Errno::EINVAL);
+            return mount_ret_errno("from_device: blocks_count is zero", Errno::EINVAL);
         }
 
         let groups_count_u64 = blocks_count
             .checked_add(blocks_per_group as u64 - 1)
-            .ok_or_else(|| debug_errno("from_device: groups_count rounding overflow", Errno::EINVAL))?
+            .ok_or_else(|| mount_errno("from_device: groups_count rounding overflow", Errno::EINVAL))?
             / blocks_per_group as u64;
         let groups_count = u32::try_from(groups_count_u64)
-            .map_err(|_| debug_errno("from_device: groups_count does not fit u32", Errno::EINVAL))?;
+            .map_err(|_| mount_errno("from_device: groups_count does not fit u32", Errno::EINVAL))?;
 
         let uuid = sb.uuid()?;
         let checksum_seed = if feature_incompat.contains(Ext4IncompatFeatures::CSUM_SEED) {
@@ -329,38 +329,4 @@ impl Context {
             f_spare: [0; 4],
         })
     }
-}
-
-// #[allow(dead_code)]
-fn _supports_sparse_super(ctx: &Context, group: u32) -> bool {
-    if !ctx.feature_ro_compat.contains(Ext4RoCompatFeatures::SPARSE_SUPER) {
-        return true;
-    }
-
-    if group <= 1 {
-        return true;
-    }
-    if group % 2 == 0 {
-        return false;
-    }
-
-    is_power_of(group, 3) || is_power_of(group, 5) || is_power_of(group, 7)
-}
-
-// #[allow(dead_code)]
-fn _first_meta_bg(sb_raw: &[u8; EXT4_SUPERBLOCK_SIZE]) -> SysResult<u32> {
-    get_u32_le(sb_raw, SB_FIRST_META_BG_OFF)
-}
-
-fn is_power_of(mut n: u32, base: u32) -> bool {
-    while n >= base {
-        if n == base {
-            return true;
-        }
-        if n % base != 0 {
-            return false;
-        }
-        n /= base;
-    }
-    false
 }

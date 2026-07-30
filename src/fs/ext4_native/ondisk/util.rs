@@ -1,7 +1,7 @@
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::backtrace::print_backtrace;
 
-pub(crate) fn debug_errno(msg: &str, errno: Errno) -> Errno {
+pub fn debug_errno(msg: &str, errno: Errno) -> Errno {
     if errno == Errno::EIO {
         crate::kdebug!("ext4_native Err({:?}): {}", errno, msg);
         print_backtrace();
@@ -9,8 +9,20 @@ pub(crate) fn debug_errno(msg: &str, errno: Errno) -> Errno {
     errno
 }
 
-pub(crate) fn ret_errno<T>(msg: &str, errno: Errno) -> SysResult<T> {
+pub fn ret_errno<T>(msg: &str, errno: Errno) -> SysResult<T> {
     Err(debug_errno(msg, errno))
+}
+
+pub fn mount_errno(msg: &str, errno: Errno) -> Errno {
+    if matches!(errno, Errno::EOPNOTSUPP | Errno::EINVAL | Errno::EIO) {
+        crate::kdebug!("ext4_native mount Err({:?}): {}", errno, msg);
+        print_backtrace();
+    }
+    errno
+}
+
+pub fn mount_ret_errno<T>(msg: &str, errno: Errno) -> SysResult<T> {
+    Err(mount_errno(msg, errno))
 }
 
 pub(super) fn get_slice(buf: &[u8], off: usize, len: usize) -> SysResult<&[u8]> {

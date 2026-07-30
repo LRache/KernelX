@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use crate::driver::BlockDriverOps;
 use crate::fs::Mode;
 use crate::fs::ext4_native::inode::Inode;
-use crate::fs::ext4_native::ondisk::{Ext4IncompatFeatures, Ext4RoCompatFeatures, debug_errno};
+use crate::fs::ext4_native::ondisk::{Ext4IncompatFeatures, Ext4RoCompatFeatures, mount_errno};
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps, VfsSuperBlock, VfsSuperBlockOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
@@ -81,7 +81,7 @@ impl FileSystemOps for FileSystem {
         driver: Option<Arc<dyn BlockDriverOps>>,
         _options: MountOptions,
     ) -> SysResult<Arc<dyn VfsSuperBlockOps>> {
-        let driver = driver.ok_or_else(|| debug_errno("FileSystem::create: block driver is None", Errno::EINVAL))?;
+        let driver = driver.ok_or_else(|| mount_errno("FileSystem::create: block driver is None", Errno::EINVAL))?;
         let ctx = Context::from_device(fsno, driver)?;
         Ok(VfsSuperBlock::new(SuperBlock {
             context: Arc::new(SleepRwLockOnStack::new(ctx, "ext4_native::Superblock::context")),
