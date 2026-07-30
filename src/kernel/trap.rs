@@ -2,7 +2,7 @@ use crate::arch::UserContextTrait;
 use crate::driver;
 use crate::kernel::errno::Errno;
 use crate::kernel::event::timer;
-use crate::kernel::ipc::{KSiFields, SiCode, signum};
+use crate::kernel::ipc::{KSiFields, SiCode, SiSigFault, signum};
 use crate::kernel::mm::MemAccessType;
 use crate::kernel::mm::maparea::MemoryFaultSignal;
 use crate::kernel::scheduler::current;
@@ -127,9 +127,12 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
 }
 
 pub fn illegal_inst() {
-    // TODO: Implement the sicode and fields for illegal inst
+    let fields = KSiFields::SigFault(SiSigFault {
+        si_addr: crate::arch::get_user_pc(),
+        si_addr_lsb: 0,
+    });
     current::pcb()
-        .send_signal(signum::SIGSEGV, SiCode::SI_KERNEL, 0, KSiFields::Empty, None)
+        .send_signal(signum::SIGILL, SiCode::ILL_ILLOPC, 0, fields, Some(current::tid()))
         .unwrap();
 }
 

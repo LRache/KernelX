@@ -57,6 +57,8 @@ impl SiCode {
     pub const SI_TIMER: Self = Self(-2);
     pub const SI_TKILL: Self = Self(-6);
 
+    pub const ILL_ILLOPC: Self = Self(1);
+
     pub const CLD_EXITED: Self = Self(1);
     pub const CLD_KILLED: Self = Self(2);
     pub const CLD_DUMPED: Self = Self(3);
@@ -106,16 +108,40 @@ impl KSiFields {
 
 impl Into<USiFields> for KSiFields {
     fn into(self) -> USiFields {
+        let mut fields = USiFields {
+            _pad: [0; SI_PAD_SIZE / core::mem::size_of::<i32>()],
+        };
+
         match self {
-            KSiFields::Empty => USiFields {
-                _pad: [0; SI_PAD_SIZE / core::mem::size_of::<i32>()],
-            },
-            KSiFields::Kill(kill) => USiFields { kill },
-            KSiFields::Rt(rt) => USiFields { rt },
-            KSiFields::SigChld(sigchld) => USiFields { sigchld },
-            KSiFields::SigFault(sigfault) => USiFields { sigfault },
-            KSiFields::Timer(timer) => USiFields { timer },
+            KSiFields::Empty => {}
+            KSiFields::Kill(kill) => {
+                fields.kill.si_pid = kill.si_pid;
+                fields.kill.si_uid = kill.si_uid;
+            }
+            KSiFields::Rt(rt) => {
+                fields.rt.si_pid = rt.si_pid;
+                fields.rt.si_uid = rt.si_uid;
+                fields.rt.si_sigval = rt.si_sigval;
+            }
+            KSiFields::Timer(timer) => {
+                fields.timer.si_tid = timer.si_tid;
+                fields.timer.si_overrun = timer.si_overrun;
+                fields.timer.si_sigval = timer.si_sigval;
+            }
+            KSiFields::SigChld(sigchld) => {
+                fields.sigchld.si_pid = sigchld.si_pid;
+                fields.sigchld.si_uid = sigchld.si_uid;
+                fields.sigchld.si_status = sigchld.si_status;
+                fields.sigchld.si_utime = sigchld.si_utime;
+                fields.sigchld.si_stime = sigchld.si_stime;
+            }
+            KSiFields::SigFault(sigfault) => {
+                fields.sigfault.si_addr = sigfault.si_addr;
+                fields.sigfault.si_addr_lsb = sigfault.si_addr_lsb;
+            }
         }
+
+        fields
     }
 }
 
