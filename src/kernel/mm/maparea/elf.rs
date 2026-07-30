@@ -6,7 +6,7 @@ use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::{FileOps, RandomAccessFile};
 use crate::kernel::mm::maparea::{
-    Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal, PinPageFrame,
+    Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultError, PinPageFrame,
 };
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
@@ -240,14 +240,14 @@ impl Area for ELFArea {
         access_type: MemAccessType,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<(), MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultError> {
         assert!(uaddr >= self.ubase);
 
         if access_type == MemAccessType::Execute && !self.perm.contains(MapPerm::X) {
-            return Err(MemoryFaultSignal::Segv);
+            return Err(MemoryFaultError::SegvAccessError);
         }
         if access_type == MemAccessType::Write && !self.perm.contains(MapPerm::W) {
-            return Err(MemoryFaultSignal::Segv);
+            return Err(MemoryFaultError::SegvAccessError);
         }
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -269,7 +269,7 @@ impl Area for ELFArea {
             }
             Ok(())
         } else {
-            Err(MemoryFaultSignal::Segv)
+            Err(MemoryFaultError::SegvMapError)
         }
     }
 

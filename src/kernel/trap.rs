@@ -4,7 +4,7 @@ use crate::kernel::errno::Errno;
 use crate::kernel::event::timer;
 use crate::kernel::ipc::{KSiFields, SiCode, SiSigFault, signum};
 use crate::kernel::mm::MemAccessType;
-use crate::kernel::mm::maparea::MemoryFaultSignal;
+use crate::kernel::mm::maparea::MemoryFaultError;
 use crate::kernel::scheduler::current;
 use crate::kernel::syscall;
 
@@ -113,24 +113,28 @@ pub fn syscall(num: usize, args: &syscall::Args, ret_arg_value: usize) -> usize 
 }
 
 pub fn memory_fault(addr: usize, access_type: MemAccessType) {
-    let signal = match current::addrspace().try_to_fix_memory_fault(addr, access_type) {
+    let (signal, si_code) = match current::addrspace().try_to_fix_memory_fault(addr, access_type) {
         Ok(()) => return,
-        Err(MemoryFaultSignal::Segv) => {
-            crate::kdebug!(
-                "Memory fault at address: 0x{:x}, access type: {:?}, send SIGSEGV",
-                addr,
-                access_type
-            );
-            signum::SIGSEGV
-        }
-        Err(MemoryFaultSignal::Bus) => signum::SIGBUS,
+        Err(MemoryFaultError::SegvMapError) => (signum::SIGSEGV, SiCode::SEGV_MAPERR),
+        Err(MemoryFaultError::SegvAccessError) => (signum::SIGSEGV, SiCode::SEGV_ACCERR),
+        Err(MemoryFaultError::BusAddressError) => (signum::SIGBUS, SiCode::BUS_ADRERR),
     };
 
-    // TODO: Implement the sicode and fields for memory fault
+    if signal == signum::SIGSEGV {
+        crate::kdebug!(
+            "Memory fault at address: 0x{:x}, access type: {:?}, send SIGSEGV",
+            addr,
+            access_type
+        );
+    }
+
+    let fields = KSiFields::SigFault(SiSigFault {
+        si_addr: addr,
+        si_addr_lsb: 0,
+    });
     current::pcb()
-        .send_signal(signal, SiCode::SI_KERNEL, 0, KSiFields::Empty, None)
+        .send_signal(signal, si_code, 0, fields, Some(current::tid()))
         .unwrap();
-    current::schedule();
 }
 
 pub fn illegal_inst() {

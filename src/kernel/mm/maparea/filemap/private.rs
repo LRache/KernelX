@@ -6,7 +6,7 @@ use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::{FileOps, RandomAccessFile};
 use crate::kernel::mm::maparea::nofilemap::{AnonMapFamilyRegistration, FrameState, SwappablePageFrame as AreaFrame};
 use crate::kernel::mm::maparea::{
-    Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal, PinPageFrame,
+    Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultError, PinPageFrame,
 };
 use crate::kernel::mm::swappable::{AccessDirty, FileMapRegistration, SharedFilePage, TlbInvalidationToken};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
@@ -410,14 +410,14 @@ impl Area for PrivateFileMapArea {
         access_type: MemAccessType,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<(), MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultError> {
         if uaddr < self.ubase {
-            return Err(MemoryFaultSignal::Segv);
+            return Err(MemoryFaultError::SegvMapError);
         }
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index >= self.frames.len() {
-            return Err(MemoryFaultSignal::Segv);
+            return Err(MemoryFaultError::SegvMapError);
         }
 
         let remap_allocated_on_write = matches!(
@@ -427,24 +427,25 @@ impl Area for PrivateFileMapArea {
         if access_type == MemAccessType::Write {
             self.translate_write(uaddr, addrspace, map_change_notifier)
                 .map(|_| ())
-                .ok_or(MemoryFaultSignal::Bus)?;
+                .ok_or(MemoryFaultError::BusAddressError)?;
             if remap_allocated_on_write {
                 let Some(PrivateFilePage::Anonymous(FrameState::Allocated(frame))) = self.frames.get(page_index) else {
                     unreachable!();
                 };
-                let guard = frame.ensure_page().map_err(|_| MemoryFaultSignal::Bus)?;
-                let page_uaddr = self.page_uaddr(page_index).ok_or(MemoryFaultSignal::Segv)?;
+                let guard = frame.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
+                let page_uaddr = self.page_uaddr(page_index).ok_or(MemoryFaultError::SegvMapError)?;
                 addrspace.mmap_replace_swappable(page_uaddr, &guard, self.perm);
             }
             return Ok(());
         }
 
         if !matches!(self.frames.get(page_index), Some(PrivateFilePage::Anonymous(_))) {
-            self.ensure_source_page(page_index).ok_or(MemoryFaultSignal::Bus)?;
+            self.ensure_source_page(page_index)
+                .ok_or(MemoryFaultError::BusAddressError)?;
         }
 
-        let page_uaddr = self.page_uaddr(page_index).ok_or(MemoryFaultSignal::Segv)?;
-        match self.frames.get(page_index).ok_or(MemoryFaultSignal::Bus)? {
+        let page_uaddr = self.page_uaddr(page_index).ok_or(MemoryFaultError::SegvMapError)?;
+        match self.frames.get(page_index).ok_or(MemoryFaultError::BusAddressError)? {
             PrivateFilePage::Source(SharedFilePage::Stable(frame)) => {
                 let cpu_mask = {
                     let mut pagetable = addrspace.pagetable().lock();
@@ -454,15 +455,15 @@ impl Area for PrivateFileMapArea {
                 arch::flush_tlb_cpu_mask(cpu_mask);
             }
             PrivateFilePage::Source(SharedFilePage::Swappable(page)) => {
-                let guard = page.ensure_page().map_err(|_| MemoryFaultSignal::Bus)?;
+                let guard = page.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
                 addrspace.mmap_replace_swappable(page_uaddr, &guard, self.perm - MapPerm::W);
             }
             PrivateFilePage::Anonymous(FrameState::Cow(frame)) => {
                 self.map_cow_page(page_index, frame, addrspace)
-                    .ok_or(MemoryFaultSignal::Bus)?;
+                    .ok_or(MemoryFaultError::BusAddressError)?;
             }
             PrivateFilePage::Anonymous(FrameState::Allocated(frame)) => {
-                let guard = frame.ensure_page().map_err(|_| MemoryFaultSignal::Bus)?;
+                let guard = frame.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
                 addrspace.mmap_replace_swappable(page_uaddr, &guard, self.perm);
             }
         }

@@ -8,7 +8,7 @@ use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{
-    Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal, PinPageFrame,
+    Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultError, PinPageFrame,
 };
 use crate::kernel::mm::swappable::AccessDirty;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
@@ -489,29 +489,29 @@ impl Area for UserStack {
         access_type: MemAccessType,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<(), MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultError> {
         if !self.contains_uaddr(addr) {
-            return Err(MemoryFaultSignal::Segv);
+            return Err(MemoryFaultError::SegvMapError);
         }
 
         let page_index = (config::USER_STACK_TOP - addr - 1) / arch::PGSIZE;
 
         if page_index >= self.get_max_page_count() {
-            return Err(MemoryFaultSignal::Segv);
+            return Err(MemoryFaultError::SegvMapError);
         }
 
         if access_type == MemAccessType::Write && matches!(self.frames.get(&page_index), Some(FrameState::Cow(_))) {
             self.copy_on_write_page(page_index, addrspace, map_change_notifier)
-                .ok_or(MemoryFaultSignal::Bus)?;
+                .ok_or(MemoryFaultError::BusAddressError)?;
         } else {
             match self.frames.get(&page_index) {
                 Some(FrameState::Allocated(frame)) => {
                     self.handle_memory_fault_on_swapped_allocated(page_index, frame, addrspace)
-                        .ok_or(MemoryFaultSignal::Bus)?;
+                        .ok_or(MemoryFaultError::BusAddressError)?;
                 }
                 Some(FrameState::Cow(frame)) => {
                     self.map_cow_page(page_index, frame, addrspace)
-                        .ok_or(MemoryFaultSignal::Bus)?;
+                        .ok_or(MemoryFaultError::BusAddressError)?;
                 }
                 None => {
                     self.allocate_page(page_index, addrspace);
@@ -522,11 +522,11 @@ impl Area for UserStack {
         if access_type == MemAccessType::Write {
             self.translate_write(addr, addrspace, map_change_notifier)
                 .map(|_| ())
-                .ok_or(MemoryFaultSignal::Segv)
+                .ok_or(MemoryFaultError::SegvMapError)
         } else {
             self.translate_read(addr, addrspace)
                 .map(|_| ())
-                .ok_or(MemoryFaultSignal::Segv)
+                .ok_or(MemoryFaultError::SegvMapError)
         }
     }
 

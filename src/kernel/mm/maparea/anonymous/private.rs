@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::maparea::nofilemap::{AnonMapFamilyRegistration, FrameState, SwappablePageFrame};
-use crate::kernel::mm::maparea::{Area, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultSignal, PinPageFrame};
+use crate::kernel::mm::maparea::{Area, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultError, PinPageFrame};
 use crate::kernel::mm::swappable::AccessDirty;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
@@ -271,7 +271,7 @@ impl Area for PrivateAnonymousArea {
         access_type: MemAccessType,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<(), MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultError> {
         debug_assert!(uaddr >= self.ubase);
 
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
@@ -279,15 +279,15 @@ impl Area for PrivateAnonymousArea {
             match self.frames.get(page_index) {
                 Some(FrameState::Allocated(frame)) => {
                     self.map_swappable_page(page_index, frame, addrspace, self.perm)
-                        .ok_or(MemoryFaultSignal::Bus)?;
+                        .ok_or(MemoryFaultError::BusAddressError)?;
                 }
                 Some(FrameState::Cow(frame)) => {
                     if access_type != MemAccessType::Write {
                         self.map_swappable_page(page_index, frame, addrspace, self.perm - MapPerm::W)
-                            .ok_or(MemoryFaultSignal::Bus)?;
+                            .ok_or(MemoryFaultError::BusAddressError)?;
                     } else {
                         self.copy_on_write_page(page_index, addrspace, map_change_notifier)
-                            .ok_or(MemoryFaultSignal::Bus)?;
+                            .ok_or(MemoryFaultError::BusAddressError)?;
                     }
                 }
                 None => {
@@ -296,7 +296,7 @@ impl Area for PrivateAnonymousArea {
             }
             Ok(())
         } else {
-            Err(MemoryFaultSignal::Segv)
+            Err(MemoryFaultError::SegvMapError)
         }
     }
 

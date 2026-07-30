@@ -15,7 +15,7 @@ use crate::klib::{SleepLockOnStack, SpinLock};
 use crate::println;
 use crate::{ktrace, print};
 
-use super::area::{Area, MapAreaInfo, MemoryFaultSignal, PinPageFrame};
+use super::area::{Area, MapAreaInfo, MemoryFaultError, PinPageFrame};
 use super::userbrk::UserBrk;
 use super::userstack::{Auxv, UserStack};
 use super::watcher::{MapChange, MapChangeEvent, MapChangeNotifier, MapManagerWatcher};
@@ -988,7 +988,7 @@ impl Manager {
         uaddr: usize,
         access_type: MemAccessType,
         addrspace: &AddrSpace,
-    ) -> Result<(), MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultError> {
         // PERF_DEBUG(map-manager-lock): Attribute lookup versus Area callback time.
         #[cfg(feature = "map-manager-lock-debug")]
         let debug = DebugOperationGuard::new(DebugOperation::MemoryFault);
@@ -997,11 +997,14 @@ impl Manager {
             #[cfg(feature = "map-manager-lock-debug")]
             let _phase = debug.area_set();
             let Some((_ubase, area)) = self.areas.range(..=uaddr).next_back() else {
-                return Err(MemoryFaultSignal::Segv);
+                return Err(MemoryFaultError::SegvMapError);
             };
             let area = area.lock();
+            if uaddr < area.ubase() || uaddr - area.ubase() >= area.size() {
+                return Err(MemoryFaultError::SegvMapError);
+            }
             if !access_type.match_perm(area.perm()) {
-                return Err(MemoryFaultSignal::Segv);
+                return Err(MemoryFaultError::SegvAccessError);
             }
             area
         };

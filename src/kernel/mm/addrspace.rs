@@ -439,7 +439,7 @@ impl AddrSpace {
         self: &Arc<Self>,
         uaddr: usize,
         access_type: MemAccessType,
-    ) -> Result<(), maparea::MemoryFaultSignal> {
+    ) -> Result<(), maparea::MemoryFaultError> {
         let map_manager = &self.map_manager.read();
         map_manager.try_to_fix_memory_fault(uaddr, access_type, self)
     }

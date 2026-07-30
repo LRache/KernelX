@@ -133,7 +133,7 @@ pub trait Area: Send {
         access_type: MemAccessType,
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<(), MemoryFaultSignal>;
+    ) -> Result<(), MemoryFaultError>;
 
     fn page_count(&self) -> usize;
     fn size(&self) -> usize {
@@ -178,7 +178,8 @@ pub trait Area: Send {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryFaultSignal {
-    Segv,
-    Bus,
+pub enum MemoryFaultError {
+    SegvMapError,
+    SegvAccessError,
+    BusAddressError,
 }

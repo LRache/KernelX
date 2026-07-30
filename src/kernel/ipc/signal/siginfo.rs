@@ -58,6 +58,9 @@ impl SiCode {
     pub const SI_TKILL: Self = Self(-6);
 
     pub const ILL_ILLOPC: Self = Self(1);
+    pub const SEGV_MAPERR: Self = Self(1);
+    pub const SEGV_ACCERR: Self = Self(2);
+    pub const BUS_ADRERR: Self = Self(2);
 
     pub const CLD_EXITED: Self = Self(1);
     pub const CLD_KILLED: Self = Self(2);

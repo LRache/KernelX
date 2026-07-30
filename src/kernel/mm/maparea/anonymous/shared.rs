@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::kernel::mm::maparea::nofilemap::{AnonMapFamilyRegistration, SwappablePageFrame};
-use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal, PinPageFrame};
+use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultError, PinPageFrame};
 use crate::kernel::mm::swappable::AccessDirty;
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::{SleepLock, SpinLock};
@@ -201,15 +201,21 @@ impl Area for SharedAnonymousArea {
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
         _map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<(), MemoryFaultSignal> {
-        let area_offset = uaddr.checked_sub(self.ubase).ok_or(MemoryFaultSignal::Segv)?;
+    ) -> Result<(), MemoryFaultError> {
+        let area_offset = uaddr.checked_sub(self.ubase).ok_or(MemoryFaultError::SegvMapError)?;
         let frame_index = area_offset / arch::PGSIZE;
-        let (page, _) = self.materialize_page(frame_index).ok_or(MemoryFaultSignal::Segv)?;
-        let guard = page.ensure_page().map_err(|_| MemoryFaultSignal::Bus)?;
+        let (page, _) = self
+            .materialize_page(frame_index)
+            .ok_or(MemoryFaultError::SegvMapError)?;
+        let guard = page.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
         let page_uaddr = self
             .ubase
-            .checked_add(frame_index.checked_mul(arch::PGSIZE).ok_or(MemoryFaultSignal::Segv)?)
-            .ok_or(MemoryFaultSignal::Segv)?;
+            .checked_add(
+                frame_index
+                    .checked_mul(arch::PGSIZE)
+                    .ok_or(MemoryFaultError::SegvMapError)?,
+            )
+            .ok_or(MemoryFaultError::SegvMapError)?;
         addrspace.mmap_replace_swappable(page_uaddr, &guard, self.perm);
         Ok(())
     }

@@ -7,7 +7,7 @@ use crate::kernel::ipc::shm::{ShmFrames, on_shm_area_drop};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::klib::SpinLock;
 
-use super::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal, PinPageFrame};
+use super::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultError, PinPageFrame};
 
 pub struct ShmArea {
     ubase: usize,
@@ -93,11 +93,11 @@ impl Area for ShmArea {
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
         _map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<(), MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultError> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         let frames = self.frames.frames.lock();
         if page_index >= frames.len() {
-            return Err(MemoryFaultSignal::Segv);
+            return Err(MemoryFaultError::SegvMapError);
         }
 
         let frame = &frames[page_index];

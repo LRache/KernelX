@@ -12,7 +12,7 @@ mod userstack;
 mod watcher;
 
 pub use anonymous::{PrivateAnonymousArea, SharedAnonymousArea};
-pub use area::{Area, MapAreaInfo, MemoryFaultSignal, PinPageFrame};
+pub use area::{Area, MapAreaInfo, MemoryFaultError, PinPageFrame};
 pub use chunk::{ReadChunk, WriteChunk};
 pub use elf::ELFArea;
 pub use filemap::{PrivateFileMapArea, SharedFileMapArea};

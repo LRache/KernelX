@@ -7,7 +7,7 @@ use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::Inode;
 use crate::fs::inode::Index as InodeIndex;
 use crate::kernel::errno::{Errno, SysResult};
-use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultSignal, PinPageFrame};
+use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultError, PinPageFrame};
 use crate::kernel::mm::swappable::{AccessDirty, FileMapRegistration, SharedFilePage, TlbInvalidationToken};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
 use crate::kernel::uapi::FileSealFlags;
@@ -261,18 +261,18 @@ impl Area for SharedFileMapArea {
         _access_type: MemAccessType,
         addrspace: &AddrSpace,
         _map_change_notifier: &MapChangeNotifier<'_>,
-    ) -> Result<(), MemoryFaultSignal> {
+    ) -> Result<(), MemoryFaultError> {
         let page_index = (uaddr - self.ubase) / arch::PGSIZE;
         if page_index >= self.states.len() {
-            return Err(MemoryFaultSignal::Segv);
+            return Err(MemoryFaultError::SegvMapError);
         }
 
         let uaddr = self.ubase + page_index * arch::PGSIZE;
         let perm = self.perm;
         let page = self
             .ensure_page(page_index)
-            .map_err(|_| MemoryFaultSignal::Bus)?
-            .ok_or(MemoryFaultSignal::Bus)?;
+            .map_err(|_| MemoryFaultError::BusAddressError)?
+            .ok_or(MemoryFaultError::BusAddressError)?;
         match page {
             SharedFilePage::Stable(frame) => {
                 let cpu_mask = {
@@ -283,7 +283,7 @@ impl Area for SharedFileMapArea {
                 arch::flush_tlb_cpu_mask(cpu_mask);
             }
             SharedFilePage::Swappable(page) => {
-                let guard = page.ensure_page().map_err(|_| MemoryFaultSignal::Bus)?;
+                let guard = page.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
                 addrspace.mmap_replace_swappable(uaddr, &guard, perm);
             }
         }
