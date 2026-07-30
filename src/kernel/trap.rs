@@ -115,7 +115,14 @@ pub fn syscall(num: usize, args: &syscall::Args, ret_arg_value: usize) -> usize 
 pub fn memory_fault(addr: usize, access_type: MemAccessType) {
     let signal = match current::addrspace().try_to_fix_memory_fault(addr, access_type) {
         Ok(()) => return,
-        Err(MemoryFaultSignal::Segv) => signum::SIGSEGV,
+        Err(MemoryFaultSignal::Segv) => {
+            crate::kdebug!(
+                "Memory fault at address: 0x{:x}, access type: {:?}, send SIGSEGV",
+                addr,
+                access_type
+            );
+            signum::SIGSEGV
+        }
         Err(MemoryFaultSignal::Bus) => signum::SIGBUS,
     };
 
