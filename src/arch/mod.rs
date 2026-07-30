@@ -59,7 +59,6 @@ arch_export! {
 
     /* ----- Context Switching ----- */
     kernel_switch(from: *mut KernelContext, to: *mut KernelContext) -> ();
-    get_user_pc() -> usize;
     return_to_user() -> !;
 
     /* ----- Interrupt ------ */

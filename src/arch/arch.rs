@@ -83,7 +83,6 @@ pub trait ArchTrait {
 
     /* ----- Context Switching ----- */
     fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext);
-    fn get_user_pc() -> usize;
     fn return_to_user() -> !;
 
     /* ----- Interrupt ------ */

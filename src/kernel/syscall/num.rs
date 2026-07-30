@@ -258,7 +258,14 @@ macro_rules! dispatch_syscall_table {
             )*
             _ => {
                 #[cfg(feature = "warn-unimplemented-syscall")]
-                crate::kwarn!("Unsupported syscall: {}, user_pc={:#x}, tid={}", $num_var, crate::arch::get_user_pc(), crate::kernel::scheduler::current::tid());
+                crate::kwarn!(
+                    "Unsupported syscall: {}, user_pc={:#x}, tid={}",
+                    $num_var,
+                    crate::arch::UserContextTrait::get_user_entry(
+                        crate::kernel::scheduler::current::tcb().user_context(),
+                    ),
+                    crate::kernel::scheduler::current::tid()
+                );
                 #[cfg(feature = "log-syscall-cpu-time")]
                 let syscall_cpu_start = $crate::kernel::scheduler::current::tcb().thread_cpu_time();
                 let result = Err(Errno::ENOSYS);

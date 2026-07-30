@@ -137,9 +137,9 @@ pub fn memory_fault(addr: usize, access_type: MemAccessType) {
         .unwrap();
 }
 
-pub fn illegal_inst() {
+pub fn illegal_inst(pc: usize) {
     let fields = KSiFields::SigFault(SiSigFault {
-        si_addr: crate::arch::get_user_pc(),
+        si_addr: pc,
         si_addr_lsb: 0,
     });
     current::pcb()

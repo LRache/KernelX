@@ -47,7 +47,7 @@ pub extern "C" fn usertrap_handler() -> ! {
         Some(Ecode::Pme) => handle_page_modify(),
         Some(Ecode::Pif) | Some(Ecode::Pnx) => handle_memory_fault(MemAccessType::Execute),
         Some(Ecode::Ppi) => handle_memory_fault(MemAccessType::Read),
-        Some(Ecode::Ine) | Some(Ecode::Ipe) => trap::illegal_inst(),
+        Some(Ecode::Ine) | Some(Ecode::Ipe) => trap::illegal_inst(era),
         Some(Ecode::Ale) => trap::memory_misaligned(),
         Some(Ecode::Ade) => handle_ade(),
         Some(Ecode::Fpd) => handle_fpu_disabled(),

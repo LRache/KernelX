@@ -171,12 +171,13 @@ pub fn usertrap_handler() -> ! {
                 }
             }
             scause::Trap::IllegalInst => {
+                let pc = sepc::read();
                 crate::kdebug!(
                     "Illegal instruction encountered, inst={:#x}, pc={:#x}",
                     stval::read(),
-                    sepc::read()
+                    pc
                 );
-                trap::illegal_inst();
+                trap::illegal_inst(pc);
             }
             scause::Trap::InstAddrMisaligned | scause::Trap::LoadAddrMisaligned | scause::Trap::StoreAddrMisaligned => {
                 trap::memory_misaligned();

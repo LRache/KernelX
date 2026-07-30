@@ -5,7 +5,7 @@ use elf::abi;
 
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
 use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task};
-use crate::arch::{self, Arch, ArchTrait, CloneABI, UserContextTrait};
+use crate::arch::{self, Arch, ArchTrait, CloneABI};
 use crate::driver::chosen;
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
@@ -155,10 +155,6 @@ impl ArchTrait for Arch {
         let data: usize;
         unsafe { core::arch::asm!("mv {data}, tp", data = out(reg) data) };
         data
-    }
-
-    fn get_user_pc() -> usize {
-        current::tcb().user_context().get_user_entry()
     }
 
     #[inline(always)]

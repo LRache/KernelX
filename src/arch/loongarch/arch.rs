@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use core::time::Duration;
 use elf::abi;
 
-use crate::arch::arch::{Arch, ArchTrait, CloneABI, UserContextTrait};
+use crate::arch::arch::{Arch, ArchTrait, CloneABI};
 use crate::driver::chosen;
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
@@ -110,10 +110,6 @@ impl ArchTrait for Arch {
 
     fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext) {
         task::kernel_switch(from, to);
-    }
-
-    fn get_user_pc() -> usize {
-        crate::kernel::scheduler::current::tcb().user_context().get_user_entry()
     }
 
     fn return_to_user() -> ! {
