@@ -32,6 +32,9 @@ use crate::klib::ksync::TaskLocal;
 use crate::klib::{RWLock, SleepLock, SpinLock};
 use crate::{arch, ktrace};
 
+#[cfg(target_arch = "loongarch64")]
+const HWCAP_LOONGARCH_UAL: usize = 1 << 2;
+
 #[derive(Debug, Clone, Copy)]
 pub struct PtraceStop {
     /// This signal will be reported to the tracer when waits.
@@ -361,6 +364,8 @@ impl TCB {
 
         auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
         auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
+        #[cfg(target_arch = "loongarch64")]
+        auxv.push(AuxKey::HWCAP, HWCAP_LOONGARCH_UAL);
 
         let userstack_top = addrspace
             .create_user_stack(argv, envp, &auxv)
@@ -514,6 +519,8 @@ impl TCB {
 
             auxv.push(AuxKey::PAGESZ, arch::PGSIZE);
             auxv.push(AuxKey::RANDOM, config::USER_RANDOM_ADDR_BASE);
+            #[cfg(target_arch = "loongarch64")]
+            auxv.push(AuxKey::HWCAP, HWCAP_LOONGARCH_UAL);
 
             let usetstack_top = addrspace.create_user_stack(argv, envp, &auxv)?;
 

@@ -32,6 +32,7 @@ pub enum AuxKey {
     _EUID = 12,
     _GID = 13,
     _EGID = 14,
+    HWCAP = 16,
     RANDOM = 25,
 }
 
