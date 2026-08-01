@@ -4,6 +4,7 @@ bitflags! {
     #[derive(Clone, Copy)]
     pub struct CapabilitySet: u32 {
         const CHOWN = 1 << 0;
+        const DAC_READ_SEARCH = 1 << 2;
         const KILL = 1 << 5;
         const SETPCAP = 1 << 8;
         const NET_RAW = 1 << 13;

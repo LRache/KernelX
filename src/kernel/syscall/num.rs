@@ -19,7 +19,7 @@ macro_rules! syscall_entries {
             45  => fs::truncate64(2),
             35  => fs::unlinkat(3),
             36  => fs::symlinkat(3),
-            37  => fs::linkat(4),
+            37  => fs::linkat(5),
             43  => fs::statfs64(2),
             44  => fs::fstatfs64(2),
             46  => fs::ftruncate64(2),

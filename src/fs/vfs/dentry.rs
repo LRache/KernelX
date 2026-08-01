@@ -931,9 +931,9 @@ impl Dentry {
         inode.symlink(target)
     }
 
-    pub fn link(self: &Arc<Self>, name: &str, target: &Arc<Dentry>) -> SysResult<()> {
+    pub fn link(self: &Arc<Self>, name: &str, target_sno: u32, target: &Arc<Inode>) -> SysResult<()> {
         self.check_child_mutation_perm()?;
-        if self.sno() != target.sno() {
+        if self.sno() != target_sno {
             return Err(Errno::EXDEV);
         }
 
@@ -943,8 +943,7 @@ impl Dentry {
             Err(err) => return Err(err),
         }
 
-        let target_inode = target.get_inode();
-        self.get_inode().link(name, &target_inode)?;
+        self.get_inode().link(name, target)?;
 
         Ok(())
     }

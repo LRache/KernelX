@@ -24,6 +24,7 @@ use crate::kernel::scheduler::current::{copy_from_user, copy_to_user};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::uptr::{UArray, UBuffer, UPtr, UString, UserPointer};
 use crate::kernel::syscall::{SyscallRet, UserStruct, utils};
+use crate::kernel::task::CapabilitySet;
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::uapi::{
     Dirent, DirentType, FileFallocateFlags, FileSealFlags, FileStat, MemFdCreateFlags, OpenFlags, Statfs, Statx, Uid,
@@ -449,6 +450,7 @@ fn do_openat(dirfd: usize, path: String, flags: usize, mode: usize) -> SyscallRe
                 &dentry,
                 file_flags,
                 Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
+                !open_flags.contains(OpenFlags::O_EXCL),
             )?;
             let time = driver::chosen::kclock::now()?;
             update_file_times(file.as_ref(), &time, false)?;
@@ -640,6 +642,7 @@ fn do_openat_with_lookup_flags(
                 &dentry,
                 file_flags,
                 Mode::from_bits(mode as u32 & 0o7777 & !current::umask()).ok_or(Errno::EINVAL)? | Mode::S_IFREG,
+                !open_flags.contains(OpenFlags::O_EXCL),
             )?;
             let time = driver::chosen::kclock::now()?;
             update_file_times(file.as_ref(), &time, false)?;
@@ -2002,14 +2005,10 @@ fn lookup_access_dentry(dirfd: usize, path: &str, flags: AccessAtFlags, search_p
         if !flags.contains(AccessAtFlags::AT_EMPTY_PATH) {
             return Err(Errno::ENOENT);
         }
-
-        let dentry = if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| Ok(cwd))?
-        } else {
-            let file = current::fdtable().lock().get(dirfd)?;
-            file.get_dentry().ok_or(Errno::ENOTDIR)?.clone()
-        };
-        return Ok(dentry.get_mount_to());
+        if dirfd as isize != AT_FDCWD {
+            return Err(Errno::EINVAL);
+        }
+        return Ok(current::with_cwd(|cwd| Ok(cwd))?.get_mount_to());
     }
 
     let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
@@ -2045,21 +2044,46 @@ fn do_faccessat(dirfd: usize, uptr_path: UString, mode: usize, flags: AccessAtFl
 
     let mode = AccessMode::from_bits(mode).ok_or(Errno::EINVAL)?;
     let path = uptr_path.read_path()?;
+    if path.is_empty() && !flags.contains(AccessAtFlags::AT_EMPTY_PATH) {
+        return Err(Errno::ENOENT);
+    }
+    if path.is_empty() && mode.is_empty() {
+        if dirfd as isize != AT_FDCWD {
+            current::fdtable().lock().get(dirfd)?;
+        }
+        return Ok(0);
+    }
+
     let search_perm = Perm::access(PermFlags::X, flags.contains(AccessAtFlags::AT_EACCESS));
     let perm = Perm::access(access_perm_flags(mode), flags.contains(AccessAtFlags::AT_EACCESS));
-    let dentry = lookup_access_dentry(dirfd, &path, flags, &search_perm)?;
+    let (dentry, inode) = if path.is_empty() && dirfd as isize != AT_FDCWD {
+        let file = current::fdtable().lock().get(dirfd)?;
+        let dentry = file.get_dentry().cloned().ok_or(Errno::ENOTDIR)?;
+        let inode = Some(file.get_inode().cloned().ok_or(Errno::EINVAL)?);
+        (dentry, inode)
+    } else {
+        let dentry = lookup_access_dentry(dirfd, &path, flags, &search_perm)?;
+        let inode = if mode.is_empty() {
+            None
+        } else {
+            Some(dentry.get_inode())
+        };
+        (dentry, inode)
+    };
 
-    if !mode.is_empty() {
-        if mode.contains(AccessMode::W_OK) && dentry.is_superblock_readonly()? {
-            return Err(Errno::EROFS);
-        }
+    if mode.is_empty() {
+        return Ok(0);
+    }
 
-        let inode = dentry.get_inode();
-        let mode = inode.mode()?;
-        let (uid, gid) = inode.owner()?;
-        if !mode.check_perm(&perm, uid, gid) {
-            return Err(Errno::EACCES);
-        }
+    let inode = inode.ok_or(Errno::EINVAL)?;
+    if mode.contains(AccessMode::W_OK) && dentry.is_superblock_readonly()? {
+        return Err(Errno::EROFS);
+    }
+
+    let mode = inode.mode()?;
+    let (uid, gid) = inode.owner()?;
+    if !mode.check_perm(&perm, uid, gid) {
+        return Err(Errno::EACCES);
     }
 
     Ok(0)
@@ -2237,16 +2261,20 @@ pub fn fanotify_mark(
     let is_mount_mark = flags.contains(FanotifyMarkFlags::FAN_MARK_MOUNT);
     let is_filesystem_mark = flags.contains(FanotifyMarkFlags::FAN_MARK_FILESYSTEM);
 
-    let dentry = if uptr_pathname.is_null() {
+    let (dentry, inode) = if uptr_pathname.is_null() {
         if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| Ok(cwd))?
+            let dentry = current::with_cwd(|cwd| Ok(cwd))?.get_mount_to();
+            let inode = dentry.get_inode();
+            (dentry, inode)
         } else {
             let file = current::fdtable().lock().get(dirfd)?;
-            match file.get_dentry() {
+            let dentry = match file.get_dentry() {
                 Some(dentry) => dentry.clone(),
                 None if is_mount_mark || is_filesystem_mark => return Err(Errno::EINVAL),
                 None => return Err(Errno::ENOTDIR),
-            }
+            };
+            let inode = file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+            (dentry, inode)
         }
     } else {
         let pathname = uptr_pathname.read_path()?;
@@ -2258,7 +2286,7 @@ pub fn fanotify_mark(
             }
         };
 
-        if dirfd as isize == AT_FDCWD {
+        let dentry = if dirfd as isize == AT_FDCWD {
             current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
         } else {
             let dir = current::fdtable()
@@ -2269,11 +2297,12 @@ pub fn fanotify_mark(
                 .clone();
             current::with_root(|root| helper(&root, &dir))?
         }
-    }
-    .get_mount_to();
-
-    let inode = dentry.get_inode();
+        .get_mount_to();
+        let inode = dentry.get_inode();
+        (dentry, inode)
+    };
     let target_is_dir = inode.inode_type()? == FileType::Directory;
+
     if flags.contains(FanotifyMarkFlags::FAN_MARK_ONLYDIR) && !target_is_dir {
         return Err(Errno::ENOTDIR);
     }
@@ -2566,16 +2595,16 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
         return Err(Errno::ENOENT);
     }
 
-    let dentry = if path_is_null || path.is_empty() {
+    let (dentry, inode) = if path_is_null || path.is_empty() {
         if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| Ok(cwd))?
+            let dentry = current::with_cwd(|cwd| Ok(cwd))?;
+            let inode = dentry.get_inode();
+            (dentry, inode)
         } else {
-            current::fdtable()
-                .lock()
-                .get(dirfd)?
-                .get_dentry()
-                .cloned()
-                .ok_or(Errno::EINVAL)?
+            let file = current::fdtable().lock().get(dirfd)?;
+            let dentry = file.get_dentry().cloned().ok_or(Errno::EINVAL)?;
+            let inode = file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+            (dentry, inode)
         }
     } else {
         let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
@@ -2585,7 +2614,7 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
                 vfs::load_dentry_at(root, dir, &path)
             }
         };
-        if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        let dentry = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
             current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
         } else {
             let dir = current::fdtable()
@@ -2595,10 +2624,11 @@ pub fn utimensat(dirfd: usize, uptr_path: UString, uptr_times: UArray<Timespec>,
                 .ok_or(Errno::ENOTDIR)?
                 .clone();
             current::with_root(|root| helper(&root, &dir))?
-        }
+        };
+        let dentry = dentry.get_mount_to();
+        let inode = dentry.get_inode();
+        (dentry, inode)
     };
-    let dentry = dentry.get_mount_to();
-    let inode = dentry.get_inode();
 
     let now = driver::chosen::kclock::now()?;
     let (atime, mtime, allow_write_perm) = if uptr_times.is_null() {
@@ -2853,10 +2883,25 @@ pub fn symlinkat(uptr_target: UString, newdirfd: usize, uptr_newname: UString) -
     Ok(0)
 }
 
-pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newpath: UString) -> SyscallRet {
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct LinkAtFlags: usize {
+        const AT_SYMLINK_FOLLOW = 0x400;
+        const AT_EMPTY_PATH = 0x1000;
+    }
+}
+
+pub fn linkat(
+    olddirfd: usize,
+    uptr_oldpath: UString,
+    newdirfd: usize,
+    uptr_newpath: UString,
+    flags: usize,
+) -> SyscallRet {
     uptr_oldpath.should_not_null()?;
     uptr_newpath.should_not_null()?;
 
+    let flags = LinkAtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
     let old_path = uptr_oldpath.read_path()?;
     let new_path = uptr_newpath.read_path()?;
 
@@ -2864,22 +2909,46 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
         return Err(Errno::ENOENT);
     }
 
-    let old_dentry = if olddirfd as isize == AT_FDCWD {
-        if old_path.is_empty() {
+    let (old_sno, old_inode) = if old_path.is_empty() {
+        if !flags.contains(LinkAtFlags::AT_EMPTY_PATH) || olddirfd as isize == AT_FDCWD {
             return Err(Errno::ENOENT);
         }
-        current::with_root_cwd(|root, cwd| vfs::load_dentry_at(&root, &cwd, &old_path))
+        if !current::capable(CapabilitySet::DAC_READ_SEARCH) {
+            return Err(Errno::ENOENT);
+        }
+        let file = current::fdtable().lock().get(olddirfd)?;
+        let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
+        let inode = file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+        (dentry.sno(), inode)
     } else {
-        let dir = current::fdtable()
-            .lock()
-            .get(olddirfd)?
-            .get_dentry()
-            .ok_or(Errno::ENOTDIR)?
-            .clone();
-        current::with_root(|root| vfs::load_dentry_at(&root, &dir, &old_path))
-    }?;
+        let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
+            if flags.contains(LinkAtFlags::AT_SYMLINK_FOLLOW) {
+                vfs::load_dentry_at(root, dir, &old_path)
+            } else {
+                vfs::load_dentry_at_nofollow(root, dir, &old_path)
+            }
+        };
+        let dentry = if old_path.starts_with('/') {
+            current::with_root(|root| helper(&root, &root))?
+        } else if olddirfd as isize == AT_FDCWD {
+            current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
+        } else {
+            let dir = current::fdtable()
+                .lock()
+                .get(olddirfd)?
+                .get_dentry()
+                .ok_or(Errno::ENOTDIR)?
+                .clone();
+            current::with_root(|root| helper(&root, &dir))?
+        };
+        let dentry = dentry.get_mount_to();
+        let inode = dentry.get_inode();
+        (dentry.sno(), inode)
+    };
 
-    let (new_parent_dentry, new_name) = if newdirfd as isize == AT_FDCWD {
+    let (new_parent_dentry, new_name) = if new_path.starts_with('/') {
+        current::with_root(|root| vfs::load_parent_dentry_at(&root, &root, &new_path))?.ok_or(Errno::EOPNOTSUPP)
+    } else if newdirfd as isize == AT_FDCWD {
         current::with_root_cwd(|root, cwd| vfs::load_parent_dentry_at(&root, &cwd, &new_path))?.ok_or(Errno::EOPNOTSUPP)
     } else {
         let dir = current::fdtable()
@@ -2892,16 +2961,27 @@ pub fn linkat(olddirfd: usize, uptr_oldpath: UString, newdirfd: usize, uptr_newp
     }?;
 
     let new_parent_dentry = new_parent_dentry.get_mount_to();
-
     if new_parent_dentry.is_superblock_readonly()? {
         return Err(Errno::EROFS);
     }
 
-    if old_dentry.sno() != new_parent_dentry.sno() {
-        return Err(Errno::EXDEV); // Cross-device link
-    }
+    // Keep the last unlink ordered with the zero-link tmpfile exception.
+    let mut old_lifecycle = old_inode.lifecycle().write();
+    let claimed_tmpfile = if old_inode.fstat()?.st_nlink == 0 {
+        if !core::mem::take(&mut old_lifecycle.tmpfile_linkable) {
+            return Err(Errno::ENOENT);
+        }
+        true
+    } else {
+        false
+    };
 
-    new_parent_dentry.link(new_name.as_ref(), &old_dentry)?;
+    if let Err(err) = new_parent_dentry.link(new_name.as_ref(), old_sno, &old_inode) {
+        if claimed_tmpfile {
+            old_lifecycle.tmpfile_linkable = true;
+        }
+        return Err(err);
+    }
 
     Ok(0)
 }
@@ -2965,14 +3045,12 @@ pub fn renameat2(
     Ok(0)
 }
 
-fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
-    let dentry = dentry.clone().get_mount_to();
+fn do_chmod(dentry: &Arc<Dentry>, inode: &Arc<Inode>, mode: usize) -> SyscallRet {
     let mut mode = Mode::from_bits(mode as u32 & 0o7777).ok_or(Errno::EINVAL)?;
     if dentry.is_superblock_readonly()? {
         return Err(Errno::EROFS);
     }
 
-    let inode = dentry.get_inode();
     let (inode_uid, inode_gid) = inode.owner()?;
     let pcb = current::pcb();
     let fsuid = pcb.fsuid();
@@ -2991,13 +3069,11 @@ fn do_chmod(dentry: &Arc<Dentry>, mode: usize) -> SyscallRet {
     Ok(0)
 }
 
-fn do_chown(dentry: &Arc<Dentry>, uid: Option<Uid>, gid: Option<Uid>) -> SyscallRet {
-    let dentry = dentry.clone().get_mount_to();
+fn do_chown(dentry: &Arc<Dentry>, inode: &Arc<Inode>, uid: Option<Uid>, gid: Option<Uid>) -> SyscallRet {
     if dentry.is_superblock_readonly()? {
         return Err(Errno::EROFS);
     }
 
-    let inode = dentry.get_inode();
     let (inode_uid, inode_gid) = inode.owner()?;
     let pcb = current::pcb();
     let fsuid = pcb.fsuid();
@@ -3043,38 +3119,40 @@ pub fn fchmodat(dirfd: usize, uptr_path: UString, mode: usize) -> SyscallRet {
         current::with_root(|root| vfs::load_dentry_at(&root, &dir, &path))?
     };
 
-    do_chmod(&dentry, mode)
+    let dentry = dentry.get_mount_to();
+    let inode = dentry.get_inode();
+    do_chmod(&dentry, &inode, mode)
 }
 
 pub fn fchmod(fd: usize, mode: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
     let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
-    do_chmod(dentry, mode)
+    let inode = file.get_inode().ok_or(Errno::EINVAL)?;
+    do_chmod(dentry, inode, mode)
 }
 
 pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags: usize) -> SyscallRet {
     let flags = AtFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
-    let path = if flags.contains(AtFlags::AT_EMPTY_PATH) {
+    let path = if uptr_path.is_null() && flags.contains(AtFlags::AT_EMPTY_PATH) {
         String::new()
     } else {
-        uptr_path.should_not_null()?;
-        uptr_path.read_path()?
+        uptr_path.should_not_null()?.read_path()?
     };
 
     if path.is_empty() && !flags.contains(AtFlags::AT_EMPTY_PATH) {
         return Err(Errno::ENOENT);
     }
 
-    let dentry = if path.is_empty() {
+    let (dentry, inode) = if path.is_empty() {
         if dirfd as isize == AT_FDCWD {
-            current::with_cwd(|cwd| Ok(cwd))?
+            let dentry = current::with_cwd(|cwd| Ok(cwd))?.get_mount_to();
+            let inode = dentry.get_inode();
+            (dentry, inode)
         } else {
-            current::fdtable()
-                .lock()
-                .get(dirfd)?
-                .get_dentry()
-                .cloned()
-                .ok_or(Errno::EINVAL)?
+            let file = current::fdtable().lock().get(dirfd)?;
+            let dentry = file.get_dentry().cloned().ok_or(Errno::EINVAL)?;
+            let inode = file.get_inode().cloned().ok_or(Errno::EINVAL)?;
+            (dentry, inode)
         }
     } else {
         let helper = |root: &Arc<Dentry>, dir: &Arc<Dentry>| {
@@ -3084,7 +3162,7 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags:
                 vfs::load_dentry_at(root, dir, &path)
             }
         };
-        if path.starts_with('/') || dirfd as isize == AT_FDCWD {
+        let dentry = if path.starts_with('/') || dirfd as isize == AT_FDCWD {
             current::with_root_cwd(|root, cwd| helper(&root, &cwd))?
         } else {
             let dir = current::fdtable()
@@ -3095,26 +3173,28 @@ pub fn fchownat(dirfd: usize, uptr_path: UString, uid: usize, gid: usize, flags:
                 .clone();
             current::with_root(|root| helper(&root, &dir))?
         }
+        .get_mount_to();
+        let inode = dentry.get_inode();
+        (dentry, inode)
     };
 
     let uid = uid as Uid;
     let gid = gid as Uid;
-
-    let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
-    let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
-    do_chown(&dentry, uid, gid)
+    let uid = if uid == Uid::MAX { None } else { Some(uid) };
+    let gid = if gid == Uid::MAX { None } else { Some(gid) };
+    do_chown(&dentry, &inode, uid, gid)
 }
 
 pub fn fchown(fd: usize, uid: usize, gid: usize) -> SyscallRet {
     let file = current::fdtable().lock().get(fd)?;
+    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
+    let inode = file.get_inode().ok_or(Errno::EINVAL)?;
 
     let uid = uid as Uid;
     let gid = gid as Uid;
-
-    let dentry = file.get_dentry().ok_or(Errno::EINVAL)?;
-    let uid = if uid == Uid::MAX { None } else { Some(uid as Uid) };
-    let gid = if gid == Uid::MAX { None } else { Some(gid as Uid) };
-    do_chown(dentry, uid, gid)
+    let uid = if uid == Uid::MAX { None } else { Some(uid) };
+    let gid = if gid == Uid::MAX { None } else { Some(gid) };
+    do_chown(dentry, inode, uid, gid)
 }
 
 fn truncate_length(length: usize) -> SysResult<u64> {

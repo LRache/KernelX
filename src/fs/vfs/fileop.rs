@@ -218,7 +218,7 @@ pub fn create_file(
     inode.open_file(Some(dentry), flags)
 }
 
-pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysResult<Arc<dyn FileOps>> {
+pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode, linkable: bool) -> SysResult<Arc<dyn FileOps>> {
     let superblock = vfs().superblock_table.lock().get(dentry.sno()).ok_or(Errno::ENOENT)?;
     let raw_inode = superblock.create_temp(mode)?;
     let inode = vfs().cache.get_or_insert(
@@ -229,6 +229,7 @@ pub fn create_temp(dentry: &Arc<Dentry>, flags: FileFlags, mode: Mode) -> SysRes
         raw_inode,
     )?;
     let dentry = Arc::new(Dentry::new("", dentry, &inode, dentry.sno()));
+    inode.lifecycle().write().tmpfile_linkable = linkable;
 
     Ok(Arc::new(RandomAccessFile::new(inode, dentry, flags)))
 }

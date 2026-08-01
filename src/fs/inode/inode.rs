@@ -23,12 +23,17 @@ use super::{FileType, Mode, Owner};
 
 pub type Inode = dyn VfsInodeOps;
 
+#[derive(Default)]
+pub struct InodeLifecycleState {
+    pub tmpfile_linkable: bool,
+}
+
 pub struct VfsInode<T: InodeOps> {
     inner: T,
     file_mapping: Option<Arc<FileMapping>>,
     // Per canonical inode: reads and writes may proceed together, while
     // truncate and namespace removal require exclusive lifetime ownership.
-    lifecycle: SleepRwLockOnStack<()>,
+    lifecycle: SleepRwLockOnStack<InodeLifecycleState>,
     lock_state: SpinLock<InodeLockState>,
     seal_state: SpinLock<InodeSealState>,
     fifo_pipe: LazyInitedCell<Arc<PipeInner>>,
@@ -47,7 +52,7 @@ impl<T: InodeOps> VfsInode<T> {
             VfsInode {
                 inner,
                 file_mapping,
-                lifecycle: SleepRwLockOnStack::new((), "VfsInode::lifecycle"),
+                lifecycle: SleepRwLockOnStack::new(InodeLifecycleState::default(), "VfsInode::lifecycle"),
                 lock_state: SpinLock::new(InodeLockState::new(), "VfsInode::lock_state"),
                 seal_state: SpinLock::new(InodeSealState::new(), "VfsInode::seal_state"),
                 fifo_pipe: LazyInitedCell::new("Inode::fifo_pipe"),
@@ -354,7 +359,7 @@ pub trait VfsInodeOps: DowncastSync {
 
     fn as_seal_ops(&self) -> Option<&dyn InodeSealOps>;
 
-    fn lifecycle(&self) -> &SleepRwLockOnStack<()>;
+    fn lifecycle(&self) -> &SleepRwLockOnStack<InodeLifecycleState>;
 
     fn begin_write_open(&self) -> SysResult<()>;
 
@@ -474,7 +479,7 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
         Some(self)
     }
 
-    fn lifecycle(&self) -> &SleepRwLockOnStack<()> {
+    fn lifecycle(&self) -> &SleepRwLockOnStack<InodeLifecycleState> {
         &self.lifecycle
     }
 
