@@ -46,7 +46,7 @@ impl EventFd {
     }
 
     fn validate_io_len(len: usize) -> SysResult<()> {
-        if len == Self::IO_BYTES {
+        if len >= Self::IO_BYTES {
             Ok(())
         } else {
             Err(Errno::EINVAL)
@@ -149,7 +149,7 @@ impl FileOps for EventFd {
     fn read(&self, buf: &mut [u8]) -> SysResult<usize> {
         Self::validate_io_len(buf.len())?;
         let value = self.read_value()?;
-        buf.copy_from_slice(&value.to_ne_bytes());
+        buf[..Self::IO_BYTES].copy_from_slice(&value.to_ne_bytes());
         Ok(Self::IO_BYTES)
     }
 
@@ -162,7 +162,7 @@ impl FileOps for EventFd {
 
     fn write(&self, buf: &[u8]) -> SysResult<usize> {
         Self::validate_io_len(buf.len())?;
-        let value = u64::from_ne_bytes(buf.try_into().unwrap());
+        let value = u64::from_ne_bytes(buf[..Self::IO_BYTES].try_into().unwrap());
         self.write_value(value)?;
         Ok(Self::IO_BYTES)
     }
