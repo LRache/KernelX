@@ -19,6 +19,8 @@ pub enum SeekWhence {
     BEG,
     CUR,
     END,
+    DATA,
+    HOLE,
 }
 
 #[derive(TryFromPrimitive)]

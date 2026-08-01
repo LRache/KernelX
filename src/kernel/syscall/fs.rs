@@ -1401,8 +1401,8 @@ pub fn lseek(fd: usize, offset: usize, how: usize) -> SyscallRet {
         0 => (offset, SeekWhence::BEG),
         1 => (offset, SeekWhence::CUR),
         2 => (offset, SeekWhence::END),
-        3 => (0, SeekWhence::BEG),
-        4 => (0, SeekWhence::END),
+        3 => (offset, SeekWhence::DATA),
+        4 => (offset, SeekWhence::HOLE),
         _ => return Err(Errno::EINVAL),
     };
 

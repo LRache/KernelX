@@ -159,6 +159,25 @@ impl FileOps for RandomAccessFile {
                 }
                 size as isize + offset
             }
+            SeekWhence::DATA => {
+                if offset < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                if offset as u64 >= self.inode.size()? {
+                    return Err(Errno::ENXIO);
+                }
+                offset
+            }
+            SeekWhence::HOLE => {
+                if offset < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                let size = self.inode.size()?;
+                if offset as u64 >= size {
+                    return Err(Errno::ENXIO);
+                }
+                isize::try_from(size).map_err(|_| Errno::EOVERFLOW)?
+            }
         };
 
         if new_pos < 0 {
