@@ -55,8 +55,8 @@ impl Utsname {
         let release = "6.0.0";
         ustname.release[..release.len()].copy_from_slice(release.as_bytes());
 
-        let machine = b"riscv64";
-        ustname.machine[..machine.len()].copy_from_slice(machine);
+        let machine = concat!(env!("ARCH"), env!("ARCH_BITS"));
+        ustname.machine[..machine.len()].copy_from_slice(machine.as_bytes());
 
         ustname
     }
