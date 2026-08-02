@@ -89,6 +89,7 @@ arch_export! {
 
     is_kernel_addr(addr: usize) -> bool;
     elf_native_machine() -> u16;
+    auxv_hwcap() -> usize;
     kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction>;
     apply_kmodule_relocation(relocation_type: u32, place: &mut [u8], value: Option<KModuleRelocationValue>) -> SysResult<()>;
     flush_kmodule_icache() -> ();

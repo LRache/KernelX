@@ -320,6 +320,17 @@ impl ArchTrait for Arch {
         abi::EM_LOONGARCH
     }
 
+    fn auxv_hwcap() -> usize {
+        const CPUCFG1_UAL: u32 = 1 << 20;
+        const HWCAP_LOONGARCH_UAL: usize = 1 << 2;
+
+        if csr::cpucfg(1) & CPUCFG1_UAL != 0 {
+            HWCAP_LOONGARCH_UAL
+        } else {
+            0
+        }
+    }
+
     fn kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction> {
         super::kmodule::relocation_action(relocation_type)
     }

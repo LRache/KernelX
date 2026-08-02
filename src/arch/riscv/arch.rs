@@ -356,6 +356,17 @@ impl ArchTrait for Arch {
         abi::EM_RISCV
     }
 
+    fn auxv_hwcap() -> usize {
+        // Linux assigns each RISC-V single-letter ISA extension to its
+        // alphabetic bit position. KernelX targets rv64gc (IMAFDC).
+        (1 << (b'I' - b'A'))
+            | (1 << (b'M' - b'A'))
+            | (1 << (b'A' - b'A'))
+            | (1 << (b'F' - b'A'))
+            | (1 << (b'D' - b'A'))
+            | (1 << (b'C' - b'A'))
+    }
+
     fn kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction> {
         super::kmodule::relocation_action(relocation_type)
     }

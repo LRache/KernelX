@@ -138,6 +138,7 @@ pub trait ArchTrait {
     fn is_kernel_addr(addr: usize) -> bool;
 
     fn elf_native_machine() -> u16;
+    fn auxv_hwcap() -> usize;
 
     fn kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction>;
     fn apply_kmodule_relocation(
