@@ -7,7 +7,7 @@ use crate::fs::file::RandomAccessFile;
 use crate::fs::{Inode, Mode, vfs};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::event::{Event, FileEvent, TimerTable, WaitQueue, timer};
-use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SiSigChld, SignalActionTable, SignalNum, signum};
+use crate::kernel::ipc::{KSiFields, PendingSignalQueue, SiCode, SignalActionTable, SignalNum, signum};
 use crate::kernel::main::deinit;
 use crate::kernel::scheduler::{self, WakeupAction, current, tid};
 use crate::kernel::task::def::TaskCloneFlags;
@@ -338,8 +338,46 @@ impl PCB {
         self.replace_exec_inode(None);
 
         *self.tasks_time_usage_capture.lock() = self.tasks_usage_time();
-        *self.child_wait_status.lock() = None;
-        *self.state.lock() = State::Exited(status);
+
+        let mut children = {
+            let mut child_wait = self.child_wait.lock();
+            child_wait.children.split_off(0)
+        };
+        with_initpcb(|init_process| {
+            let pending_notifications = {
+                let mut init_child_wait = init_process.child_wait.lock();
+                init_child_wait.children.reserve(children.len());
+                let mut pending_notifications = Vec::new();
+
+                for child in children.drain(..) {
+                    let pending_status = {
+                        let mut parent = child.parent.lock();
+                        *parent = Some(init_process.clone());
+                        child.set_wait_parent_tid(init_process.pid());
+                        init_child_wait.children.push(child.clone());
+                        child.pending_parent_wait_status()
+                    };
+
+                    if let Some(status) = pending_status {
+                        pending_notifications.push((child, status));
+                    }
+                }
+
+                pending_notifications
+            };
+
+            for (child, status) in pending_notifications {
+                child.notify_parent_wait_status(init_process, init_process.pid(), status);
+            }
+        });
+
+        let parent_notification = {
+            let parent = self.parent.lock();
+            *self.child_wait_status.lock() = None;
+            *self.state.lock() = State::Exited(status);
+            parent.as_ref().map(|parent| (parent.clone(), self.wait_parent_tid()))
+        };
+
         self.pidfd_waiters.lock().wake_all(|event| match event {
             Event::Poll { waker, .. } => Event::Poll {
                 event: FileEvent::READ_READY,
@@ -348,34 +386,9 @@ impl PCB {
             event => event,
         });
 
-        if let Some(parent) = self.parent.lock().as_ref() {
-            parent.wake_waiting_tasks(self.pid, self.wait_parent_tid());
-
-            let fields = KSiFields::SigChld(SiSigChld {
-                si_pid: self.pid,
-                si_uid: current::uid(),
-                si_status: status.si_status(),
-                si_utime: 0,
-                si_stime: 0,
-            });
-            if !self.exit_signal.is_empty() {
-                parent
-                    .send_signal(self.exit_signal, SiCode::SI_KERNEL, 0, fields, None)
-                    .unwrap_or(());
-            }
+        if let Some((parent, wait_parent_tid)) = parent_notification {
+            self.notify_parent_wait_status(&parent, wait_parent_tid, WaitStatus::Exited(status));
         }
-
-        let mut children = {
-            let mut child_wait = self.child_wait.lock();
-            child_wait.children.split_off(0)
-        };
-        with_initpcb(|init_process| {
-            children.iter_mut().for_each(|c| {
-                *c.parent.lock() = Some(init_process.clone());
-                c.set_wait_parent_tid(init_process.pid());
-            });
-            init_process.child_wait.lock().children.append(&mut children);
-        });
     }
 
     fn replace_exec_inode(&self, new_inode: Option<Arc<Inode>>) {

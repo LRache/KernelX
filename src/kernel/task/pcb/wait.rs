@@ -126,78 +126,86 @@ impl PCB {
         }
     }
 
+    /// Notifies an explicit parent about a process-level waitable state.
+    pub(super) fn notify_parent_wait_status(&self, parent: &PCB, wait_parent_tid: Tid, status: WaitStatus) {
+        parent.wake_waiting_tasks(self.pid, wait_parent_tid);
+
+        let (signal, si_code, si_status) = match status {
+            WaitStatus::Exited(status) => (self.exit_signal, SiCode::SI_KERNEL, status.si_status()),
+            WaitStatus::Stopped(signum) => {
+                let send_sigchld = !parent
+                    .signal
+                    .actions
+                    .lock()
+                    .get(signum::SIGCHLD)
+                    .flags
+                    .contains(SignalActionFlags::SA_NOCLDSTOP);
+                if !send_sigchld {
+                    return;
+                }
+                (signum::SIGCHLD, SiCode::CLD_STOPPED, signum.num() as i32)
+            }
+            WaitStatus::Continued => {
+                let send_sigchld = !parent
+                    .signal
+                    .actions
+                    .lock()
+                    .get(signum::SIGCHLD)
+                    .flags
+                    .contains(SignalActionFlags::SA_NOCLDSTOP);
+                if !send_sigchld {
+                    return;
+                }
+                (signum::SIGCHLD, SiCode::CLD_CONTINUED, signum::SIGCONT.num() as i32)
+            }
+            WaitStatus::PtraceStopped(_) => unreachable!("ptrace stops are notified through the tracer"),
+        };
+
+        if signal.is_empty() {
+            return;
+        }
+
+        let fields = KSiFields::SigChld(SiSigChld {
+            si_pid: self.pid,
+            si_uid: self.uid(),
+            si_status,
+            si_utime: 0,
+            si_stime: 0,
+        });
+        parent.send_signal(signal, si_code, 0, fields, None).unwrap_or(());
+    }
+
     /// Records a job-control stop and notifies the parent process.
     pub fn notify_stopped(&self, signum: SignalNum) {
-        let should_notify = {
+        let notification_target = {
+            let parent = self.parent.lock();
             let mut child_wait_status = self.child_wait_status.lock();
             if matches!(*child_wait_status, Some(ChildWaitStatus::Stopped { .. })) {
-                false
+                None
             } else {
                 *child_wait_status = Some(ChildWaitStatus::Stopped {
                     signum,
                     reported: false,
                 });
-                true
+                parent.as_ref().map(|parent| (parent.clone(), self.wait_parent_tid()))
             }
         };
 
-        if !should_notify {
-            return;
-        }
-
-        if let Some(parent) = self.parent.lock().as_ref() {
-            parent.wake_waiting_tasks(self.pid, self.wait_parent_tid());
-
-            let send_sigchld = !parent
-                .signal
-                .actions
-                .lock()
-                .get(signum::SIGCHLD)
-                .flags
-                .contains(SignalActionFlags::SA_NOCLDSTOP);
-
-            if send_sigchld {
-                let fields = KSiFields::SigChld(SiSigChld {
-                    si_pid: self.pid,
-                    si_uid: self.uid(),
-                    si_status: signum.num() as i32,
-                    si_utime: 0,
-                    si_stime: 0,
-                });
-                parent
-                    .send_signal(signum::SIGCHLD, SiCode::CLD_STOPPED, 0, fields, None)
-                    .unwrap_or(());
-            }
+        if let Some((parent, wait_parent_tid)) = notification_target {
+            self.notify_parent_wait_status(&parent, wait_parent_tid, WaitStatus::Stopped(signum));
         }
     }
 
     /// Records a continued state and notifies the parent process.
     pub fn notify_continued(&self) {
-        *self.child_wait_status.lock() = Some(ChildWaitStatus::Continued { reported: false });
+        let notification_target = {
+            let parent = self.parent.lock();
+            *self.child_wait_status.lock() = Some(ChildWaitStatus::Continued { reported: false });
+            parent.as_ref().map(|parent| (parent.clone(), self.wait_parent_tid()))
+        };
 
-        if let Some(parent) = self.parent.lock().as_ref() {
-            parent.wake_waiting_tasks(self.pid, self.wait_parent_tid());
-
-            let send_sigchld = !parent
-                .signal
-                .actions
-                .lock()
-                .get(signum::SIGCHLD)
-                .flags
-                .contains(SignalActionFlags::SA_NOCLDSTOP);
-
-            if send_sigchld {
-                let fields = KSiFields::SigChld(SiSigChld {
-                    si_pid: self.pid,
-                    si_uid: self.uid(),
-                    si_status: signum::SIGCONT.num() as i32,
-                    si_utime: 0,
-                    si_stime: 0,
-                });
-                parent
-                    .send_signal(signum::SIGCHLD, SiCode::CLD_CONTINUED, 0, fields, None)
-                    .unwrap_or(());
-            }
+        if let Some((parent, wait_parent_tid)) = notification_target {
+            self.notify_parent_wait_status(&parent, wait_parent_tid, WaitStatus::Continued);
         }
     }
 
@@ -286,6 +294,22 @@ impl PCB {
             Some(ChildWaitStatus::Stopped { reported: false, .. }) => options.wait_stopped,
             Some(ChildWaitStatus::Continued { reported: false }) => options.wait_continued,
             _ => false,
+        }
+    }
+
+    /// Returns a parent-visible state that still needs to follow a reparented child.
+    pub(super) fn pending_parent_wait_status(&self) -> Option<WaitStatus> {
+        if let State::Exited(status) = *self.state.lock() {
+            return Some(WaitStatus::Exited(status));
+        }
+
+        match *self.child_wait_status.lock() {
+            Some(ChildWaitStatus::Stopped {
+                signum,
+                reported: false,
+            }) => Some(WaitStatus::Stopped(signum)),
+            Some(ChildWaitStatus::Continued { reported: false }) => Some(WaitStatus::Continued),
+            _ => None,
         }
     }
 

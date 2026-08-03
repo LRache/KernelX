@@ -87,9 +87,14 @@ pub fn with_initpcb<F, R>(f: F) -> R
 where
     F: FnOnce(&Arc<PCB>) -> R,
 {
-    let tcbs = TCBS.lock();
-    let tcb = tcbs.get(&INIT_UTASK_TID).expect("Init process not created yet");
-    f(tcb.parent())
+    let init_process = {
+        let tcbs = TCBS.lock();
+        tcbs.get(&INIT_UTASK_TID)
+            .expect("Init process not created yet")
+            .parent()
+            .clone()
+    };
+    f(&init_process)
 }
 
 pub fn insert(tcb: Arc<TCB>) {
