@@ -93,11 +93,13 @@ impl PrivateAnonymousArea {
         // Allocate before taking the old page lock: allocation may invoke
         // reclaim, which must never select this page and wait on a lock
         // held by the allocating task itself.
-        let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
+        // No zeroing needed: the whole page is overwritten by the copy below
+        // before the frame can be mapped anywhere.
+        let new_frame = PhysPageFrame::alloc_with_shrink();
         let mut old_guard = old_page.ensure_page().ok()?;
         // Copy the content BEFORE installing the new frame into the PTE,
         // otherwise a concurrent fault on `uaddr` from another task/CPU
-        // could observe the zeroed page between the PTE replacement and
+        // could observe a partially copied page between the PTE replacement and
         // the copy.
         new_frame.slice().copy_from_slice(old_guard.frame().slice());
         let page_index = self

@@ -162,7 +162,9 @@ impl PrivateFileMapArea {
 
         // Allocate before taking the source page lock: allocation may reclaim
         // a file page and must not wait on a lock held by this task.
-        let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
+        // No zeroing needed: the whole page is overwritten by the copy below
+        // before the frame can be mapped anywhere.
+        let new_frame = PhysPageFrame::alloc_with_shrink();
         let copied = match &source {
             SharedFilePage::Stable(source_frame) => {
                 self.install_anonymous_copy(page_index, source_frame, new_frame, addrspace)
@@ -218,7 +220,9 @@ impl PrivateFileMapArea {
         // Allocate before taking the old page lock: allocation may invoke
         // reclaim, which must never select this page and wait on a lock
         // held by the allocating task itself.
-        let new_frame = PhysPageFrame::alloc_with_shrink_zeroed();
+        // No zeroing needed: the whole page is overwritten by the copy below
+        // before the frame can be mapped anywhere.
+        let new_frame = PhysPageFrame::alloc_with_shrink();
         let mut old_guard = old_page.ensure_page().ok()?;
 
         new_frame.slice().copy_from_slice(old_guard.frame().slice());
