@@ -14,6 +14,9 @@ use crate::klib::SpinLock;
 
 use super::super::slots::AreaPageSlots;
 
+const FAULT_AROUND_PAGES: usize = 2;
+const FAULT_AROUND_THRESHOLD: u8 = 2;
+
 enum PrivateFilePage {
     Source(SharedFilePage),
     Anonymous(FrameState),
@@ -32,6 +35,9 @@ pub struct PrivateFileMapArea {
     page_base: usize,
 
     frames: AreaPageSlots<PrivateFilePage>,
+
+    expected_fault_index: Option<usize>,
+    sequential_faults: u8,
 }
 
 impl PrivateFileMapArea {
@@ -61,6 +67,8 @@ impl PrivateFileMapArea {
             family_registration: AnonMapFamilyRegistration::new_root(),
             page_base: 0,
             frames: AreaPageSlots::new(page_count),
+            expected_fault_index: None,
+            sequential_faults: 0,
         }
     }
 
@@ -258,6 +266,34 @@ impl PrivateFileMapArea {
         addrspace.mmap_replace_swappable(uaddr, &guard, self.perm - MapPerm::W);
         Some(kpage)
     }
+
+    fn map_source_page(
+        page_uaddr: usize,
+        perm: MapPerm,
+        page: &SharedFilePage,
+        addrspace: &AddrSpace,
+    ) -> Result<(), MemoryFaultError> {
+        match page {
+            SharedFilePage::Stable(frame) => {
+                let cpu_mask = {
+                    let mut pagetable = addrspace.pagetable().lock();
+                    pagetable.mmap_replace(page_uaddr, frame, perm - MapPerm::W);
+                    pagetable.active_cpu_mask()
+                };
+                arch::flush_tlb_cpu_mask(cpu_mask);
+            }
+            SharedFilePage::Swappable(page) => {
+                let guard = page.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
+                addrspace.mmap_replace_swappable(page_uaddr, &guard, perm - MapPerm::W);
+            }
+        }
+        Ok(())
+    }
+
+    fn reset_fault_around(&mut self) {
+        self.expected_fault_index = None;
+        self.sequential_faults = 0;
+    }
 }
 
 impl Area for PrivateFileMapArea {
@@ -302,6 +338,7 @@ impl Area for PrivateFileMapArea {
         addrspace: &AddrSpace,
         map_change_notifier: &MapChangeNotifier<'_>,
     ) -> Option<PinPageFrame> {
+        self.reset_fault_around();
         if uaddr < self.ubase || !self.perm.contains(MapPerm::W) {
             return None;
         }
@@ -403,7 +440,11 @@ impl Area for PrivateFileMapArea {
             ),
             page_base: self.page_base,
             frames,
+            expected_fault_index: None,
+            sequential_faults: 0,
         };
+
+        self.reset_fault_around();
 
         Box::new(new_area)
     }
@@ -423,12 +464,11 @@ impl Area for PrivateFileMapArea {
         if page_index >= self.frames.len() {
             return Err(MemoryFaultError::SegvMapError);
         }
-
-        let remap_allocated_on_write = matches!(
-            self.frames.get(page_index),
-            Some(PrivateFilePage::Anonymous(FrameState::Allocated(_)))
-        );
         if access_type == MemAccessType::Write {
+            let remap_allocated_on_write = matches!(
+                self.frames.get(page_index),
+                Some(PrivateFilePage::Anonymous(FrameState::Allocated(_)))
+            );
             self.translate_write(uaddr, addrspace, map_change_notifier)
                 .map(|_| ())
                 .ok_or(MemoryFaultError::BusAddressError)?;
@@ -443,34 +483,77 @@ impl Area for PrivateFileMapArea {
             return Ok(());
         }
 
-        if !matches!(self.frames.get(page_index), Some(PrivateFilePage::Anonymous(_))) {
-            self.ensure_source_page(page_index)
-                .ok_or(MemoryFaultError::BusAddressError)?;
-        }
-
-        let page_uaddr = self.page_uaddr(page_index).ok_or(MemoryFaultError::SegvMapError)?;
-        match self.frames.get(page_index).ok_or(MemoryFaultError::BusAddressError)? {
-            PrivateFilePage::Source(SharedFilePage::Stable(frame)) => {
-                let cpu_mask = {
-                    let mut pagetable = addrspace.pagetable().lock();
-                    pagetable.mmap_replace(page_uaddr, frame, self.perm - MapPerm::W);
-                    pagetable.active_cpu_mask()
-                };
-                arch::flush_tlb_cpu_mask(cpu_mask);
-            }
-            PrivateFilePage::Source(SharedFilePage::Swappable(page)) => {
-                let guard = page.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
-                addrspace.mmap_replace_swappable(page_uaddr, &guard, self.perm - MapPerm::W);
-            }
-            PrivateFilePage::Anonymous(FrameState::Cow(frame)) => {
+        let source_page_absent = match self.frames.get(page_index) {
+            None => true,
+            Some(PrivateFilePage::Source(_)) => false,
+            Some(PrivateFilePage::Anonymous(FrameState::Cow(frame))) => {
                 self.map_cow_page(page_index, frame, addrspace)
                     .ok_or(MemoryFaultError::BusAddressError)?;
+                self.reset_fault_around();
+                return Ok(());
             }
-            PrivateFilePage::Anonymous(FrameState::Allocated(frame)) => {
-                let guard = frame.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
-                addrspace.mmap_replace_swappable(page_uaddr, &guard, self.perm);
+            Some(PrivateFilePage::Anonymous(FrameState::Allocated(frame))) => {
+                {
+                    let guard = frame.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
+                    let page_uaddr = self.page_uaddr(page_index).ok_or(MemoryFaultError::SegvMapError)?;
+                    addrspace.mmap_replace_swappable(page_uaddr, &guard, self.perm);
+                }
+                self.reset_fault_around();
+                return Ok(());
             }
+        };
+
+        let page_uaddr = self.page_uaddr(page_index).ok_or(MemoryFaultError::SegvMapError)?;
+        let perm = self.perm;
+        let source = self
+            .ensure_source_page(page_index)
+            .ok_or(MemoryFaultError::BusAddressError)?;
+        Self::map_source_page(page_uaddr, perm, source, addrspace)?;
+
+        if !source_page_absent {
+            self.reset_fault_around();
+            return Ok(());
         }
+
+        let sequential = self.expected_fault_index == Some(page_index);
+        self.sequential_faults = if sequential {
+            self.sequential_faults.saturating_add(1)
+        } else {
+            1
+        };
+        let Some(mut expected_fault_index) = page_index.checked_add(1) else {
+            self.reset_fault_around();
+            return Ok(());
+        };
+        self.expected_fault_index = Some(expected_fault_index);
+
+        if self.sequential_faults < FAULT_AROUND_THRESHOLD {
+            return Ok(());
+        }
+
+        // Premapped pages do not fault, so the next expected fault is the
+        // exclusive end of the successfully mapped window.
+        let fault_around_end = expected_fault_index
+            .saturating_add(FAULT_AROUND_PAGES)
+            .min(self.frames.len());
+        for fault_around_index in expected_fault_index..fault_around_end {
+            if matches!(self.frames.get(fault_around_index), Some(PrivateFilePage::Anonymous(_))) {
+                break;
+            }
+            let page_uaddr = self.page_uaddr(fault_around_index);
+            let perm = self.perm;
+            let Some(source) = self.ensure_source_page(fault_around_index) else {
+                break;
+            };
+            let Some(page_uaddr) = page_uaddr else {
+                break;
+            };
+            if Self::map_source_page(page_uaddr, perm, source, addrspace).is_err() {
+                break;
+            }
+            expected_fault_index = fault_around_index + 1;
+        }
+        self.expected_fault_index = Some(expected_fault_index);
 
         Ok(())
     }
@@ -505,6 +588,7 @@ impl Area for PrivateFileMapArea {
         let split_offset = split_index
             .checked_mul(arch::PGSIZE)
             .expect("private file split offset overflow");
+        self.reset_fault_around();
         let remaining_frames = self.frames.split_off(split_index);
 
         let new_file_length = self.file_length.saturating_sub(split_offset);
@@ -556,12 +640,15 @@ impl Area for PrivateFileMapArea {
             family_registration: right_family_registration,
             page_base: right_page_base,
             frames: remaining_frames,
+            expected_fault_index: None,
+            sequential_faults: 0,
         };
 
         (self, Box::new(new_area))
     }
 
     fn set_perm(&mut self, perm: MapPerm, pagetable: &SpinLock<PageTable>, tlb_cpu_mask: &mut usize) {
+        self.reset_fault_around();
         self.perm = perm;
 
         for (page_index, state) in self.frames.iter() {
