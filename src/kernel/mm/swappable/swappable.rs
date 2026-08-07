@@ -343,6 +343,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
     }
 
     fn pin_resident_locked(self: &Arc<Self>, inner: &mut SwappableFrameInner<B>, write: bool) -> SwappableFramePin<B> {
+        let old_class = Self::reclaim_class_locked(inner);
         let kpage = match &mut inner.state {
             SwappableFrameState::In { frame, dirty, .. } => {
                 *dirty |= write;
@@ -353,9 +354,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
             }
         };
         inner.pins = inner.pins.checked_add(1).expect("swappable frame pin count overflow");
-        if inner.backend.is_swappable() {
-            self.relink_locked(inner);
-        }
+        self.relink_if_class_changed_locked(inner, old_class);
         SwappableFramePin {
             owner: self.clone(),
             kpage,
@@ -383,6 +382,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
     /// all of its page-table updates into one TLB invalidation.
     pub fn collect_mapped_access_dirty_no_flush(self: &Arc<Self>) -> (bool, usize) {
         let mut inner = self.inner.lock();
+        let old_class = Self::reclaim_class_locked(&inner);
         let (access_dirty, cpu_mask) = {
             let inner = &*inner;
             let SwappableFrameState::In { frame, .. } = &inner.state else {
@@ -392,27 +392,23 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
             (access_dirty, cpu_mask)
         };
 
-        let is_swappable = inner.backend.is_swappable();
         let SwappableFrameState::In { dirty, referenced, .. } = &mut inner.state else {
             unreachable!();
         };
         *dirty |= access_dirty.dirty;
         *referenced |= access_dirty.accessed;
         let dirty = *dirty;
-        if is_swappable && (access_dirty.accessed || access_dirty.dirty) {
-            self.relink_locked(&inner);
-        }
+        self.relink_if_class_changed_locked(&inner, old_class);
         (dirty, cpu_mask)
     }
 
     pub fn clear_dirty(self: &Arc<Self>) {
         let mut inner = self.inner.lock();
+        let old_class = Self::reclaim_class_locked(&inner);
         if let SwappableFrameState::In { dirty, .. } = &mut inner.state {
             *dirty = false;
         }
-        if inner.backend.is_swappable() {
-            self.relink_locked(&inner);
-        }
+        self.relink_if_class_changed_locked(&inner, old_class);
     }
 
     pub fn is_invalid(&self) -> bool {
@@ -478,6 +474,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
         f: impl FnOnce(&PhysPageFrame) -> (R, AccessDirty),
     ) -> Option<R> {
         let mut inner = self.inner.lock();
+        let old_class = Self::reclaim_class_locked(&inner);
         let SwappableFrameState::In {
             frame,
             dirty,
@@ -490,9 +487,7 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
         let accessed = accessed || access_dirty.accessed;
         *referenced |= accessed;
         *dirty |= access_dirty.dirty;
-        if inner.backend.is_swappable() && (accessed || access_dirty.dirty) {
-            self.relink_locked(&inner);
-        }
+        self.relink_if_class_changed_locked(&inner, old_class);
         Some(result)
     }
 
@@ -559,15 +554,13 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
             SwappableFrameState::Out | SwappableFrameState::Invalidating { .. } | SwappableFrameState::Invalid => None,
         };
         if let Some(access_dirty) = access_dirty {
-            let is_swappable = inner.backend.is_swappable();
+            let old_class = Self::reclaim_class_locked(&inner);
             let SwappableFrameState::In { dirty, referenced, .. } = &mut inner.state else {
                 unreachable!();
             };
             *dirty |= access_dirty.dirty;
             *referenced |= access_dirty.accessed;
-            if is_swappable && (access_dirty.accessed || access_dirty.dirty) {
-                self.relink_locked(&inner);
-            }
+            self.relink_if_class_changed_locked(&inner, old_class);
         }
     }
 
@@ -585,13 +578,12 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
 
     pub fn add_mapping_ref(self: &Arc<Self>) {
         let mut inner = self.inner.lock();
+        let old_class = Self::reclaim_class_locked(&inner);
         inner.mapping_refs = inner
             .mapping_refs
             .checked_add(1)
             .expect("swappable frame mapping reference count overflow");
-        if inner.backend.is_swappable() {
-            self.relink_locked(&inner);
-        }
+        self.relink_if_class_changed_locked(&inner, old_class);
     }
 
     pub fn release_mapping_ref(self: &Arc<Self>) -> usize {
@@ -755,6 +747,12 @@ impl<B: SwappableBackendOps> SwappableFrame<B> {
         let page: Arc<dyn SwappableFrameOps> = self.clone();
         super::swapper::relink(page, Self::reclaim_class_locked(inner));
     }
+
+    fn relink_if_class_changed_locked(self: &Arc<Self>, inner: &SwappableFrameInner<B>, old_class: ReclaimClass) {
+        if inner.backend.is_swappable() && Self::reclaim_class_locked(inner) != old_class {
+            self.relink_locked(inner);
+        }
+    }
 }
 
 impl<B: SwappableBackendOps> SwappableFrameOps for SwappableFrame<B> {
@@ -806,14 +804,12 @@ impl<B: SwappableBackendOps> SwappableFrameGuard<'_, B> {
 
     pub fn mark_dirty(&mut self) {
         let inner = &mut self.inner;
-        let is_swappable = inner.backend.is_swappable();
+        let old_class = SwappableFrame::<B>::reclaim_class_locked(inner);
         let SwappableFrameState::In { dirty, .. } = &mut inner.state else {
             unreachable!();
         };
         *dirty = true;
-        if is_swappable {
-            self.owner.relink_locked(inner);
-        }
+        self.owner.relink_if_class_changed_locked(inner, old_class);
     }
 
     pub fn pin_page(&mut self, write: bool) -> SwappableFramePin<B> {
@@ -823,14 +819,12 @@ impl<B: SwappableBackendOps> SwappableFrameGuard<'_, B> {
     /// Takes ownership of the software dirty state collected before writeback.
     pub fn take_dirty(&mut self) -> bool {
         let inner = &mut self.inner;
-        let is_swappable = inner.backend.is_swappable();
+        let old_class = SwappableFrame::<B>::reclaim_class_locked(inner);
         let SwappableFrameState::In { dirty, .. } = &mut inner.state else {
             unreachable!();
         };
         let dirty = core::mem::replace(dirty, false);
-        if is_swappable {
-            self.owner.relink_locked(inner);
-        }
+        self.owner.relink_if_class_changed_locked(inner, old_class);
         dirty
     }
 
@@ -849,14 +843,10 @@ impl<B: SwappableBackendOps> ResidentPageGuard for SwappableFrameGuard<'_, B> {
 impl<B: SwappableBackendOps> Drop for SwappableFrameGuard<'_, B> {
     fn drop(&mut self) {
         let inner = &mut self.inner;
-        let is_swappable = inner.backend.is_swappable();
         let SwappableFrameState::In { referenced, .. } = &mut inner.state else {
             unreachable!();
         };
         *referenced = true;
-        if is_swappable {
-            self.owner.relink_locked(inner);
-        }
     }
 }
 
@@ -878,13 +868,9 @@ impl<B: SwappableBackendOps> Drop for SwappableFramePin<B> {
         inner.pins -= 1;
         let last_pin = inner.pins == 0;
         let can_finish_invalidation = last_pin && !inner.tlb_flush_pending;
-        let is_swappable = inner.backend.is_swappable();
         match &mut inner.state {
             SwappableFrameState::In { referenced, .. } => {
                 *referenced = true;
-                if is_swappable {
-                    self.owner.relink_locked(&inner);
-                }
             }
             SwappableFrameState::Invalidating { .. } if can_finish_invalidation => {
                 inner.state = SwappableFrameState::Invalid;
