@@ -17,7 +17,7 @@ impl Context {
         let raw = self.read_fs_block(pblk)?;
         let block = parse_dir_block(raw, pblk, self.metadata_csum)?;
 
-        if self.metadata_csum {
+        if self.metadata_csum && !cfg!(feature = "ext4-native-skip-crc32c-verify") {
             self.verify_dir_block_checksum(dir_ino, dir_generation, &block.raw)?;
         }
 

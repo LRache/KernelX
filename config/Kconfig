@@ -286,6 +286,15 @@ config VIRTIO_BLOCK_PAGE_CACHE
 	  Enable a page-sized write-back cache for virtio block devices. Dirty pages
 	  are written back on flush or cache eviction.
 
+config EXT4_NATIVE_SKIP_CRC32C_VERIFY
+	bool "Skip ext4 native CRC32C verification"
+	default n
+	help
+	  Skip read-side CRC32C verification for ext4 native metadata. Checksum
+	  generation and writeback remain enabled. This option can allow corrupted
+	  metadata to be accepted and is intended only for performance comparison
+	  or debugging.
+
 endmenu
 
 menu "Boot Configuration"

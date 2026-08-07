@@ -187,7 +187,9 @@ impl Context {
                     Errno::EIO,
                 );
             }
-            sb.verify_checksum()?;
+            if !cfg!(feature = "ext4-native-skip-crc32c-verify") {
+                sb.verify_checksum()?;
+            }
         }
 
         let log_block_size = sb.log_block_size()?;
@@ -292,7 +294,7 @@ impl Context {
         self.read_device(EXT4_SUPERBLOCK_OFFSET as u64, &mut raw)?;
         let sb = Ext4Superblock::parse_raw(raw)?;
 
-        if self.metadata_csum {
+        if self.metadata_csum && !cfg!(feature = "ext4-native-skip-crc32c-verify") {
             sb.verify_checksum()?;
         }
 

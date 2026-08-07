@@ -163,6 +163,7 @@ def build_cargo_info(config: dict[str, str]) -> dict:
         ("SCHEDULER_BLOCK_REASON_DEBUG", "scheduler-block-reason-debug"),
         ("FANOTIFY", "fanotify"),
         ("VIRTIO_BLOCK_PAGE_CACHE", "virtio-block-page-cache"),
+        ("EXT4_NATIVE_SKIP_CRC32C_VERIFY", "ext4-native-skip-crc32c-verify"),
         ("NOLOCK", "nolock"),
         ("BACKTRACE", "backtrace"),
     ]

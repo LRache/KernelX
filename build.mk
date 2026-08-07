@@ -117,6 +117,10 @@ ifeq ($(CONFIG_VIRTIO_BLOCK_PAGE_CACHE),y)
 RUST_FEATURES += virtio-block-page-cache
 endif
 
+ifeq ($(CONFIG_EXT4_NATIVE_SKIP_CRC32C_VERIFY),y)
+RUST_FEATURES += ext4-native-skip-crc32c-verify
+endif
+
 ifeq ($(CONFIG_NOLOCK),y)
 RUST_FEATURES += nolock
 endif

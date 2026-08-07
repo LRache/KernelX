@@ -104,7 +104,7 @@ impl Context {
         let raw = &block[off_in_block..end];
         let inode = Ext4Inode::parse_inode(ino, raw)?;
 
-        if self.metadata_csum {
+        if self.metadata_csum && !cfg!(feature = "ext4-native-skip-crc32c-verify") {
             self.verify_inode_checksum(&inode)?;
         }
 

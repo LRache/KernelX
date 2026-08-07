@@ -14,7 +14,7 @@ impl Context {
         let raw = self.read_fs_block(pblk)?;
         let block = parse_extent_block_bytes(raw, pblk, false, self.block_size as usize)?;
 
-        if self.metadata_csum {
+        if self.metadata_csum && !cfg!(feature = "ext4-native-skip-crc32c-verify") {
             self.verify_extent_block_checksum(owner_ino, owner_generation, &block)?;
         }
 

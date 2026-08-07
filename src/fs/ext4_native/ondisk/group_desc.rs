@@ -48,7 +48,10 @@ impl Context {
     ) -> SysResult<Ext4BitmapBlock> {
         let raw = self.read_fs_block(gd.block_bitmap)?;
 
-        if self.metadata_csum && (gd.flags & EXT4_BG_BLOCK_UNINIT) == 0 {
+        if self.metadata_csum
+            && !cfg!(feature = "ext4-native-skip-crc32c-verify")
+            && (gd.flags & EXT4_BG_BLOCK_UNINIT) == 0
+        {
             self.verify_bitmap_checksum(group, gd, &raw, true)?;
         }
 
@@ -82,7 +85,10 @@ impl Context {
         let gd = self.read_group_desc(group)?;
         let raw = self.read_fs_block(gd.inode_bitmap)?;
 
-        if self.metadata_csum && (gd.flags & EXT4_BG_INODE_UNINIT) == 0 {
+        if self.metadata_csum
+            && !cfg!(feature = "ext4-native-skip-crc32c-verify")
+            && (gd.flags & EXT4_BG_INODE_UNINIT) == 0
+        {
             self.verify_bitmap_checksum(group, &gd, &raw, false)?;
         }
 
@@ -180,7 +186,9 @@ impl Context {
             raw_len: self.desc_size as u8,
         };
 
-        self.verify_group_desc_checksum(group, gd.raw_slice())?;
+        if !self.metadata_csum || !cfg!(feature = "ext4-native-skip-crc32c-verify") {
+            self.verify_group_desc_checksum(group, gd.raw_slice())?;
+        }
         Ok(gd)
     }
 
