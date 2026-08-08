@@ -1193,7 +1193,7 @@ impl InodeOps for Inode {
         Ok(())
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
+    fn rename(&self, old_name: &str, source: &Self, new_parent: &Self, new_name: &str) -> SysResult<()> {
         let old_name_bytes = old_name.as_bytes();
         let new_name_bytes = new_name.as_bytes();
         if old_name_bytes.is_empty()
@@ -1215,14 +1215,23 @@ impl InodeOps for Inode {
             .context
             .upgrade()
             .ok_or_else(|| debug_errno("rename: new parent context has been dropped", Errno::EIO))?;
-        if !Arc::ptr_eq(&context, &new_parent_context) {
+        let source_context = source
+            .context
+            .upgrade()
+            .ok_or_else(|| debug_errno("rename: source context has been dropped", Errno::EIO))?;
+        if !Arc::ptr_eq(&context, &new_parent_context) || !Arc::ptr_eq(&context, &source_context) {
             return ret_errno("rename: cross-filesystem rename forbidden", Errno::EXDEV);
         }
         drop(new_parent_context);
+        drop(source_context);
 
         let context = context.write();
         let old_parent_ino = self.get_ino();
         let new_parent_ino = new_parent.get_ino();
+        let source_ino = source.get_ino();
+        if source_ino == old_parent_ino || source_ino == new_parent_ino {
+            return ret_errno("rename: source cannot be a parent directory", Errno::EINVAL);
+        }
         let same_parent = old_parent_ino == new_parent_ino;
 
         if same_parent {
@@ -1235,7 +1244,10 @@ impl InodeOps for Inode {
             if old_name == new_name {
                 return Ok(());
             }
-            let mut src_inode = context.read_inode(src_ino)?;
+            if src_ino != source_ino {
+                return ret_errno("rename: source inode changed", Errno::ENOENT);
+            }
+            let mut src_inode = source.inode.lock();
             let src_mode_type = src_inode.i_mode & S_IFMT;
             let file_type = dirent_file_type(src_inode.i_mode)?;
             fsno = context.fsno;
@@ -1259,7 +1271,6 @@ impl InodeOps for Inode {
             context.remove_dirent(parent.ino, &mut parent, old_name_bytes)?;
             context.write_inode(&mut parent)?;
             context.write_inode(&mut src_inode)?;
-            sync_cached_inode(fsno, &src_inode);
             self.invalidate_dir_cache();
             drop(parent);
             drop(context);
@@ -1281,7 +1292,10 @@ impl InodeOps for Inode {
         ensure_dir_writable(&new_parent_inode, "rename")?;
 
         let src_ino = lookup_name_in_dir(&context, &old_parent, old_name_bytes)?;
-        let mut src_inode = context.read_inode(src_ino)?;
+        if src_ino != source_ino {
+            return ret_errno("rename: source inode changed", Errno::ENOENT);
+        }
+        let mut src_inode = source.inode.lock();
         let src_mode_type = src_inode.i_mode & S_IFMT;
         let file_type = dirent_file_type(src_inode.i_mode)?;
 
@@ -1339,7 +1353,6 @@ impl InodeOps for Inode {
         context.write_inode(&mut old_parent)?;
         context.write_inode(&mut new_parent_inode)?;
         context.write_inode(&mut src_inode)?;
-        sync_cached_inode(fsno, &src_inode);
         self.invalidate_dir_cache();
         new_parent.invalidate_dir_cache();
         if src_mode_type == S_IFDIR {

@@ -154,9 +154,16 @@ impl<T: StaticFsInfo> MemInodeOps<T> for RegularInode<T> {
         RegularInode::<T>::lookup(self, name)
     }
 
-    fn rename(&self, old_name: &str, new_parent: &dyn MemInodeOps<T>, new_name: &str) -> SysResult<()> {
+    fn rename(
+        &self,
+        old_name: &str,
+        source: &dyn MemInodeOps<T>,
+        new_parent: &dyn MemInodeOps<T>,
+        new_name: &str,
+    ) -> SysResult<()> {
+        let source = source.as_regular().ok_or(Errno::EXDEV)?;
         let new_parent = new_parent.as_regular().ok_or(Errno::EXDEV)?;
-        RegularInode::<T>::rename(self, old_name, new_parent, new_name)
+        RegularInode::<T>::rename(self, old_name, source, new_parent, new_name)
     }
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
@@ -461,7 +468,7 @@ impl<T: StaticFsInfo> RegularInode<T> {
         }
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
+    fn rename(&self, old_name: &str, _source: &Self, new_parent: &Self, new_name: &str) -> SysResult<()> {
         if old_name == "." || old_name == ".." || new_name == "." || new_name == ".." {
             return Err(Errno::EINVAL);
         }

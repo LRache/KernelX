@@ -994,7 +994,7 @@ impl Dentry {
             .as_ref()
             .map(|(_, overwritten_inode)| overwritten_inode.lifecycle().write());
 
-        old_parent_inode.rename(old_name, &new_parent_inode, new_name)?;
+        old_parent_inode.rename(old_name, &old_inode, &new_parent_inode, new_name)?;
         drop(overwritten_lifecycle);
 
         self.children.lock().remove(old_name);

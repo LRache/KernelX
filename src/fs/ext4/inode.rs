@@ -1007,7 +1007,7 @@ impl InodeOps for Ext4Inode {
         })
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
+    fn rename(&self, old_name: &str, _source: &Self, new_parent: &Self, new_name: &str) -> SysResult<()> {
         if self.ino == new_parent.ino && old_name == new_name {
             return Ok(());
         }

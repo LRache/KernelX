@@ -49,7 +49,7 @@ impl InodeOps for Inode {
         Err(Errno::EROFS)
     }
 
-    fn rename(&self, _old_name: &str, _new_parent: &Self, _new_name: &str) -> SysResult<()> {
+    fn rename(&self, _old_name: &str, _source: &Self, _new_parent: &Self, _new_name: &str) -> SysResult<()> {
         Err(Errno::EROFS)
     }
 

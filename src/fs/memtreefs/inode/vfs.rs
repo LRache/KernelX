@@ -74,8 +74,9 @@ impl<T: StaticFsInfo> InodeOps for Arc<dyn MemInodeOps<T>> {
         self.as_ref().lookup(name)
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
-        self.as_ref().rename(old_name, new_parent.as_ref(), new_name)
+    fn rename(&self, old_name: &str, source: &Self, new_parent: &Self, new_name: &str) -> SysResult<()> {
+        self.as_ref()
+            .rename(old_name, source.as_ref(), new_parent.as_ref(), new_name)
     }
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {

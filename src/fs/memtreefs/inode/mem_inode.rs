@@ -105,7 +105,13 @@ pub trait MemInodeOps<T: StaticFsInfo>: Send + Sync + 'static {
         Err(Errno::ENOTDIR)
     }
 
-    fn rename(&self, _old_name: &str, _new_parent: &dyn MemInodeOps<T>, _new_name: &str) -> SysResult<()> {
+    fn rename(
+        &self,
+        _old_name: &str,
+        _source: &dyn MemInodeOps<T>,
+        _new_parent: &dyn MemInodeOps<T>,
+        _new_name: &str,
+    ) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
 

@@ -395,7 +395,7 @@ pub trait VfsInodeOps: DowncastSync {
 
     fn lookup(&self, name: &str) -> SysResult<u32>;
 
-    fn rename(&self, old_name: &str, new_parent: &Arc<Inode>, new_name: &str) -> SysResult<()>;
+    fn rename(&self, old_name: &str, source: &Arc<Inode>, new_parent: &Arc<Inode>, new_name: &str) -> SysResult<()>;
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>>;
 
@@ -575,9 +575,10 @@ impl<T: InodeOps> VfsInodeOps for VfsInode<T> {
         self.inner.lookup(name)
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Arc<Inode>, new_name: &str) -> SysResult<()> {
+    fn rename(&self, old_name: &str, source: &Arc<Inode>, new_parent: &Arc<Inode>, new_name: &str) -> SysResult<()> {
+        let source = downcast_inode::<T>(source).ok_or(Errno::EXDEV)?;
         let new_parent = downcast_inode::<T>(new_parent).ok_or(Errno::EXDEV)?;
-        self.inner.rename(old_name, new_parent, new_name)
+        self.inner.rename(old_name, source, new_parent, new_name)
     }
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
@@ -816,7 +817,7 @@ pub trait InodeOps: Send + Sync + Sized + 'static {
         Err(Errno::ENOTDIR)
     }
 
-    fn rename(&self, _old_name: &str, _new_parent: &Self, _new_name: &str) -> SysResult<()> {
+    fn rename(&self, _old_name: &str, _source: &Self, _new_parent: &Self, _new_name: &str) -> SysResult<()> {
         Err(Errno::EOPNOTSUPP)
     }
 
@@ -1049,8 +1050,9 @@ impl<T: InodeOps> InodeOps for Arc<T> {
         self.as_ref().lookup(name)
     }
 
-    fn rename(&self, old_name: &str, new_parent: &Self, new_name: &str) -> SysResult<()> {
-        self.as_ref().rename(old_name, new_parent.as_ref(), new_name)
+    fn rename(&self, old_name: &str, source: &Self, new_parent: &Self, new_name: &str) -> SysResult<()> {
+        self.as_ref()
+            .rename(old_name, source.as_ref(), new_parent.as_ref(), new_name)
     }
 
     fn readlink(&self, buf: &mut [u8]) -> SysResult<Option<usize>> {
