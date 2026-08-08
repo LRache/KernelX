@@ -909,9 +909,7 @@ impl InodeOps for Inode {
         }
 
         if end > old_size {
-            let context = context.write();
-            let mut inode = self.inode.lock();
-            context.write_inode(&mut inode)?;
+            self.metadata_dirty.store(true, Ordering::Release);
         }
         drop(page_cache);
 
