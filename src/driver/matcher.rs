@@ -13,6 +13,7 @@ pub trait PCIMatcher: Send + Sync {
 pub fn register_matchers() {
     manager::register_mmio_matcher(&virtio::MMIOMatcher);
     manager::register_mmio_matcher(&char::serial::ns16550a::MMIOMatcher);
+    manager::register_mmio_matcher(&block::starfive_mmc::MMIOMatcher);
     manager::register_mmio_matcher(&block::starfive_sdio::MMIOMatcher);
     manager::register_mmio_matcher(&rtc::goldfish::MMIOMatcher);
     manager::register_mmio_matcher(&rtc::ls7a::MMIOMatcher);
