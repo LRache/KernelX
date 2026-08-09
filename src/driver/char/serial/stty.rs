@@ -52,6 +52,7 @@ impl DriverOps for Stty {
 
     fn handle_interrupt(&self) {
         let mut serial = self.serial.lock();
+        serial.acknowledge_interrupt();
 
         while let Some(c) = serial.getchar() {
             let event = self.tty.process_input_byte(c, |c| {

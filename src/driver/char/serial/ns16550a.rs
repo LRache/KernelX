@@ -21,12 +21,15 @@ mod regs {
     pub const FCR_FIFO_ENABLE: u32 = 1 << 0;
     pub const FCR_FIFO_CLEAR: u32 = 3 << 1; // clear the content of the two FIFOs
     pub const ISR: usize = 2; // interrupt status register
+    pub const ISR_CAUSE_MASK: u32 = 0x0f;
+    pub const ISR_BUSY: u32 = 0x07;
     pub const LCR: usize = 3; // line control register
     pub const LCR_EIGHT_BITS: u32 = 3 << 0;
     pub const LCR_BAUD_LATCH: u32 = 1 << 7; // special mode to set baud rate
     pub const LSR: usize = 5; // line status register
     pub const LSR_RX_READY: u32 = 1 << 0; // input is waiting to be read from RHR
     pub const LSR_TX_IDLE: u32 = 1 << 5; // THR can accept another character to send
+    pub const USR: usize = 0x1f; // DW APB UART status register
 }
 
 enum RegSize {
@@ -35,15 +38,27 @@ enum RegSize {
     U32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SerialKind {
+    Ns16550,
+    DwApb,
+}
+
 struct Serial {
     base: usize,
     shift: usize,
     reg_size: RegSize,
+    kind: SerialKind,
 }
 
 impl Serial {
-    pub fn new(base: usize, shift: usize, reg_size: RegSize) -> Self {
-        Self { base, shift, reg_size }
+    pub fn new(base: usize, shift: usize, reg_size: RegSize, kind: SerialKind) -> Self {
+        Self {
+            base,
+            shift,
+            reg_size,
+            kind,
+        }
     }
 
     fn read_reg(&mut self, offset: usize) -> u32 {
@@ -93,6 +108,18 @@ impl Serial {
 }
 
 impl SerialOps for Serial {
+    fn acknowledge_interrupt(&mut self) {
+        if self.kind != SerialKind::DwApb {
+            return;
+        }
+
+        let cause = self.read_reg(regs::ISR) & regs::ISR_CAUSE_MASK;
+        if cause == regs::ISR_BUSY {
+            // Reading USR clears the DW APB UART Busy Detect interrupt.
+            self.read_reg(regs::USR);
+        }
+    }
+
     fn getchar(&mut self) -> Option<u8> {
         if (self.read_reg(regs::LSR) & regs::LSR_RX_READY) == 0 {
             None
@@ -150,7 +177,12 @@ impl MMIOMatcherTrait for MMIOMatcher {
             .unwrap_or(0);
         let bdiv = (freq + 8 * speed) / (16 * speed);
 
-        let mut serial = Serial::new(kbase, reg_shift, reg_size);
+        let kind = if device.match_compatible(&["snps,dw-apb-uart"]).is_some() {
+            SerialKind::DwApb
+        } else {
+            SerialKind::Ns16550
+        };
+        let mut serial = Serial::new(kbase, reg_shift, reg_size, kind);
         serial.init(bdiv as u32);
         let driver = Stty::new(device.name().into(), Box::new(serial));
 
