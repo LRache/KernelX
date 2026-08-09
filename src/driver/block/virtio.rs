@@ -182,16 +182,38 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
 
         let token = {
             let mut driver = self.driver.lock();
-            unsafe { driver.read_blocks_nb(start_block, &mut req, buf, &mut resp) }.map_err(|_| ())?
+            // SAFETY: `req`, `buf`, and `resp` remain valid and untouched until
+            // the matching `complete_read_blocks` call after this task wakes.
+            unsafe { driver.read_blocks_nb(start_block, &mut req, buf, &mut resp) }.map_err(|err| {
+                crate::kdebug!(
+                    "virtio-blk read submit failed: device={}, start_block={}, len={}, err={:?}",
+                    self.device_name,
+                    start_block,
+                    buf.len(),
+                    err
+                );
+            })?
         };
 
         self.wait_for_token(token);
 
         let complete_result = {
             let mut driver = self.driver.lock();
+            // SAFETY: These are the same buffers and token passed to the
+            // corresponding successful `read_blocks_nb` submission.
             unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) }
         };
-        complete_result.map_err(|_| ())?;
+        complete_result.map_err(|err| {
+            crate::kdebug!(
+                "virtio-blk read completion failed: device={}, start_block={}, len={}, token={}, status={:?}, err={:?}",
+                self.device_name,
+                start_block,
+                buf.len(),
+                token,
+                resp.status(),
+                err
+            );
+        })?;
         self.wake_next();
 
         if resp.status() == RespStatus::OK {
@@ -215,16 +237,38 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
 
         let token = {
             let mut driver = self.driver.lock();
-            unsafe { driver.write_blocks_nb(start_block, &mut req, buf, &mut resp) }.map_err(|_| ())?
+            // SAFETY: `req`, `buf`, and `resp` remain valid and untouched until
+            // the matching `complete_write_blocks` call after this task wakes.
+            unsafe { driver.write_blocks_nb(start_block, &mut req, buf, &mut resp) }.map_err(|err| {
+                crate::kdebug!(
+                    "virtio-blk write submit failed: device={}, start_block={}, len={}, err={:?}",
+                    self.device_name,
+                    start_block,
+                    buf.len(),
+                    err
+                );
+            })?
         };
 
         self.wait_for_token(token);
 
         let complete_result = {
             let mut driver = self.driver.lock();
+            // SAFETY: These are the same buffers and token passed to the
+            // corresponding successful `write_blocks_nb` submission.
             unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) }
         };
-        complete_result.map_err(|_| ())?;
+        complete_result.map_err(|err| {
+            crate::kdebug!(
+                "virtio-blk write completion failed: device={}, start_block={}, len={}, token={}, status={:?}, err={:?}",
+                self.device_name,
+                start_block,
+                buf.len(),
+                token,
+                resp.status(),
+                err
+            );
+        })?;
         self.wake_next();
 
         if resp.status() == RespStatus::OK {
