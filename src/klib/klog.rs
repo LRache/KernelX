@@ -1,7 +1,8 @@
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::kernel::exit;
-use crate::klib::backtrace;
+use crate::klib::{backtrace, print};
 use crate::println;
 
 pub const COLOR_RESET: &str = "\x1b[0m";
@@ -10,6 +11,19 @@ pub const COLOR_YELLOW: &str = "\x1b[33m";
 pub const COLOR_BLUE: &str = "\x1b[34m";
 pub const COLOR_GREEN: &str = "\x1b[32m";
 pub const COLOR_BOLD: &str = "\x1b[1m";
+
+static PANIC_OWNER: AtomicBool = AtomicBool::new(false);
+
+fn claim_panic_owner() {
+    if PANIC_OWNER
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+}
 
 #[cfg(feature = "log-warn")]
 #[macro_export]
@@ -122,6 +136,9 @@ macro_rules! ktrace {
 
 #[panic_handler]
 pub fn panic_handler(info: &PanicInfo) -> ! {
+    claim_panic_owner();
+    let klog_guard = print::try_lock_klog();
+
     if let Some(location) = info.location() {
         println!(
             "{}{}[{}]{} {} (tid={}) @ {}:{}{}",
@@ -148,6 +165,7 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
     }
 
     backtrace::print_backtrace();
+    drop(klog_guard);
 
     exit();
 }
@@ -155,6 +173,9 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
 /// C 代码通过 kpanic() / kassert() 触发内核 panic（见 clib/include/klib/klib.h）
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_kpanic(file: *const u8, line: u32, msg: *const u8) -> ! {
+    claim_panic_owner();
+    let klog_guard = print::try_lock_klog();
+
     // SAFETY: C 传入的字符串在 panic 路径上保证有效
     let (file_str, msg_str) = unsafe {
         let file_len = (0..).take_while(|&i| *file.add(i) != 0).count();
@@ -171,6 +192,7 @@ pub extern "C" fn rust_kpanic(file: *const u8, line: u32, msg: *const u8) -> ! {
     );
 
     backtrace::print_backtrace();
+    drop(klog_guard);
 
     exit();
 }

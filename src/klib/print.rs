@@ -1,10 +1,16 @@
 use core::fmt::Write;
 
+use spin::{Mutex, MutexGuard};
+
 use crate::arch;
 use crate::driver::chosen::{kconsole, kdebug_console};
-use crate::klib::{SpinLock, dmesg};
+use crate::klib::dmesg;
 
-static KLOG_LOCK: SpinLock<()> = SpinLock::new((), "KLOG_LOCK");
+static KLOG_LOCK: Mutex<()> = Mutex::new(());
+
+pub(super) fn try_lock_klog() -> Option<MutexGuard<'static, ()>> {
+    KLOG_LOCK.try_lock()
+}
 
 pub struct Writer;
 impl Write for Writer {
