@@ -1,14 +1,14 @@
 type SBIRet = Result<usize, isize>;
 
+#[cfg(not(feature = "no-smp"))]
 #[repr(usize)]
 enum SBIExtension {
     Hsm = 0x48534d,
-    #[cfg(not(feature = "no-smp"))]
     Ipi = 0x735049,
-    #[cfg(not(feature = "no-smp"))]
     Rfence = 0x52464e43,
 }
 
+#[cfg(not(feature = "no-smp"))]
 #[repr(usize)]
 enum HsmFunction {
     HartStart = 0,
@@ -74,6 +74,7 @@ pub fn set_timer(time: u64) {
     let _ = sbi_call(0x0, 0x0, time as usize, (time >> 32) as usize, 0, 0, 0, 0);
 }
 
+#[cfg(not(feature = "no-smp"))]
 pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> SBIRet {
     sbi_call(
         HsmFunction::HartStart as usize,

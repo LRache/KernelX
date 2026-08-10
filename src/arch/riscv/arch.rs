@@ -6,14 +6,13 @@ use elf::abi;
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
 use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task};
 use crate::arch::{self, Arch, ArchTrait, CloneABI};
-use crate::driver::chosen;
+use crate::driver::{self, chosen};
 use crate::kernel::config;
 use crate::kernel::errno::SysResult;
 use crate::kernel::mm::{self, MapPerm};
 use crate::kernel::scheduler::current;
 use crate::klib::{InitedCell, SpinLock};
 use crate::kmodule::{KModuleRelocationAction, KModuleRelocationValue};
-use crate::{driver, kinfo, kwarn};
 
 use super::csr::{SIE, Sstatus, sscratch};
 use super::pagetable::kernelpagetable;
@@ -100,20 +99,27 @@ impl ArchTrait for Arch {
     }
 
     fn setup_all_cores(current_core: usize) {
-        unsafe extern "C" {
-            static __riscv_others_entry: u8;
-        }
-
-        kinfo!("Starting other harts...");
-
         let interrupt_stack_base = mm::page::alloc_contiguous_zero(config::KERNEL_TRAP_STACK_PAGE_COUNT);
         let interrupt_stack_top = interrupt_stack_base + config::KERNEL_TRAP_STACK_PAGE_COUNT * arch::PGSIZE;
         // This allocation is owned by the boot hart for the kernel lifetime.
         current::processor().set_kernel_trap_stack_top(interrupt_stack_top);
         sscratch::write(interrupt_stack_top);
 
-        for hartid in 0..core_count() {
-            if hartid != current_core {
+        #[cfg(feature = "no-smp")]
+        let _ = current_core;
+
+        #[cfg(not(feature = "no-smp"))]
+        {
+            unsafe extern "C" {
+                static __riscv_others_entry: u8;
+            }
+
+            crate::kinfo!("Starting other harts...");
+            for hartid in 0..core_count() {
+                if hartid == current_core {
+                    continue;
+                }
+
                 let interrupt_stack_base = mm::page::alloc_contiguous_zero(config::KERNEL_TRAP_STACK_PAGE_COUNT);
                 let interrupt_stack_top = interrupt_stack_base + config::KERNEL_TRAP_STACK_PAGE_COUNT * arch::PGSIZE;
                 let stack = task::KernelStack::<{ config::SCHEDULER_KSTACK_PAGE_COUNT - 1 }>::new();
@@ -132,9 +138,9 @@ impl ArchTrait for Arch {
                     stack_top,
                 ) {
                     mm::page::free_contiguous(interrupt_stack_base, config::KERNEL_TRAP_STACK_PAGE_COUNT);
-                    kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
+                    crate::kwarn!("Failed to start hart {}: SBI error {}", hartid, error);
                 } else {
-                    kinfo!("Hart {} started successfully", hartid);
+                    crate::kinfo!("Hart {} started successfully", hartid);
                     // The secondary hart uses both stacks for the lifetime of
                     // the kernel, so the bootstrap stack mapping remains live
                     // and the raw interrupt-stack allocation is not freed.
