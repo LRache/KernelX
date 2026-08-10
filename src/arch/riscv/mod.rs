@@ -10,6 +10,7 @@ mod sbi_driver;
 mod task;
 
 pub use context::{KernelContext, SigContext, UserContext};
+pub use cpu::ArchPerCpuData;
 pub use fdt::load_device_tree;
 pub use pagetable::*;
 pub use switch::kernel_switch;

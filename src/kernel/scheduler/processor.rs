@@ -19,6 +19,7 @@ pub struct Processor {
     kernel_trap_stack_top: usize,
     task: Option<NonNull<Arc<dyn Task>>>,
     idle_kernel_context: arch::KernelContext,
+    arch_data: arch::ArchPerCpuData,
 
     #[cfg(feature = "spinlock-check")]
     locked_spin: VecDeque<HeldSpinLock>,
@@ -31,6 +32,7 @@ impl<'a> Processor {
             kernel_trap_stack_top: 0,
             task: None,
             idle_kernel_context: arch::KernelContext::new_idle(),
+            arch_data: arch::ArchPerCpuData::new(),
             #[cfg(feature = "spinlock-check")]
             locked_spin: VecDeque::new(),
             // irq_spinlock_count: 0,
@@ -47,6 +49,14 @@ impl<'a> Processor {
 
     pub fn set_kernel_trap_stack_top(&mut self, stack_top: usize) {
         self.kernel_trap_stack_top = stack_top;
+    }
+
+    pub fn arch_data(&self) -> &arch::ArchPerCpuData {
+        &self.arch_data
+    }
+
+    pub fn arch_data_mut(&mut self) -> &mut arch::ArchPerCpuData {
+        &mut self.arch_data
     }
 
     pub fn has_task(&self) -> bool {

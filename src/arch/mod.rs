@@ -15,6 +15,7 @@ pub type KernelContext = arch_impl::KernelContext;
 pub type KernelStack<const MAPPED_PAGE_COUNT: usize> = arch_impl::KernelStack<MAPPED_PAGE_COUNT>;
 pub type SigContext = arch_impl::SigContext;
 pub type PageTable = arch_impl::PageTable;
+pub type ArchPerCpuData = arch_impl::ArchPerCpuData;
 // pub type MappedPage<'a> = arch_impl::MappedPage<'a>;
 
 cfg_if::cfg_if! {

@@ -1,4 +1,3 @@
-use crate::arch::riscv::cpu::get_cpu_info;
 use crate::arch::riscv::csr::scause::Interrupt;
 use crate::arch::riscv::csr::*;
 use crate::arch::riscv::{UserContext, plic};
@@ -54,12 +53,15 @@ pub fn save_float_registers(fpregs: &mut [u64; 33]) {
         fn asm_save_double(fpregs: *mut u64);
     }
 
-    let cpu_info = get_cpu_info(current::hart_id());
-    if cpu_info.double_supported() {
+    let (double_supported, float_supported) = {
+        let arch_data = current::processor().arch_data();
+        (arch_data.double_supported(), arch_data.float_supported())
+    };
+    if double_supported {
         unsafe {
             asm_save_double(fpregs.as_mut_ptr());
         }
-    } else if cpu_info.float_supported() {
+    } else if float_supported {
         unsafe {
             asm_save_float(fpregs.as_mut_ptr());
         }
@@ -72,12 +74,15 @@ pub fn restore_float_registers(fpregs: &[u64; 33]) {
         fn asm_restore_double(fpregs: *const u64);
     }
 
-    let cpu_info = get_cpu_info(current::hart_id());
-    if cpu_info.double_supported() {
+    let (double_supported, float_supported) = {
+        let arch_data = current::processor().arch_data();
+        (arch_data.double_supported(), arch_data.float_supported())
+    };
+    if double_supported {
         unsafe {
             asm_restore_double(fpregs.as_ptr());
         }
-    } else if cpu_info.float_supported() {
+    } else if float_supported {
         unsafe {
             asm_restore_float(fpregs.as_ptr());
         }
@@ -137,7 +142,7 @@ pub fn usertrap_handler() -> ! {
     let user_context = current::tcb().user_context();
     user_context.set_user_entry(sepc::read());
 
-    let cpu_info = get_cpu_info(current::hart_id());
+    let svadu_enabled = current::processor().arch_data().svadu_enabled();
     let sstatus = Sstatus::read();
 
     if sstatus.fs() != SstatusFs::Off {
@@ -154,19 +159,19 @@ pub fn usertrap_handler() -> ! {
             }
             scause::Trap::InstPageFault => {
                 let addr = stval::read();
-                if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
+                if svadu_enabled || !svadu_mark_page_accessed(addr) {
                     trap::memory_fault(addr, MemAccessType::Execute);
                 }
             }
             scause::Trap::LoadPageFault => {
                 let addr = stval::read();
-                if cpu_info.svadu_enabled() || !svadu_mark_page_accessed(addr) {
+                if svadu_enabled || !svadu_mark_page_accessed(addr) {
                     trap::memory_fault(addr, MemAccessType::Read);
                 }
             }
             scause::Trap::StorePageFault => {
                 let addr = stval::read();
-                if cpu_info.svadu_enabled() || !svadu_mark_page_accessed_and_dirty(addr) {
+                if svadu_enabled || !svadu_mark_page_accessed_and_dirty(addr) {
                     trap::memory_fault(addr, MemAccessType::Write);
                 }
             }

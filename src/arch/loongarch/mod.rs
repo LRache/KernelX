@@ -17,6 +17,14 @@ pub use context::{KernelContext, SigContext, UserContext};
 pub use pagetable::PageTable;
 pub use task::KernelStack;
 
+pub struct ArchPerCpuData;
+
+impl ArchPerCpuData {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
 /// 4 KiB base page, matching Linux's default LoongArch configuration.
 pub const PGBITS: usize = 12;
 pub const PGSIZE: usize = 1 << PGBITS;

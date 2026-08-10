@@ -4,9 +4,49 @@ use fdt::node::FdtNode;
 use crate::kinfo;
 use crate::klib::InitedCell;
 
+pub struct ArchPerCpuData {
+    svadu_enabled: bool,
+    zbc_supported: bool,
+    float_supported: bool,
+    double_supported: bool,
+}
+
+impl ArchPerCpuData {
+    pub const fn new() -> Self {
+        Self {
+            svadu_enabled: false,
+            zbc_supported: false,
+            float_supported: false,
+            double_supported: false,
+        }
+    }
+
+    pub fn svadu_enabled(&self) -> bool {
+        self.svadu_enabled
+    }
+
+    pub fn zbc_supported(&self) -> bool {
+        self.zbc_supported
+    }
+
+    pub fn float_supported(&self) -> bool {
+        self.float_supported
+    }
+
+    pub fn double_supported(&self) -> bool {
+        self.double_supported
+    }
+
+    pub fn update_from(&mut self, cpu_info: &CPUInfo) {
+        self.svadu_enabled = cpu_info.svadu_enabled();
+        self.zbc_supported = cpu_info.zbc_supported();
+        self.float_supported = cpu_info.float_supported();
+        self.double_supported = cpu_info.double_supported();
+    }
+}
+
 pub struct CPUInfo {
     svadu_enabled: bool,
-    #[allow(dead_code)]
     zbc_supported: bool,
     float_supported: bool,
     double_supported: bool,
@@ -17,7 +57,6 @@ impl CPUInfo {
         self.svadu_enabled
     }
 
-    #[allow(dead_code)]
     pub fn zbc_supported(&self) -> bool {
         self.zbc_supported
     }
@@ -92,6 +131,6 @@ pub fn core_count() -> usize {
     CPU_INFO.len()
 }
 
-pub fn get_cpu_info(hart_id: usize) -> &'static CPUInfo {
-    &CPU_INFO[hart_id]
+pub fn try_get_cpu_info(hart_id: usize) -> Option<&'static CPUInfo> {
+    CPU_INFO.try_get()?.get(hart_id)
 }

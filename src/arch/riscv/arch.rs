@@ -19,7 +19,7 @@ use super::csr::{SIE, Sstatus, sscratch};
 use super::pagetable::kernelpagetable;
 use super::sbi_driver::SBIKConsole;
 use super::task::context::KernelContext;
-use super::{core_count, kernel_switch, time_frequency, try_time_frequency};
+use super::{core_count, cpu, kernel_switch, time_frequency, try_time_frequency};
 
 unsafe extern "C" {
     static __kernel_start: u8;
@@ -68,6 +68,12 @@ fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
 
+fn update_percpu_cpu_info() {
+    if let Some(cpu_info) = cpu::try_get_cpu_info(current::hart_id()) {
+        current::processor().arch_data_mut().update_from(cpu_info);
+    }
+}
+
 impl ArchTrait for Arch {
     fn init() {
         init_mmio_kaddr(Self::paddr_to_kaddr(mm::max_memory_end()));
@@ -90,6 +96,7 @@ impl ArchTrait for Arch {
         }
         current::processor().set_kernel_trap_stack_top(stack_top);
         task::traphandle::install_kerneltrap_handler();
+        update_percpu_cpu_info();
     }
 
     fn setup_all_cores(current_core: usize) {
@@ -227,6 +234,7 @@ impl ArchTrait for Arch {
 
     fn scan_device() {
         load_device_tree(unsafe { __riscv_copied_fdt }).unwrap();
+        update_percpu_cpu_info();
     }
 
     fn kaddr_to_paddr(kaddr: usize) -> usize {
