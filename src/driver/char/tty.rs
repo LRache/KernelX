@@ -11,6 +11,7 @@ type Cc = u8;
 type Speed = u32;
 const INPUT_BUFFER_SIZE: usize = 4096;
 const LINE_BUFFER_SIZE: usize = 1024;
+const NCCS: usize = 19;
 
 bitflags! {
     #[repr(C)]
@@ -46,8 +47,9 @@ bitflags! {
         const ISIG    = 0o0000001;
         const ICANON  = 0o0000002;
         const ECHO    = 0o0000010;
-        const ECHONL  = 0o0000020;
-        const IEXTEN  = 0o0002000;
+        const ECHOE   = 0o0000020;
+        const ECHONL  = 0o0000100;
+        const IEXTEN  = 0o0100000;
     }
 }
 
@@ -59,7 +61,7 @@ struct Termios {
     c_cflag: TcFlag,
     c_lflag: LocalFlags,
     c_line: Cc,
-    c_cc: [Cc; 8],
+    c_cc: [Cc; NCCS],
 }
 
 #[repr(C)]
@@ -70,7 +72,7 @@ struct Termios2 {
     c_cflag: TcFlag,
     c_lflag: LocalFlags,
     c_line: Cc,
-    c_cc: [Cc; 19],
+    c_cc: [Cc; NCCS],
     c_ispeed: Speed,
     c_ospeed: Speed,
 }
@@ -93,20 +95,28 @@ pub struct TtyAttr {
     pub echo: bool,
     pub echoe: bool,
     pub canonical: bool,
+    control_chars: [Cc; NCCS],
 }
 
 impl Default for TtyAttr {
     fn default() -> Self {
+        let mut control_chars = [0; NCCS];
+        control_chars[cc::VINTR] = 0x03;
+        control_chars[cc::VQUIT] = 0x1c;
+        control_chars[cc::VERASE] = 0x08;
+        control_chars[cc::VEOF] = 0x04;
+
         Self {
             icrnl: true,
             inlcr: false,
             igncr: false,
             ocrnl: false,
-            onlcr: false,
+            onlcr: true,
             opost: true,
             echo: true,
             echoe: true,
             canonical: true,
+            control_chars,
         }
     }
 }
@@ -143,9 +153,12 @@ impl<const N: usize> TtyLineBuffer<N> {
         self
     }
 
-    fn delete_char(&mut self) {
+    fn delete_char(&mut self) -> bool {
         if self.length > 0 {
             self.length -= 1;
+            true
+        } else {
+            false
         }
     }
 
@@ -158,10 +171,6 @@ impl<const N: usize> TtyLineBuffer<N> {
 
     fn clear(&mut self) {
         self.length = 0;
-    }
-
-    fn empty(&self) -> bool {
-        self.length == 0
     }
 }
 
@@ -195,7 +204,9 @@ impl TtyState {
         attr.onlcr = termios.c_oflag.contains(OutputFlags::ONLCR);
         attr.opost = termios.c_oflag.contains(OutputFlags::OPOST);
         attr.echo = termios.c_lflag.contains(LocalFlags::ECHO);
+        attr.echoe = termios.c_lflag.contains(LocalFlags::ECHOE);
         attr.canonical = termios.c_lflag.contains(LocalFlags::ICANON);
+        attr.control_chars = termios.c_cc;
     }
 
     pub fn input_ready(&self) -> bool {
@@ -218,7 +229,7 @@ impl TtyState {
                     c = b'\n';
                 } else if attr.inlcr && c == b'\n' {
                     c = b'\r';
-                } else if attr.canonical && c == 0x4 {
+                } else if attr.canonical && attr.control_chars[cc::VEOF] != 0 && c == attr.control_chars[cc::VEOF] {
                     return Some(read);
                 }
                 *i = c;
@@ -252,49 +263,50 @@ impl TtyState {
             _ => byte,
         };
 
+        let mut echo_output = |c| Self::process_output_byte_with_attr(attr, c, &mut echo);
         let mut event = None;
         let mut push_to_buffer = true;
         match c {
-            0x7f => {
+            c if attr.control_chars[cc::VERASE] != 0 && c == attr.control_chars[cc::VERASE] => {
                 if attr.canonical {
-                    if attr.echoe {
-                        if !line.empty() {
-                            echo(0x08);
-                            echo(b' ');
-                            echo(0x08);
+                    let deleted = line.delete_char();
+                    if deleted && attr.echo {
+                        if attr.echoe {
+                            echo_output(0x08);
+                            echo_output(b' ');
+                            echo_output(0x08);
+                        } else {
+                            echo_output(c);
                         }
-                        push_to_buffer = false;
-                    } else {
-                        echo(0x08);
                     }
-                    line.delete_char();
+                    push_to_buffer = false;
                 } else if attr.echo {
-                    echo(0x08);
+                    echo_output(c);
                 }
             }
-            0x3 => {
+            c if attr.control_chars[cc::VINTR] != 0 && c == attr.control_chars[cc::VINTR] => {
                 if attr.canonical {
                     event = Some(TtyInputEvent::Interrupt);
                     push_to_buffer = false;
                 }
                 if attr.echo {
-                    echo(b'^');
-                    echo(b'C');
+                    echo_output(b'^');
+                    echo_output(b'C');
                 }
             }
-            0x4 => {
+            c if attr.control_chars[cc::VEOF] != 0 && c == attr.control_chars[cc::VEOF] => {
                 if attr.echo {
-                    echo(b'^');
-                    echo(b'D');
+                    echo_output(b'^');
+                    echo_output(b'D');
                 }
                 if attr.canonical {
                     line.move_to_ring_buffer(&mut *input);
-                    input.push(0x4);
+                    input.push(c);
                 }
             }
             b'\n' => {
                 if attr.echo {
-                    echo(b'\n');
+                    echo_output(b'\n');
                 }
                 if attr.canonical {
                     line.input_char(b'\n').move_to_ring_buffer(&mut *input);
@@ -302,7 +314,7 @@ impl TtyState {
             }
             _ => {
                 if attr.echo {
-                    echo(c);
+                    echo_output(c);
                 }
                 if attr.canonical {
                     line.input_char(c);
@@ -317,7 +329,10 @@ impl TtyState {
     }
 
     pub fn process_output_byte(&self, byte: u8, mut write: impl FnMut(u8)) {
-        let attr = self.attr();
+        Self::process_output_byte_with_attr(self.attr(), byte, &mut write);
+    }
+
+    fn process_output_byte_with_attr(attr: TtyAttr, byte: u8, write: &mut impl FnMut(u8)) {
         if !attr.opost {
             write(byte);
             return;
@@ -381,13 +396,15 @@ impl TtyState {
             }
             IoctlReq::TCGETA => {
                 let termios = self.termios();
+                let mut c_cc = [0; 8];
+                c_cc.copy_from_slice(&termios.c_cc[..8]);
                 let termio = Termio {
                     c_iflag: termios.c_iflag.bits() as u16,
                     c_oflag: termios.c_oflag.bits() as u16,
                     c_cflag: termios.c_cflag as u16,
                     c_lflag: termios.c_lflag.bits() as u16,
                     c_line: termios.c_line,
-                    c_cc: termios.c_cc,
+                    c_cc,
                 };
                 addrspace.copy_to_user(arg, termio)?;
                 Ok(TtyIoctlResult::Handled(0))
@@ -437,7 +454,7 @@ impl TtyState {
             c_cflag: termios.c_cflag,
             c_lflag: termios.c_lflag,
             c_line: termios.c_line,
-            c_cc: Default::default(),
+            c_cc: termios.c_cc,
         };
         self.set_termios(&termios);
     }
@@ -471,12 +488,10 @@ impl TtyState {
         if attr.echo {
             termios.c_lflag |= LocalFlags::ECHO;
         }
-
-        use self::cc::*;
-        termios.c_cc[VINTR] = 0x03;
-        termios.c_cc[VQUIT] = 0x1c;
-        termios.c_cc[VERASE] = 0x7f;
-        termios.c_cc[VEOF] = 0x04;
+        if attr.echoe {
+            termios.c_lflag |= LocalFlags::ECHOE;
+        }
+        termios.c_cc = attr.control_chars;
         termios
     }
 
@@ -488,7 +503,7 @@ impl TtyState {
             c_cflag: termios.c_cflag,
             c_lflag: termios.c_lflag,
             c_line: termios.c_line,
-            c_cc: Default::default(),
+            c_cc: termios.c_cc,
             c_ispeed: 0,
             c_ospeed: 0,
         }
