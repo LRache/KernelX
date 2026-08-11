@@ -1,7 +1,8 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use virtio_drivers::Error;
 use virtio_drivers::device::blk::{BlkReq, BlkResp, RespStatus, VirtIOBlk};
 use virtio_drivers::transport::Transport;
 
@@ -97,6 +98,7 @@ pub struct VirtIOBlockDriver<T: Transport + Send + 'static> {
     cache: SleepLock<PageCache>,
     driver: SpinLock<VirtIOBlk<VirtIOHal, T>>,
     inflight: SpinLock<BTreeMap<u16, Arc<dyn Task>>>,
+    queue_waiters: SpinLock<VecDeque<Arc<dyn Task>>>,
     read_only: bool,
     readahead: AtomicUsize,
 }
@@ -112,6 +114,7 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             cache: SleepLock::new(PageCache::new(), "VirtIOBlockDriver::cache"),
             driver: SpinLock::new(blk, "VirtIOBlockDriver::driver"),
             inflight: SpinLock::new(BTreeMap::new(), "VirtIOBlockDriver::inflight"),
+            queue_waiters: SpinLock::new(VecDeque::new(), "VirtIOBlockDriver::queue_waiters"),
             read_only,
             readahead: AtomicUsize::new(0),
         }
@@ -139,6 +142,14 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
         let token = self.driver.lock().peek_used();
         if let Some(token) = token {
             self.wake_token(token);
+        }
+    }
+
+    fn wake_queue_waiter(&self) {
+        // Callers hold `driver`, matching the submit-side driver -> queue_waiters
+        // lock order and publishing reclaimed descriptors after waiter registration.
+        if let Some(task) = self.queue_waiters.lock().pop_front() {
+            scheduler::wakeup_task_uninterruptible(task, Event::IOComplete);
         }
     }
 
@@ -180,19 +191,33 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();
 
-        let token = {
+        let token = loop {
             let mut driver = self.driver.lock();
             // SAFETY: `req`, `buf`, and `resp` remain valid and untouched until
-            // the matching `complete_read_blocks` call after this task wakes.
-            unsafe { driver.read_blocks_nb(start_block, &mut req, buf, &mut resp) }.map_err(|err| {
-                crate::kdebug!(
-                    "virtio-blk read submit failed: device={}, start_block={}, len={}, err={:?}",
-                    self.device_name,
-                    start_block,
-                    buf.len(),
-                    err
-                );
-            })?
+            // the matching `complete_read_blocks` call after a successful
+            // submission. `QueueFull` is returned before they are published.
+            match unsafe { driver.read_blocks_nb(start_block, &mut req, buf, &mut resp) } {
+                Ok(token) => break token,
+                Err(Error::QueueFull) => {
+                    let task = current::task().clone();
+                    scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_queue_full");
+                    // Keep `driver` locked until this waiter is visible so a
+                    // concurrent completion cannot release space and miss it.
+                    self.queue_waiters.lock().push_back(task);
+                    drop(driver);
+                    current::schedule();
+                }
+                Err(err) => {
+                    crate::kdebug!(
+                        "virtio-blk read submit failed: device={}, start_block={}, len={}, err={:?}",
+                        self.device_name,
+                        start_block,
+                        buf.len(),
+                        err
+                    );
+                    return Err(());
+                }
+            }
         };
 
         self.wait_for_token(token);
@@ -201,8 +226,11 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             let mut driver = self.driver.lock();
             // SAFETY: These are the same buffers and token passed to the
             // corresponding successful `read_blocks_nb` submission.
-            unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) }
+            let result = unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) };
+            self.wake_queue_waiter();
+            result
         };
+        self.wake_next();
         complete_result.map_err(|err| {
             crate::kdebug!(
                 "virtio-blk read completion failed: device={}, start_block={}, len={}, token={}, status={:?}, err={:?}",
@@ -214,7 +242,6 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
                 err
             );
         })?;
-        self.wake_next();
 
         if resp.status() == RespStatus::OK {
             Ok(())
@@ -235,19 +262,33 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
         let mut req = BlkReq::default();
         let mut resp = BlkResp::default();
 
-        let token = {
+        let token = loop {
             let mut driver = self.driver.lock();
             // SAFETY: `req`, `buf`, and `resp` remain valid and untouched until
-            // the matching `complete_write_blocks` call after this task wakes.
-            unsafe { driver.write_blocks_nb(start_block, &mut req, buf, &mut resp) }.map_err(|err| {
-                crate::kdebug!(
-                    "virtio-blk write submit failed: device={}, start_block={}, len={}, err={:?}",
-                    self.device_name,
-                    start_block,
-                    buf.len(),
-                    err
-                );
-            })?
+            // the matching `complete_write_blocks` call after a successful
+            // submission. `QueueFull` is returned before they are published.
+            match unsafe { driver.write_blocks_nb(start_block, &mut req, buf, &mut resp) } {
+                Ok(token) => break token,
+                Err(Error::QueueFull) => {
+                    let task = current::task().clone();
+                    scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_queue_full");
+                    // Keep `driver` locked until this waiter is visible so a
+                    // concurrent completion cannot release space and miss it.
+                    self.queue_waiters.lock().push_back(task);
+                    drop(driver);
+                    current::schedule();
+                }
+                Err(err) => {
+                    crate::kdebug!(
+                        "virtio-blk write submit failed: device={}, start_block={}, len={}, err={:?}",
+                        self.device_name,
+                        start_block,
+                        buf.len(),
+                        err
+                    );
+                    return Err(());
+                }
+            }
         };
 
         self.wait_for_token(token);
@@ -256,8 +297,11 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             let mut driver = self.driver.lock();
             // SAFETY: These are the same buffers and token passed to the
             // corresponding successful `write_blocks_nb` submission.
-            unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) }
+            let result = unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) };
+            self.wake_queue_waiter();
+            result
         };
+        self.wake_next();
         complete_result.map_err(|err| {
             crate::kdebug!(
                 "virtio-blk write completion failed: device={}, start_block={}, len={}, token={}, status={:?}, err={:?}",
@@ -269,7 +313,6 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
                 err
             );
         })?;
-        self.wake_next();
 
         if resp.status() == RespStatus::OK {
             Ok(())
