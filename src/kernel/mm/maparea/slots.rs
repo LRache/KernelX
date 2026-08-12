@@ -45,6 +45,49 @@ impl<T> AreaPageSlots<T> {
         }
     }
 
+    pub(super) fn get_or_replace_with(
+        &mut self,
+        index: usize,
+        should_replace: impl FnOnce(&T) -> bool,
+        make_value: impl FnOnce() -> Option<T>,
+    ) -> Option<&T> {
+        if index >= self.len() {
+            return None;
+        }
+
+        match self {
+            Self::Dense(slots) => {
+                let slot = &mut slots[index];
+                if slot.as_ref().is_some_and(should_replace) {
+                    *slot = make_value();
+                    return slot.as_ref();
+                }
+                if slot.is_none() {
+                    *slot = Some(make_value()?);
+                }
+                slot.as_ref()
+            }
+            Self::Sparse { key_base, slots, .. } => {
+                let key = *key_base + index;
+                match slots.entry(key) {
+                    btree_map::Entry::Occupied(mut entry) => {
+                        if should_replace(entry.get()) {
+                            let Some(value) = make_value() else {
+                                entry.remove();
+                                return None;
+                            };
+                            entry.insert(value);
+                        } else {
+                            return Some(entry.into_mut());
+                        }
+                        Some(entry.into_mut())
+                    }
+                    btree_map::Entry::Vacant(entry) => Some(entry.insert(make_value()?)),
+                }
+            }
+        }
+    }
+
     pub(super) fn insert(&mut self, index: usize, value: T) -> Option<T> {
         debug_assert!(index < self.len(), "page slot index out of bounds");
         match self {

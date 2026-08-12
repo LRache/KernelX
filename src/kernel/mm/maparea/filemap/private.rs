@@ -89,26 +89,26 @@ impl PrivateFileMapArea {
             return None;
         }
 
-        let needs_load = match self.frames.get(page_index) {
-            None => true,
-            Some(PrivateFilePage::Source(SharedFilePage::Stable(_))) => false,
-            Some(PrivateFilePage::Source(SharedFilePage::Swappable(page))) => page.is_invalid(),
-            Some(PrivateFilePage::Anonymous(_)) => return None,
-        };
-        if needs_load {
-            // Replacing an invalid source page drops its old mapping pin.
-            self.frames.remove(page_index);
-            let file_page_index = self.file_page_index(page_index)?;
-            let page = self
-                .file
-                .get_inode()?
-                .acquire_mmap_shared_page(file_page_index)
-                .ok()??;
-            self.frames.insert(page_index, PrivateFilePage::Source(page));
-        }
+        let file_page_index = self.file_page_index(page_index)?;
+        let file = &self.file;
+        let page = self.frames.get_or_replace_with(
+            page_index,
+            // Replacing or discarding an invalid source page drops its old
+            // mapping pin.
+            |page| {
+                matches!(
+                    page,
+                    PrivateFilePage::Source(SharedFilePage::Swappable(page)) if page.is_invalid()
+                )
+            },
+            || {
+                let page = file.get_inode()?.acquire_mmap_shared_page(file_page_index).ok()??;
+                Some(PrivateFilePage::Source(page))
+            },
+        )?;
 
-        match self.frames.get(page_index) {
-            Some(PrivateFilePage::Source(page)) => Some(page),
+        match page {
+            PrivateFilePage::Source(page) => Some(page),
             _ => None,
         }
     }
