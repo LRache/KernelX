@@ -39,7 +39,7 @@ impl MMIOMatcherTrait for MMIOMatcher {
         }
 
         match transport.device_type() {
-            VirtioDeviceType::Block => Some(Arc::new(VirtIOBlockDriver::new(device.name().into(), transport))),
+            VirtioDeviceType::Block => Some(VirtIOBlockDriver::new(device.name().into(), transport)),
             VirtioDeviceType::Console => Some(virtconsole::new_driver(virtconsole::device_name(), transport)),
             VirtioDeviceType::Network => {
                 let net_driver = Arc::new(VirtioNetDriver::new(transport));
@@ -71,9 +71,9 @@ impl PCIMatcherTrait for PCIMatcher {
                 let name = pci_device_name(vdev_type);
                 if device.msix_vector().is_some() {
                     let transport = MsixPciTransport::new(device, transport)?;
-                    Some(Arc::new(VirtIOBlockDriver::new(name, transport)))
+                    Some(VirtIOBlockDriver::new(name, transport))
                 } else {
-                    Some(Arc::new(VirtIOBlockDriver::new(name, transport)))
+                    Some(VirtIOBlockDriver::new(name, transport))
                 }
             }
             VirtioDeviceType::Console => {

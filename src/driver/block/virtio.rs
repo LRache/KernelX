@@ -1,7 +1,10 @@
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use core::time::Duration;
 use virtio_drivers::Error;
 use virtio_drivers::device::blk::{BlkReq, BlkResp, RespStatus, VirtIOBlk};
 use virtio_drivers::transport::Transport;
@@ -10,7 +13,7 @@ use virtio_drivers::transport::Transport;
 use crate::arch;
 use crate::driver::virtio::VirtIOHal;
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
-use crate::kernel::event::Event;
+use crate::kernel::event::{Event, timer};
 #[cfg(feature = "virtio-block-page-cache")]
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::scheduler::{self, Task, current};
@@ -97,18 +100,26 @@ pub struct VirtIOBlockDriver<T: Transport + Send + 'static> {
     #[cfg(feature = "virtio-block-page-cache")]
     cache: SleepLock<PageCache>,
     driver: SpinLock<VirtIOBlk<VirtIOHal, T>>,
-    inflight: SpinLock<BTreeMap<u16, Arc<dyn Task>>>,
+    inflight: SpinLock<BTreeMap<u16, InflightRequest>>,
     queue_waiters: SpinLock<VecDeque<Arc<dyn Task>>>,
     read_only: bool,
     readahead: AtomicUsize,
 }
 
+struct InflightRequest {
+    task: Arc<dyn Task>,
+    deadline: Duration,
+}
+
 impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
-    pub fn new(device_name: String, transport: T) -> Self {
+    const IO_TIMEOUT: Duration = Duration::from_secs(1);
+    const TIMEOUT_SCAN_INTERVAL: Duration = Duration::from_millis(250);
+
+    pub fn new(device_name: String, transport: T) -> Arc<Self> {
         let mut blk = VirtIOBlk::new(transport).unwrap();
         blk.enable_interrupts();
         let read_only = blk.readonly();
-        Self {
+        let driver = Arc::new(Self {
             device_name,
             #[cfg(feature = "virtio-block-page-cache")]
             cache: SleepLock::new(PageCache::new(), "VirtIOBlockDriver::cache"),
@@ -117,24 +128,85 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             queue_waiters: SpinLock::new(VecDeque::new(), "VirtIOBlockDriver::queue_waiters"),
             read_only,
             readahead: AtomicUsize::new(0),
+        });
+        Self::arm_timeout(&driver);
+        driver
+    }
+
+    fn arm_timeout(driver: &Arc<Self>) {
+        let driver = Arc::downgrade(driver);
+        timer::add_timer_with_callback(
+            Self::TIMEOUT_SCAN_INTERVAL,
+            Box::new(move || {
+                let Some(driver) = driver.upgrade() else {
+                    return;
+                };
+                driver.handle_timeout();
+                Self::arm_timeout(&driver);
+            }),
+        );
+    }
+
+    fn handle_timeout(&self) {
+        let now = timer::now();
+        let (expired, inflight_count): (Vec<_>, _) = {
+            let inflight = self.inflight.lock();
+            let expired = inflight
+                .values()
+                .filter(|request| request.deadline <= now)
+                .map(|request| request.task.clone())
+                .collect();
+            (expired, inflight.len())
+        };
+        if expired.is_empty() {
+            return;
+        }
+
+        let used_head = self.driver.lock().peek_used();
+        crate::kwarn!(
+            "virtio-blk I/O wait timed out: device={}, expired={}, inflight={}, used_head={:?}",
+            self.device_name,
+            expired.len(),
+            inflight_count,
+            used_head,
+        );
+        for task in expired {
+            scheduler::wakeup_task_uninterruptible(task, Event::Timeout);
         }
     }
 
     fn wait_for_token(&self, token: u16) {
         let task = current::task();
-        scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_io");
-        self.inflight.lock().insert(token, task.clone());
+        loop {
+            scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_io");
+            self.inflight.lock().insert(
+                token,
+                InflightRequest {
+                    task: task.clone(),
+                    deadline: timer::now() + Self::IO_TIMEOUT,
+                },
+            );
 
-        if self.driver.lock().peek_used() == Some(token) {
-            self.wake_token(token);
+            if self.driver.lock().peek_used() == Some(token) {
+                self.wake_token(token);
+            }
+
+            current::schedule();
+
+            if self.driver.lock().peek_used() == Some(token) {
+                self.inflight.lock().remove(&token);
+                break;
+            }
+
+            // A timeout may have exposed a completed request ahead of this
+            // token. Re-drive the queue head before waiting again.
+            self.wake_next();
         }
-
-        current::schedule();
     }
 
     fn wake_token(&self, token: u16) {
-        if let Some(task) = self.inflight.lock().remove(&token) {
-            scheduler::wakeup_task_uninterruptible(task, Event::IOComplete);
+        if let Some(request) = self.inflight.lock().remove(&token) {
+            scheduler::wakeup_task_uninterruptible(request.task, Event::IOComplete);
         }
     }
 
