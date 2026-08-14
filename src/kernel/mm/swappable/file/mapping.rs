@@ -8,7 +8,7 @@ use crate::klib::SleepLock;
 
 use super::super::swappable::SwappableFramePin;
 use super::backend::{FileBackend, FileBackendState};
-use super::frame::{FilePage, FilePageIdentityPin, FilePageMappingPin, FileSwappableFrame};
+use super::frame::{FilePage, FilePageIdentityPin, FilePageMappingRef, FileSwappableFrame};
 use super::rmap::{FileMapRegistration, FileRmap};
 
 /// A mapping of a file's pages to physical frames,
@@ -39,12 +39,12 @@ impl FileMapping {
     }
 
     /// Acquire a page for a shared file mapping, loading it if necessary.
-    /// The returned pin owns one mapping reference until it is dropped.
+    /// The returned reference owns one mapping reference until it is dropped.
     pub fn acquire_mapped_page(
         &self,
         file_page_index: usize,
         load: impl FnOnce() -> SysResult<Option<PhysPageFrame>>,
-    ) -> SysResult<Option<FilePageMappingPin>> {
+    ) -> SysResult<Option<FilePageMappingRef>> {
         let page = {
             let mut pages = self.pages.lock();
             let page = if let Some(page) = pages.get(&file_page_index) {
@@ -57,7 +57,7 @@ impl FileMapping {
                 pages.insert(file_page_index, page.clone());
                 page
             };
-            FilePageMappingPin::new(page)
+            FilePageMappingRef::new(page)
         };
 
         match page.ensure_page_with(|_| load()) {

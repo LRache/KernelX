@@ -124,24 +124,24 @@ impl Drop for FilePageIdentityPin {
     }
 }
 
-pub struct FilePageMappingPin {
+pub struct FilePageMappingRef {
     page: Arc<FilePage>,
 }
 
-impl FilePageMappingPin {
+impl FilePageMappingRef {
     pub(super) fn new(page: Arc<FilePage>) -> Self {
         page.frame.add_mapping_ref();
         Self { page }
     }
 }
 
-impl Clone for FilePageMappingPin {
+impl Clone for FilePageMappingRef {
     fn clone(&self) -> Self {
         Self::new(self.page.clone())
     }
 }
 
-impl Deref for FilePageMappingPin {
+impl Deref for FilePageMappingRef {
     type Target = FilePage;
 
     fn deref(&self) -> &Self::Target {
@@ -149,7 +149,7 @@ impl Deref for FilePageMappingPin {
     }
 }
 
-impl Drop for FilePageMappingPin {
+impl Drop for FilePageMappingRef {
     fn drop(&mut self) {
         self.page.frame.release_mapping_ref();
     }
@@ -158,5 +158,5 @@ impl Drop for FilePageMappingPin {
 #[derive(Clone)]
 pub enum SharedFilePage {
     Stable(Arc<PhysPageFrame>),
-    Swappable(FilePageMappingPin),
+    Swappable(FilePageMappingRef),
 }
