@@ -1,6 +1,8 @@
 use bitflags::bitflags;
 use core::fmt;
 use core::ptr::NonNull;
+#[cfg(feature = "debug_pagetable")]
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::arch::{PageTableTrait, kaddr_to_paddr, paddr_to_kaddr};
 use crate::kernel::mm::{self, MapPerm};
@@ -10,6 +12,16 @@ use super::{PGBITS, PGMASK, PGSIZE};
 const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
 const ENTRIES_PER_TABLE: usize = PGSIZE / core::mem::size_of::<u64>(); // 512
+
+#[cfg(feature = "debug_pagetable")]
+static NEXT_TLB_CONTEXT_ID: AtomicUsize = AtomicUsize::new(1);
+
+#[cfg(feature = "debug_pagetable")]
+fn allocate_tlb_context_id() -> usize {
+    NEXT_TLB_CONTEXT_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .expect("TLB context ID overflow")
+}
 
 bitflags! {
     /// PTE bit layout (PALEN=48, 4 KiB pages, RPLV=0). Matches hardware
@@ -257,16 +269,21 @@ impl PTETable {
 
 pub struct PageTable {
     pub root: usize,
-    /// CPUs that may use this page table again without first performing a
-    /// local TLB invalidation. Protected by the owning page-table lock.
-    active_cpu_mask: usize,
+    /// CPUs that may still cache this page table and may use it again without
+    /// first performing a local TLB invalidation. Protected by the owning
+    /// page-table lock.
+    cached_cpu_mask: usize,
+    #[cfg(feature = "debug_pagetable")]
+    tlb_context_id: usize,
 }
 
 impl PageTable {
     pub const fn new() -> Self {
         Self {
             root: 0,
-            active_cpu_mask: 0,
+            cached_cpu_mask: 0,
+            #[cfg(feature = "debug_pagetable")]
+            tlb_context_id: 0,
         }
     }
 
@@ -281,13 +298,20 @@ impl PageTable {
         debug_assert!(root != 0, "PageTable root cannot be zero");
         Self {
             root,
-            active_cpu_mask: 0,
+            cached_cpu_mask: 0,
+            #[cfg(feature = "debug_pagetable")]
+            tlb_context_id: allocate_tlb_context_id(),
         }
     }
 
     pub fn create(&mut self) {
         debug_assert!(self.root == 0, "PageTable::create called twice");
         self.root = mm::page::alloc_zero();
+        #[cfg(feature = "debug_pagetable")]
+        {
+            debug_assert_eq!(self.tlb_context_id, 0, "PageTable TLB context initialized twice");
+            self.tlb_context_id = allocate_tlb_context_id();
+        }
     }
 
     pub fn get_pgd(&self) -> usize {
@@ -296,19 +320,28 @@ impl PageTable {
     }
 
     pub fn activate_cpu(&mut self, cpu_id: usize) {
-        self.active_cpu_mask |= 1usize
+        self.cached_cpu_mask |= 1usize
             .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
             .expect("CPU ID exceeds page-table CPU mask width");
     }
 
-    pub fn deactivate_cpu(&mut self, cpu_id: usize) {
-        self.active_cpu_mask &= !1usize
+    pub fn deactivate_cpu(&mut self, cpu_id: usize) -> bool {
+        let cpu_bit = 1usize
             .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
             .expect("CPU ID exceeds page-table CPU mask width");
+        let was_cached = self.cached_cpu_mask & cpu_bit != 0;
+        self.cached_cpu_mask &= !cpu_bit;
+        was_cached
     }
 
     pub fn active_cpu_mask(&self) -> usize {
-        self.active_cpu_mask
+        self.cached_cpu_mask
+    }
+
+    #[cfg(feature = "debug_pagetable")]
+    pub fn tlb_context_id(&self) -> usize {
+        assert_ne!(self.tlb_context_id, 0, "PageTable has no TLB context ID");
+        self.tlb_context_id
     }
 
     pub fn is_mapped(&self, uaddr: usize) -> bool {

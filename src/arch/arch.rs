@@ -83,6 +83,7 @@ pub trait ArchTrait {
 
     /* ----- Context Switching ----- */
     fn kernel_switch(from: *mut KernelContext, to: *mut KernelContext);
+    fn prepare_task_switch(was_cached: bool);
     fn return_to_user() -> !;
 
     /* ----- Interrupt ------ */
@@ -108,10 +109,9 @@ pub trait ArchTrait {
     fn map_kernel_addr(kstart: usize, pstart: usize, size: usize, perm: MapPerm);
     unsafe fn unmap_kernel_addr(kstart: usize, size: usize);
     fn flush_tlb_all();
-    /// Flush user translations cached by the remote CPUs in `cpu_mask`.
-    ///
-    /// The current CPU must not be present: it has already left user mode and
-    /// will perform its mandatory local invalidation before returning.
+    /// Make stale user translations safe for every CPU in `cpu_mask`.
+    /// Active targets are invalidated synchronously; an architecture may defer
+    /// an inactive target's local invalidation until it next returns to user.
     fn flush_tlb_cpu_mask(cpu_mask: usize);
 
     /// Translate a device MMIO physical address into a kernel-accessible VA

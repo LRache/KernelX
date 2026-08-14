@@ -60,6 +60,7 @@ arch_export! {
 
     /* ----- Context Switching ----- */
     kernel_switch(from: *mut KernelContext, to: *mut KernelContext) -> ();
+    prepare_task_switch(was_cached: bool) -> ();
     return_to_user() -> !;
 
     /* ----- Interrupt ------ */

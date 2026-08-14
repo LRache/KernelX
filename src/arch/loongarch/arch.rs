@@ -112,6 +112,21 @@ impl ArchTrait for Arch {
         task::kernel_switch(from, to);
     }
 
+    fn prepare_task_switch(was_cached: bool) {
+        let hartid = current::hart_id();
+
+        #[cfg(feature = "debug_pagetable")]
+        let cached_context_id = was_cached.then(|| current::addrspace().pagetable().lock().tlb_context_id());
+
+        #[cfg(feature = "debug_pagetable")]
+        iocsr::invalidate_tlb_context(hartid, cached_context_id);
+
+        #[cfg(not(feature = "debug_pagetable"))]
+        let _ = was_cached;
+
+        iocsr::mark_tlb_flush_pending_for_switch(hartid);
+    }
+
     fn return_to_user() -> ! {
         task::traphandle::return_to_user()
     }
@@ -234,25 +249,13 @@ impl ArchTrait for Arch {
             return;
         }
 
+        let valid_cpu_mask = usize::MAX >> (usize::BITS as usize - Self::cpu_count());
         debug_assert_eq!(
-            cpu_mask
-                & 1usize
-                    .checked_shl(current::hart_id().try_into().expect("hart ID does not fit in u32"))
-                    .expect("hart ID exceeds TLB CPU mask width"),
+            cpu_mask & !valid_cpu_mask,
             0,
-            "targeted TLB flush mask contains the current hart"
+            "TLB flush mask contains an unavailable hart"
         );
-
-        #[cfg(not(feature = "no-smp"))]
-        {
-            let valid_cpu_mask = usize::MAX >> (usize::BITS as usize - Self::cpu_count());
-            debug_assert_eq!(
-                cpu_mask & !valid_cpu_mask,
-                0,
-                "TLB flush mask contains an unavailable hart"
-            );
-            iocsr::flush_tlb_cpu_mask(cpu_mask);
-        }
+        iocsr::flush_tlb_cpu_mask(cpu_mask & valid_cpu_mask);
     }
 
     fn mmio_phys_to_kaddr(paddr: usize, _size: usize) -> usize {

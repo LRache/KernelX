@@ -186,6 +186,11 @@ pub fn schedule() {
     arch::disable_interrupt();
     task().pause_system_time();
 
+    if task().is_user_task() {
+        let hartid = hart_id();
+        let was_cached = addrspace().deactivate_cpu(hartid);
+        arch::prepare_task_switch(was_cached);
+    }
     processor().switch_to_idle();
 
     // Do not cache `processor()` here because `switch_to_idle` may resume

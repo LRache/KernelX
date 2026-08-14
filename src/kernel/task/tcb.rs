@@ -1027,6 +1027,10 @@ impl Task for TCB {
         self
     }
 
+    fn is_user_task(&self) -> bool {
+        true
+    }
+
     fn pause_system_time(&self) {
         self.pause_user_task_system_time();
     }

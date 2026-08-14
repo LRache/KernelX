@@ -409,8 +409,8 @@ impl AddrSpace {
         self.pagetable.lock().activate_cpu(cpu_id);
     }
 
-    pub(crate) fn deactivate_cpu(&self, cpu_id: usize) {
-        self.pagetable.lock().deactivate_cpu(cpu_id);
+    pub(crate) fn deactivate_cpu(&self, cpu_id: usize) -> bool {
+        self.pagetable.lock().deactivate_cpu(cpu_id)
     }
 
     pub fn add_map_manager_watcher(&self, watcher: Arc<dyn MapManagerWatcher>) {

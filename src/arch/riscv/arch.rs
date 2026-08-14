@@ -180,6 +180,8 @@ impl ArchTrait for Arch {
         kernel_switch(from, to);
     }
 
+    fn prepare_task_switch(_was_cached: bool) {}
+
     fn wait_for_interrupt() {
         // SAFETY: `wfi` only suspends instruction execution until an interrupt
         // becomes pending. Global interrupts remain disabled until it returns,

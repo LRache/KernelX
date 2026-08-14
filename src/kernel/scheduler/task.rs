@@ -67,6 +67,10 @@ pub trait Task: Send + Sync {
     fn pause_system_time(&self) {}
     fn resume_system_time(&self) {}
 
+    fn is_user_task(&self) -> bool {
+        false
+    }
+
     fn tcb(&self) -> &TCB;
 
     fn set_exited(&self) {}

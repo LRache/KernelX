@@ -14,10 +14,9 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn usertrap_handler() -> ! {
-    // User execution has stopped. Kernel paths do not directly use user
-    // virtual addresses, and the return path invalidates the local TLB before
-    // the address space can be used again.
-    current::addrspace().deactivate_cpu(current::hart_id());
+    // Publish inactivity before entering kernel paths that may block. If a
+    // remote request won the race, this also completes its local invalidation.
+    iocsr::deactivate_tlb_cpu(current::hart_id());
 
     trap::trap_enter();
 
@@ -207,11 +206,6 @@ pub fn return_to_user() -> ! {
 
     csr::write::<{ csr::num::PGDL }>(uc.user_pgd);
 
-    // Publish this CPU under the page-table lock before the local invalidation
-    // makes the user address space usable again.
-    current::addrspace().activate_cpu(current::hart_id());
-    crate::arch::flush_tlb_all();
-
     csr::write::<{ csr::num::ERA }>(uc.get_user_entry());
     csr::write::<{ csr::num::PRMD }>(csr::prmd::USERFRAME);
 
@@ -220,6 +214,19 @@ pub fn return_to_user() -> ! {
     } else {
         csr::write::<{ csr::num::EUEN }>(csr::read::<{ csr::num::EUEN }>() & !0x3);
     }
+
+    // Serialize activation with page-table updates. An inactive request made
+    // before this lock is acquired leaves a pending local invalidation; an
+    // updater that acquires the lock afterwards sees this CPU in the cache set.
+    let hartid = current::hart_id();
+    let mut pagetable = current::addrspace().pagetable().lock();
+    pagetable.activate_cpu(hartid);
+    let flushed = iocsr::activate_tlb_cpu(hartid);
+    #[cfg(feature = "debug_pagetable")]
+    iocsr::validate_activated_tlb_context(hartid, pagetable.tlb_context_id(), flushed);
+    #[cfg(not(feature = "debug_pagetable"))]
+    let _ = flushed;
+    drop(pagetable);
 
     unsafe { asm_usertrap_return(uc as *const UserContext) }
 }

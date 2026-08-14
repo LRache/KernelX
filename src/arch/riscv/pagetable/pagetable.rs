@@ -193,10 +193,13 @@ impl<T: PageAllocator> PageTableImpls<T> {
             .expect("CPU ID exceeds page-table CPU mask width");
     }
 
-    pub fn deactivate_cpu(&mut self, cpu_id: usize) {
-        self.active_cpu_mask &= !1usize
+    pub fn deactivate_cpu(&mut self, cpu_id: usize) -> bool {
+        let cpu_bit = 1usize
             .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
             .expect("CPU ID exceeds page-table CPU mask width");
+        let was_active = self.active_cpu_mask & cpu_bit != 0;
+        self.active_cpu_mask &= !cpu_bit;
+        was_active
     }
 
     pub fn active_cpu_mask(&self) -> usize {
