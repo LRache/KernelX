@@ -55,7 +55,10 @@ impl LockerTrait for SleepLocker {
                 return;
             }
 
-            let task = current::task();
+            // Keep an owned task reference across schedule(). `current::task()`
+            // borrows the processor's scheduler slot, which may be reused for
+            // another task after this task switches out or migrates.
+            let task = current::task().clone();
 
             // Hold `waiters` lock while doing the second try_lock() check AND
             // adding ourselves to the waiters list. `unlock()` also holds
