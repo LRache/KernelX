@@ -457,13 +457,13 @@ impl AddrSpace {
     ) -> Option<(AccessDirty, usize)> {
         let mut pagetable = self.pagetable.lock();
         let access_dirty = pagetable.take_access_dirty_bit_with_check(uaddr, expected_kpage)?;
-        Some((AccessDirty::from(access_dirty), pagetable.active_cpu_mask()))
+        Some((AccessDirty::from(access_dirty), pagetable.tlb_cached_cpu_mask()))
     }
 
     pub fn unmap_if_maps_no_flush(&self, uaddr: usize, expected_kpage: usize) -> Option<(AccessDirty, usize)> {
         let mut pagetable = self.pagetable.lock();
         let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, expected_kpage)?;
-        Some((AccessDirty::from(access_dirty), pagetable.active_cpu_mask()))
+        Some((AccessDirty::from(access_dirty), pagetable.tlb_cached_cpu_mask()))
     }
 
     pub(crate) fn mmap_swappable<G>(&self, uaddr: usize, guard: &G, perm: MapPerm)
@@ -476,7 +476,7 @@ impl AddrSpace {
             // held until after the PTE is installed. The owning Area already
             // registered this address range before acquiring the guard.
             unsafe { pagetable.mmap_raw(uaddr, guard.frame().get_page(), perm) };
-            pagetable.active_cpu_mask()
+            pagetable.tlb_cached_cpu_mask()
         };
         arch::flush_tlb_cpu_mask(cpu_mask);
     }
@@ -490,7 +490,7 @@ impl AddrSpace {
             // SAFETY: The guard keeps the replacement frame resident for the
             // complete PTE update, and the Area retains the logical page owner.
             unsafe { pagetable.mmap_replace_raw(uaddr, guard.frame().get_page(), perm) };
-            pagetable.active_cpu_mask()
+            pagetable.tlb_cached_cpu_mask()
         };
         arch::flush_tlb_cpu_mask(cpu_mask);
     }
@@ -536,7 +536,7 @@ impl AddrSpace {
             }
             None => return None,
         };
-        let cpu_mask = pagetable.active_cpu_mask();
+        let cpu_mask = pagetable.tlb_cached_cpu_mask();
         drop(pagetable);
         arch::flush_tlb_cpu_mask(cpu_mask);
         Some(access_dirty)

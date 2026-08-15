@@ -104,7 +104,7 @@ impl Area for ShmArea {
         let cpu_mask = {
             let mut pagetable = addrspace.pagetable().lock();
             pagetable.mmap(uaddr & !arch::PGMASK, frame, self.perm);
-            pagetable.active_cpu_mask()
+            pagetable.tlb_cached_cpu_mask()
         };
         arch::flush_tlb_cpu_mask(cpu_mask);
         Ok(())
@@ -117,7 +117,7 @@ impl Area for ShmArea {
             let uaddr = self.ubase + i * arch::PGSIZE;
             let mut pagetable = pagetable.lock();
             if pagetable.munmap_with_check(uaddr, frames[i].get_page()) {
-                tlb_cpu_mask |= pagetable.active_cpu_mask();
+                tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
             }
         }
         arch::flush_tlb_cpu_mask(tlb_cpu_mask);

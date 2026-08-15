@@ -73,7 +73,7 @@ impl ELFArea {
         let cpu_mask = {
             let mut pagetable = pagetable.lock();
             pagetable.mmap(self.ubase + area_offset, &frame, self.perm);
-            pagetable.active_cpu_mask()
+            pagetable.tlb_cached_cpu_mask()
         };
         arch::flush_tlb_cpu_mask(cpu_mask);
         self.frames[page_index] = Frame::Allocated(frame);
@@ -112,7 +112,7 @@ impl ELFArea {
         let cpu_mask = {
             let mut pagetable = addrspace.pagetable().lock();
             pagetable.mmap_replace(uaddr, &new_frame, self.perm);
-            pagetable.active_cpu_mask()
+            pagetable.tlb_cached_cpu_mask()
         };
         arch::flush_tlb_cpu_mask(cpu_mask);
         self.frames[page_index] = Frame::Allocated(new_frame);
@@ -125,7 +125,7 @@ impl ELFArea {
         let cpu_mask = {
             let mut pagetable = addrspace.pagetable().lock();
             pagetable.mmap_replace(uaddr, frame, self.perm - MapPerm::W);
-            pagetable.active_cpu_mask()
+            pagetable.tlb_cached_cpu_mask()
         };
         arch::flush_tlb_cpu_mask(cpu_mask);
 
@@ -214,7 +214,7 @@ impl Area for ELFArea {
                     let uaddr = self.ubase + page_index * arch::PGSIZE;
                     let mut pagetable = self_pagetable.lock();
                     if pagetable.mmap_replace_perm(uaddr, cow_perm) {
-                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        *tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                     }
                     Frame::Cow(frame.clone())
                 }
@@ -326,7 +326,7 @@ impl Area for ELFArea {
                 // `translate_read` or `translate_write` but never accessed afterwards.
                 let mut pagetable = pagetable.lock();
                 if pagetable.munmap_with_check(self.ubase + page_index * arch::PGSIZE, frame.get_page()) {
-                    tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                 }
             }
         }
@@ -345,13 +345,13 @@ impl Area for ELFArea {
                 Frame::Allocated(_) => {
                     let mut pagetable = pagetable.lock();
                     if pagetable.mmap_replace_perm(uaddr, perm) {
-                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        *tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                     }
                 }
                 Frame::Cow(_) => {
                     let mut pagetable = pagetable.lock();
                     if pagetable.mmap_replace_perm(uaddr, cow_perm) {
-                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        *tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                     }
                 }
                 Frame::Unallocated => {}

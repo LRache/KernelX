@@ -270,7 +270,7 @@ impl Area for SharedAnonymousArea {
                 let mut pagetable = pagetable.lock();
                 let access_dirty = pagetable.mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), perm);
                 if access_dirty.is_some() {
-                    *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    *tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                 }
                 let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                 ((), AccessDirty { accessed, dirty })
@@ -290,7 +290,7 @@ impl Area for SharedAnonymousArea {
                     let mut pagetable = pagetable.lock();
                     let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
                     if access_dirty.is_some() {
-                        tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                     }
                     access_dirty.map(AccessDirty::from)
                 });

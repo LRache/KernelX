@@ -272,7 +272,7 @@ pub struct PageTable {
     /// CPUs that may still cache this page table and may use it again without
     /// first performing a local TLB invalidation. Protected by the owning
     /// page-table lock.
-    cached_cpu_mask: usize,
+    tlb_cached_cpu_mask: usize,
     #[cfg(feature = "debug_pagetable")]
     tlb_context_id: usize,
 }
@@ -281,7 +281,7 @@ impl PageTable {
     pub const fn new() -> Self {
         Self {
             root: 0,
-            cached_cpu_mask: 0,
+            tlb_cached_cpu_mask: 0,
             #[cfg(feature = "debug_pagetable")]
             tlb_context_id: 0,
         }
@@ -298,7 +298,7 @@ impl PageTable {
         debug_assert!(root != 0, "PageTable root cannot be zero");
         Self {
             root,
-            cached_cpu_mask: 0,
+            tlb_cached_cpu_mask: 0,
             #[cfg(feature = "debug_pagetable")]
             tlb_context_id: allocate_tlb_context_id(),
         }
@@ -320,7 +320,7 @@ impl PageTable {
     }
 
     pub fn activate_cpu(&mut self, cpu_id: usize) {
-        self.cached_cpu_mask |= 1usize
+        self.tlb_cached_cpu_mask |= 1usize
             .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
             .expect("CPU ID exceeds page-table CPU mask width");
     }
@@ -329,13 +329,13 @@ impl PageTable {
         let cpu_bit = 1usize
             .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
             .expect("CPU ID exceeds page-table CPU mask width");
-        let was_cached = self.cached_cpu_mask & cpu_bit != 0;
-        self.cached_cpu_mask &= !cpu_bit;
+        let was_cached = self.tlb_cached_cpu_mask & cpu_bit != 0;
+        self.tlb_cached_cpu_mask &= !cpu_bit;
         was_cached
     }
 
-    pub fn active_cpu_mask(&self) -> usize {
-        self.cached_cpu_mask
+    pub fn tlb_cached_cpu_mask(&self) -> usize {
+        self.tlb_cached_cpu_mask
     }
 
     #[cfg(feature = "debug_pagetable")]

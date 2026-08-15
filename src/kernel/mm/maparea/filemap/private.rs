@@ -278,7 +278,7 @@ impl PrivateFileMapArea {
                 let cpu_mask = {
                     let mut pagetable = addrspace.pagetable().lock();
                     pagetable.mmap_replace(page_uaddr, frame, perm - MapPerm::W);
-                    pagetable.active_cpu_mask()
+                    pagetable.tlb_cached_cpu_mask()
                 };
                 arch::flush_tlb_cpu_mask(cpu_mask);
             }
@@ -414,7 +414,7 @@ impl Area for PrivateFileMapArea {
                 let mut pagetable = self_pagetable.lock();
                 let access_dirty = pagetable.mmap_replace_perm_with_check_and_ad(uaddr, resident.get_page(), cow_perm);
                 if access_dirty.is_some() {
-                    *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                    *tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                 }
                 let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                 ((), AccessDirty { accessed, dirty })
@@ -666,7 +666,7 @@ impl Area for PrivateFileMapArea {
                     let access_dirty =
                         pagetable.mmap_replace_perm_with_check_and_ad(uaddr, frame.get_page(), perm - MapPerm::W);
                     if access_dirty.is_some() {
-                        *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        *tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                     }
                 }
                 PrivateFilePage::Source(SharedFilePage::Swappable(frame)) => {
@@ -678,7 +678,7 @@ impl Area for PrivateFileMapArea {
                             perm - MapPerm::W,
                         );
                         if access_dirty.is_some() {
-                            *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                            *tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                         }
                         let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                         ((), AccessDirty { accessed, dirty })
@@ -694,7 +694,7 @@ impl Area for PrivateFileMapArea {
                         let access_dirty =
                             pagetable.mmap_replace_perm_with_check_and_ad(uaddr, resident.get_page(), page_perm);
                         if access_dirty.is_some() {
-                            *tlb_cpu_mask |= pagetable.active_cpu_mask();
+                            *tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                         }
                         let (accessed, dirty) = access_dirty.unwrap_or((false, false));
                         ((), AccessDirty { accessed, dirty })
@@ -718,7 +718,7 @@ impl Area for PrivateFileMapArea {
                     SharedFilePage::Stable(frame) => {
                         let mut pagetable = pagetable.lock();
                         if pagetable.munmap_with_check(uaddr, frame.get_page()) {
-                            tlb_cpu_mask |= pagetable.active_cpu_mask();
+                            tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                         }
                     }
                     SharedFilePage::Swappable(page) => {
@@ -727,7 +727,7 @@ impl Area for PrivateFileMapArea {
                             let mut pagetable = pagetable.lock();
                             let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, resident.get_page());
                             if access_dirty.is_some() {
-                                tlb_cpu_mask |= pagetable.active_cpu_mask();
+                                tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                             }
                             access_dirty.map(AccessDirty::from)
                         });
@@ -763,7 +763,7 @@ impl Area for PrivateFileMapArea {
                     let mut pagetable = pagetable.lock();
                     let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, resident.get_page());
                     if access_dirty.is_some() {
-                        tlb_cpu_mask |= pagetable.active_cpu_mask();
+                        tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
                     }
                     access_dirty.map(AccessDirty::from)
                 });

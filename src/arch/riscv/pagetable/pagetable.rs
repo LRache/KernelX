@@ -17,9 +17,10 @@ pub trait PageAllocator {
 pub struct PageTableImpls<T: PageAllocator> {
     pub root: usize,
     has_shared_kernel_mappings: bool,
-    /// CPUs that may use this page table again without first performing a
-    /// local TLB invalidation. Protected by the owning page-table lock.
-    active_cpu_mask: usize,
+    /// CPUs that may still cache this page table and may use it again without
+    /// first performing a local TLB invalidation. Protected by the owning
+    /// page-table lock.
+    tlb_cached_cpu_mask: usize,
     _marker: core::marker::PhantomData<T>,
 }
 
@@ -38,7 +39,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
         Self {
             root,
             has_shared_kernel_mappings: false,
-            active_cpu_mask: 0,
+            tlb_cached_cpu_mask: 0,
             _marker: core::marker::PhantomData,
         }
     }
@@ -188,7 +189,7 @@ impl<T: PageAllocator> PageTableImpls<T> {
     }
 
     pub fn activate_cpu(&mut self, cpu_id: usize) {
-        self.active_cpu_mask |= 1usize
+        self.tlb_cached_cpu_mask |= 1usize
             .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
             .expect("CPU ID exceeds page-table CPU mask width");
     }
@@ -197,13 +198,13 @@ impl<T: PageAllocator> PageTableImpls<T> {
         let cpu_bit = 1usize
             .checked_shl(cpu_id.try_into().expect("CPU ID does not fit in u32"))
             .expect("CPU ID exceeds page-table CPU mask width");
-        let was_active = self.active_cpu_mask & cpu_bit != 0;
-        self.active_cpu_mask &= !cpu_bit;
-        was_active
+        let was_cached = self.tlb_cached_cpu_mask & cpu_bit != 0;
+        self.tlb_cached_cpu_mask &= !cpu_bit;
+        was_cached
     }
 
-    pub fn active_cpu_mask(&self) -> usize {
-        self.active_cpu_mask
+    pub fn tlb_cached_cpu_mask(&self) -> usize {
+        self.tlb_cached_cpu_mask
     }
 
     #[allow(dead_code)]
@@ -459,7 +460,7 @@ impl PageTable {
         Self {
             root: 0,
             has_shared_kernel_mappings: false,
-            active_cpu_mask: 0,
+            tlb_cached_cpu_mask: 0,
             _marker: core::marker::PhantomData,
         }
     }

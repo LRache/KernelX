@@ -104,7 +104,7 @@ fn svadu_mark_page_accessed(uaddr: usize) -> bool {
     let (changed, cpu_mask) = {
         let mut pagetable = addrspace.pagetable().lock();
         let changed = pagetable.mark_page_accessed(uaddr);
-        let cpu_mask = if changed { pagetable.active_cpu_mask() } else { 0 };
+        let cpu_mask = if changed { pagetable.tlb_cached_cpu_mask() } else { 0 };
         (changed, cpu_mask)
     };
     arch::flush_tlb_cpu_mask(cpu_mask);
@@ -116,7 +116,7 @@ fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
     let (changed, cpu_mask) = {
         let mut pagetable = addrspace.pagetable().lock();
         let changed = pagetable.mark_page_accessed_and_dirty(uaddr);
-        let cpu_mask = if changed { pagetable.active_cpu_mask() } else { 0 };
+        let cpu_mask = if changed { pagetable.tlb_cached_cpu_mask() } else { 0 };
         (changed, cpu_mask)
     };
     arch::flush_tlb_cpu_mask(cpu_mask);
