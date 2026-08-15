@@ -84,6 +84,8 @@ impl LockerTrait for SleepLockerOnStack {
 
         while !waiter.as_ref().get_ref().is_granted() {
             current::schedule();
+            let event = current::task().take_wakeup_event().unwrap();
+            debug_assert_eq!(event, Event::SleepLock);
         }
     }
 

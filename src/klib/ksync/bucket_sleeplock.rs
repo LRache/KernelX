@@ -218,6 +218,8 @@ impl LockerTrait for BucketSleepLocker {
             }
 
             current::schedule();
+            let event = current::task().take_wakeup_event().unwrap();
+            debug_assert_eq!(event, Event::SleepLock);
         }
     }
 

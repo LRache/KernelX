@@ -51,6 +51,8 @@ impl WaitQueue {
             state.waiters.push(task);
         }
         current::schedule();
+        let event = current::task().take_wakeup_event().unwrap();
+        debug_assert_eq!(event, Event::SleepLock);
     }
 
     fn complete(&self) {
