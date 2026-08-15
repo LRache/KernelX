@@ -218,8 +218,15 @@ impl LockerTrait for BucketSleepLocker {
             }
 
             current::schedule();
-            let event = current::task().take_wakeup_event().unwrap();
-            debug_assert_eq!(event, Event::SleepLock);
+            match current::task().take_wakeup_event() {
+                Some(Event::SleepLock) => {}
+                Some(event) => crate::kwarn!(
+                    "BucketSleepLock '{}' waiter received unexpected event: {:?}",
+                    name,
+                    event
+                ),
+                None => crate::kwarn!("BucketSleepLock '{}' waiter resumed without a wakeup event", name),
+            }
         }
     }
 

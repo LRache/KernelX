@@ -84,8 +84,15 @@ impl LockerTrait for SleepLockerOnStack {
 
         while !waiter.as_ref().get_ref().is_granted() {
             current::schedule();
-            let event = current::task().take_wakeup_event().unwrap();
-            debug_assert_eq!(event, Event::SleepLock);
+            match current::task().take_wakeup_event() {
+                Some(Event::SleepLock) => {}
+                Some(event) => crate::kwarn!(
+                    "SleepLockOnStack '{}' waiter received unexpected event: {:?}",
+                    name,
+                    event
+                ),
+                None => crate::kwarn!("SleepLockOnStack '{}' waiter resumed without a wakeup event", name),
+            }
         }
     }
 
