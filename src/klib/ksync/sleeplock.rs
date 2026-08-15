@@ -55,16 +55,12 @@ impl LockerTrait for SleepLocker {
                 return;
             }
 
-            // Keep an owned task reference across schedule(). `current::task()`
-            // borrows the processor's scheduler slot, which may be reused for
-            // another task after this task switches out or migrates.
-            let task = current::task().clone();
-
             // Hold `waiters` lock while doing the second try_lock() check AND
             // adding ourselves to the waiters list. `unlock()` also holds
             // `waiters` lock after setting locked=false, so these two critical
             // sections are mutually exclusive — preventing lost wakeups.
             {
+                let task = current::task();
                 let mut waiters = self.waiters.lock();
                 // Re-check: if unlock() ran between the first try_lock() above
                 // and here, we will see locked==false now and take the lock
@@ -78,8 +74,10 @@ impl LockerTrait for SleepLocker {
                 waiters.push_back(task.clone());
             }
 
+            // Do not retain the borrowed task across schedule(): the processor's
+            // scheduler slot may be reused while this task is switched out.
             current::schedule();
-            let event = task.take_wakeup_event().unwrap();
+            let event = current::task().take_wakeup_event().unwrap();
             debug_assert_eq!(event, Event::SleepLock);
         }
     }
