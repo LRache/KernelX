@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod exports;
 mod loader;
 pub mod wrapper;
