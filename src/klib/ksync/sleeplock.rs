@@ -76,6 +76,8 @@ impl LockerTrait for SleepLocker {
             }
 
             current::schedule();
+            let event = task.take_wakeup_event().unwrap();
+            debug_assert_eq!(event, Event::SleepLock);
         }
     }
 
