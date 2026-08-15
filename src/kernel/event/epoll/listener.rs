@@ -391,7 +391,7 @@ impl EpollListener {
             return false;
         }
 
-        inner.waiter.wait(
+        inner.waiter.wait_pending(
             current::task().clone(),
             Event::Poll {
                 event: FileEvent::READ_READY,

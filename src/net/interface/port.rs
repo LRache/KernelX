@@ -217,7 +217,7 @@ impl PortMap {
         if q.has_data() {
             return true;
         }
-        q.waiters.wait(current::task().clone(), event);
+        q.waiters.wait_pending(current::task().clone(), event);
         false
     }
 
@@ -226,7 +226,7 @@ impl PortMap {
         if q.has_data() {
             return true;
         }
-        q.waiters.wait(current::task().clone(), event);
+        q.waiters.wait_pending(current::task().clone(), event);
         false
     }
 

@@ -260,7 +260,7 @@ impl PtyInner {
             return Ok(Some(ready));
         }
         if event.contains(FileEvent::READ_READY) {
-            state.master_waiters.wait(
+            state.master_waiters.wait_pending(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::READ_READY,
@@ -277,7 +277,7 @@ impl PtyInner {
             return Ok(Some(ready));
         }
         if event.contains(FileEvent::READ_READY) {
-            state.slave_waiters.wait(
+            state.slave_waiters.wait_pending(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::READ_READY,

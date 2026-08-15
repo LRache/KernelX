@@ -20,7 +20,6 @@ use crate::kernel::syscall::{SysResult, SyscallRet};
 use crate::kernel::task::fdtable::FDFlags;
 use crate::kernel::task::{ITimer, PCB};
 use crate::kernel::uapi::OpenFlags;
-use crate::klib::defer;
 
 use super::common::{ITimerSpec, ITimerVal, Timespec, Timespec32};
 
@@ -433,17 +432,7 @@ fn select(
     }
 
     let tcb = current::tcb();
-
-    // Blocked before waiting files to avoid losing wakeup events.
-    tcb.block("select");
-
-    // Use defer to ensure unblocking if we return early due to error or ready events.
-    let defer = defer::defer(|| {
-        tcb.unblock();
-    });
-
     let mut ready_count = 0;
-    let mut waiting_files = Vec::new();
     let r = files_to_select
         .iter()
         .enumerate()
@@ -451,8 +440,6 @@ fn select(
             if let Some(event) = file.wait_event(i, *wait_set)? {
                 set_select_fd_by_event(event, *fd, &mut readfds, &mut writefds, &mut exceptfds);
                 ready_count += 1;
-            } else {
-                waiting_files.push(file);
             }
             Ok(())
         });
@@ -462,6 +449,7 @@ fn select(
         for file in files_to_select.iter().map(|(_, f, _)| f) {
             file.wait_event_cancel();
         }
+        tcb.clear_pending_wakeup();
         return Err(e);
     }
 
@@ -470,6 +458,7 @@ fn select(
         for file in files_to_select.iter().map(|(_, f, _)| f) {
             file.wait_event_cancel();
         }
+        tcb.clear_pending_wakeup();
 
         write_back_fdsets(
             &uptr_readfds,
@@ -482,23 +471,27 @@ fn select(
         return Ok(ready_count);
     }
 
-    let timer_id = if let Some(duration) = timeout {
-        if !duration.is_zero() {
-            Some(timer::add_timer(current::task().clone(), duration))
-        } else {
+    let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+    let should_schedule = tcb.block_if_no_pending_wakeup("select");
+    let timer_id = match timeout {
+        Some(duration) if duration.is_zero() => {
             unreachable!("zero select timeout is handled before registering waiters");
         }
-    } else {
-        None
+        Some(duration) if should_schedule => Some(timer::add_timer(current::task().clone(), duration)),
+        _ => None,
     };
 
-    let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
-
     if has_pending_unmasked_signal() {
+        if should_schedule {
+            tcb.unblock();
+        } else {
+            tcb.take_wakeup_event();
+        }
         old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
-        waiting_files.iter().for_each(|file| {
+        files_to_select.iter().for_each(|(_, file, _)| {
             file.wait_event_cancel();
         });
+        tcb.clear_pending_wakeup();
         timer_id.map(|id| timer::remove_timer(id));
 
         write_back_fdsets(
@@ -513,8 +506,9 @@ fn select(
         return Err(Errno::EINTR);
     }
 
-    defer::cancel(defer);
-    current::schedule();
+    if should_schedule {
+        current::schedule();
+    }
 
     old_signal_mask.map(|mask| {
         tcb.set_signal_mask(mask);
@@ -525,11 +519,10 @@ fn select(
     match event {
         Event::Poll { event, waker } => {
             debug_assert!(waker < files_to_select.len());
-            waiting_files.iter().enumerate().for_each(|(i, file)| {
-                if i != waker {
-                    file.wait_event_cancel();
-                }
+            files_to_select.iter().for_each(|(_, file, _)| {
+                file.wait_event_cancel();
             });
+            tcb.clear_pending_wakeup();
 
             set_select_fd_by_event(
                 event,
@@ -552,9 +545,10 @@ fn select(
             Ok(1)
         }
         Event::Timeout => {
-            waiting_files.iter().for_each(|file| {
+            files_to_select.iter().for_each(|(_, file, _)| {
                 file.wait_event_cancel();
             });
+            tcb.clear_pending_wakeup();
 
             write_back_fdsets(
                 &uptr_readfds,
@@ -568,9 +562,10 @@ fn select(
             Ok(0)
         }
         Event::Signal => {
-            waiting_files.iter().for_each(|file| {
+            files_to_select.iter().for_each(|(_, file, _)| {
                 file.wait_event_cancel();
             });
+            tcb.clear_pending_wakeup();
             timer_id.map(|id| timer::remove_timer(id));
 
             write_back_fdsets(
@@ -705,41 +700,46 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
         return Ok(count);
     }
 
-    let mut count = 0u32;
+    let mut count = 0;
     let mut i = 0;
-
     let tcb = current::tcb();
-    tcb.block("poll");
-    let defer = defer::defer(|| {
-        tcb.unblock();
-    });
+    let mut poll_files: Vec<(Arc<dyn FileOps>, &mut Pollfd)> = Vec::new();
 
-    let mut poll_files: Vec<(Arc<dyn FileOps>, &mut Pollfd)> = pollfds
-        .iter_mut()
-        .filter_map(|pfd| {
-            if pfd.fd < 0 {
-                return None;
+    for pfd in pollfds.iter_mut() {
+        if pfd.fd < 0 {
+            continue;
+        }
+
+        let file = match fdtable.get(pfd.fd as usize) {
+            Ok(file) => file,
+            Err(_) => {
+                pfd.revents = PollEventSet::POLLNVAL;
+                count += 1;
+                continue;
             }
+        };
 
-            let file = match fdtable.get(pfd.fd as usize) {
-                Ok(f) => f,
-                Err(_) => {
-                    pfd.revents = PollEventSet::POLLNVAL;
-                    count += 1;
-                    return None;
-                }
-            };
-
-            let wait_set = pfd.events.into();
-            if let Some(event) = file.wait_event(i, wait_set).unwrap() {
+        let wait_set = pfd.events.into();
+        match file.wait_event(i, wait_set) {
+            Ok(Some(event)) => {
                 pfd.revents = event.into();
                 count += 1;
             }
+            Ok(None) => {}
+            Err(e) => {
+                file.wait_event_cancel();
+                drop(fdtable);
+                poll_files.iter_mut().for_each(|(file, _)| {
+                    file.wait_event_cancel();
+                });
+                tcb.clear_pending_wakeup();
+                return Err(e);
+            }
+        }
 
-            i += 1;
-            Some((file, pfd))
-        })
-        .collect();
+        i += 1;
+        poll_files.push((file, pfd));
+    }
 
     drop(fdtable);
 
@@ -747,31 +747,38 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
         poll_files.iter_mut().for_each(|(file, _)| {
             file.wait_event_cancel();
         });
-        return Ok(count as usize);
+        tcb.clear_pending_wakeup();
+        return Ok(count);
     }
 
+    let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
+    let should_schedule = tcb.block_if_no_pending_wakeup("poll");
     let timer_id = match timeout {
         Some(timeout) if timeout.is_zero() => {
             unreachable!("zero poll timeout is handled before registering waiters");
         }
-        Some(timeout) => Some(timer::add_timer(current::task().clone(), timeout)),
-        None => None,
+        Some(timeout) if should_schedule => Some(timer::add_timer(current::task().clone(), timeout)),
+        _ => None,
     };
 
-    let tcb = current::tcb();
-    let old_signal_mask = sigmask.map(|mask| tcb.swap_signal_mask(mask));
-
     if has_pending_unmasked_signal() {
+        if should_schedule {
+            tcb.unblock();
+        } else {
+            tcb.take_wakeup_event();
+        }
         old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
         timer_id.map(|id| timer::remove_timer(id));
         poll_files.iter_mut().for_each(|(file, _)| {
             file.wait_event_cancel();
         });
+        tcb.clear_pending_wakeup();
         return Err(Errno::EINTR);
     }
 
-    defer::cancel(defer);
-    current::schedule();
+    if should_schedule {
+        current::schedule();
+    }
 
     old_signal_mask.map(|mask| tcb.set_signal_mask(mask));
 
@@ -782,6 +789,7 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
         poll_files.iter_mut().for_each(|(file, _)| {
             file.wait_event_cancel();
         });
+        tcb.clear_pending_wakeup();
     };
 
     let (poll_event, waker) = match event {
@@ -801,12 +809,10 @@ fn do_poll(pollfds: &mut [Pollfd], timeout: Option<Duration>, sigmask: Option<Si
 
     debug_assert!(waker < poll_files.len());
 
-    poll_files.iter_mut().enumerate().for_each(|(i, (file, pfd))| {
-        if i != waker {
-            file.wait_event_cancel();
-            pfd.revents = PollEventSet::empty();
-        }
+    poll_files.iter_mut().for_each(|(file, _)| {
+        file.wait_event_cancel();
     });
+    tcb.clear_pending_wakeup();
 
     poll_files[waker].1.revents = poll_event.into();
 

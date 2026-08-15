@@ -245,7 +245,7 @@ impl FileOps for EventFd {
         }
 
         if want_read {
-            self.read_waiter.lock().wait(
+            self.read_waiter.lock().wait_pending(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::READ_READY,
@@ -254,7 +254,7 @@ impl FileOps for EventFd {
             );
         }
         if want_write {
-            self.write_waiter.lock().wait(
+            self.write_waiter.lock().wait_pending(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::WRITE_READY,

@@ -9,11 +9,22 @@ use super::Event;
 struct WaitQueueItem<T> {
     task: Arc<dyn Task>,
     arg: T,
+    wakeup: fn(Arc<dyn Task>, Event),
 }
 
 impl<T> WaitQueueItem<T> {
-    fn new(task: Arc<dyn Task>, arg: T) -> Self {
-        Self { task, arg }
+    fn new(task: Arc<dyn Task>, arg: T, wakeup: fn(Arc<dyn Task>, Event)) -> Self {
+        Self { task, arg, wakeup }
+    }
+}
+
+fn wakeup_task(task: Arc<dyn Task>, event: Event) {
+    let _ = scheduler::wakeup_task(task, event);
+}
+
+fn set_pending_wakeup_if_running(task: Arc<dyn Task>, event: Event) {
+    if !task.set_pending_wakeup_if_running(event.clone()) {
+        let _ = scheduler::wakeup_task(task, event);
     }
 }
 
@@ -31,7 +42,12 @@ impl<T> WaitQueue<T> {
     }
 
     pub fn wait(&mut self, task: Arc<dyn Task>, arg: T) {
-        self.waiters.push_back(WaitQueueItem::new(task, arg));
+        self.waiters.push_back(WaitQueueItem::new(task, arg, wakeup_task));
+    }
+
+    pub fn wait_pending(&mut self, task: Arc<dyn Task>, arg: T) {
+        self.waiters
+            .push_back(WaitQueueItem::new(task, arg, set_pending_wakeup_if_running));
     }
 
     pub fn wait_current(&mut self, arg: T) {
@@ -42,7 +58,7 @@ impl<T> WaitQueue<T> {
 
     pub fn wake_all(&mut self, map_arg_to_event: impl Fn(T) -> Event) {
         self.waiters.drain(..).for_each(|item| {
-            let _ = scheduler::wakeup_task(item.task, map_arg_to_event(item.arg));
+            (item.wakeup)(item.task, map_arg_to_event(item.arg));
         });
     }
 
@@ -51,7 +67,7 @@ impl<T> WaitQueue<T> {
         while i < self.waiters.len() {
             if predicate(&self.waiters[i].arg) {
                 if let Some(item) = self.waiters.remove(i) {
-                    let _ = scheduler::wakeup_task(item.task, map_arg_to_event(item.arg));
+                    (item.wakeup)(item.task, map_arg_to_event(item.arg));
                 }
             } else {
                 i += 1;

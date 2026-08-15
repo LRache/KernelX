@@ -303,7 +303,7 @@ impl MessagePipeInner {
         }
 
         if want_read {
-            state.read_waiter.wait(
+            state.read_waiter.wait_pending(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::READ_READY,
@@ -313,7 +313,7 @@ impl MessagePipeInner {
         }
 
         if want_write {
-            state.write_waiter.wait(
+            state.write_waiter.wait_pending(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::WRITE_READY,

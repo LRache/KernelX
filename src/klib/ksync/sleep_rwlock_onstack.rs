@@ -111,8 +111,18 @@ impl<T> SleepRwLockOnStack<T> {
 
         while !waiter.as_ref().get_ref().is_granted() {
             current::schedule();
-            let event = current::task().take_wakeup_event().unwrap();
-            debug_assert_eq!(event, Event::SleepLock);
+            match current::task().take_wakeup_event() {
+                Some(Event::SleepLock) => {}
+                Some(event) => crate::kwarn!(
+                    "SleepRwLockOnStack '{}' read waiter received unexpected event: {:?}",
+                    self.name,
+                    event
+                ),
+                None => crate::kwarn!(
+                    "SleepRwLockOnStack '{}' read waiter resumed without a wakeup event",
+                    self.name
+                ),
+            }
         }
         SleepRwLockOnStackReadGuard { lock: self }
     }
@@ -145,8 +155,18 @@ impl<T> SleepRwLockOnStack<T> {
 
         while !waiter.as_ref().get_ref().is_granted() {
             current::schedule();
-            let event = current::task().take_wakeup_event().unwrap();
-            debug_assert_eq!(event, Event::SleepLock);
+            match current::task().take_wakeup_event() {
+                Some(Event::SleepLock) => {}
+                Some(event) => crate::kwarn!(
+                    "SleepRwLockOnStack '{}' write waiter received unexpected event: {:?}",
+                    self.name,
+                    event
+                ),
+                None => crate::kwarn!(
+                    "SleepRwLockOnStack '{}' write waiter resumed without a wakeup event",
+                    self.name
+                ),
+            }
         }
         SleepRwLockOnStackWriteGuard { lock: self }
     }

@@ -382,7 +382,7 @@ impl FileOps for TimerFd {
             return Ok(Some(FileEvent::READ_READY));
         }
 
-        state.waiter.wait(
+        state.waiter.wait_pending(
             current::task().clone(),
             Event::Poll {
                 event: FileEvent::READ_READY,

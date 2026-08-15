@@ -218,7 +218,7 @@ impl PCB {
         }
 
         if event.contains(FileEvent::READ_READY) {
-            waiters.wait(
+            waiters.wait_pending(
                 current::task().clone(),
                 Event::Poll {
                     event: FileEvent::READ_READY,

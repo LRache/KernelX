@@ -245,6 +245,9 @@ pub struct TCB {
     ucontext_syscall_retreg_backup: TaskLocal<Option<usize>>,
 
     state: SpinLock<TCBStateSet>,
+    // Always access while holding `state`, so checking Running and consuming
+    // the pending event is atomic with the transition to Blocked.
+    pending_wakeup_event: SpinLock<Option<Event>>,
     pub wakeup_event: SpinLock<Option<Event>>,
     parent_waiting_vfork: SpinLock<Option<Arc<dyn Task>>>,
     pub time_counter: SpinLock<TimeCounter>,
@@ -290,6 +293,7 @@ impl TCB {
             ucontext_syscall_retreg_backup: TaskLocal::new(tid, None),
 
             state: SpinLock::new(TCBStateSet::default(), "TCB::state"),
+            pending_wakeup_event: SpinLock::new(None, "TCB::pending_wakeup_event"),
             wakeup_event: SpinLock::new(None, "TCB::wakeup_event"),
             parent_waiting_vfork: SpinLock::new(None, "TCB::parent_waiting_vfork"),
             time_counter: SpinLock::new(TimeCounter::new(), "TCB::time_counter"),
@@ -792,6 +796,37 @@ impl TCB {
         true
     }
 
+    pub fn block_if_no_pending_wakeup(&self, name: &'static str) -> bool {
+        debug_assert!(current::tid() == self.tid);
+
+        let mut state = self.state.lock();
+        match state.state {
+            TCBState::Ready | TCBState::Running => {}
+            _ => return false,
+        }
+        debug_assert!(state.on_cpu);
+        debug_assert!(!state.wake_pending);
+
+        if let Some(event) = self.pending_wakeup_event.lock().take() {
+            *self.wakeup_event.lock() = Some(event);
+            return false;
+        }
+
+        #[cfg(feature = "scheduler-block-reason-debug")]
+        {
+            state.debug_block_name = Some(name);
+        }
+        #[cfg(not(feature = "scheduler-block-reason-debug"))]
+        let _ = name;
+        state.set_state(TCBState::Blocked);
+        true
+    }
+
+    pub fn clear_pending_wakeup(&self) {
+        let _state = self.state.lock();
+        self.pending_wakeup_event.lock().take();
+    }
+
     pub fn prepare_signal_wait(&self, signal_set: SignalSet, _reason: &str) -> SysResult<Option<PendingSignal>> {
         debug_assert!(current::tid() == self.tid);
 
@@ -1188,6 +1223,18 @@ impl Task for TCB {
         }
         *self.wakeup_event.lock() = Some(event);
         Some(state.make_ready())
+    }
+
+    fn set_pending_wakeup_if_running(&self, event: Event) -> bool {
+        let state = self.state.lock();
+        if state.state != TCBState::Running {
+            return false;
+        }
+        let mut pending = self.pending_wakeup_event.lock();
+        if pending.is_none() {
+            *pending = Some(event);
+        }
+        true
     }
 
     fn take_wakeup_event(&self) -> Option<Event> {

@@ -199,7 +199,7 @@ impl FileOps for FanotifyFile {
             return Ok(Some(FileEvent::READ_READY));
         }
 
-        self.inner.waiter.lock().wait(
+        self.inner.waiter.lock().wait_pending(
             current::task().clone(),
             Event::Poll {
                 event: FileEvent::READ_READY,
