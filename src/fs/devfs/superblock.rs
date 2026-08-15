@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use crate::driver::{DeviceType, DriverOps};
 use crate::fs::devfs::devnode::CharDevInode;
 use crate::fs::filesystem::{FileSystemOps, MountOptions, VfsSuperBlockOps};
-use crate::fs::{Mode, Owner, memtreefs};
+use crate::fs::{InodeOps, Mode, Owner, memtreefs};
 use crate::kernel::errno::SysResult;
 use crate::klib::InitedCell;
 
@@ -105,18 +105,24 @@ pub fn init() {
 }
 
 pub fn add_device(name: String, driver: Arc<dyn DriverOps>) {
-    let root = DEV_SUPERBLOCK.root_inode();
     match driver.device_type() {
         DeviceType::Char => {
             let ino = DEV_SUPERBLOCK.alloc_inode_number();
             let cdev_inode = CharDevInode::new(ino, driver.as_char_driver().unwrap());
-            root.as_ref().add_child(name, Arc::new(cdev_inode)).unwrap();
+            add_inode(name, cdev_inode).unwrap();
         }
         DeviceType::Block => {
             let ino = DEV_SUPERBLOCK.alloc_inode_number();
             let bdev_inode = super::devnode::BlockDevInode::new(ino, driver.as_block_driver().unwrap());
-            root.as_ref().add_child(name, Arc::new(bdev_inode)).unwrap();
+            add_inode(name, bdev_inode).unwrap();
         }
         _ => {}
     }
+}
+
+/// Adds an inode directly below the devfs root.
+///
+/// The inode's `get_ino()` value must be unique within devfs.
+pub fn add_inode(name: String, inode: impl InodeOps) -> SysResult<()> {
+    DEV_SUPERBLOCK.root_inode().as_ref().add_child(name, Arc::new(inode))
 }

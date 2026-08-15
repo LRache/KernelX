@@ -5,4 +5,4 @@ mod superblock;
 use inode::{NullInode, PtmxInode, RtcInode, URandomInode, ZeroInode};
 
 pub use inode::LoopInode;
-pub use superblock::{FileSystem, add_device, init};
+pub use superblock::{FileSystem, add_device, add_inode, init};
