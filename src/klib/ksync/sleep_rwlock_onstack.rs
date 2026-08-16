@@ -111,7 +111,9 @@ impl<T> SleepRwLockOnStack<T> {
 
         while !waiter.as_ref().get_ref().is_granted() {
             current::schedule();
-            match current::task().take_wakeup_event() {
+            let event = current::task().take_wakeup_event();
+            #[cfg(feature = "debug-task")]
+            match event {
                 Some(Event::SleepLock) => {}
                 Some(event) => crate::kwarn!(
                     "SleepRwLockOnStack '{}' read waiter received unexpected event: {:?}",
@@ -123,6 +125,8 @@ impl<T> SleepRwLockOnStack<T> {
                     self.name
                 ),
             }
+            #[cfg(not(feature = "debug-task"))]
+            let _ = event;
         }
         SleepRwLockOnStackReadGuard { lock: self }
     }
@@ -155,7 +159,9 @@ impl<T> SleepRwLockOnStack<T> {
 
         while !waiter.as_ref().get_ref().is_granted() {
             current::schedule();
-            match current::task().take_wakeup_event() {
+            let event = current::task().take_wakeup_event();
+            #[cfg(feature = "debug-task")]
+            match event {
                 Some(Event::SleepLock) => {}
                 Some(event) => crate::kwarn!(
                     "SleepRwLockOnStack '{}' write waiter received unexpected event: {:?}",
@@ -167,6 +173,8 @@ impl<T> SleepRwLockOnStack<T> {
                     self.name
                 ),
             }
+            #[cfg(not(feature = "debug-task"))]
+            let _ = event;
         }
         SleepRwLockOnStackWriteGuard { lock: self }
     }

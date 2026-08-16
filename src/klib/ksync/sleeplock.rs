@@ -77,11 +77,15 @@ impl LockerTrait for SleepLocker {
             // Do not retain the borrowed task across schedule(): the processor's
             // scheduler slot may be reused while this task is switched out.
             current::schedule();
-            match current::task().take_wakeup_event() {
+            let event = current::task().take_wakeup_event();
+            #[cfg(feature = "debug-task")]
+            match event {
                 Some(Event::SleepLock) => {}
                 Some(event) => crate::kwarn!("SleepLock '{}' waiter received unexpected event: {:?}", name, event),
                 None => crate::kwarn!("SleepLock '{}' waiter resumed without a wakeup event", name),
             }
+            #[cfg(not(feature = "debug-task"))]
+            let _ = event;
         }
     }
 
