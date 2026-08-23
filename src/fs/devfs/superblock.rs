@@ -107,22 +107,22 @@ pub fn init() {
 pub fn add_device(name: String, driver: Arc<dyn DriverOps>) {
     match driver.device_type() {
         DeviceType::Char => {
-            let ino = DEV_SUPERBLOCK.alloc_inode_number();
-            let cdev_inode = CharDevInode::new(ino, driver.as_char_driver().unwrap());
-            add_inode(name, cdev_inode).unwrap();
+            add_inode(name, |ino| CharDevInode::new(ino, driver.as_char_driver().unwrap())).unwrap();
         }
         DeviceType::Block => {
-            let ino = DEV_SUPERBLOCK.alloc_inode_number();
-            let bdev_inode = super::devnode::BlockDevInode::new(ino, driver.as_block_driver().unwrap());
-            add_inode(name, bdev_inode).unwrap();
+            add_inode(name, |ino| {
+                super::devnode::BlockDevInode::new(ino, driver.as_block_driver().unwrap())
+            })
+            .unwrap();
         }
         _ => {}
     }
 }
 
 /// Adds an inode directly below the devfs root.
-///
-/// The inode's `get_ino()` value must be unique within devfs.
-pub fn add_inode(name: String, inode: impl InodeOps) -> SysResult<()> {
-    DEV_SUPERBLOCK.root_inode().as_ref().add_child(name, Arc::new(inode))
+pub fn add_inode<I: InodeOps>(name: String, create: impl FnOnce(u32) -> I) -> SysResult<u32> {
+    let ino = DEV_SUPERBLOCK.alloc_inode_number();
+    let inode = create(ino);
+    DEV_SUPERBLOCK.root_inode().as_ref().add_child(name, Arc::new(inode))?;
+    Ok(ino)
 }

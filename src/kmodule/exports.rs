@@ -1,6 +1,8 @@
 use core::mem::size_of;
 use core::slice;
 
+pub use kernelx_derive::kmodule_export;
+
 #[repr(C)]
 pub struct KModuleExport {
     name: *const u8,
@@ -68,6 +70,11 @@ fn exports() -> &'static [KModuleExport] {
     }
 }
 
+/// Declares a `.kmodule.exports` record for a function defined elsewhere.
+///
+/// Prefer the [`macro@kmodule_export`] attribute when the function can be
+/// annotated at its definition site; this form exists for exporting paths that
+/// are declared in another module.
 #[macro_export]
 macro_rules! kmodule_export {
     ($name:literal, $func:path) => {

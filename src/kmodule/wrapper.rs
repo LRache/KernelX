@@ -3,11 +3,13 @@ use core::{slice, str};
 use crate::kernel::errno::Errno;
 use crate::kernel::scheduler::current;
 use crate::klib::klog::{COLOR_BLUE, COLOR_BOLD, COLOR_RESET};
+use crate::kmodule::exports::kmodule_export;
 
 const MAX_KMODULE_LOG_LEN: usize = 1024;
 const MAX_KMODULE_FILE_LEN: usize = 256;
 
 // SAFETY: This symbol is part of the stable C ABI exposed to kernel modules.
+#[kmodule_export]
 #[unsafe(no_mangle)]
 pub extern "C" fn kmodule_log_info(file: *const u8, line: u32, column: u32, msg: *const u8, len: usize) -> isize {
     if msg.is_null() {
@@ -39,8 +41,6 @@ pub extern "C" fn kmodule_log_info(file: *const u8, line: u32, column: u32, msg:
 
     len as isize
 }
-
-crate::kmodule_export!("kmodule_log_info", kmodule_log_info);
 
 /// # Safety
 ///
