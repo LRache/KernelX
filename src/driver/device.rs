@@ -4,7 +4,7 @@ use virtio_drivers::transport::pci::bus::{
     BarInfo, Cam, CapabilityIterator, DeviceFunction, DeviceFunctionInfo, PciRoot,
 };
 
-use crate::arch;
+use super::pci::config;
 
 pub enum DeviceType {
     Block,
@@ -216,18 +216,8 @@ impl PCIDevice<'_> {
     }
 
     pub(crate) fn config_read_u32(&self, register_offset: u16) -> u32 {
-        let ptr = (self.ecam_kaddr + config_offset(self.cam, self.device_function, register_offset)) as *const u32;
-        unsafe { arch::read_volatile(ptr) }
+        config::read_u32(self.ecam_kaddr, self.cam, self.device_function, register_offset)
     }
-}
-
-fn config_offset(cam: Cam, df: DeviceFunction, register_offset: u16) -> usize {
-    let bdf = ((df.bus as usize) << 8) | ((df.device as usize) << 3) | df.function as usize;
-    let config_off = match cam {
-        Cam::MmioCam => bdf << 8,
-        Cam::Ecam => bdf << 12,
-    };
-    config_off + register_offset as usize
 }
 
 impl core::fmt::Debug for Device<'_, '_> {
