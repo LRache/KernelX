@@ -47,7 +47,7 @@ unsafe impl Hal for VirtIOHal {
             return paddr;
         }
 
-        let bounce_kaddr = alloc_zeroed_dma_pages(arch::page_count(len));
+        let bounce_kaddr = page::alloc_contiguous(arch::page_count(len));
         if matches!(direction, BufferDirection::DriverToDevice | BufferDirection::Both) {
             // SAFETY: `buffer` is valid for `len` bytes by the Hal contract,
             // and `bounce_kaddr` owns at least `len` writable bytes.

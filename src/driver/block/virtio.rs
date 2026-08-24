@@ -1,19 +1,22 @@
 use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::marker::PhantomPinned;
+use core::mem::{self, size_of};
+use core::pin::{Pin, pin};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use virtio_drivers::Error;
-use virtio_drivers::device::blk::{BlkReq, BlkResp, RespStatus, VirtIOBlk};
+use virtio_drivers::device::blk::{BlkReq, BlkResp, VirtIOBlk};
 use virtio_drivers::transport::Transport;
 
-#[cfg(feature = "virtio-block-page-cache")]
 use crate::arch;
 use crate::driver::virtio::VirtIOHal;
 use crate::driver::{BlockDriverOps, DeviceType, DriverOps};
 use crate::kernel::event::{Event, timer};
+use crate::kernel::mm::ContiguousPhysPageFrame;
 #[cfg(feature = "virtio-block-page-cache")]
 use crate::kernel::mm::PhysPageFrame;
 use crate::kernel::scheduler::{self, Task, current};
@@ -95,20 +98,208 @@ impl PageCache {
     }
 }
 
+#[repr(C)]
+struct DmaRequest {
+    req: BlkReq,
+    resp: BlkResp,
+}
+
+impl Default for DmaRequest {
+    fn default() -> Self {
+        Self {
+            req: BlkReq::default(),
+            resp: BlkResp::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RequestOperation {
+    Read,
+    Write,
+}
+
+struct InflightRequest {
+    token: u16,
+    operation: RequestOperation,
+    start_block: usize,
+    buffer_addr: usize,
+    buffer_len: usize,
+    task: Arc<dyn Task>,
+    completion_addr: usize,
+    deadline: Duration,
+}
+
+enum RequestSlot {
+    Free,
+    Reserved,
+    Inflight(InflightRequest),
+}
+
+#[derive(Clone, Copy)]
+struct RequestIo {
+    slot: usize,
+    operation: RequestOperation,
+    start_block: usize,
+    buffer_addr: usize,
+    buffer_len: usize,
+    completion_addr: usize,
+}
+
+struct RequestPool {
+    dma: ContiguousPhysPageFrame,
+    slots: Vec<RequestSlot>,
+    token_slots: Vec<Option<usize>>,
+}
+
+impl RequestPool {
+    fn new(queue_size: usize) -> Self {
+        assert_ne!(queue_size, 0, "virtio-blk queue must not be empty");
+        let bytes = queue_size
+            .checked_mul(size_of::<DmaRequest>())
+            .expect("virtio-blk request pool size overflow");
+        let dma = ContiguousPhysPageFrame::alloc(arch::page_count(bytes));
+        assert!(
+            arch::dma_direct_paddr(dma.get_page(), bytes).is_some(),
+            "virtio-blk request pool must be directly DMA-addressable"
+        );
+
+        for slot in 0..queue_size {
+            // SAFETY: The DMA allocation owns enough aligned, contiguous space
+            // for `queue_size` non-overlapping `DmaRequest` objects. Each slot
+            // is initialized exactly once here and contains no drop fields.
+            unsafe { dma.ptr().cast::<DmaRequest>().add(slot).write(DmaRequest::default()) };
+        }
+
+        Self {
+            dma,
+            slots: core::iter::repeat_with(|| RequestSlot::Free).take(queue_size).collect(),
+            token_slots: core::iter::repeat_with(|| None).take(queue_size).collect(),
+        }
+    }
+
+    fn reserve(&mut self) -> Option<usize> {
+        let slot = self.slots.iter().position(|slot| matches!(slot, RequestSlot::Free))?;
+        self.slots[slot] = RequestSlot::Reserved;
+        Some(slot)
+    }
+
+    fn release_reserved(&mut self, slot: usize) {
+        debug_assert!(matches!(self.slots[slot], RequestSlot::Reserved));
+        self.slots[slot] = RequestSlot::Free;
+    }
+
+    fn dma_request(&mut self, slot: usize) -> &mut DmaRequest {
+        debug_assert!(slot < self.slots.len());
+        // SAFETY: The pool initialized every slot in `new`, the backing DMA
+        // allocation outlives this borrow, and the pool lock serializes all
+        // accesses to a slot's request and response headers.
+        unsafe { &mut *self.dma.ptr().cast::<DmaRequest>().add(slot) }
+    }
+
+    fn publish(&mut self, slot: usize, request: InflightRequest) {
+        let token = usize::from(request.token);
+        assert!(
+            token < self.token_slots.len(),
+            "virtio-blk returned an out-of-range token"
+        );
+        assert!(self.token_slots[token].is_none(), "virtio-blk reused an inflight token");
+        debug_assert!(matches!(self.slots[slot], RequestSlot::Reserved));
+        self.token_slots[token] = Some(slot);
+        self.slots[slot] = RequestSlot::Inflight(request);
+    }
+
+    fn io(&self, token: u16) -> Option<RequestIo> {
+        let slot = *self.token_slots.get(usize::from(token))?.as_ref()?;
+        let RequestSlot::Inflight(request) = &self.slots[slot] else {
+            return None;
+        };
+        Some(RequestIo {
+            slot,
+            operation: request.operation,
+            start_block: request.start_block,
+            buffer_addr: request.buffer_addr,
+            buffer_len: request.buffer_len,
+            completion_addr: request.completion_addr,
+        })
+    }
+
+    fn finish(&mut self, token: u16) -> Option<Arc<dyn Task>> {
+        let token_index = usize::from(token);
+        let slot = self.token_slots.get_mut(token_index)?.take()?;
+        let RequestSlot::Inflight(request) = mem::replace(&mut self.slots[slot], RequestSlot::Free) else {
+            return None;
+        };
+        debug_assert_eq!(request.token, token);
+        Some(request.task)
+    }
+
+    fn refresh_deadline(&mut self, token: u16, deadline: Duration) {
+        let Some(slot) = self
+            .token_slots
+            .get(usize::from(token))
+            .and_then(|slot| slot.as_ref())
+            .copied()
+        else {
+            return;
+        };
+        if let RequestSlot::Inflight(request) = &mut self.slots[slot] {
+            request.deadline = deadline;
+        }
+    }
+
+    fn expired_tasks(&self, now: Duration) -> Vec<Arc<dyn Task>> {
+        self.slots
+            .iter()
+            .filter_map(|slot| match slot {
+                RequestSlot::Inflight(request) if request.deadline <= now => Some(request.task.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn inflight_count(&self) -> usize {
+        self.token_slots.iter().filter(|slot| slot.is_some()).count()
+    }
+}
+
+struct RequestCompletion {
+    result: SpinLock<Option<Result<(), ()>>>,
+    _pin: PhantomPinned,
+}
+
+impl RequestCompletion {
+    fn new() -> Self {
+        Self {
+            result: SpinLock::new(None, "RequestCompletion::result"),
+            _pin: PhantomPinned,
+        }
+    }
+
+    fn finish(&self, result: Result<(), ()>) {
+        let old = self.result.lock().replace(result);
+        debug_assert!(old.is_none(), "virtio-blk request completed twice");
+    }
+
+    fn take_result_or_block(&self, task: Arc<dyn Task>) -> Option<Result<(), ()>> {
+        let mut result = self.result.lock();
+        if result.is_some() {
+            return result.take();
+        }
+        scheduler::block_task_uninterruptible(task, "virtio_blk_io");
+        None
+    }
+}
+
 pub struct VirtIOBlockDriver<T: Transport + Send + 'static> {
     device_name: String,
     #[cfg(feature = "virtio-block-page-cache")]
     cache: SleepLock<PageCache>,
     driver: SpinLock<VirtIOBlk<VirtIOHal, T>>,
-    inflight: SpinLock<BTreeMap<u16, InflightRequest>>,
+    requests: SpinLock<RequestPool>,
     queue_waiters: SpinLock<VecDeque<Arc<dyn Task>>>,
     read_only: bool,
     readahead: AtomicUsize,
-}
-
-struct InflightRequest {
-    task: Arc<dyn Task>,
-    deadline: Duration,
 }
 
 impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
@@ -119,12 +310,13 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
         let mut blk = VirtIOBlk::new(transport).unwrap();
         blk.enable_interrupts();
         let read_only = blk.readonly();
+        let request_pool = RequestPool::new(usize::from(blk.virt_queue_size()));
         let driver = Arc::new(Self {
             device_name,
             #[cfg(feature = "virtio-block-page-cache")]
             cache: SleepLock::new(PageCache::new(), "VirtIOBlockDriver::cache"),
             driver: SpinLock::new(blk, "VirtIOBlockDriver::driver"),
-            inflight: SpinLock::new(BTreeMap::new(), "VirtIOBlockDriver::inflight"),
+            requests: SpinLock::new(request_pool, "VirtIOBlockDriver::requests"),
             queue_waiters: SpinLock::new(VecDeque::new(), "VirtIOBlockDriver::queue_waiters"),
             read_only,
             readahead: AtomicUsize::new(0),
@@ -148,15 +340,12 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
     }
 
     fn handle_timeout(&self) {
+        self.drain_completions(false);
+
         let now = timer::now();
-        let (expired, inflight_count): (Vec<_>, _) = {
-            let inflight = self.inflight.lock();
-            let expired = inflight
-                .values()
-                .filter(|request| request.deadline <= now)
-                .map(|request| request.task.clone())
-                .collect();
-            (expired, inflight.len())
+        let (expired, inflight_count) = {
+            let requests = self.requests.lock();
+            (requests.expired_tasks(now), requests.inflight_count())
         };
         if expired.is_empty() {
             return;
@@ -175,54 +364,112 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
         }
     }
 
-    fn wait_for_token(&self, token: u16) {
-        let task = current::task();
+    fn wait_for_completion(&self, token: u16, completion: Pin<&RequestCompletion>) -> Result<(), ()> {
         loop {
-            scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_io");
-            self.inflight.lock().insert(
-                token,
-                InflightRequest {
-                    task: task.clone(),
-                    deadline: timer::now() + Self::IO_TIMEOUT,
-                },
-            );
-
-            if self.driver.lock().peek_used() == Some(token) {
-                self.wake_token(token);
-            }
-
             current::schedule();
-
-            if self.driver.lock().peek_used() == Some(token) {
-                self.inflight.lock().remove(&token);
-                break;
+            let event = current::task().take_wakeup_event().unwrap();
+            debug_assert!(matches!(event, Event::IOComplete | Event::Timeout));
+            if let Some(result) = completion.get_ref().take_result_or_block(current::task().clone()) {
+                return result;
             }
-
-            // A timeout may have exposed a completed request ahead of this
-            // token. Re-drive the queue head before waiting again.
-            self.wake_next();
+            self.requests
+                .lock()
+                .refresh_deadline(token, timer::now() + Self::IO_TIMEOUT);
         }
     }
 
-    fn wake_token(&self, token: u16) {
-        if let Some(request) = self.inflight.lock().remove(&token) {
-            scheduler::wakeup_task_uninterruptible(request.task, Event::IOComplete);
-        }
-    }
-
-    fn wake_next(&self) {
-        let token = self.driver.lock().peek_used();
-        if let Some(token) = token {
-            self.wake_token(token);
-        }
-    }
-
-    fn wake_queue_waiter(&self) {
-        // Callers hold `driver`, matching the submit-side driver -> queue_waiters
-        // lock order and publishing reclaimed descriptors after waiter registration.
-        if let Some(task) = self.queue_waiters.lock().pop_front() {
+    fn wake_queue_waiters(&self, count: usize) {
+        let waiters: Vec<_> = {
+            let mut queue_waiters = self.queue_waiters.lock();
+            (0..count).filter_map(|_| queue_waiters.pop_front()).collect()
+        };
+        for task in waiters {
             scheduler::wakeup_task_uninterruptible(task, Event::IOComplete);
         }
+    }
+
+    fn drain_completions(&self, acknowledge: bool) -> usize {
+        let mut completed_tasks = Vec::new();
+        {
+            let mut driver = self.driver.lock();
+            if acknowledge {
+                driver.ack_interrupt();
+            }
+
+            while let Some(token) = driver.peek_used() {
+                let mut requests = self.requests.lock();
+                let Some(io) = requests.io(token) else {
+                    crate::kwarn!(
+                        "virtio-blk used token has no request: device={}, token={}",
+                        self.device_name,
+                        token
+                    );
+                    break;
+                };
+
+                let dma_request = requests.dma_request(io.slot);
+                // SAFETY: `io` records the exact request header, response
+                // header, and data buffer published for `token`. The owning
+                // task remains blocked until this completion is recorded, and
+                // the driver lock serializes used-ring consumption.
+                let result = unsafe {
+                    match io.operation {
+                        RequestOperation::Read => driver.complete_read_blocks(
+                            token,
+                            &dma_request.req,
+                            core::slice::from_raw_parts_mut(io.buffer_addr as *mut u8, io.buffer_len),
+                            &mut dma_request.resp,
+                        ),
+                        RequestOperation::Write => driver.complete_write_blocks(
+                            token,
+                            &dma_request.req,
+                            core::slice::from_raw_parts(io.buffer_addr as *const u8, io.buffer_len),
+                            &mut dma_request.resp,
+                        ),
+                    }
+                };
+                let status = dma_request.resp.status();
+
+                if driver.peek_used() == Some(token) {
+                    crate::kwarn!(
+                        "virtio-blk failed to consume used token: device={}, token={}, err={:?}",
+                        self.device_name,
+                        token,
+                        result
+                    );
+                    break;
+                }
+
+                if let Err(err) = &result {
+                    crate::kdebug!(
+                        "virtio-blk completion failed: device={}, start_block={}, len={}, token={}, status={:?}, err={:?}",
+                        self.device_name,
+                        io.start_block,
+                        io.buffer_len,
+                        token,
+                        status,
+                        err
+                    );
+                }
+
+                // SAFETY: `completion_addr` points to the pinned completion
+                // object owned by the blocked submitter. The submitter cannot
+                // return until a result is stored here, and this token has not
+                // previously been removed from the request pool.
+                unsafe { &*(io.completion_addr as *const RequestCompletion) }.finish(result.map_err(|_| ()));
+                let task = requests
+                    .finish(token)
+                    .expect("virtio-blk request disappeared during completion");
+                completed_tasks.push(task);
+            }
+        }
+
+        let completed = completed_tasks.len();
+        for task in completed_tasks {
+            scheduler::wakeup_task_uninterruptible(task, Event::IOComplete);
+        }
+        self.wake_queue_waiters(completed);
+        completed
     }
 
     #[cfg(feature = "virtio-block-page-cache")]
@@ -260,26 +507,60 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             return Ok(());
         }
 
-        let mut req = BlkReq::default();
-        let mut resp = BlkResp::default();
+        let completion = pin!(RequestCompletion::new());
 
         let token = loop {
             let mut driver = self.driver.lock();
-            // SAFETY: `req`, `buf`, and `resp` remain valid and untouched until
-            // the matching `complete_read_blocks` call after a successful
-            // submission. `QueueFull` is returned before they are published.
-            match unsafe { driver.read_blocks_nb(start_block, &mut req, buf, &mut resp) } {
-                Ok(token) => break token,
+            let mut requests = self.requests.lock();
+            let Some(slot) = requests.reserve() else {
+                let task = current::task().clone();
+                scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_queue_full");
+                self.queue_waiters.lock().push_back(task);
+                drop(requests);
+                drop(driver);
+                current::schedule();
+                let event = current::task().take_wakeup_event().unwrap();
+                debug_assert_eq!(event, Event::IOComplete);
+                continue;
+            };
+
+            let dma_request = requests.dma_request(slot);
+            dma_request.resp = BlkResp::default();
+            // SAFETY: This pool slot and `buf` remain valid and untouched until
+            // `drain_completions` consumes the matching token. `QueueFull` is
+            // returned before the buffers are published to the device.
+            match unsafe { driver.read_blocks_nb(start_block, &mut dma_request.req, buf, &mut dma_request.resp) } {
+                Ok(token) => {
+                    let task = current::task().clone();
+                    scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_io");
+                    requests.publish(
+                        slot,
+                        InflightRequest {
+                            token,
+                            operation: RequestOperation::Read,
+                            start_block,
+                            buffer_addr: buf.as_mut_ptr() as usize,
+                            buffer_len: buf.len(),
+                            task,
+                            completion_addr: completion.as_ref().get_ref() as *const RequestCompletion as usize,
+                            deadline: timer::now() + Self::IO_TIMEOUT,
+                        },
+                    );
+                    break token;
+                }
                 Err(Error::QueueFull) => {
+                    requests.release_reserved(slot);
                     let task = current::task().clone();
                     scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_queue_full");
-                    // Keep `driver` locked until this waiter is visible so a
-                    // concurrent completion cannot release space and miss it.
                     self.queue_waiters.lock().push_back(task);
+                    drop(requests);
                     drop(driver);
                     current::schedule();
+                    let event = current::task().take_wakeup_event().unwrap();
+                    debug_assert_eq!(event, Event::IOComplete);
                 }
                 Err(err) => {
+                    requests.release_reserved(slot);
                     crate::kdebug!(
                         "virtio-blk read submit failed: device={}, start_block={}, len={}, err={:?}",
                         self.device_name,
@@ -292,34 +573,7 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             }
         };
 
-        self.wait_for_token(token);
-
-        let complete_result = {
-            let mut driver = self.driver.lock();
-            // SAFETY: These are the same buffers and token passed to the
-            // corresponding successful `read_blocks_nb` submission.
-            let result = unsafe { driver.complete_read_blocks(token, &req, buf, &mut resp) };
-            self.wake_queue_waiter();
-            result
-        };
-        self.wake_next();
-        complete_result.map_err(|err| {
-            crate::kdebug!(
-                "virtio-blk read completion failed: device={}, start_block={}, len={}, token={}, status={:?}, err={:?}",
-                self.device_name,
-                start_block,
-                buf.len(),
-                token,
-                resp.status(),
-                err
-            );
-        })?;
-
-        if resp.status() == RespStatus::OK {
-            Ok(())
-        } else {
-            Err(())
-        }
+        self.wait_for_completion(token, completion.as_ref())
     }
 
     fn raw_write_blocks(&self, start_block: usize, buf: &[u8]) -> Result<(), ()> {
@@ -331,26 +585,60 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             return Err(());
         }
 
-        let mut req = BlkReq::default();
-        let mut resp = BlkResp::default();
+        let completion = pin!(RequestCompletion::new());
 
         let token = loop {
             let mut driver = self.driver.lock();
-            // SAFETY: `req`, `buf`, and `resp` remain valid and untouched until
-            // the matching `complete_write_blocks` call after a successful
-            // submission. `QueueFull` is returned before they are published.
-            match unsafe { driver.write_blocks_nb(start_block, &mut req, buf, &mut resp) } {
-                Ok(token) => break token,
+            let mut requests = self.requests.lock();
+            let Some(slot) = requests.reserve() else {
+                let task = current::task().clone();
+                scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_queue_full");
+                self.queue_waiters.lock().push_back(task);
+                drop(requests);
+                drop(driver);
+                current::schedule();
+                let event = current::task().take_wakeup_event().unwrap();
+                debug_assert_eq!(event, Event::IOComplete);
+                continue;
+            };
+
+            let dma_request = requests.dma_request(slot);
+            dma_request.resp = BlkResp::default();
+            // SAFETY: This pool slot and `buf` remain valid and untouched until
+            // `drain_completions` consumes the matching token. `QueueFull` is
+            // returned before the buffers are published to the device.
+            match unsafe { driver.write_blocks_nb(start_block, &mut dma_request.req, buf, &mut dma_request.resp) } {
+                Ok(token) => {
+                    let task = current::task().clone();
+                    scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_io");
+                    requests.publish(
+                        slot,
+                        InflightRequest {
+                            token,
+                            operation: RequestOperation::Write,
+                            start_block,
+                            buffer_addr: buf.as_ptr() as usize,
+                            buffer_len: buf.len(),
+                            task,
+                            completion_addr: completion.as_ref().get_ref() as *const RequestCompletion as usize,
+                            deadline: timer::now() + Self::IO_TIMEOUT,
+                        },
+                    );
+                    break token;
+                }
                 Err(Error::QueueFull) => {
+                    requests.release_reserved(slot);
                     let task = current::task().clone();
                     scheduler::block_task_uninterruptible(task.clone(), "virtio_blk_queue_full");
-                    // Keep `driver` locked until this waiter is visible so a
-                    // concurrent completion cannot release space and miss it.
                     self.queue_waiters.lock().push_back(task);
+                    drop(requests);
                     drop(driver);
                     current::schedule();
+                    let event = current::task().take_wakeup_event().unwrap();
+                    debug_assert_eq!(event, Event::IOComplete);
                 }
                 Err(err) => {
+                    requests.release_reserved(slot);
                     crate::kdebug!(
                         "virtio-blk write submit failed: device={}, start_block={}, len={}, err={:?}",
                         self.device_name,
@@ -363,34 +651,7 @@ impl<T: Transport + Send + 'static> VirtIOBlockDriver<T> {
             }
         };
 
-        self.wait_for_token(token);
-
-        let complete_result = {
-            let mut driver = self.driver.lock();
-            // SAFETY: These are the same buffers and token passed to the
-            // corresponding successful `write_blocks_nb` submission.
-            let result = unsafe { driver.complete_write_blocks(token, &req, buf, &mut resp) };
-            self.wake_queue_waiter();
-            result
-        };
-        self.wake_next();
-        complete_result.map_err(|err| {
-            crate::kdebug!(
-                "virtio-blk write completion failed: device={}, start_block={}, len={}, token={}, status={:?}, err={:?}",
-                self.device_name,
-                start_block,
-                buf.len(),
-                token,
-                resp.status(),
-                err
-            );
-        })?;
-
-        if resp.status() == RespStatus::OK {
-            Ok(())
-        } else {
-            Err(())
-        }
+        self.wait_for_completion(token, completion.as_ref())
     }
 
     fn raw_read_block(&self, block: usize, buf: &mut [u8; BLOCK_SIZE]) -> Result<(), ()> {
@@ -634,14 +895,7 @@ impl<T: Transport + Send + 'static> DriverOps for VirtIOBlockDriver<T> {
     }
 
     fn handle_interrupt(&self) {
-        let mut driver = self.driver.lock();
-        driver.ack_interrupt();
-        let token = driver.peek_used();
-        drop(driver);
-
-        if let Some(token) = token {
-            self.wake_token(token);
-        }
+        self.drain_completions(true);
     }
 }
 
