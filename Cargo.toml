@@ -29,6 +29,7 @@ debug-task = ["log-warn"]
 debug_pagetable = []
 fanotify = []
 virtio-block-page-cache = []
+lwext4 = []
 ext4-native-skip-crc32c-verify = []
 
 kvm=[]

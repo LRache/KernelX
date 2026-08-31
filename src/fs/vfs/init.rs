@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::fs::exfat::FileSystem as ExfatFileSystem;
+#[cfg(feature = "lwext4")]
 use crate::fs::ext4::Ext4FileSystem;
 use crate::fs::ext4_native::FileSystem as Ext4NativeFileSystem;
 use crate::fs::filesystem::MountOptions;
@@ -14,7 +15,9 @@ use crate::fs::{Dentry, devfs, procfs, tmpfs};
 pub fn init() {
     let mut vfs = VirtualFileSystem::new();
     vfs.register_filesystem("devfs", &devfs::FileSystem);
+    #[cfg(feature = "lwext4")]
     vfs.register_filesystem("ext2", &Ext4FileSystem);
+    #[cfg(feature = "lwext4")]
     vfs.register_filesystem("ext3", &Ext4FileSystem);
     vfs.register_filesystem("ext4", &Ext4NativeFileSystem);
     vfs.register_filesystem("ext4native", &Ext4NativeFileSystem);

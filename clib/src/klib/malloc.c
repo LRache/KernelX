@@ -2,12 +2,14 @@
 #include <kmodule/export.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 static tlsf_t tlsf = NULL;
 
 extern void *kernel_heap_alloc(size_t align, size_t size);
 extern void kernel_heap_free(void *ptr);
+extern void *kernel_heap_realloc(void *ptr, size_t size);
 
 void init_heap(void *start, size_t size) {
     tlsf = tlsf_create_with_pool(start, size);
@@ -27,6 +29,10 @@ void *try_malloc_aligned(size_t align, size_t size) {
 
 void free_heap_ptr(void *ptr) {
     tlsf_free(tlsf, ptr);
+}
+
+void *realloc_heap_ptr(void *ptr, size_t size) {
+    return tlsf_realloc(tlsf, ptr, size);
 }
 
 void *malloc(size_t size) {
@@ -55,3 +61,7 @@ void free(void *ptr) {
 }
 
 KMODULE_EXPORT("free", free);
+
+void *realloc(void *ptr, size_t size) {
+    return kernel_heap_realloc(ptr, size);
+}

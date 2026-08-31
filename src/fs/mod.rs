@@ -5,6 +5,7 @@ pub mod vfs;
 
 pub mod devfs;
 mod exfat;
+#[cfg(feature = "lwext4")]
 mod ext4;
 mod ext4_native;
 mod filesystem;

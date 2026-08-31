@@ -11,6 +11,7 @@ unsafe extern "C" {
     fn add_heap_pool(start: *mut c_void, size: usize) -> i32;
     fn try_malloc_aligned(align: usize, size: usize) -> *mut c_void;
     fn free_heap_ptr(ptr: *mut c_void);
+    fn realloc_heap_ptr(ptr: *mut c_void, size: usize) -> *mut c_void;
 }
 
 struct HeapState {
@@ -125,6 +126,22 @@ impl HeapAllocator {
         // SAFETY: The caller guarantees `ptr` was allocated from this TLSF instance.
         unsafe { free_heap_ptr(ptr as *mut c_void) };
     }
+
+    unsafe fn realloc(&self, ptr: *mut u8, size: usize) -> *mut u8 {
+        if ptr.is_null() {
+            return self.alloc(core::mem::align_of::<usize>(), size);
+        }
+        if size == 0 {
+            // SAFETY: The caller guarantees `ptr` was allocated from this TLSF instance.
+            unsafe { self.dealloc(ptr) };
+            return core::ptr::null_mut();
+        }
+
+        let _state = self.state.lock();
+        // SAFETY: The caller guarantees `ptr` was allocated from this TLSF instance,
+        // and all access to the allocator is serialized by `state`.
+        unsafe { realloc_heap_ptr(ptr as *mut c_void, size) as *mut u8 }
+    }
 }
 
 unsafe impl GlobalAlloc for HeapAllocator {
@@ -178,4 +195,11 @@ unsafe extern "C" fn kernel_heap_free(ptr: *mut c_void) {
         // SAFETY: C `free` requires that `ptr` came from the same heap allocator.
         unsafe { ALLOCATOR.dealloc(ptr as *mut u8) };
     }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn kernel_heap_realloc(ptr: *mut c_void, size: usize) -> *mut c_void {
+    // SAFETY: C `realloc` requires that a non-null `ptr` came from the same heap
+    // allocator and has not already been freed.
+    unsafe { ALLOCATOR.realloc(ptr as *mut u8, size) as *mut c_void }
 }

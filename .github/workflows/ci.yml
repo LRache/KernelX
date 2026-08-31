@@ -63,7 +63,6 @@ jobs:
             CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
             CONFIG_FANOTIFY=y \
             COMPILE_MODE=release \
-            SYSROOT=/usr/riscv64-linux-gnu \
             CONFIG_VIRTIO_BLOCK_PAGE_CACHE=n \
             OBJCOPY=llvm-objcopy-21
 
@@ -233,8 +232,7 @@ jobs:
             CONFIG_FANOTIFY=y \
             COMPILE_MODE=release \
             OBJCOPY=llvm-objcopy-21 \
-            CONFIG_VIRTIO_BLOCK_PAGE_CACHE=n \
-            SYSROOT=/usr/loongarch64-linux-gnu
+            CONFIG_VIRTIO_BLOCK_PAGE_CACHE=n
 
       - name: Build loongarch64 kmodule usertest image
         run: |

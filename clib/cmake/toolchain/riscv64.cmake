@@ -16,15 +16,6 @@ set(ARCH_COMMON_FLAGS
     -fPIE
 )
 
-if(SYSROOT)
-    set(CMAKE_SYSROOT ${SYSROOT})
-    list(APPEND ARCH_COMMON_FLAGS
-        --sysroot=${SYSROOT}
-        -isystem ${SYSROOT}/include
-        -isystem ${SYSROOT}/usr/include
-    )
-endif()
-
 set(ARCH_COMMON_FLAGS_LIST ${ARCH_COMMON_FLAGS} -nostdlib)
 string(REPLACE ";" " " ARCH_COMMON_FLAGS_STR "${ARCH_COMMON_FLAGS}")
 

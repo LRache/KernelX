@@ -31,6 +31,28 @@ char *strcpy(char *dest, const char *src) {
 
 KMODULE_EXPORT("strcpy", strcpy);
 
+char *strncpy(char *dest, const char *src, size_t n) {
+    size_t i = 0;
+    while (i < n && src[i]) {
+        dest[i] = src[i];
+        i++;
+    }
+    while (i < n) {
+        dest[i] = '\0';
+        i++;
+    }
+    return dest;
+}
+
+char *strchr(const char *s, int ch) {
+    const unsigned char c = (unsigned char)ch;
+    do {
+        if ((unsigned char)*s == c)
+            return (char *)s;
+    } while (*s++);
+    return NULL;
+}
+
 size_t strnlen(const char *s, size_t maxlen) {
     size_t l = 0;
     while (l < maxlen && s[l])

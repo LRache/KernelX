@@ -1,7 +1,6 @@
 fn main() {
     let arch = std::env::var("ARCH").unwrap();
     let arch_bits = std::env::var("ARCH_BITS").unwrap();
-    let sysroot = std::env::var("SYSROOT").unwrap_or_default();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
 
     track_kernelx_env_vars();
@@ -33,7 +32,9 @@ fn main() {
     println!("cargo:rustc-link-arg=--no-whole-archive");
     println!("cargo:rerun-if-changed={}", clib_archive);
 
-    generate_ext4_bindings(&manifest_dir, &arch, &arch_bits, &sysroot);
+    if std::env::var_os("CARGO_FEATURE_LWEXT4").is_some() {
+        generate_ext4_bindings(&manifest_dir, &arch, &arch_bits);
+    }
 
     // vDSO symbols
     let symbols_src = format!("vdso/build/{}{}/symbols.inc", arch, arch_bits);
@@ -62,7 +63,7 @@ fn track_kernelx_env_vars() {
     }
 }
 
-fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysroot: &str) {
+fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str) {
     use std::path::{Path, PathBuf};
 
     let target = std::env::var("TARGET").unwrap();
@@ -85,13 +86,14 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
         Path::new(manifest_dir).join(format!("clib/build/{}{}/lib/lwext4/include", arch, arch_bits));
     let wrapper = Path::new(manifest_dir).join("src/fs/ext4/wrapper.h");
 
-    let mut builder = bindgen::Builder::default()
+    let builder = bindgen::Builder::default()
         .use_core()
         .wrap_unsafe_ops(true)
         .header(wrapper.to_string_lossy())
         .clang_arg(format!("-I{}", clib_include.display()))
         .clang_arg(format!("-I{}", lwext4_include.display()))
         .clang_arg(format!("-I{}", generated_include.display()))
+        .clang_arg("-ffreestanding")
         .clang_arg(format!("--target={clang_target}"))
         .clang_args(clang_arch_args)
         .allowlist_function("(ext4|kernelx_ext4)_.*")
@@ -101,14 +103,6 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
         .layout_tests(false)
         .parse_callbacks(Box::new(CustomCargoCallbacks))
         .generate_comments(false);
-
-    if !sysroot.is_empty() {
-        builder = builder
-            .clang_arg(format!("--sysroot={sysroot}"))
-            .clang_arg(format!("-I{sysroot}/include"))
-            .clang_arg(format!("-I{sysroot}/usr/include"));
-    }
-    println!("cargo:rerun-if-env-changed=SYSROOT");
 
     let bindings = builder.generate().expect("Unable to generate ext4 bindings");
 
@@ -124,7 +118,7 @@ fn generate_ext4_bindings(manifest_dir: &str, arch: &str, arch_bits: &str, sysro
     println!("cargo:rerun-if-changed={}", wrapper.display());
     println!(
         "cargo:rerun-if-changed={}",
-        generated_include.join("ext4_config.h").display()
+        generated_include.join("generated/ext4_config.h").display()
     );
 }
 

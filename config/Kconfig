@@ -58,13 +58,6 @@ config READELF
 	string "readelf util path"
 	default "readelf"
 
-config SYSROOT
-	string "Sysroot path"
-	default ""
-	help
-	  Path to the sysroot directory, passed to clang via --sysroot.
-	  Used for clib and other C code compilation.
-
 config RUST_TARGET
 	string
 	default "riscv64gc-unknown-none-elf" if RISCV64
@@ -285,6 +278,13 @@ config VIRTIO_BLOCK_PAGE_CACHE
 	help
 	  Enable a page-sized write-back cache for virtio block devices. Dirty pages
 	  are written back on flush or cache eviction.
+
+config ENABLE_LWEXT4
+	bool "Enable lwext4"
+	default n
+	help
+	  Build and register the lwext4-backed ext2 and ext3 filesystems. Ext4 and
+	  ext4native continue to use the native Rust implementation.
 
 config EXT4_NATIVE_SKIP_CRC32C_VERIFY
 	bool "Skip ext4 native CRC32C verification"

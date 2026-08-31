@@ -122,7 +122,6 @@ def build_env_vars(project_root: Path, config: dict[str, str]) -> dict[str, str]
         "CONFIG_SECOND_MOUNTPOINT": config_value(config, "SECOND_MOUNTPOINT") or "/mnt",
         "CONFIG_DEFAULT_INITPATH": config_value(config, "DEFAULT_INITPATH"),
         "CONFIG_DEFAULT_BOOTARGS": config_value(config, "DEFAULT_BOOTARGS"),
-        "SYSROOT": config_value(config, "SYSROOT"),
         "COMPILE_MODE": config_value(config, "COMPILE_MODE", "debug"),
         "RUSTFLAGS": " ".join(rustflags),
     }
@@ -163,6 +162,7 @@ def build_cargo_info(config: dict[str, str]) -> dict:
         ("SCHEDULER_BLOCK_REASON_DEBUG", "scheduler-block-reason-debug"),
         ("FANOTIFY", "fanotify"),
         ("VIRTIO_BLOCK_PAGE_CACHE", "virtio-block-page-cache"),
+        ("ENABLE_LWEXT4", "lwext4"),
         ("EXT4_NATIVE_SKIP_CRC32C_VERIFY", "ext4-native-skip-crc32c-verify"),
         ("NOLOCK", "nolock"),
         ("BACKTRACE", "backtrace"),
