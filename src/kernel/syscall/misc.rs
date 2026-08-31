@@ -499,14 +499,19 @@ pub fn sched_setaffinity(_pid: usize, _cpusetsize: usize, _uptr_mask: UBuffer) -
 }
 
 pub fn sched_getaffinity(_pid: usize, cpusetsize: usize, uptr_mask: UBuffer) -> SyscallRet {
-    let cpu_count = arch::cpu_count();
-    if cpusetsize < cpu_count.div_ceil(u8::BITS as usize) {
+    let cpu_mask = arch::cpu_mask();
+    // The mask is encoded by hart ID, so the buffer must hold up to the
+    // highest hart ID bit, not just `cpu_count` bits.
+    let highest_cpu = usize::BITS as usize - cpu_mask.leading_zeros() as usize;
+    if cpusetsize < highest_cpu.div_ceil(u8::BITS as usize) {
         return Err(Errno::EINVAL);
     }
 
     let mut cpuset_buffer = vec![0u8; cpusetsize];
-    for cpu in 0..cpu_count {
-        cpuset_buffer[cpu / u8::BITS as usize] |= 1 << (cpu % u8::BITS as usize);
+    for cpu in 0..highest_cpu {
+        if cpu_mask & (1usize << cpu) != 0 {
+            cpuset_buffer[cpu / u8::BITS as usize] |= 1 << (cpu % u8::BITS as usize);
+        }
     }
 
     uptr_mask.write(0, &cpuset_buffer)?;

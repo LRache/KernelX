@@ -76,6 +76,9 @@ pub trait ArchTrait {
     fn setup_all_cores(current_core: usize);
     fn clone_abi() -> CloneABI;
     fn cpu_count() -> usize;
+    /// A bitmask of available CPUs with bit `i` set for CPU `i`. CPU numbers
+    /// are the device-tree hart IDs, which may be non-contiguous.
+    fn cpu_mask() -> usize;
 
     /* ----- Per-CPU Data ----- */
     fn set_percpu_data(data: usize);
@@ -150,6 +153,12 @@ pub trait ArchTrait {
 
     fn crc32c(seed: u32, buf: &[u8]) -> u32 {
         crate::klib::crc::crc32c_update_generic(seed, buf)
+    }
+
+    /// Whether the hardware provides the extensions required to host guests
+    /// (e.g. the RISC-V H and Sstc extensions).
+    fn support_hypervisor() -> bool {
+        false
     }
 }
 

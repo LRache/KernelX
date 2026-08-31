@@ -96,6 +96,14 @@ impl ArchTrait for Arch {
         if cfg!(feature = "no-smp") { 1 } else { fdt::cpu_count() }
     }
 
+    fn cpu_mask() -> usize {
+        if cfg!(feature = "no-smp") {
+            1
+        } else {
+            usize::MAX >> (usize::BITS as usize - Self::cpu_count())
+        }
+    }
+
     #[inline(always)]
     fn set_percpu_data(data: usize) {
         unsafe { core::arch::asm!("move $r21, {x}", x = in(reg) data) };

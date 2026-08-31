@@ -55,9 +55,11 @@ pub fn init() {
         )
         .unwrap();
     #[cfg(feature = "kvm")]
-    root.as_ref()
-        .add_child("kvm".into(), Arc::new(KvmInode::new(superblock.alloc_inode_number())))
-        .unwrap();
+    if crate::arch::support_hypervisor() {
+        root.as_ref()
+            .add_child("kvm".into(), Arc::new(KvmInode::new(superblock.alloc_inode_number())))
+            .unwrap();
+    }
     let pts_dir = root
         .as_ref()
         .create(

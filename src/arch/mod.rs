@@ -53,6 +53,7 @@ arch_export! {
     setup_all_cores(current_core: usize) -> ();
     clone_abi() -> CloneABI;
     cpu_count() -> usize;
+    cpu_mask() -> usize;
 
     /* ----- Per-CPU Data ----- */
     set_percpu_data(data: usize) -> ();
@@ -96,6 +97,7 @@ arch_export! {
     apply_kmodule_relocation(relocation_type: u32, place: &mut [u8], value: Option<KModuleRelocationValue>) -> SysResult<()>;
     flush_kmodule_icache() -> ();
     crc32c(seed: u32, buf: &[u8]) -> u32;
+    support_hypervisor() -> bool;
 }
 
 pub fn try_uptime() -> Option<Duration> {

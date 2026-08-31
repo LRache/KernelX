@@ -1,9 +1,7 @@
 // PERF_DEBUG_BEGIN(scheduler-time): Temporary scheduler running/blocked-time
 // aggregation. Remove this whole file together with every
 // PERF_DEBUG(scheduler-time) call site.
-#[cfg(feature = "scheduler-block-reason-debug")]
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "scheduler-block-reason-debug")]
 use spin::mutex::SpinMutex;
@@ -74,14 +72,20 @@ impl CpuSchedDebug {
     }
 }
 
-static CPU_STATS: InitedCell<Vec<CpuSchedDebug>> = InitedCell::uninit();
+// Keyed by device-tree hart ID, which may be non-contiguous.
+static CPU_STATS: InitedCell<BTreeMap<usize, CpuSchedDebug>> = InitedCell::uninit();
 
 pub(crate) fn init() {
-    CPU_STATS.init((0..arch::cpu_count()).map(|_| CpuSchedDebug::new()).collect());
+    CPU_STATS.init(
+        (0..usize::BITS as usize)
+            .filter(|cpu| arch::cpu_mask() & (1usize << cpu) != 0)
+            .map(|cpu| (cpu, CpuSchedDebug::new()))
+            .collect(),
+    );
 }
 
 pub(crate) fn start_running(cpu_id: usize, now_us: u64) {
-    let Some(stats) = CPU_STATS.try_get().and_then(|stats| stats.get(cpu_id)) else {
+    let Some(stats) = CPU_STATS.try_get().and_then(|stats| stats.get(&cpu_id)) else {
         return;
     };
     let old = stats.running_since_us.swap(now_us.saturating_add(1), Ordering::Relaxed);
@@ -89,7 +93,7 @@ pub(crate) fn start_running(cpu_id: usize, now_us: u64) {
 }
 
 pub(crate) fn finish_running(cpu_id: usize, now_us: u64) {
-    let Some(stats) = CPU_STATS.try_get().and_then(|stats| stats.get(cpu_id)) else {
+    let Some(stats) = CPU_STATS.try_get().and_then(|stats| stats.get(&cpu_id)) else {
         return;
     };
     let encoded_start = stats.running_since_us.swap(0, Ordering::Relaxed);
@@ -105,7 +109,7 @@ pub(crate) fn finish_block(stamp: Option<DebugBlockStamp>) {
     let Some(stamp) = stamp else {
         return;
     };
-    let Some(stats) = CPU_STATS.try_get().and_then(|stats| stats.get(stamp.cpu_id)) else {
+    let Some(stats) = CPU_STATS.try_get().and_then(|stats| stats.get(&stamp.cpu_id)) else {
         return;
     };
     stats
@@ -124,7 +128,7 @@ pub(crate) fn dump() {
     let now_us = arch::get_time_us();
 
     println!("========== scheduler time debug ==========");
-    for (cpu_id, cpu) in stats.iter().enumerate() {
+    for (cpu_id, cpu) in stats.iter() {
         println!("cpu{}:", cpu_id);
         println!("  running                 {} us", cpu.running_snapshot(now_us));
         #[cfg(feature = "scheduler-block-reason-debug")]

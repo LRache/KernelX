@@ -115,7 +115,10 @@ impl ArchTrait for Arch {
             }
 
             crate::kinfo!("Starting other harts...");
-            for hartid in 0..core_count() {
+            let mut remaining_hart_mask = cpu::hart_mask();
+            while remaining_hart_mask != 0 {
+                let hartid = remaining_hart_mask.trailing_zeros() as usize;
+                remaining_hart_mask &= !(1usize << hartid);
                 if hartid == current_core {
                     continue;
                 }
@@ -156,6 +159,10 @@ impl ArchTrait for Arch {
 
     fn cpu_count() -> usize {
         core_count()
+    }
+
+    fn cpu_mask() -> usize {
+        cpu::hart_mask()
     }
 
     #[inline(always)]
@@ -381,6 +388,29 @@ impl ArchTrait for Arch {
             | (1 << (b'F' - b'A'))
             | (1 << (b'D' - b'A'))
             | (1 << (b'C' - b'A'))
+    }
+
+    fn support_hypervisor() -> bool {
+        // The H extension provides the hypervisor CSRs (hstatus, hgatp, ...)
+        // and Sstc provides vstimecmp, both of which `VCpu` accesses
+        // unconditionally. A vCPU may run on any hart, so every discovered
+        // hart must have both extensions.
+        let mut mask = cpu::hart_mask();
+        if mask == 0 {
+            return false;
+        }
+        while mask != 0 {
+            let hart = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            match cpu::try_get_cpu_info(hart) {
+                Some(info) if info.h_extension() && info.sstc_supported() => {}
+                _ => {
+                    crate::kwarn!("KVM unavailable: hart {} lacks the H or Sstc extension", hart);
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn kmodule_relocation_action(relocation_type: u32) -> SysResult<KModuleRelocationAction> {
