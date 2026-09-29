@@ -199,8 +199,8 @@ def run_qemu(args: argparse.Namespace) -> int:
         selector.register(proc.stdout, selectors.EVENT_READ)
         last_output = time.monotonic()
         idle_timed_out = False
-        stopped_after_success = False
         stopping = False
+        interrupted = False
         success_marker = args.success_marker.encode() if args.success_marker else None
         success_seen = False
         marker_tail = b""
@@ -218,10 +218,11 @@ def run_qemu(args: argparse.Namespace) -> int:
             marker_tail = combined[-marker_tail_len:] if marker_tail_len else b""
 
         def on_signal(signum, _frame) -> None:
-            nonlocal stopping
+            nonlocal stopping, interrupted
             if stopping:
                 return
             stopping = True
+            interrupted = True
             write_line(log, f"[ci-qemu-watchdog] received signal {signum}, stopping QEMU")
             capture_failure(args, f"signal {signum}")
             stop_qemu(proc)
@@ -237,10 +238,7 @@ def run_qemu(args: argparse.Namespace) -> int:
                     observe_output(data)
                     last_output = time.monotonic()
 
-            if args.exit_on_success and success_seen:
-                stopped_after_success = True
-                write_line(log, "[ci-qemu-watchdog] success marker seen; stopping QEMU")
-                stop_qemu(proc)
+            if proc.poll() is not None:
                 break
 
             if time.monotonic() - last_output >= args.idle_timeout:
@@ -267,10 +265,10 @@ def run_qemu(args: argparse.Namespace) -> int:
             remove_monitor_socket(args.monitor_socket)
             return IDLE_EXIT_CODE
 
-        if stopped_after_success:
-            write_line(log, "[ci-qemu-watchdog] exiting with 0")
+        if interrupted:
+            write_line(log, f"[ci-qemu-watchdog] exiting with {FAILURE_EXIT_CODE} after signal")
             remove_monitor_socket(args.monitor_socket)
-            return 0
+            return FAILURE_EXIT_CODE
 
         write_line(log, f"[ci-qemu-watchdog] QEMU exited with {returncode}")
         if returncode != 0:
@@ -285,6 +283,8 @@ def run_qemu(args: argparse.Namespace) -> int:
             remove_monitor_socket(args.monitor_socket)
             return FAILURE_EXIT_CODE
 
+        if success_marker is not None:
+            write_line(log, "[ci-qemu-watchdog] success marker seen")
         remove_monitor_socket(args.monitor_socket)
         return returncode
 
@@ -297,11 +297,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--monitor-log", help="File that receives QEMU monitor state on timeout.")
     parser.add_argument("--memory-dump", help="Guest physical memory dump path captured on timeout.")
     parser.add_argument("--success-marker", help="Output marker required for a successful run.")
-    parser.add_argument(
-        "--exit-on-success",
-        action="store_true",
-        help="Stop QEMU and return success as soon as --success-marker is seen.",
-    )
     parser.add_argument("cmd", nargs=argparse.REMAINDER, help="QEMU command and arguments.")
 
     args = parser.parse_args()
@@ -313,8 +308,6 @@ def parse_args() -> argparse.Namespace:
         parser.error("--monitor-socket and --monitor-log must be used together")
     if args.memory_dump and not args.monitor_socket:
         parser.error("--memory-dump requires --monitor-socket and --monitor-log")
-    if args.exit_on_success and not args.success_marker:
-        parser.error("--exit-on-success requires --success-marker")
     return args
 
 
