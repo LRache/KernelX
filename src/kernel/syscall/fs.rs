@@ -1477,27 +1477,45 @@ pub fn close_range(fd: usize, max_fd: usize, flags: usize) -> SyscallRet {
 }
 
 pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: usize) -> SyscallRet {
+    let user_offset = uptr_offset.read_optional()?;
     let fdtable = current::fdtable();
     let mut fdtable = fdtable.lock();
-    let out_file = fdtable.get(out_fd)?;
     let in_file = fdtable.get(in_fd)?;
-    let in_file_offset = in_file
-        .seek(0, SeekWhence::CUR)
-        .map_err(|err| if err == Errno::ESPIPE { Errno::EINVAL } else { err })?;
+    if !in_file.readable() {
+        return Err(Errno::EBADF);
+    }
+    let in_file_offset = in_file.seek(0, SeekWhence::CUR).map_err(|err| {
+        if err == Errno::ESPIPE && user_offset.is_none() {
+            Errno::EINVAL
+        } else {
+            err
+        }
+    })?;
+    let mut local_offset = match user_offset {
+        Some(offset) => utils::should_not_be_negative(offset)?,
+        None => in_file_offset,
+    };
+    if (count as isize) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let out_file = fdtable.get(out_fd)?;
     drop(fdtable); // Release lock early
 
     if !out_file.writable() {
         return Err(Errno::EBADF);
     }
-    if !in_file.readable() {
-        return Err(Errno::EBADF);
+    if out_file.flags().append {
+        return Err(Errno::EINVAL);
     }
 
-    let mut local_offset = if uptr_offset.is_null() {
-        in_file_offset
-    } else {
-        utils::should_not_be_negative(uptr_offset.read()?)?
-    };
+    let max_rw_count = (i32::MAX as usize) & !(crate::arch::PGSIZE - 1);
+    let max_file_size = isize::MAX as usize;
+    let available = max_file_size.checked_sub(local_offset).ok_or(Errno::EOVERFLOW)?;
+    let count = core::cmp::min(count, max_rw_count);
+    if count > 0 && available == 0 {
+        return Err(Errno::EOVERFLOW);
+    }
+    let count = core::cmp::min(count, available);
     if count != 0 {
         wait_fanotify_permission_for_file(&in_file, FanotifyEventMask::FAN_ACCESS_PERM)?;
     }
@@ -1510,18 +1528,26 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
 
     while left > 0 {
         let to_read = core::cmp::min(left, BUFFER_SIZE);
-        let bytes_read = in_file.pread(&mut buffer[..to_read], local_offset)?;
+        let bytes_read = match in_file.pread(&mut buffer[..to_read], local_offset) {
+            Ok(n) => n,
+            Err(_) if total_sent > 0 => break,
+            Err(err) => return Err(err),
+        };
         if bytes_read == 0 {
             break; // EOF
         }
         total_read += bytes_read;
 
-        let bytes_written = out_file.write(&buffer[..bytes_read])?;
+        let bytes_written = match out_file.write(&buffer[..bytes_read]) {
+            Ok(n) => n,
+            Err(_) if total_sent > 0 => break,
+            Err(err) => return Err(err),
+        };
         if bytes_written == 0 {
             break; // Can't write more
         }
 
-        local_offset += bytes_read;
+        local_offset += bytes_written;
         total_sent += bytes_written;
         left -= bytes_written;
 
@@ -1535,9 +1561,10 @@ pub fn sendfile(out_fd: usize, in_fd: usize, uptr_offset: UPtr<usize>, count: us
     }
 
     if total_sent > 0 {
-        let time = driver::chosen::kclock::now()?;
-        update_file_times(in_file.as_ref(), &time, false)?;
-        update_file_times(out_file.as_ref(), &time, true)?;
+        if let Ok(time) = driver::chosen::kclock::now() {
+            let _ = update_file_times(in_file.as_ref(), &time, false);
+            let _ = update_file_times(out_file.as_ref(), &time, true);
+        }
     }
 
     if uptr_offset.is_null() {
