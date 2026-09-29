@@ -1,5 +1,7 @@
 use crate::arch::riscv::csr::scause::Interrupt;
 use crate::arch::riscv::csr::*;
+#[cfg(feature = "debug_pagetable")]
+use crate::arch::riscv::tlb;
 use crate::arch::riscv::{UserContext, plic};
 use crate::arch::{self, UserContextTrait};
 use crate::kernel::mm::MemAccessType;
@@ -126,10 +128,8 @@ fn svadu_mark_page_accessed_and_dirty(uaddr: usize) -> bool {
 pub fn usertrap_handler() -> ! {
     install_kerneltrap_handler();
 
-    // User execution has stopped. Kernel paths do not directly use user
-    // virtual addresses, and the return path performs a local SFENCE.VMA
-    // before the address space can be used again.
-    current::addrspace().deactivate_cpu(current::hart_id());
+    // Keep this hart in the page table's cached CPU mask while handling the
+    // trap. A real task switch removes it and performs a local SFENCE.VMA.
 
     debug_assert!(
         Sstatus::read().sie() == false,
@@ -242,9 +242,15 @@ pub fn return_to_user() -> ! {
         .set_fs(SstatusFs::Clean)
         .write();
 
-    // Publish this CPU under the page-table lock before asm_usertrap_return
-    // performs the local SFENCE.VMA and starts using user translations.
-    current::addrspace().activate_cpu(current::hart_id());
+    // Publish this hart under the page-table lock before it can use user
+    // translations. Page-table updates snapshot the same mask under this lock.
+    let hartid = current::hart_id();
+    let mut pagetable = current::addrspace().pagetable().lock();
+    pagetable.activate_cpu(hartid);
+    #[cfg(feature = "debug_pagetable")]
+    tlb::validate_activated_tlb_context(hartid, pagetable.tlb_context_id());
+    drop(pagetable);
+
     usertrap_return(user_context);
 }
 

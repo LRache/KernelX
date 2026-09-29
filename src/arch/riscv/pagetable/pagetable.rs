@@ -1,6 +1,8 @@
 use crate::arch::PageTableTrait;
 use crate::kernel::mm;
 use crate::kernel::mm::MapPerm;
+#[cfg(feature = "debug_pagetable")]
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{Ordering, fence};
 
 use super::kernelpagetable::{install_shared_kernel_mappings, is_shared_kernel_root};
@@ -9,6 +11,16 @@ use super::pte::{Addr, PTE, PTEFlags, PTETable};
 const PAGE_TABLE_LEVELS: usize = 3;
 const LEAF_LEVEL: usize = 2;
 pub(super) const ENTRIES_PER_TABLE: usize = 512;
+
+#[cfg(feature = "debug_pagetable")]
+static NEXT_TLB_CONTEXT_ID: AtomicUsize = AtomicUsize::new(1);
+
+#[cfg(feature = "debug_pagetable")]
+fn allocate_tlb_context_id() -> usize {
+    NEXT_TLB_CONTEXT_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .expect("TLB context ID overflow")
+}
 
 pub trait PageAllocator {
     fn alloc_zero() -> usize;
@@ -21,6 +33,8 @@ pub struct PageTableImpls<T: PageAllocator> {
     /// first performing a local TLB invalidation. Protected by the owning
     /// page-table lock.
     tlb_cached_cpu_mask: usize,
+    #[cfg(feature = "debug_pagetable")]
+    tlb_context_id: usize,
     _marker: core::marker::PhantomData<T>,
 }
 
@@ -32,6 +46,11 @@ impl<T: PageAllocator> PageTableImpls<T> {
         );
 
         self.root = mm::page::alloc_zero();
+        #[cfg(feature = "debug_pagetable")]
+        {
+            debug_assert_eq!(self.tlb_context_id, 0, "PageTable TLB context initialized twice");
+            self.tlb_context_id = allocate_tlb_context_id();
+        }
     }
 
     pub fn from_root(root: usize) -> Self {
@@ -40,6 +59,8 @@ impl<T: PageAllocator> PageTableImpls<T> {
             root,
             has_shared_kernel_mappings: false,
             tlb_cached_cpu_mask: 0,
+            #[cfg(feature = "debug_pagetable")]
+            tlb_context_id: allocate_tlb_context_id(),
             _marker: core::marker::PhantomData,
         }
     }
@@ -205,6 +226,12 @@ impl<T: PageAllocator> PageTableImpls<T> {
 
     pub fn tlb_cached_cpu_mask(&self) -> usize {
         self.tlb_cached_cpu_mask
+    }
+
+    #[cfg(feature = "debug_pagetable")]
+    pub fn tlb_context_id(&self) -> usize {
+        assert_ne!(self.tlb_context_id, 0, "PageTable has no TLB context ID");
+        self.tlb_context_id
     }
 
     #[allow(dead_code)]
@@ -461,6 +488,8 @@ impl PageTable {
             root: 0,
             has_shared_kernel_mappings: false,
             tlb_cached_cpu_mask: 0,
+            #[cfg(feature = "debug_pagetable")]
+            tlb_context_id: 0,
             _marker: core::marker::PhantomData,
         }
     }

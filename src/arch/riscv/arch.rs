@@ -4,7 +4,7 @@ use core::time::Duration;
 use elf::abi;
 
 use crate::arch::riscv::sbi_driver::{SBIConsoleDriver, SBIKPMU};
-use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task};
+use crate::arch::riscv::{csr, load_device_tree, plic, sbi_driver, task, tlb};
 use crate::arch::{self, Arch, ArchTrait, CloneABI};
 use crate::driver::{self, chosen};
 use crate::kernel::config;
@@ -187,7 +187,17 @@ impl ArchTrait for Arch {
         kernel_switch(from, to);
     }
 
-    fn prepare_task_switch(_was_cached: bool) {}
+    fn prepare_task_switch(was_cached: bool) {
+        #[cfg(feature = "debug_pagetable")]
+        {
+            let hartid = current::hart_id();
+            let cached_context_id = was_cached.then(|| current::addrspace().pagetable().lock().tlb_context_id());
+            tlb::invalidate_tlb_context(hartid, cached_context_id);
+        }
+
+        #[cfg(not(feature = "debug_pagetable"))]
+        let _ = was_cached;
+    }
 
     fn wait_for_interrupt() {
         // SAFETY: `wfi` only suspends instruction execution until an interrupt
@@ -279,44 +289,11 @@ impl ArchTrait for Arch {
     }
 
     fn flush_tlb_all() {
-        // SAFETY: The caller has completed the page-table update before
-        // invoking this function. The fence publishes those writes before
-        // invalidating all local address translations.
-        unsafe {
-            core::arch::asm!(
-                "fence rw, rw",
-                "sfence.vma zero, zero",
-                options(nostack, preserves_flags)
-            )
-        };
-
-        #[cfg(not(feature = "no-smp"))]
-        sbi_driver::remote_sfence_vma_all().unwrap_or_else(|error| panic!("SBI remote SFENCE.VMA failed: {error}"));
+        tlb::flush_tlb_all();
     }
 
     fn flush_tlb_cpu_mask(cpu_mask: usize) {
-        if cpu_mask == 0 {
-            return;
-        }
-
-        debug_assert_eq!(
-            cpu_mask
-                & 1usize
-                    .checked_shl(current::hart_id().try_into().expect("hart ID does not fit in u32"))
-                    .expect("hart ID exceeds TLB CPU mask width"),
-            0,
-            "targeted TLB flush mask contains the current hart"
-        );
-
-        // SAFETY: Page-table writes are complete before this function is
-        // called. The fence publishes them before remote invalidation.
-        unsafe {
-            core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
-        }
-
-        #[cfg(not(feature = "no-smp"))]
-        sbi_driver::remote_sfence_vma(cpu_mask)
-            .unwrap_or_else(|error| panic!("SBI targeted remote SFENCE.VMA failed: {error}"));
+        tlb::flush_tlb_cpu_mask(cpu_mask);
     }
 
     fn mmio_phys_to_kaddr(paddr: usize, size: usize) -> usize {

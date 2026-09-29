@@ -103,9 +103,7 @@ asm_usertrap_return:
 
     # load the target user page table
     LOAD(a0, 34)
-    sfence.vma
     csrw satp, a0
-    sfence.vma
 
     # restore the a0
     csrr a0, sscratch

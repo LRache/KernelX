@@ -8,6 +8,7 @@ mod pagetable;
 mod plic;
 mod sbi_driver;
 mod task;
+mod tlb;
 
 pub use context::{KernelContext, SigContext, UserContext};
 pub use cpu::ArchPerCpuData;
