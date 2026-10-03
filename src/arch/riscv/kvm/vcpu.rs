@@ -31,8 +31,19 @@ pub struct VCpuState {
     pub(super) context: VCpuContext,
     pub(super) pc: usize,
     pub(super) vsatp: usize,
+    vsstatus: usize,
+    vstvec: usize,
+    vsscratch: usize,
+    vsepc: usize,
+    vscause: usize,
+    vstval: usize,
+    scounteren: usize,
+    senvcfg: usize,
     pub(super) spp: SstatusSPP,
+    // With hideleg configured below, hie also holds the vsie enable bits.
     pub(super) hie: Hie,
+    // hvip.VSSIP also preserves the guest-writable vsip.SSIP bit. The
+    // timer/external pending bits in vsip are derived, not separate state.
     pub(super) hvip: Hvip,
     pub(super) vstimecmp: usize,
     running: bool,
@@ -58,6 +69,14 @@ impl VCpuState {
             context: VCpuContext::new(),
             pc: 0,
             vsatp: 0,
+            vsstatus: 2usize << 32, // UXL=64; interrupts and extension state start disabled.
+            vstvec: 0,
+            vsscratch: 0,
+            vsepc: 0,
+            vscause: 0,
+            vstval: 0,
+            scounteren: 0,
+            senvcfg: 0,
             spp: SstatusSPP::Supervisor,
             hie: Hie::clear(),
             hvip: Hvip::clear(),
@@ -67,6 +86,13 @@ impl VCpuState {
     }
 
     fn goto_guest(&mut self, hgatp: usize) {
+        // This path must not schedule between loading and saving hart-local
+        // guest state. RUN enters with host interrupts disabled, and the guest
+        // trap returns with SIE cleared before any host interrupt is handled.
+        debug_assert!(
+            !Sstatus::read().sie(),
+            "guest context switch requires host interrupts disabled"
+        );
         Self::delegate_exceptions_to_vs();
         Self::delegate_interrupts_to_vs();
         Self::enable_sstc_timer();
@@ -82,14 +108,74 @@ impl VCpuState {
         self.hie.write();
         self.hvip.write();
 
+        let host_scounteren: usize;
+        let host_senvcfg: usize;
+        // SAFETY: RUN executes in HS-mode on an H-extension hart with host
+        // interrupts disabled. These values belong to this exclusively running
+        // vCPU. The shared supervisor CSRs are restored below before scheduling.
+        unsafe {
+            core::arch::asm!(
+                "csrw vsstatus, {vsstatus}",
+                "csrw vstvec, {vstvec}",
+                "csrw vsscratch, {vsscratch}",
+                "csrw vsepc, {vsepc}",
+                "csrw vscause, {vscause}",
+                "csrw vstval, {vstval}",
+                "csrrw {host_scounteren}, scounteren, {scounteren}",
+                "csrrw {host_senvcfg}, senvcfg, {senvcfg}",
+                vsstatus = in(reg) self.vsstatus,
+                vstvec = in(reg) self.vstvec,
+                vsscratch = in(reg) self.vsscratch,
+                vsepc = in(reg) self.vsepc,
+                vscause = in(reg) self.vscause,
+                vstval = in(reg) self.vstval,
+                scounteren = in(reg) self.scounteren,
+                senvcfg = in(reg) self.senvcfg,
+                host_scounteren = out(reg) host_scounteren,
+                host_senvcfg = out(reg) host_senvcfg,
+                options(nostack),
+            );
+        }
+
         traphandle::restore_float_registers(&mut self.context.fpregs_mut());
+        // SAFETY: context has the assembly-defined layout and stays live on
+        // this kernel stack until the guest trap restores the host registers.
+        // Host interrupts are disabled throughout the context switch.
         unsafe {
             asm_kvm_guest_trap_return(&mut self.context);
         };
 
+        // SAFETY: The guest trap returned to HS-mode on the same hart with
+        // interrupts disabled. Capture its CSRs and restore the shared host
+        // values before any path can schedule or handle host interrupts.
+        unsafe {
+            core::arch::asm!(
+                "csrr {vsstatus}, vsstatus",
+                "csrr {vstvec}, vstvec",
+                "csrr {vsscratch}, vsscratch",
+                "csrr {vsepc}, vsepc",
+                "csrr {vscause}, vscause",
+                "csrr {vstval}, vstval",
+                "csrrw {scounteren}, scounteren, {host_scounteren}",
+                "csrrw {senvcfg}, senvcfg, {host_senvcfg}",
+                vsstatus = out(reg) self.vsstatus,
+                vstvec = out(reg) self.vstvec,
+                vsscratch = out(reg) self.vsscratch,
+                vsepc = out(reg) self.vsepc,
+                vscause = out(reg) self.vscause,
+                vstval = out(reg) self.vstval,
+                scounteren = out(reg) self.scounteren,
+                senvcfg = out(reg) self.senvcfg,
+                host_scounteren = in(reg) host_scounteren,
+                host_senvcfg = in(reg) host_senvcfg,
+                options(nostack),
+            );
+        }
+
         traphandle::install_kerneltrap_handler();
         Hstatus::read().set_spv(HstatusSpv::Hypervisor).write();
         self.vsatp = vsatp::read();
+        self.vstimecmp = vstimecmp::read();
         self.hie = Hie::read();
         self.hvip = Hvip::read();
         self.spp = Sstatus::read().spp();

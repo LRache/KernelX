@@ -269,6 +269,16 @@ pub mod vsatp {
 }
 
 pub mod vstimecmp {
+    pub fn read() -> usize {
+        let value: usize;
+        // SAFETY: The KVM exit path runs in HS-mode after enabling Sstc for
+        // the guest; reading its timer comparator does not modify state.
+        unsafe {
+            core::arch::asm!("csrr {}, vstimecmp", out(reg) value);
+        }
+        value
+    }
+
     pub fn write(value: usize) {
         unsafe {
             core::arch::asm!("csrw vstimecmp, {}", in(reg) value);
