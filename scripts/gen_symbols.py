@@ -83,6 +83,14 @@ def main() -> None:
     data = build_binary(symbols)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    # Skip rewriting when content is unchanged: build.rs tracks this file via
+    # rerun-if-changed, so a needless mtime bump would recompile the kernel.
+    if os.path.exists(args.output):
+        with open(args.output, "rb") as existing:
+            if existing.read() == data:
+                print(f"gen_symbols: {len(symbols)} symbols unchanged, "
+                      f"skip rewriting {args.output}")
+                return
     with open(args.output, "wb") as f:
         f.write(data)
 
