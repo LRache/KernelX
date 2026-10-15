@@ -26,10 +26,18 @@ $(LTP_SRC)/configure:
 	$(info + AUTOTOOLS ltp)
 	@ $(MAKE) -C $(LTP_SRC) autotools
 
+# 交叉编译时 pkg-config 只能查找目标 sysroot，否则会探测到宿主机的 libtirpc、libmnl 等库，
+# 链接目标程序时失败。编译器没有独立 sysroot（如 Debian 的交叉工具链）时直接禁用查找。
+LTP_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
+LTP_PKG_CONFIG_LIBDIR ?= $(if $(filter-out /,$(LTP_SYSROOT)),$(LTP_SYSROOT)/usr/lib/pkgconfig:$(LTP_SYSROOT)/usr/share/pkgconfig,$(LTP_BUILD)/no-pkgconfig)
+
 $(LTP_BUILD)/config.status: $(LTP_SRC)/configure
 	$(info + CONFIGURE ltp ($(LTP_HOST)))
 	@ mkdir -p $(LTP_BUILD)
-	@ cd $(LTP_BUILD) && $(LTP_SRC)/configure \
+	@ cd $(LTP_BUILD) && \
+		PKG_CONFIG_LIBDIR="$(LTP_PKG_CONFIG_LIBDIR)" PKG_CONFIG_PATH= \
+		$(if $(filter-out /,$(LTP_SYSROOT)),PKG_CONFIG_SYSROOT_DIR="$(LTP_SYSROOT)") \
+		$(LTP_SRC)/configure \
 		--host=$(LTP_HOST) \
 		--prefix=$(LTP_PREFIX) \
 		CC="$(CC)" \
