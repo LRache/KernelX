@@ -8,3 +8,6 @@
 [submodule "tools/FlameGraph"]
 	path = tools/FlameGraph
 	url = https://github.com/brendangregg/FlameGraph.git
+[submodule "usertests/ltp/ltp"]
+	path = usertests/ltp/ltp
+	url = https://github.com/linux-test-project/ltp.git

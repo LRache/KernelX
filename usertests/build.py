@@ -11,7 +11,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 TEST_ROOT_DIR = "tests"
-INIT_RUNNER_SOURCE = BASE_DIR / "support" / "autorun-init.c"
+ROOTFS_DIR = BASE_DIR / "rootfs"
 INIT_RUNNER_LIST = Path("etc/kx-tests.list")
 
 DEFAULT_TESTS = [
@@ -27,31 +27,14 @@ DEFAULT_TESTS = [
     "kmodule",
 ]
 
-COMMON_GLIBC_RUNTIME_FILES = [
-    "libc.so.6",
-    "libm.so.6",
-    "libpthread.so.0",
-    "libdl.so.2",
-    "librt.so.1",
-    "libgcc_s.so.1",
-]
-
 ARCH_CONFIGS = {
     "riscv64": {
         "aliases": ("riscv", "rv64"),
         "gnu_prefix": "riscv64-unknown-linux-gnu-",
         "elf_prefix": "riscv64-unknown-elf-",
         "musl_prefix": "riscv64-linux-musl-",
-        "musl_libc": "/opt/riscv64-linux-musl-cross/riscv64-linux-musl/lib/libc.so",
-        "musl_loader": "ld-musl-riscv64.so.1",
         "glibc_cc": "riscv64-unknown-linux-gnu-gcc",
-        "glibc_loader": "ld-linux-riscv64-lp64d.so.1",
         "glibc_loader_path": "lib/ld-linux-riscv64-lp64d.so.1",
-        "glibc_search_dirs": (
-            "/usr/riscv64-linux-gnu/lib",
-            "/lib/riscv64-linux-gnu",
-            "/usr/lib/riscv64-linux-gnu",
-        ),
         "cargo_target": "riscv64gc-unknown-linux-gnu",
         "cargo_linker": "riscv64-unknown-linux-gnu-gcc",
         "sysroot": "/usr/riscv64-linux-gnu",
@@ -62,18 +45,8 @@ ARCH_CONFIGS = {
         "gnu_prefix": "loongarch64-linux-gnu-",
         "elf_prefix": "loongarch64-unknown-elf-",
         "musl_prefix": "loongarch64-linux-musl-",
-        "musl_libc": "/opt/loongarch64-linux-musl-cross/loongarch64-linux-musl/lib/libc.so",
-        "musl_loader": "ld-musl-loongarch64-lp64d.so.1",
         "glibc_cc": "loongarch64-linux-gnu-gcc",
-        "glibc_loader": "ld-linux-loongarch-lp64d.so.1",
         "glibc_loader_path": "lib64/ld-linux-loongarch-lp64d.so.1",
-        "glibc_search_dirs": (
-            "/usr/loongarch64-linux-gnu/lib",
-            "/lib/loongarch64-linux-gnu",
-            "/usr/lib/loongarch64-linux-gnu",
-            "/lib64",
-            "/usr/lib64",
-        ),
         "cargo_target": "loongarch64-unknown-linux-gnu",
         "cargo_linker": "loongarch64-linux-gnu-gcc",
         "sysroot": "/usr/loongarch64-linux-gnu",
@@ -132,7 +105,7 @@ def normalize_isa(isa):
 def available_tests():
     tests = []
     for test_dir in sorted(BASE_DIR.iterdir()):
-        if not test_dir.is_dir() or test_dir.name == "build":
+        if not test_dir.is_dir() or test_dir.name in ("build", ROOTFS_DIR.name):
             continue
         if (test_dir / "Makefile").is_file() or (test_dir / "makefile").is_file():
             tests.append(test_dir.name)
@@ -501,70 +474,6 @@ def copy_case_outputs(output_dir, target_dir, case_name):
     raise RuntimeError(f"No files found in {output_dir} for {case_name}")
 
 
-def copy_runtime_file(src, dest, desc):
-    if src.is_file():
-        log_info(f"Copying {desc} to build directory...")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
-    else:
-        log_warn(f"{desc} not found at {src}, skipping copy")
-
-
-def find_glibc_runtime_file(filename, config):
-    gcc = glibc_compiler(config)
-    search_dirs = libc_dirs_from_env("GLIBC_LIB_DIR", "LIBC_DIR")
-
-    glibc_libc = env_path("GLIBC_LIBC")
-    if glibc_libc:
-        if filename == glibc_libc.name:
-            return glibc_libc
-        search_dirs.append(glibc_libc.parent)
-
-    search_dirs.extend(glibc_sysroot_dirs(gcc, config))
-    search_dirs.extend(Path(directory) for directory in config["glibc_search_dirs"])
-    search_dirs = dedup_paths(search_dirs)
-
-    return find_file_in_dirs(filename, search_dirs) or compiler_file(gcc, filename)
-
-
-def find_musl_libc(config):
-    musl_libc = env_path("MUSL_LIBC")
-    if musl_libc:
-        return musl_libc
-
-    libc = find_file_in_dirs("libc.so", libc_dirs_from_env("MUSL_LIB_DIR", "LIBC_DIR"))
-    if libc:
-        return libc
-
-    gcc = os.environ.get("MUSL_CC")
-    if gcc:
-        libc = compiler_file(gcc, "libc.so")
-        if libc:
-            return libc
-
-    return Path(config["musl_libc"])
-
-
-def copy_musl_runtime(rootfs_dir, config):
-    copy_runtime_file(find_musl_libc(config), rootfs_dir / "lib" / config["musl_loader"], "musl libc")
-
-
-def copy_glibc_runtime(rootfs_dir, config):
-    loader = config["glibc_loader"]
-    src = find_glibc_runtime_file(loader, config)
-    if src:
-        copy_runtime_file(src, rootfs_dir / config["glibc_loader_path"], f"glibc runtime {loader}")
-    else:
-        log_warn(f"glibc runtime {loader} not found, skipping copy")
-
-    for filename in COMMON_GLIBC_RUNTIME_FILES:
-        src = find_glibc_runtime_file(filename, config)
-        if src:
-            copy_runtime_file(src, rootfs_dir / "lib" / filename, f"glibc runtime {filename}")
-        else:
-            log_warn(f"glibc runtime {filename} not found, skipping copy")
-
-
 def make_vars_for_test(test, isa, config):
     make_vars = {
         "ISA": isa,
@@ -672,22 +581,31 @@ def build_test(selection, isa, rootfs_dir, config):
     return commands
 
 
-def build_autorun_init(rootfs_dir, config, commands):
+def build_rootfs(rootfs_dir, isa, config, autorun):
+    log_info(f"Building base rootfs for {isa}...")
+    make_vars = {
+        "ISA": isa,
+        "CROSS_COMPILE": env_or_config("CROSS_COMPILE", config, "gnu_prefix"),
+        "MUSL_CROSS_COMPILE": env_or_config("MUSL_CROSS_COMPILE", config, "musl_prefix"),
+        "GLIBC_CC": glibc_compiler(config),
+        "AUTORUN": "y" if autorun else "n",
+    }
+    if "MUSL_CC" in os.environ:
+        make_vars["MUSL_CC"] = os.environ["MUSL_CC"]
+
+    make_args = ["make", "all", *[f"{key}={value}" for key, value in make_vars.items()]]
+    if subprocess.run(make_args, cwd=ROOTFS_DIR).returncode != 0:
+        log_error("Failed to build base rootfs")
+        return False
+
+    shutil.copytree(ROOTFS_DIR / "build" / isa / "root", rootfs_dir, symlinks=True, dirs_exist_ok=True)
+    return True
+
+
+def write_test_list(rootfs_dir, commands):
     list_file = rootfs_dir / INIT_RUNNER_LIST
     list_file.parent.mkdir(parents=True, exist_ok=True)
     list_file.write_text("".join(f"{command}\n" for command in commands))
-
-    (rootfs_dir / "tmp").mkdir(parents=True, exist_ok=True)
-
-    gcc = glibc_compiler(config)
-    log_info(f"Building autorun init with {gcc}...")
-    try:
-        run([gcc, "-Wall", "-Wextra", "-O2", str(INIT_RUNNER_SOURCE), "-o", str(rootfs_dir / "init")])
-    except subprocess.CalledProcessError:
-        log_error("Failed to build autorun init")
-        return False
-
-    return True
 
 
 def create_image(build_dir, rootfs_dir, isa, img_size):
@@ -787,6 +705,9 @@ def main(argv):
     shutil.rmtree(rootfs_dir, ignore_errors=True)
     rootfs_dir.mkdir(parents=True, exist_ok=True)
 
+    if not build_rootfs(rootfs_dir, isa, config, args.autorun):
+        return 1
+
     test_commands = []
     try:
         for selection in tests:
@@ -795,11 +716,8 @@ def main(argv):
         log_error(str(err))
         return 1
 
-    if args.autorun and not build_autorun_init(rootfs_dir, config, test_commands):
-        return 1
-
-    copy_musl_runtime(rootfs_dir, config)
-    copy_glibc_runtime(rootfs_dir, config)
+    if args.autorun:
+        write_test_list(rootfs_dir, test_commands)
 
     img_file = create_image(build_dir, rootfs_dir, isa, img_size)
     if img_file is None:

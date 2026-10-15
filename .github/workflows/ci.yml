@@ -173,6 +173,138 @@ jobs:
             usertests/build/riscv64.ext4
             KernelX-testsuit/testsuit-for-oskernel/sdcard-rv.img
 
+  test-riscv64-ltp:
+    name: Test riscv64 LTP
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm-slim
+
+    env:
+      RUSTUP_HOME: /usr/local/rustup
+      CARGO_HOME: /usr/local/cargo
+
+    steps:
+      - name: Setup build environment
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            curl wget gnupg ca-certificates lsb-release software-properties-common \
+            make cmake ninja-build gcc g++ git python3 xz-utils bzip2 file e2fsprogs \
+            autoconf automake m4 pkg-config \
+            gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu qemu-system-misc \
+          && rm -rf /var/lib/apt/lists/*
+          curl -fsSL https://apt.llvm.org/llvm.sh | bash -s -- 21
+          rm -rf /var/lib/apt/lists/*
+          for tool in clang clang++ ld.lld llvm-objcopy llvm-objdump llvm-ar llvm-nm llvm-strip; do
+            ln -sf /usr/bin/${tool}-21 /usr/local/bin/${tool}
+          done
+          for bin in /usr/bin/riscv64-linux-gnu-*; do
+            name=$(basename "$bin")
+            ln -sf "$bin" "/usr/local/bin/riscv64-unknown-linux-gnu-${name#riscv64-linux-gnu-}"
+          done
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain nightly
+          export PATH=/usr/local/cargo/bin:$PATH
+          rustup target add riscv64gc-unknown-none-elf
+          rustup component add rust-src
+          echo "/usr/local/cargo/bin" >> $GITHUB_PATH
+
+      # 不递归拉取子模块，避开 LTP 自身的 mce-test、sparse、ltx、kirk 等子模块。
+      - name: Checkout KernelX
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # 与本地验证 LTP 时使用的 config/riscv-usertests 保持一致。
+      - name: Build riscv64 LTP kernel
+        run: |
+          make -f build.mk kernel \
+            ARCH=riscv \
+            ARCH_BITS=64 \
+            CROSS_COMPILE=riscv64-unknown-linux-gnu- \
+            KERNELX_RELEASE=5.0 \
+            CONFIG_LOG_LEVEL=trace \
+            CONFIG_NO_SMP=y \
+            CONFIG_ENABLE_SWAP_MEMORY=y \
+            CONFIG_WARN_UNIMPLEMENTED_SYSCALL=y \
+            CONFIG_FANOTIFY=y \
+            CONFIG_BACKTRACE=y \
+            COMPILE_MODE=release \
+            CONFIG_VIRTIO_BLOCK_PAGE_CACHE=n \
+            OBJCOPY=llvm-objcopy-21
+
+      - name: Build riscv64 LTP usertest image
+        run: |
+          MAKEFLAGS=-j$(nproc) IMG_SIZE=1536 bash ./usertests/build.sh riscv64 ltp
+          test -x usertests/build/riscv64/init
+          test -x usertests/build/riscv64/bin/busybox
+          test -x usertests/build/riscv64/tests/ltp/kx-ltp
+          test -f usertests/build/riscv64/tests/ltp/kx.runtest
+
+      # kx-ltp 对单个测试有 300s+5s 的兜底超时，watchdog 的无输出超时要比它长，
+      # 这样卡住的测试会先被 kx-ltp 记为 timeout，而不是整个 QEMU 被杀掉。
+      - name: Test riscv64 LTP
+        timeout-minutes: 60
+        run: |
+          qemu_artifacts="qemu-artifacts/riscv64/ltp"
+          qemu_log="$qemu_artifacts/qemu_output.log"
+          qemu_monitor_sock="$qemu_artifacts/qemu-monitor.sock"
+          qemu_monitor_log="$qemu_artifacts/qemu_monitor.log"
+          qemu_memory_dump="$qemu_artifacts/qemu-memory.vmcore"
+          success_marker="Init process exited with status Normal(0), system will halt."
+          mkdir -p "$qemu_artifacts"
+          swap_disk="$(mktemp /tmp/qemu-swap-XXXXXX)"
+          trap 'rm -f "$swap_disk"' EXIT
+          truncate -s 1G "$swap_disk"
+
+          set +e
+          python3 scripts/ci_qemu_watchdog.py \
+            --idle-timeout 400 \
+            --log "$qemu_log" \
+            --monitor-socket "$qemu_monitor_sock" \
+            --monitor-log "$qemu_monitor_log" \
+            --memory-dump "$qemu_memory_dump" \
+            --success-marker "$success_marker" \
+            -- \
+          qemu-system-riscv64 \
+            -M virt \
+            -m 256M \
+            -nographic \
+            -chardev socket,id=ci_monitor,path="$qemu_monitor_sock",server=on,wait=off \
+            -mon chardev=ci_monitor,mode=readline \
+            -kernel build/riscv64/Image \
+            -drive file=usertests/build/riscv64.ext4,if=none,id=x0,format=raw \
+            -drive file="$swap_disk",if=none,id=x1,format=raw \
+            -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
+            -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1 \
+            -smp 1 \
+            -append "rtc=rtc@101000 swap=virtio_mmio@10002000 init=/init initcwd=/ root=virtio_mmio@10001000 rootfstype=ext4"
+          qemu_status=$?
+          set -e
+
+          grep -aE "\[ltp\] (FAIL|summary)" "$qemu_log" || true
+          if [ "$qemu_status" -eq 0 ]; then
+            echo "LTP passed."
+          elif [ "$qemu_status" -eq 124 ]; then
+            echo "LTP failed: QEMU produced no output for 400 seconds."
+            grep -a "\[ltp\] run " "$qemu_log" | tail -1 || true
+            tail -50 "$qemu_log" || true
+            exit 1
+          else
+            echo "LTP failed: QEMU status: $qemu_status"
+            tail -50 "$qemu_log" || true
+            exit 1
+          fi
+
+      - name: Upload riscv64 LTP debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-riscv64-ltp-debug
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            qemu-artifacts/riscv64/ltp/
+            build/riscv64/
+
   test-loongarch64:
     name: Test loongarch64 testsuite
     runs-on: ubuntu-latest

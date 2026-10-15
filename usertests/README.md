@@ -183,7 +183,7 @@ basic-ulib/build/riscv64/output/read/test.txt
 
 ## 自动运行 init
 
-默认情况下，`build.py` 会生成用于启动后自动运行测试的 `/init`。如果只想构建和打包测试，不需要自动运行，
+默认情况下，镜像中包含用于启动后自动运行测试的 `/init`（由 `rootfs/` 构建，见“基础 rootfs”）。如果只想构建和打包测试，不需要自动运行，
 可以传入 `--no-autorun`：
 
 ```sh
@@ -192,7 +192,7 @@ basic-ulib/build/riscv64/output/read/test.txt
 ./usertests/build.sh riscv64 kmodule --no-autorun
 ```
 
-默认自动运行模式会额外生成：
+默认自动运行模式下，镜像会额外包含：
 
 ```text
 /init
@@ -217,75 +217,82 @@ basic-ulib/build/riscv64/output/read/test.txt
 
 新增 case 时需要把它加入 suite 的 `ALL_CASES` 和 source/command 映射，并继续遵循统一输出布局；只有需要特殊参数、顺序或默认过滤时，才需要增加 `run.list`。
 
-## libc 和运行时库
+## 基础 rootfs
 
-glibc 和 musl 的位置通过环境变量传递。脚本优先使用环境变量，找不到时才使用架构默认路径或编译器查询结果。
-
-常用变量：
+测试之外的镜像内容由 `usertests/rootfs/` 独立构建，`build.py` 只负责调用它、收集产物，再放入测试：
 
 ```text
-CROSS_COMPILE glibc 测试使用的交叉编译前缀；未设置 GLIBC_CC 时，也用它推导 gcc 和 sysroot
-GLIBC_CC      glibc 测试使用的 C 编译器，同时作为 glibc 运行时查询编译器
-MUSL_CC       musl 测试使用的 C 编译器，同时可用于查询 musl libc.so
-LIBC_DIR       通用 libc 目录，glibc/musl 都可作为兜底使用
-GLIBC_LIB_DIR  glibc 运行时库目录
-GLIBC_LIBC     glibc libc.so.6 的完整路径
-GLIBC_CRT_DIR  glibc crt1.o、crti.o、crtn.o 所在目录
-MUSL_LIB_DIR   musl 库目录
-MUSL_LIBC      musl libc.so 的完整路径
+rootfs/
+├── Makefile          # 入口：生成 rootfs/build/<isa>/root
+├── busybox.mk        # busybox 的下载、配置和编译
+├── autorun-init.c    # 自动运行测试的 /init
+└── skel/             # 原样复制的静态文件（/etc/passwd、/etc/group）
 ```
 
-如果没有显式提供 `GLIBC_LIB_DIR` / `LIBC_DIR` / `GLIBC_LIBC`，脚本会优先使用 `GLIBC_CC`，否则使用
-`${CROSS_COMPILE}gcc` 执行 `--print-sysroot`，并从这个 sysroot 下的 `lib`、`lib64`、`usr/lib`、
-`usr/lib64` 和 multiarch 目录查找 glibc loader 与运行时库。
+`build.py` 的构建顺序：
 
-示例：
+1. 执行 `make -C rootfs all ISA=<isa> CROSS_COMPILE=... MUSL_CROSS_COMPILE=... GLIBC_CC=... AUTORUN=y|n`；
+2. 把 `rootfs/build/<isa>/root` 复制到 `build/<isa>/`（保留符号链接）；
+3. 构建并收集选中的测试到 `/tests/<suite>/`；
+4. 自动运行模式下写入 `/etc/kx-tests.list`；
+5. 生成 ext4 镜像。
+
+也可以单独构建基础 rootfs：
 
 ```sh
-GLIBC_LIB_DIR=/usr/riscv64-linux-gnu/lib \
-MUSL_LIB_DIR=/opt/riscv64-linux-musl-cross/riscv64-linux-musl/lib \
-./usertests/build.sh riscv64
+make -C usertests/rootfs ISA=riscv64
+make -C usertests/rootfs ISA=loongarch64 CROSS_COMPILE=loongarch64-linux-gnu- MUSL_CROSS_COMPILE=loongarch64-linux-musl-
 ```
 
-使用自定义交叉工具链时：
+基础 rootfs 包含：
+
+```text
+/bin/busybox 及 /bin、/sbin、/usr/bin、/usr/sbin 下的 applet 符号链接
+/lib/ld-linux-riscv64-lp64d.so.1 或 /lib64/ld-linux-loongarch-lp64d.so.1
+/lib/libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libgcc_s.so.1
+/lib/ld-musl-<arch>.so.1     # 找到 musl 工具链时
+/etc/passwd /etc/group
+/tmp
+/init                        # 仅 AUTORUN=y
+```
+
+### busybox
+
+1. 首次构建时从 busybox.net 下载 `busybox-<版本>.tar.bz2` 并解压到 `rootfs/build/`，各架构共用。默认版本是 1.36.1，可用 `BUSYBOX_VERSION` 覆盖。
+2. 在 `rootfs/build/<isa>/busybox/` 中进行源码树外构建：以 `defconfig` 为基础，开启 `CONFIG_STATIC`，关闭 `tc`（新内核头文件已移除 CBQ，无法编译）和 `/linuxrc`。
+3. 用 `make install` 安装 `/bin/busybox`，并为所有 applet 创建相对路径的符号链接。
+
+busybox 使用 glibc 的 `CROSS_COMPILE` 静态链接。默认 `/init` 是 autorun runner，不使用 busybox 的 `init`。
+
+### libc 运行时库
+
+运行时库优先从环境变量指定的目录中查找，找不到时使用对应编译器的 `-print-file-name` 查询；仍然找不到时打印 warning 并跳过。
+
+```text
+CROSS_COMPILE       glibc 交叉编译前缀；未设置 GLIBC_CC 时用它推导 gcc
+GLIBC_CC            glibc 编译器，用于查询运行时库和编译 /init
+MUSL_CROSS_COMPILE  musl 交叉编译前缀；未设置 MUSL_CC 时用它推导 gcc
+MUSL_CC             musl 编译器，用于查询 libc.so
+GLIBC_LIB_DIR       glibc 运行时库目录，未设置时使用 LIBC_DIR
+MUSL_LIBC           musl libc.so 的完整路径
+MUSL_LIB_DIR        musl 库目录，未设置时使用 MUSL_LIBC 所在目录或 LIBC_DIR
+```
+
+musl 的 `libc.so` 会安装为对应的 loader，例如 riscv64 的 `/lib/ld-musl-riscv64.so.1`。默认的 musl 前缀（如 `riscv64-linux-musl-`）不在 `PATH` 中时，可以这样指定：
+
+```sh
+MUSL_CROSS_COMPILE=/opt/cross-tools/riscv64-linux-musl/bin/riscv64-linux-musl- \
+./usertests/build.sh riscv64 basic-musl
+```
+
+使用自定义 glibc 交叉工具链时：
 
 ```sh
 CROSS_COMPILE=/opt/cross-tools/riscv64-unknown-linux-gnu/bin/riscv64-unknown-linux-gnu- \
 ./usertests/build.sh riscv64 kmodule
 ```
 
-loongarch 示例：
-
-```sh
-GLIBC_LIB_DIR=/usr/loongarch64-linux-gnu/lib \
-./usertests/build.sh loongarch64
-```
-
-打包 glibc 时，脚本会把动态链接器复制到对应架构 ELF interpreter 要求的位置，并把常见运行时库复制到镜像的 `/lib`。
-
-动态链接器路径例如：
-
-```text
-/lib/ld-linux-riscv64-lp64d.so.1
-/lib64/ld-linux-loongarch-lp64d.so.1
-```
-
-常见运行时库路径例如：
-
-```text
-libc.so.6
-libm.so.6
-libpthread.so.0
-libdl.so.2
-librt.so.1
-libgcc_s.so.1
-```
-
-musl 测试需要的 loader 也会复制到 `/lib`，例如 riscv64 的：
-
-```text
-/lib/ld-musl-riscv64.so.1
-```
+`GLIBC_LIBC`、`GLIBC_CRT_DIR`、`SYSROOT` 等变量只用于 `basic-glibc-static` 的静态链接，不影响基础 rootfs。
 
 ## 镜像生成
 
@@ -326,3 +333,55 @@ usertests/build/riscv64.ext4
 ```
 
 `build.py` 结束时会递归打印 staging 目录中每个 suite 的文件列表，便于确认多级测试是否被正确收集。
+
+## LTP
+
+`ltp` suite 用于接入 [Linux Test Project](https://github.com/linux-test-project/ltp)。LTP 源码是位于 `usertests/ltp/ltp` 的 git submodule，固定在某个发布 tag 上。首次使用前需要初始化：
+
+```sh
+git submodule update --init usertests/ltp/ltp
+```
+
+注意：`make init` 使用 `git submodule update --remote`，会把 LTP 移到上游 master 的最新提交，而不是固定的 tag。
+
+LTP 不在 `DEFAULT_TESTS` 中，需要显式选择。完整安装体积较大，建议同时增大镜像：
+
+```sh
+IMG_SIZE=2048 ./usertests/build.sh riscv64 ltp
+IMG_SIZE=2048 ./usertests/build.sh loongarch64 ltp
+```
+
+构建流程由 `usertests/ltp/Makefile` 负责：
+
+1. 第一次构建时在 submodule 中执行 `make autotools` 生成 `configure`（两个架构共用）。
+2. 在 `ltp/build/<isa>/ltp-build` 中进行源码树外 configure（`--host` 由 `CROSS_COMPILE` 推导，`--prefix=/tests/ltp`），使用 glibc 工具链动态链接。
+3. 执行 `make` 和 `make install DESTDIR=ltp/build/<isa>/ltp-stage`，并 strip `testcases/bin` 中的 ELF。
+4. 将完整安装、`kx.runtest` 和 runner `kx-ltp` 收集到 `/tests/ltp/`。
+
+镜像中的布局（`LTPROOT=/tests/ltp`）：
+
+```text
+/tests/ltp/kx-ltp
+/tests/ltp/kx.runtest
+/tests/ltp/kernel.config
+/tests/ltp/testcases/bin/...
+/tests/ltp/runtest/...
+```
+
+`/init` 不运行 `runltp`/kirk，而是执行 `/tests/ltp/kx-ltp`。它会：
+
+- 设置 `LTPROOT`、`TMPDIR=/tmp`、`PATH` 和 `KCONFIG_PATH=/tests/ltp/kernel.config`，并切换到 `testcases/bin`；
+- 读取 runtest 格式的列表（`<tag> <command> [args...]`），默认是 `/tests/ltp/kx.runtest`，也可以传入绝对路径或相对 `LTPROOT` 的路径，例如 `/tests/ltp/kx-ltp runtest/syscalls`；
+- 逐条 `fork` + `execvp`，每个测试在独立的进程组中运行；退出码 0 记为 `PASS`，32（TCONF）记为 `CONF`，其他退出码或信号记为 `FAIL`；包含 shell 元字符的条目记为 `SKIP`；
+- 每个测试有兜底超时，默认 300 秒，可用第二个参数修改，例如 `kx-ltp kx.runtest 120`。超时后先向测试进程组发 `SIGINT`，让 LTP 库清理子进程，5 秒后仍未退出则发 `SIGKILL`，并记为 `FAIL <tag> timeout=...`；
+- 最后打印 `[ltp] summary pass=... conf=... fail=... skip=... timeout=...`，只有 `fail=0` 时才返回 0。
+
+兜底超时依赖内核的 `alarm`/`SIGALRM`。如果运行长时间没有新输出，最后一行 `[ltp] run <tag>` 就是卡住的测试。
+
+要调整自动运行的测试，编辑 `usertests/ltp/kx.runtest`，可以直接从 `ltp/runtest/*` 中复制条目。
+
+`kernel.config` 是提供给 LTP 内核配置检查的最小 `.config`（KernelX 没有 `/proc/config.gz`），只列出测试关心且 KernelX 支持的选项。
+
+LTP 会查询 `nobody`、`bin`、`daemon` 等用户和组，这些由基础 rootfs 的 `/etc/passwd`、`/etc/group` 提供（`rootfs/skel/etc/`）。
+
+镜像中的 `/bin/sh`、`cp`、`cat` 等命令由 busybox 提供，LTP 内部通过 `system()` 调用的命令（例如复制子程序）依赖它们。`kx-ltp` 本身仍然直接 `execvp`，不会通过 shell 解析 runtest 条目。
