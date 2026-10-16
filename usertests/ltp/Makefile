@@ -10,7 +10,8 @@ LTP_HOST = $(notdir $(patsubst %-,%,$(CROSS_COMPILE)))
 
 BUILD_DIR = build/$(ARCH)
 OUTPUT_DIR = $(BUILD_DIR)/output
-LTP_BUILD = $(abspath $(BUILD_DIR)/ltp-build)
+# LTP 用 CURDIR（物理路径）推导源码目录，构建目录必须是解析过符号链接的绝对路径。
+LTP_BUILD := $(shell mkdir -p $(BUILD_DIR)/ltp-build && cd $(BUILD_DIR)/ltp-build && pwd -P)
 LTP_MAKE = $(MAKE) -C $(LTP_BUILD) -f $(LTP_SRC)/Makefile top_srcdir=$(LTP_SRC) top_builddir=$(LTP_BUILD)
 
 CFLAGS += -Wall -Wextra -O2
