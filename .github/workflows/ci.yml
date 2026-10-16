@@ -323,7 +323,7 @@ jobs:
             make cmake ninja-build gcc g++ git python3 xz-utils bzip2 file e2fsprogs \
             autoconf automake m4 pkg-config \
             gcc-loongarch64-linux-gnu binutils-loongarch64-linux-gnu libc6-dev-loong64-cross \
-            qemu-system-misc \
+            qemu-system-misc ipxe-qemu \
           && rm -rf /var/lib/apt/lists/*
           curl -fsSL https://apt.llvm.org/llvm.sh | bash -s -- 21
           rm -rf /var/lib/apt/lists/*
