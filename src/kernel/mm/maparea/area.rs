@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::arch::PageTable;
-use crate::kernel::errno::SysResult;
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::swappable::{AnonymousSwappableFramePin, FileBackend, SwappableFramePin};
 use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, PhysPageFrame};
 use crate::klib::SpinLock;
@@ -150,6 +150,30 @@ pub trait Area: Send {
 
     fn set_perm(&mut self, _perm: MapPerm, _pagetable: &SpinLock<PageTable>, _tlb_cpu_mask: &mut usize) {
         unimplemented!("set_perm not implemented for the area type: {}", self.type_name());
+    }
+
+    /// Checks whether this area can be moved or grown by `mremap`.
+    fn check_remap(&self) -> SysResult<()> {
+        Err(Errno::EINVAL)
+    }
+
+    /// Removes the page table entries at the current `ubase` while keeping the
+    /// backing pages, then moves the area to `new_ubase`. Pages are mapped at
+    /// the new address lazily by later faults.
+    fn remap(&mut self, _new_ubase: usize, _pagetable: &SpinLock<PageTable>) {
+        unimplemented!("remap not implemented for the area type: {}", self.type_name());
+    }
+
+    /// Creates an unbound area that shares this area's backing object,
+    /// starting at `uaddr` and spanning `page_count` pages. Used by `mremap`
+    /// with `old_size == 0`, which is only valid for shared mappings.
+    fn duplicate(&self, _uaddr: usize, _page_count: usize) -> SysResult<Box<dyn Area>> {
+        Err(Errno::EINVAL)
+    }
+
+    /// Appends `extra_pages` unallocated pages to the end of this area.
+    fn grow(&mut self, _extra_pages: usize) {
+        unimplemented!("grow not implemented for the area type: {}", self.type_name());
     }
 
     fn unmap(&mut self, _pagetable: &SpinLock<PageTable>) {

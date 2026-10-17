@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
+use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::nofilemap::{AnonMapFamilyRegistration, SwappablePageFrame};
 use crate::kernel::mm::maparea::{Area, MapAreaInfo, MapChangeNotifier, MemoryFaultError, PinPageFrame};
 use crate::kernel::mm::swappable::AccessDirty;
@@ -120,6 +121,33 @@ impl SharedAnonymousArea {
         let pin = page.pin_page(dirty).ok()?;
         Some(PinPageFrame::swappable(pin))
     }
+
+    /// Removes this area's page table entries without releasing its pages.
+    fn invalidate_ptes(&self, pagetable: &SpinLock<PageTable>) {
+        self.family_registration.with_tlb_invalidation_batch(|token| {
+            let mut tlb_cpu_mask = 0;
+            for frame_index in 0..self.page_count {
+                let Some(page) = self.page(frame_index) else {
+                    continue;
+                };
+                let uaddr = self.ubase + frame_index * arch::PGSIZE;
+                page.begin_tlb_invalidation(token, |frame| {
+                    let mut pagetable = pagetable.lock();
+                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
+                    if access_dirty.is_some() {
+                        tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
+                    }
+                    access_dirty.map(AccessDirty::from)
+                });
+            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
+            for frame_index in 0..self.page_count {
+                if let Some(page) = self.page(frame_index) {
+                    page.finish_tlb_invalidation(token);
+                }
+            }
+        });
+    }
 }
 
 impl Area for SharedAnonymousArea {
@@ -204,9 +232,11 @@ impl Area for SharedAnonymousArea {
     ) -> Result<(), MemoryFaultError> {
         let area_offset = uaddr.checked_sub(self.ubase).ok_or(MemoryFaultError::SegvMapError)?;
         let frame_index = area_offset / arch::PGSIZE;
+        // The manager has checked that `uaddr` is inside this area, so a
+        // missing page lies past the end of the shared object.
         let (page, _) = self
             .materialize_page(frame_index)
-            .ok_or(MemoryFaultError::SegvMapError)?;
+            .ok_or(MemoryFaultError::BusAddressError)?;
         let guard = page.ensure_page().map_err(|_| MemoryFaultError::BusAddressError)?;
         let page_uaddr = self
             .ubase
@@ -278,30 +308,46 @@ impl Area for SharedAnonymousArea {
         }
     }
 
+    fn check_remap(&self) -> SysResult<()> {
+        Ok(())
+    }
+
+    fn remap(&mut self, new_ubase: usize, pagetable: &SpinLock<PageTable>) {
+        self.invalidate_ptes(pagetable);
+        self.set_ubase(new_ubase);
+    }
+
+    fn duplicate(&self, uaddr: usize, page_count: usize) -> SysResult<Box<dyn Area>> {
+        debug_assert!(uaddr >= self.ubase && uaddr < self.ubase + self.size());
+        let page_base = self
+            .page_base
+            .checked_add((uaddr - self.ubase) / arch::PGSIZE)
+            .ok_or(Errno::EINVAL)?;
+        Ok(Box::new(SharedAnonymousArea {
+            ubase: uaddr,
+            perm: self.perm,
+            object: self.object.clone(),
+            page_base,
+            page_count,
+            family_registration: self.family_registration.unbound_sibling(),
+        }))
+    }
+
+    fn grow(&mut self, extra_pages: usize) {
+        // Pages past the end of the shared object stay unbacked, like Linux
+        // shmem after its mapping grows beyond the object size.
+        self.page_count = self
+            .page_count
+            .checked_add(extra_pages)
+            .expect("shared anonymous page count overflow");
+        if self.family_registration.is_bound() {
+            self.family_registration
+                .update(self.ubase, self.page_base, self.page_count);
+        }
+    }
+
     fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        self.family_registration.with_tlb_invalidation_batch(|token| {
-            let mut tlb_cpu_mask = 0;
-            for frame_index in 0..self.page_count {
-                let Some(page) = self.page(frame_index) else {
-                    continue;
-                };
-                let uaddr = self.ubase + frame_index * arch::PGSIZE;
-                page.begin_tlb_invalidation(token, |frame| {
-                    let mut pagetable = pagetable.lock();
-                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
-                    if access_dirty.is_some() {
-                        tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
-                    }
-                    access_dirty.map(AccessDirty::from)
-                });
-            }
-            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
-            for frame_index in 0..self.page_count {
-                if let Some(page) = self.page(frame_index) {
-                    page.finish_tlb_invalidation(token);
-                }
-            }
-        });
+        self.invalidate_ptes(pagetable);
         self.family_registration.unregister();
     }
 

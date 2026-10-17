@@ -111,6 +111,47 @@ impl SharedFileMapArea {
             }
         }
     }
+
+    /// Removes this area's page table entries without releasing its pages.
+    fn invalidate_ptes(&self, pagetable: &SpinLock<PageTable>) {
+        let invalidate = |token: Option<&TlbInvalidationToken>| {
+            let mut tlb_cpu_mask = 0;
+            for (page_index, page) in self.states.iter() {
+                let uaddr = self.ubase + page_index * arch::PGSIZE;
+                match page {
+                    SharedFilePage::Stable(frame) => {
+                        let mut pagetable = pagetable.lock();
+                        if pagetable.munmap_with_check(uaddr, frame.get_page()) {
+                            tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
+                        }
+                    }
+                    SharedFilePage::Swappable(page) => {
+                        let token = token.expect("swappable file page must have a file mapping registration");
+                        page.begin_tlb_invalidation(token, |frame| {
+                            let mut pagetable = pagetable.lock();
+                            let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
+                            if access_dirty.is_some() {
+                                tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
+                            }
+                            access_dirty.map(AccessDirty::from)
+                        });
+                    }
+                }
+            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
+            for (_, state) in self.states.iter() {
+                if let SharedFilePage::Swappable(page) = state {
+                    let token = token.expect("swappable file page must have a file mapping registration");
+                    assert!(page.finish_tlb_invalidation(token));
+                }
+            }
+        };
+        if let Some(registration) = &self.file_map_registration {
+            registration.with_tlb_invalidation_batch(|token| invalidate(Some(token)));
+        } else {
+            invalidate(None);
+        }
+    }
 }
 
 impl Area for SharedFileMapArea {
@@ -335,45 +376,42 @@ impl Area for SharedFileMapArea {
         (self, Box::new(right))
     }
 
-    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let invalidate = |token: Option<&TlbInvalidationToken>| {
-            let mut tlb_cpu_mask = 0;
-            for (page_index, page) in self.states.iter() {
-                let uaddr = self.ubase + page_index * arch::PGSIZE;
-                match page {
-                    SharedFilePage::Stable(frame) => {
-                        let mut pagetable = pagetable.lock();
-                        if pagetable.munmap_with_check(uaddr, frame.get_page()) {
-                            tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
-                        }
-                    }
-                    SharedFilePage::Swappable(page) => {
-                        let token = token.expect("swappable file page must have a file mapping registration");
-                        page.begin_tlb_invalidation(token, |frame| {
-                            let mut pagetable = pagetable.lock();
-                            let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
-                            if access_dirty.is_some() {
-                                tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
-                            }
-                            access_dirty.map(AccessDirty::from)
-                        });
-                    }
-                }
-            }
-            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
-            for (_, state) in self.states.iter() {
-                if let SharedFilePage::Swappable(page) = state {
-                    let token = token.expect("swappable file page must have a file mapping registration");
-                    assert!(page.finish_tlb_invalidation(token));
-                }
-            }
-        };
-        if let Some(registration) = &self.file_map_registration {
-            registration.with_tlb_invalidation_batch(|token| invalidate(Some(token)));
-        } else {
-            invalidate(None);
-        }
+    fn check_remap(&self) -> SysResult<()> {
+        Ok(())
+    }
 
+    fn remap(&mut self, new_ubase: usize, pagetable: &SpinLock<PageTable>) {
+        self.invalidate_ptes(pagetable);
+        self.set_ubase(new_ubase);
+    }
+
+    fn duplicate(&self, uaddr: usize, page_count: usize) -> SysResult<Box<dyn Area>> {
+        debug_assert!(uaddr >= self.ubase && uaddr < self.ubase + self.size());
+        let offset = self.offset.checked_add(uaddr - self.ubase).ok_or(Errno::EINVAL)?;
+        let length = page_count.checked_mul(arch::PGSIZE).ok_or(Errno::ENOMEM)?;
+        Ok(Box::new(SharedFileMapArea::new(
+            uaddr,
+            self.perm,
+            self.inode.clone(),
+            self.inode_index,
+            offset,
+            length,
+            self.writable,
+            self.path.clone(),
+        )))
+    }
+
+    fn grow(&mut self, extra_pages: usize) {
+        self.states.grow(extra_pages);
+        if let Some(registration) = &self.file_map_registration
+            && registration.is_bound()
+        {
+            registration.update(self.ubase, self.file_page_base(), self.states.len());
+        }
+    }
+
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        self.invalidate_ptes(pagetable);
         self.states.clear_with(|_, _| {});
 
         if let Some(registration) = &mut self.file_map_registration {

@@ -7,7 +7,7 @@ use crate::arch;
 use crate::fs::file::FileMmapRequest;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::{Area, PrivateAnonymousArea, SharedAnonymousArea};
-use crate::kernel::mm::{AddrSpace, MapPerm, MmapPlacement};
+use crate::kernel::mm::{AddrSpace, MapPerm, MmapPlacement, RemapTarget};
 use crate::kernel::scheduler::*;
 use crate::kernel::syscall::SyscallRet;
 use crate::kernel::task;
@@ -361,51 +361,49 @@ bitflags! {
     }
 }
 
-pub fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: usize, _new_addr: usize) -> SyscallRet {
-    let flags = MRemapFlags::from_bits(flags & 0x7).ok_or(Errno::EINVAL)?;
+pub fn mremap(old_addr: usize, old_size: usize, new_size: usize, flags: usize, new_addr: usize) -> SyscallRet {
+    let flags = MRemapFlags::from_bits(flags).ok_or(Errno::EINVAL)?;
 
+    if flags.intersects(MRemapFlags::FIXED | MRemapFlags::DONTUNMAP) && !flags.contains(MRemapFlags::MAYMOVE) {
+        return Err(Errno::EINVAL);
+    }
+    // TODO: MREMAP_DONTUNMAP needs an empty area of the same type left at the old address.
+    if flags.contains(MRemapFlags::DONTUNMAP) {
+        return Err(Errno::EINVAL);
+    }
+
+    // `old_size == 0` duplicates a shared mapping; private mappings are rejected later.
     if old_addr % arch::PGSIZE != 0 || new_size == 0 {
         return Err(Errno::EINVAL);
     }
 
     let old_pages = arch::page_count(old_size);
     let new_pages = arch::page_count(new_size);
+    let old_end = old_pages
+        .checked_mul(arch::PGSIZE)
+        .and_then(|size| old_addr.checked_add(size))
+        .ok_or(Errno::EINVAL)?;
+    let new_map_size = new_pages.checked_mul(arch::PGSIZE).ok_or(Errno::ENOMEM)?;
 
-    if new_pages == old_pages {
-        return Ok(old_addr);
-    }
+    let target = if flags.contains(MRemapFlags::FIXED) {
+        if new_addr % arch::PGSIZE != 0 {
+            return Err(Errno::EINVAL);
+        }
+        let new_end = new_addr.checked_add(new_map_size).ok_or(Errno::EINVAL)?;
+        if new_end - 1 > arch::USEREND {
+            return Err(Errno::EINVAL);
+        }
+        if new_addr < old_end && old_addr < new_end {
+            return Err(Errno::EINVAL);
+        }
+        RemapTarget::Fixed(new_addr)
+    } else if flags.contains(MRemapFlags::MAYMOVE) {
+        RemapTarget::MayMove
+    } else {
+        RemapTarget::InPlace
+    };
 
-    if new_pages < old_pages {
-        let tail_addr = old_addr + new_pages * arch::PGSIZE;
-        let tail_pages = old_pages - new_pages;
-        current::addrspace().unmap_area(tail_addr, tail_pages)?;
-        return Ok(old_addr);
-    }
-
-    if !flags.contains(MRemapFlags::MAYMOVE) {
-        return Err(Errno::ENOMEM);
-    }
-
-    let new_addr = mmap(
-        0,
-        new_pages * arch::PGSIZE,
-        0x3,  /* R|W */
-        0x22, /* PRIVATE|ANON */
-        usize::MAX,
-        0,
-    )?;
-
-    let copy_len = old_pages * arch::PGSIZE;
-    let addrspace = current::addrspace();
-    for offset in (0..copy_len).step_by(arch::PGSIZE) {
-        let _ = addrspace.with_translated_read_write(old_addr + offset, new_addr + offset, arch::PGSIZE, |src, dst| {
-            dst.copy_from_slice(src);
-        });
-    }
-
-    addrspace.unmap_area(old_addr, old_pages)?;
-
-    Ok(new_addr)
+    current::addrspace().remap_area(old_addr, old_pages, new_pages, target)
 }
 
 pub fn mlock(_start: usize, _length: usize) -> SyscallRet {

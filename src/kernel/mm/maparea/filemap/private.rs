@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
 use crate::fs::file::{FileOps, RandomAccessFile};
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::maparea::nofilemap::{AnonMapFamilyRegistration, FrameState, SwappablePageFrame as AreaFrame};
 use crate::kernel::mm::maparea::{
     Area, MapAreaInfo, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultError, PinPageFrame,
@@ -293,6 +294,83 @@ impl PrivateFileMapArea {
     fn reset_fault_around(&mut self) {
         self.expected_fault_index = None;
         self.sequential_faults = 0;
+    }
+
+    /// Removes this area's page table entries without releasing its pages.
+    fn invalidate_ptes(&self, pagetable: &SpinLock<PageTable>) {
+        let unmap_source_pages = |token: Option<&TlbInvalidationToken>| {
+            let mut tlb_cpu_mask = 0;
+            for (page_index, state) in self.frames.iter() {
+                let PrivateFilePage::Source(source) = state else {
+                    continue;
+                };
+                let uaddr = self
+                    .page_uaddr(page_index)
+                    .expect("private file source unmap address overflow");
+                match source {
+                    SharedFilePage::Stable(frame) => {
+                        let mut pagetable = pagetable.lock();
+                        if pagetable.munmap_with_check(uaddr, frame.get_page()) {
+                            tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
+                        }
+                    }
+                    SharedFilePage::Swappable(page) => {
+                        let token = token.expect("swappable source page must have a file mapping registration");
+                        page.begin_tlb_invalidation(token, |resident| {
+                            let mut pagetable = pagetable.lock();
+                            let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, resident.get_page());
+                            if access_dirty.is_some() {
+                                tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
+                            }
+                            access_dirty.map(AccessDirty::from)
+                        });
+                    }
+                }
+            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
+            for (_, state) in self.frames.iter() {
+                if let PrivateFilePage::Source(SharedFilePage::Swappable(page)) = state {
+                    let token = token.expect("swappable source page must have a file mapping registration");
+                    assert!(page.finish_tlb_invalidation(token));
+                }
+            }
+        };
+        if let Some(registration) = &self.file_map_registration {
+            registration.with_tlb_invalidation_batch(|token| unmap_source_pages(Some(token)));
+        } else {
+            unmap_source_pages(None);
+        }
+
+        self.family_registration.with_tlb_invalidation_batch(|token| {
+            let mut tlb_cpu_mask = 0;
+            for (page_index, state) in self.frames.iter() {
+                let page = match state {
+                    PrivateFilePage::Anonymous(FrameState::Allocated(page))
+                    | PrivateFilePage::Anonymous(FrameState::Cow(page)) => page,
+                    PrivateFilePage::Source(_) => continue,
+                };
+                let uaddr = self
+                    .page_uaddr(page_index)
+                    .expect("private file unmap address overflow");
+                page.begin_tlb_invalidation(token, |resident| {
+                    let mut pagetable = pagetable.lock();
+                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, resident.get_page());
+                    if access_dirty.is_some() {
+                        tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
+                    }
+                    access_dirty.map(AccessDirty::from)
+                });
+            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
+            for (_, state) in self.frames.iter() {
+                let page = match state {
+                    PrivateFilePage::Anonymous(FrameState::Allocated(page))
+                    | PrivateFilePage::Anonymous(FrameState::Cow(page)) => page,
+                    PrivateFilePage::Source(_) => continue,
+                };
+                assert!(page.finish_tlb_invalidation(token));
+            }
+        });
     }
 }
 
@@ -704,80 +782,31 @@ impl Area for PrivateFileMapArea {
         }
     }
 
-    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        let unmap_source_pages = |token: Option<&TlbInvalidationToken>| {
-            let mut tlb_cpu_mask = 0;
-            for (page_index, state) in self.frames.iter() {
-                let PrivateFilePage::Source(source) = state else {
-                    continue;
-                };
-                let uaddr = self
-                    .page_uaddr(page_index)
-                    .expect("private file source unmap address overflow");
-                match source {
-                    SharedFilePage::Stable(frame) => {
-                        let mut pagetable = pagetable.lock();
-                        if pagetable.munmap_with_check(uaddr, frame.get_page()) {
-                            tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
-                        }
-                    }
-                    SharedFilePage::Swappable(page) => {
-                        let token = token.expect("swappable source page must have a file mapping registration");
-                        page.begin_tlb_invalidation(token, |resident| {
-                            let mut pagetable = pagetable.lock();
-                            let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, resident.get_page());
-                            if access_dirty.is_some() {
-                                tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
-                            }
-                            access_dirty.map(AccessDirty::from)
-                        });
-                    }
-                }
-            }
-            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
-            for (_, state) in self.frames.iter() {
-                if let PrivateFilePage::Source(SharedFilePage::Swappable(page)) = state {
-                    let token = token.expect("swappable source page must have a file mapping registration");
-                    assert!(page.finish_tlb_invalidation(token));
-                }
-            }
-        };
-        if let Some(registration) = &self.file_map_registration {
-            registration.with_tlb_invalidation_batch(|token| unmap_source_pages(Some(token)));
-        } else {
-            unmap_source_pages(None);
-        }
+    fn check_remap(&self) -> SysResult<()> {
+        Ok(())
+    }
 
-        self.family_registration.with_tlb_invalidation_batch(|token| {
-            let mut tlb_cpu_mask = 0;
-            for (page_index, state) in self.frames.iter() {
-                let page = match state {
-                    PrivateFilePage::Anonymous(FrameState::Allocated(page))
-                    | PrivateFilePage::Anonymous(FrameState::Cow(page)) => page,
-                    PrivateFilePage::Source(_) => continue,
-                };
-                let uaddr = self
-                    .page_uaddr(page_index)
-                    .expect("private file unmap address overflow");
-                page.begin_tlb_invalidation(token, |resident| {
-                    let mut pagetable = pagetable.lock();
-                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, resident.get_page());
-                    if access_dirty.is_some() {
-                        tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
-                    }
-                    access_dirty.map(AccessDirty::from)
-                });
-            }
-            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
-            for (_, state) in self.frames.iter() {
-                let page = match state {
-                    PrivateFilePage::Anonymous(FrameState::Allocated(page))
-                    | PrivateFilePage::Anonymous(FrameState::Cow(page)) => page,
-                    PrivateFilePage::Source(_) => continue,
-                };
-                assert!(page.finish_tlb_invalidation(token));
-            }
-        });
+    fn remap(&mut self, new_ubase: usize, pagetable: &SpinLock<PageTable>) {
+        self.invalidate_ptes(pagetable);
+        self.set_ubase(new_ubase);
+    }
+
+    fn grow(&mut self, extra_pages: usize) {
+        self.frames.grow(extra_pages);
+        self.file_length = self.frames.len() * arch::PGSIZE;
+        if let Some(registration) = &self.file_map_registration
+            && registration.is_bound()
+        {
+            registration.update(self.ubase, self.file_page_base(), self.frames.len());
+        }
+        if self.family_registration.is_bound() {
+            self.family_registration
+                .update(self.ubase, self.page_base, self.frames.len());
+        }
+    }
+
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        self.invalidate_ptes(pagetable);
 
         self.frames.clear_with(|_, state| {
             let page = match state {

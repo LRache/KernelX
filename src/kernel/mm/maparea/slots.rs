@@ -146,6 +146,29 @@ impl<T> AreaPageSlots<T> {
         right
     }
 
+    /// Appends `extra` empty slots to the end.
+    pub(super) fn grow(&mut self, extra: usize) {
+        let new_page_count = self.len().checked_add(extra).expect("page slot count overflow");
+        match self {
+            Self::Dense(slots) if Self::uses_dense_storage(new_page_count) => {
+                slots.resize_with(new_page_count, || None);
+            }
+            Self::Dense(slots) => {
+                let slots = core::mem::take(slots)
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, slot)| slot.map(|value| (index, value)))
+                    .collect();
+                *self = Self::Sparse {
+                    page_count: new_page_count,
+                    key_base: 0,
+                    slots,
+                };
+            }
+            Self::Sparse { page_count, .. } => *page_count = new_page_count,
+        }
+    }
+
     pub(super) fn clear_with(&mut self, mut drop_slot: impl FnMut(usize, T)) {
         match self {
             Self::Dense(slots) => {

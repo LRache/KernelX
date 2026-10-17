@@ -9,7 +9,7 @@ use crate::arch::{self, PageTable};
 use crate::kernel::config;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::mm::maparea::anonymous::PrivateAnonymousArea;
-use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType};
+use crate::kernel::mm::{AddrSpace, MapPerm, MemAccessType, RemapTarget};
 use crate::klib::{SleepLockOnStack, SpinLock};
 #[cfg(feature = "map-manager-lock-debug")]
 use crate::println;
@@ -642,13 +642,7 @@ impl Manager {
         }
 
         // Check if there's space after all existing areas
-        // We need to ensure we don't exceed reasonable address space limits
-        // For safety, let's limit to addresses below the user stack region
-        let max_mmap_addr = if self.userstack_ubase > 0 {
-            self.userstack_ubase
-        } else {
-            config::USER_STACK_TOP - config::USER_STACK_PAGE_COUNT_MAX * arch::PGSIZE
-        };
+        let max_mmap_addr = self.max_mmap_addr();
 
         if candidate_addr + required_size <= max_mmap_addr {
             ktrace!(
@@ -664,6 +658,16 @@ impl Manager {
                 max_mmap_addr
             );
             None
+        }
+    }
+
+    /// Returns the exclusive upper bound of mmap allocations. For safety,
+    /// mappings stay below the user stack region.
+    fn max_mmap_addr(&self) -> usize {
+        if self.userstack_ubase > 0 {
+            self.userstack_ubase
+        } else {
+            config::USER_STACK_TOP - config::USER_STACK_PAGE_COUNT_MAX * arch::PGSIZE
         }
     }
 
@@ -839,6 +843,144 @@ impl Manager {
         }
 
         Ok(())
+    }
+
+    /// Resizes and/or moves `[old_addr, old_addr + old_pages * PGSIZE)` for `mremap`.
+    ///
+    /// The old range must lie inside a single area. Moving keeps the area's
+    /// backing pages and only drops their old page table entries; the new
+    /// address is populated lazily by page faults.
+    ///
+    /// When `old_pages` is 0, the shared area containing `old_addr` is
+    /// duplicated at the new address and the old mapping is left untouched.
+    ///
+    /// # Returns
+    /// * `Ok(usize)` - Base address of the remapped range
+    /// * `Err(EFAULT)` - The old range is not covered by a single area
+    /// * `Err(ENOMEM)` - The range cannot grow in place and moving is not allowed
+    /// * `Err(EINVAL)` - The area type cannot be moved or grown
+    pub fn remap_area(
+        &mut self,
+        old_addr: usize,
+        old_pages: usize,
+        new_pages: usize,
+        target: RemapTarget,
+        pagetable: &SpinLock<PageTable>,
+        addrspace: &Arc<AddrSpace>,
+    ) -> SysResult<usize> {
+        debug_assert!(old_addr % arch::PGSIZE == 0, "old_addr should be page-aligned");
+        debug_assert!(new_pages > 0, "new_pages should be greater than 0");
+
+        let old_end = old_addr + old_pages * arch::PGSIZE;
+        let new_size = new_pages * arch::PGSIZE;
+
+        let (area_base, area_end, check_remap) = {
+            let (&area_base, area) = self.areas.range(..=old_addr).next_back().ok_or(Errno::EFAULT)?;
+            let area = area.lock();
+            (area_base, area_base + area.size(), area.check_remap())
+        };
+        if old_addr >= area_end || old_end > area_end {
+            return Err(Errno::EFAULT);
+        }
+
+        if old_pages == 0 {
+            let mut area = self
+                .areas
+                .get(&area_base)
+                .unwrap()
+                .lock()
+                .duplicate(old_addr, new_pages)?;
+            let new_addr = match target {
+                RemapTarget::InPlace => return Err(Errno::ENOMEM),
+                RemapTarget::MayMove => self.find_mmap_ubase(new_pages).ok_or(Errno::ENOMEM)?,
+                RemapTarget::Fixed(new_addr) => {
+                    self.unmap_area(new_addr, new_pages, pagetable)?;
+                    new_addr
+                }
+            };
+            area.set_ubase(new_addr);
+            area.bind_addrspace(addrspace);
+            self.areas.insert(new_addr, Self::lock_area(area));
+            return Ok(new_addr);
+        }
+
+        if !matches!(target, RemapTarget::Fixed(_)) {
+            if new_pages == old_pages {
+                return Ok(old_addr);
+            }
+            if new_pages < old_pages {
+                self.unmap_area(old_addr + new_size, old_pages - new_pages, pagetable)?;
+                return Ok(old_addr);
+            }
+
+            // Try to grow in place. Never grow into the brk window, whose
+            // layout is owned by `UserBrk`.
+            let extra_pages = new_pages - old_pages;
+            let new_end = old_addr + new_size;
+            if old_end == area_end
+                && check_remap.is_ok()
+                && new_end <= self.max_mmap_addr()
+                && (old_end >= config::USER_BRK_MAX || new_end <= config::USER_BRK_BASE)
+                && !self.is_map_range_overlapped(old_end, extra_pages)
+            {
+                self.areas.get(&area_base).unwrap().lock().grow(extra_pages);
+                return Ok(old_addr);
+            }
+        }
+
+        let new_addr = match target {
+            RemapTarget::InPlace => return Err(Errno::ENOMEM),
+            RemapTarget::MayMove => {
+                check_remap?;
+                self.find_mmap_ubase(new_pages).ok_or(Errno::ENOMEM)?
+            }
+            RemapTarget::Fixed(new_addr) => {
+                check_remap?;
+                new_addr
+            }
+        };
+
+        // Detach [old_addr, old_end) from its area; keep the other parts in place.
+        let mut middle = self.areas.remove(&area_base).unwrap().into_inner();
+        if area_base < old_addr {
+            let left;
+            (left, middle) = middle.split(old_addr);
+            self.areas.insert(area_base, Self::lock_area(left));
+        }
+        if old_end < area_end {
+            let right;
+            (middle, right) = middle.split(old_end);
+            self.areas.insert(old_end, Self::lock_area(right));
+        }
+
+        if let RemapTarget::Fixed(_) = target {
+            // `middle` is detached, so this only replaces whatever occupies
+            // the destination.
+            self.unmap_area(new_addr, new_pages, pagetable)?;
+        }
+
+        if new_pages < old_pages {
+            let mut tail;
+            (middle, tail) = middle.split(old_addr + new_size);
+            self.notify_before_map_change(MapChange {
+                uaddr: tail.ubase(),
+                page_count: tail.page_count(),
+                event: MapChangeEvent::Unmap,
+            });
+            tail.unmap(pagetable);
+        } else if new_pages > old_pages {
+            middle.grow(new_pages - old_pages);
+        }
+
+        self.notify_before_map_change(MapChange {
+            uaddr: old_addr,
+            page_count: core::cmp::min(old_pages, new_pages),
+            event: MapChangeEvent::Remap,
+        });
+        middle.remap(new_addr, pagetable);
+        self.areas.insert(new_addr, Self::lock_area(middle));
+
+        Ok(new_addr)
     }
 
     /// Set permissions for a specific range of pages

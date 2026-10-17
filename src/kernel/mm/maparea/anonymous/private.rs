@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 
 use crate::arch;
 use crate::arch::{PageTable, PageTableTrait};
+use crate::kernel::errno::SysResult;
 use crate::kernel::mm::maparea::nofilemap::{AnonMapFamilyRegistration, FrameState, SwappablePageFrame};
 use crate::kernel::mm::maparea::{Area, MapChange, MapChangeEvent, MapChangeNotifier, MemoryFaultError, PinPageFrame};
 use crate::kernel::mm::swappable::AccessDirty;
@@ -142,6 +143,35 @@ impl PrivateAnonymousArea {
         let uaddr = self.ubase + frame_index * arch::PGSIZE;
         addrspace.mmap_replace_swappable(uaddr, &guard, perm);
         Some(guard.frame().get_page())
+    }
+
+    /// Removes this area's page table entries without releasing its pages.
+    fn invalidate_ptes(&self, pagetable: &SpinLock<PageTable>) {
+        self.family_registration.with_tlb_invalidation_batch(|token| {
+            let mut tlb_cpu_mask = 0;
+            for (frame_index, state) in self.frames.iter() {
+                let page = match state {
+                    FrameState::Allocated(page) | FrameState::Cow(page) => page,
+                };
+                let uaddr = self.ubase + frame_index * arch::PGSIZE;
+                page.begin_tlb_invalidation(token, |frame| {
+                    let mut pagetable = pagetable.lock();
+                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
+                    if access_dirty.is_some() {
+                        tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
+                    }
+                    access_dirty.map(AccessDirty::from)
+                });
+            }
+            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
+            for (_, state) in self.frames.iter() {
+                let page = match state {
+                    FrameState::Allocated(page) | FrameState::Cow(page) => page,
+                };
+                let finished = page.finish_tlb_invalidation(token);
+                debug_assert!(finished);
+            }
+        });
     }
 }
 
@@ -388,32 +418,25 @@ impl Area for PrivateAnonymousArea {
         }
     }
 
-    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
-        self.family_registration.with_tlb_invalidation_batch(|token| {
-            let mut tlb_cpu_mask = 0;
-            for (frame_index, state) in self.frames.iter() {
-                let page = match state {
-                    FrameState::Allocated(page) | FrameState::Cow(page) => page,
-                };
-                let uaddr = self.ubase + frame_index * arch::PGSIZE;
-                page.begin_tlb_invalidation(token, |frame| {
-                    let mut pagetable = pagetable.lock();
-                    let access_dirty = pagetable.munmap_with_check_and_ad(uaddr, frame.get_page());
-                    if access_dirty.is_some() {
-                        tlb_cpu_mask |= pagetable.tlb_cached_cpu_mask();
-                    }
-                    access_dirty.map(AccessDirty::from)
-                });
-            }
-            arch::flush_tlb_cpu_mask(tlb_cpu_mask);
-            for (_, state) in self.frames.iter() {
-                let page = match state {
-                    FrameState::Allocated(page) | FrameState::Cow(page) => page,
-                };
-                assert!(page.finish_tlb_invalidation(token));
-            }
-        });
+    fn check_remap(&self) -> SysResult<()> {
+        Ok(())
+    }
 
+    fn remap(&mut self, new_ubase: usize, pagetable: &SpinLock<PageTable>) {
+        self.invalidate_ptes(pagetable);
+        self.set_ubase(new_ubase);
+    }
+
+    fn grow(&mut self, extra_pages: usize) {
+        self.frames.grow(extra_pages);
+        if self.family_registration.is_bound() {
+            self.family_registration
+                .update(self.ubase, self.page_base, self.frames.len());
+        }
+    }
+
+    fn unmap(&mut self, pagetable: &SpinLock<PageTable>) {
+        self.invalidate_ptes(pagetable);
         self.frames.clear_with(|_, state| {
             let page = match state {
                 FrameState::Allocated(page) | FrameState::Cow(page) => page,

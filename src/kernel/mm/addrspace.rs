@@ -41,6 +41,16 @@ pub enum MmapPlacement {
     FixedNoReplace(usize),
 }
 
+/// Where `mremap` may place a resized mapping.
+pub enum RemapTarget {
+    /// Resize only at the original address.
+    InPlace,
+    /// Resize in place if possible, otherwise move to a free range.
+    MayMove,
+    /// Move to the given address, replacing any existing mappings there.
+    Fixed(usize),
+}
+
 impl AddrSpace {
     pub fn new() -> Arc<Self> {
         Self::new_with_pagetable(create_pagetable())
@@ -128,6 +138,17 @@ impl AddrSpace {
         map_manager.unmap_area(uaddr, page_count, &self.pagetable)?;
 
         Ok(())
+    }
+
+    pub fn remap_area(
+        self: &Arc<Self>,
+        old_addr: usize,
+        old_pages: usize,
+        new_pages: usize,
+        target: RemapTarget,
+    ) -> SysResult<usize> {
+        let mut map_manager = self.map_manager.write();
+        map_manager.remap_area(old_addr, old_pages, new_pages, target, &self.pagetable, self)
     }
 
     pub fn set_area_perm(&self, uaddr: usize, page_count: usize, perm: MapPerm) -> Result<(), Errno> {
