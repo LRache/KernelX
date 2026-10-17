@@ -1,3 +1,4 @@
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
@@ -17,9 +18,7 @@ use crate::kernel::mm::{FixedContiguousPhysPageFrame, PhysPageFrame, page};
 use crate::kernel::uapi::{FileStat, Uid};
 use crate::klib::{SleepLock, SleepRwLockOnStack, SpinLock};
 
-use super::ondisk::{
-    DirEntry2, Ext4DirEntryFileType, Ext4InodeFlags, debug_errno, lookup_extent_lblk, lookup_lblk, ret_errno,
-};
+use super::ondisk::{DirEntry2, Ext4DirEntryFileType, Ext4InodeFlags, debug_errno, lookup_lblk, ret_errno};
 use super::{Context, Ext4Inode, ExtentLeaf};
 
 const S_IFMT: u16 = 0xF000;
@@ -27,7 +26,7 @@ const S_IFDIR: u16 = 0x4000;
 const S_IFREG: u16 = 0x8000;
 const EXT_INIT_MAX_LEN: u16 = 32768;
 const MAX_BULK_ALLOC_BLOCKS: usize = 128;
-const WRITEBACK_BATCH_PAGES: usize = 4;
+const WRITEBACK_BATCH_PAGES: usize = 16;
 
 fn now() -> Duration {
     kclock::now().unwrap_or(Duration::ZERO)
@@ -123,11 +122,38 @@ impl InodePageCache {
     }
 }
 
+/// Directory entries in on-disk order, indexed by name for lookups.
+struct DirCache {
+    entries: Vec<DirResult>,
+    names: BTreeMap<String, u32>,
+}
+
+impl DirCache {
+    fn new(entries: Vec<DirResult>) -> Self {
+        let names = entries.iter().map(|entry| (entry.name.clone(), entry.ino)).collect();
+        Self { entries, names }
+    }
+
+    fn insert(&mut self, entry: DirResult) {
+        self.remove(&entry.name);
+        self.names.insert(entry.name.clone(), entry.ino);
+        self.entries.push(entry);
+    }
+
+    fn remove(&mut self, name: &str) {
+        if self.names.remove(name).is_some()
+            && let Some(pos) = self.entries.iter().position(|entry| entry.name == name)
+        {
+            self.entries.remove(pos);
+        }
+    }
+}
+
 pub struct Inode {
     context: Weak<SleepRwLockOnStack<Context>>,
     inode: SleepLock<Ext4Inode>,
     page_cache: SleepLock<InodePageCache>,
-    dents_cache: SpinLock<Option<Vec<DirResult>>>,
+    dents_cache: SpinLock<Option<DirCache>>,
     metadata_dirty: AtomicBool,
     deleted: AtomicBool,
 }
@@ -159,44 +185,45 @@ impl Inode {
         *self.dents_cache.lock() = None;
     }
 
-    fn dir_results(&self, context: &Context, inode: &Ext4Inode) -> SysResult<Vec<DirResult>> {
-        if let Some(entries) = self.dents_cache.lock().as_ref() {
-            return Ok(entries.clone());
+    /// Runs `f` on the cached directory entries, loading them first if needed.
+    /// Callers hold the context lock, so the directory cannot change meanwhile.
+    fn with_dir_cache<R>(
+        &self,
+        context: &Context,
+        inode: &mut Ext4Inode,
+        f: impl FnOnce(&DirCache) -> R,
+    ) -> SysResult<R> {
+        if let Some(cache) = self.dents_cache.lock().as_ref() {
+            return Ok(f(cache));
         }
 
-        let entries = read_dir_results_from_disk(context, inode)?;
-        *self.dents_cache.lock() = Some(entries.clone());
-        Ok(entries)
-    }
-
-    fn dir_result_at(&self, context: &Context, inode: &Ext4Inode, index: usize) -> SysResult<Option<DirResult>> {
-        if let Some(entries) = self.dents_cache.lock().as_ref() {
-            return Ok(entries.get(index).cloned());
-        }
-
-        let entries = read_dir_results_from_disk(context, inode)?;
-        let result = entries.get(index).cloned();
-        *self.dents_cache.lock() = Some(entries);
+        let cache = DirCache::new(read_dir_results_from_disk(context, inode)?);
+        let result = f(&cache);
+        *self.dents_cache.lock() = Some(cache);
         Ok(result)
     }
 
-    fn lookup_dir_entry(&self, context: &Context, inode: &Ext4Inode, needle: &[u8]) -> SysResult<u32> {
-        if let Some(entries) = self.dents_cache.lock().as_ref() {
-            return entries
-                .iter()
-                .find(|entry| entry.name.as_bytes() == needle)
-                .map(|entry| entry.ino)
-                .ok_or(Errno::ENOENT);
-        }
+    fn lookup_dir_entry(&self, context: &Context, inode: &mut Ext4Inode, needle: &[u8]) -> SysResult<u32> {
+        let needle = core::str::from_utf8(needle).map_err(|_| Errno::ENOENT)?;
+        self.with_dir_cache(context, inode, |cache| cache.names.get(needle).copied())?
+            .ok_or(Errno::ENOENT)
+    }
 
-        let entries = read_dir_results_from_disk(context, inode)?;
-        let result = entries
-            .iter()
-            .find(|entry| entry.name.as_bytes() == needle)
-            .map(|entry| entry.ino)
-            .ok_or(Errno::ENOENT);
-        *self.dents_cache.lock() = Some(entries);
-        result
+    fn dir_cache_insert(&self, name: &str, ino: u32, file_type: Ext4DirEntryFileType) {
+        let entry = DirResult {
+            name: String::from(name),
+            ino,
+            file_type: ext4_file_type(file_type.as_u8()),
+        };
+        if let Some(cache) = self.dents_cache.lock().as_mut() {
+            cache.insert(entry);
+        }
+    }
+
+    fn dir_cache_remove(&self, name: &str) {
+        if let Some(cache) = self.dents_cache.lock().as_mut() {
+            cache.remove(name);
+        }
     }
 
     fn mark_deleted(&self, inode: &Ext4Inode) {
@@ -245,7 +272,7 @@ impl Inode {
             .ok_or_else(|| debug_errno("writeat: offset+len overflow", Errno::EINVAL))
     }
 
-    fn read_raw_at_locked(context: &Context, inode: &Ext4Inode, buf: &mut [u8], offset: usize) -> SysResult<usize> {
+    fn read_raw_at_locked(context: &Context, inode: &mut Ext4Inode, buf: &mut [u8], offset: usize) -> SysResult<usize> {
         let file_size = inode.i_size as usize;
         if offset >= file_size {
             return Ok(0);
@@ -270,7 +297,7 @@ impl Inode {
                 let chunk = core::cmp::min(to_read - copied, block_size - in_block);
                 let dst = &mut buf[copied..copied + chunk];
 
-                match lookup_lblk(context, inode, lblk)? {
+                match lookup_lblk(context, &*inode, lblk)? {
                     Some(pblk) => {
                         let data = context.read_fs_block(pblk)?;
                         dst.copy_from_slice(&data[in_block..in_block + chunk]);
@@ -284,11 +311,11 @@ impl Inode {
         }
 
         let block_size = context.block_size as usize;
-        let ino = inode.ino;
-        let (_, extents, _) = context.extent_tree_snapshot(ino, inode)?;
+        let map = context.extent_map(inode)?;
+        let extents = &map.leaves;
 
         let mut copied = 0;
-        let mut extent_idx = 0usize;
+        let mut extent_idx = first_extent_index(extents, offset / block_size);
         while copied < to_read {
             let file_off = offset + copied;
             let lblk = u32::try_from(file_off / block_size)
@@ -296,9 +323,9 @@ impl Inode {
             let in_block = file_off % block_size;
             let remaining = to_read - copied;
 
-            advance_extent_cursor(&extents, &mut extent_idx, lblk);
+            advance_extent_cursor(extents, &mut extent_idx, lblk);
             if in_block == 0 {
-                if let Some(extent) = mapped_extent_for_read(&extents, extent_idx, lblk) {
+                if let Some(extent) = mapped_extent_for_read(extents, extent_idx, lblk) {
                     let full_blocks = full_block_run_len(extent, lblk, remaining, block_size);
                     if full_blocks != 0 {
                         let start_pblk = extent.ee_start + (lblk - extent.ee_block) as u64;
@@ -308,7 +335,7 @@ impl Inode {
                         continue;
                     }
                 } else {
-                    let hole_blocks = hole_run_blocks(&extents, extent_idx, lblk);
+                    let hole_blocks = hole_run_blocks(extents, extent_idx, lblk);
                     let full_blocks = (remaining / block_size).min(hole_blocks);
                     if full_blocks != 0 {
                         let byte_len = full_blocks * block_size;
@@ -321,7 +348,7 @@ impl Inode {
 
             let chunk = core::cmp::min(remaining, block_size - in_block);
             let dst = &mut buf[copied..copied + chunk];
-            match mapped_read_pblk(&extents, extent_idx, lblk) {
+            match mapped_read_pblk(extents, extent_idx, lblk) {
                 Some(pblk) => {
                     let data = context.read_fs_block(pblk)?;
                     dst.copy_from_slice(&data[in_block..in_block + chunk]);
@@ -356,12 +383,11 @@ impl Inode {
         }
         Self::ensure_extent_data_supported(inode, op)?;
         let block_size = context.block_size as usize;
-        let ino = inode.ino;
-        let (tree_generation, mut extents, old_extent_blocks) = context.extent_tree_snapshot(ino, inode)?;
-        let old_extents = extents.clone();
+        let old_map = context.extent_map(inode)?;
+        let mut extents = old_map.leaves.clone();
 
         let mut written = 0;
-        let mut extent_idx = 0usize;
+        let mut extent_idx = first_extent_index(&extents, offset / block_size);
         let mut extents_dirty = false;
         let mut metadata_dirty = false;
         let mut newly_allocated = Vec::new();
@@ -461,14 +487,14 @@ impl Inode {
             metadata_dirty = true;
         }
         if extents_dirty {
-            if let Err(err) = context.replace_extent_tree(ino, inode, tree_generation, &extents, &old_extent_blocks) {
+            if let Err(err) = context.replace_extent_tree(inode, &old_map, extents) {
                 for pblk in newly_allocated {
                     let _ = context.free_block(pblk);
                 }
                 return Err(err);
             }
-            context.update_i_blocks_from_extent_delta(inode, &old_extents, old_extent_blocks.len(), &extents)?;
-            metadata_dirty = true;
+            // replace_extent_tree already wrote the inode, including i_size.
+            metadata_dirty = false;
         }
         if metadata_dirty {
             context.write_inode(inode)?;
@@ -495,10 +521,10 @@ impl Inode {
 
         page_cache.acquire_cached_page(file_page_index, || {
             let context = context.read();
-            let inode = self.inode.lock();
+            let mut inode = self.inode.lock();
             let len = core::cmp::min(file_size - page_offset, arch::PGSIZE);
             let frame = PhysPageFrame::alloc_zeroed();
-            let read_len = Self::read_raw_at_locked(&context, &inode, &mut frame.slice()[..len], page_offset)?;
+            let read_len = Self::read_raw_at_locked(&context, &mut inode, &mut frame.slice()[..len], page_offset)?;
             if read_len < len {
                 frame.slice()[read_len..len].fill(0);
             }
@@ -677,7 +703,7 @@ impl Inode {
                     // insert_extent_1blk and init_dir_block cannot expose
                     // stale data from a previously freed block.
                     context_lock.zero_fs_block(pblk)?;
-                    context_lock.insert_extent_1blk(child_ino, &mut child, 0, pblk)?;
+                    context_lock.insert_extent_1blk(&mut child, 0, pblk)?;
                     context_lock.init_dir_block(pblk, child_ino, child.i_generation, parent.ino)?;
                     child.i_size = context_lock.block_size as u64;
                     parent.i_links_count = parent
@@ -704,7 +730,7 @@ impl Inode {
 
         match result {
             Ok(inode) => {
-                self.invalidate_dir_cache();
+                self.dir_cache_insert(name, child_ino, file_type);
                 Ok(inode)
             }
             Err(err) => {
@@ -734,7 +760,7 @@ impl Inode {
         let target = target.as_bytes();
         if target.len() <= inode.i_block().len() {
             if inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-                context.remove_extent_range(inode.ino, &mut inode, 0, u32::MAX)?;
+                context.remove_extent_range(&mut inode, 0, u32::MAX)?;
             }
             set_fast_symlink(&mut inode, target);
             let time = now();
@@ -745,7 +771,7 @@ impl Inode {
         }
 
         if inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-            context.remove_extent_range(inode.ino, &mut inode, 0, u32::MAX)?;
+            context.remove_extent_range(&mut inode, 0, u32::MAX)?;
         } else {
             inode.i_flags.insert(Ext4InodeFlags::EXTENTS);
             context.init_empty_extent_root(&mut inode)?;
@@ -791,9 +817,9 @@ impl InodeOps for Inode {
             .ok_or_else(|| debug_errno("readat: context has been dropped", Errno::EIO))?;
         let file_size = {
             let context = context.read();
-            let inode = self.inode.lock();
+            let mut inode = self.inode.lock();
             if direct || !Self::is_cacheable_file(&inode) {
-                return Self::read_raw_at_locked(&context, &inode, buf, offset);
+                return Self::read_raw_at_locked(&context, &mut inode, buf, offset);
             }
             usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?
         };
@@ -949,22 +975,19 @@ impl InodeOps for Inode {
         }
 
         let block_size = context.block_size as u64;
-        let ino = inode.ino;
-        let generation = inode.i_generation;
 
         if new_size < old_size {
             let first_drop_u64 = new_size.div_ceil(block_size);
             let first_drop_lblk = u32::try_from(first_drop_u64)
                 .map_err(|_| debug_errno("truncate: first drop lblk overflow", Errno::EFBIG))?;
 
-            context.remove_extent_range(ino, &mut inode, first_drop_lblk, u32::MAX)?;
+            context.remove_extent_range(&mut inode, first_drop_lblk, u32::MAX)?;
 
             let tail_off = (new_size % block_size) as usize;
             if tail_off != 0 {
                 let kept_lblk = u32::try_from(new_size / block_size)
                     .map_err(|_| debug_errno("truncate: kept lblk overflow", Errno::EFBIG))?;
-                let root = context.parse_extent_root(&inode)?;
-                if let Some(pblk) = lookup_extent_lblk(&context, root, ino, generation, kept_lblk)? {
+                if let Some(pblk) = context.extent_map(&mut inode)?.lookup(kept_lblk, false) {
                     let mut data = context.read_fs_block(pblk)?;
                     data[tail_off..].fill(0);
                     context.write_fs_block(pblk, &data)?;
@@ -1040,7 +1063,7 @@ impl InodeOps for Inode {
 
         ensure_dir_writable(&parent, "unlink")?;
 
-        let child_ino = lookup_name_in_dir(&context, &parent, name_bytes)?;
+        let child_ino = lookup_name_in_dir(&context, &mut parent, name_bytes)?;
         let mut child = context.read_inode(child_ino)?;
         let mode_type = child.i_mode & S_IFMT;
 
@@ -1064,7 +1087,7 @@ impl InodeOps for Inode {
                 return Err(err);
             }
 
-            self.invalidate_dir_cache();
+            self.dir_cache_remove(name);
             return Ok(());
         }
 
@@ -1072,9 +1095,9 @@ impl InodeOps for Inode {
 
         let fsno = context.fsno;
         context.remove_dirent(parent.ino, &mut parent, name_bytes)?;
+        self.dir_cache_remove(name);
         destroy_unlinked_inode(&context, &mut child, false)?;
         mark_cached_inode_deleted(fsno, &child);
-        self.invalidate_dir_cache();
         drop(parent);
         drop(context);
         evict_inode(fsno, child_ino);
@@ -1099,24 +1122,24 @@ impl InodeOps for Inode {
 
         ensure_dir_writable(&parent, "rmdir")?;
 
-        let child_ino = lookup_name_in_dir(&context, &parent, name_bytes)?;
+        let child_ino = lookup_name_in_dir(&context, &mut parent, name_bytes)?;
         let mut child = context.read_inode(child_ino)?;
         ensure_rmdir_cleanup_supported(&child)?;
 
-        if !is_dir_empty(&context, &child)? {
+        if !is_dir_empty(&context, &mut child)? {
             return ret_errno("rmdir: directory is not empty", Errno::ENOTEMPTY);
         }
 
         let old_parent_links = parent.i_links_count;
         let fsno = context.fsno;
         context.remove_dirent(parent.ino, &mut parent, name_bytes)?;
+        self.dir_cache_remove(name);
         parent.i_links_count = old_parent_links
             .checked_sub(1)
             .ok_or_else(|| debug_errno("rmdir: parent link count underflow", Errno::EIO))?;
         context.write_inode(&mut parent)?;
         destroy_unlinked_inode(&context, &mut child, true)?;
         mark_cached_inode_deleted(fsno, &child);
-        self.invalidate_dir_cache();
         drop(parent);
         drop(context);
         evict_inode(fsno, child_ino);
@@ -1183,13 +1206,13 @@ impl InodeOps for Inode {
             return Err(err);
         }
 
+        self.dir_cache_insert(name, child_ino, file_type);
         if let Err(err) = context.write_inode(&mut child) {
             child.i_links_count = old_links;
             child.i_ctime = old_ctime;
             return Err(err);
         }
 
-        self.invalidate_dir_cache();
         Ok(())
     }
 
@@ -1240,7 +1263,7 @@ impl InodeOps for Inode {
             let mut parent = self.inode.lock();
             ensure_dir_writable(&parent, "rename")?;
 
-            let src_ino = lookup_name_in_dir(&context, &parent, old_name_bytes)?;
+            let src_ino = lookup_name_in_dir(&context, &mut parent, old_name_bytes)?;
             if old_name == new_name {
                 return Ok(());
             }
@@ -1252,7 +1275,7 @@ impl InodeOps for Inode {
             let file_type = dirent_file_type(src_inode.i_mode)?;
             fsno = context.fsno;
 
-            match lookup_name_in_dir(&context, &parent, new_name_bytes) {
+            match lookup_name_in_dir(&context, &mut parent, new_name_bytes) {
                 Ok(target_ino) if target_ino == src_ino => return Ok(()),
                 Ok(target_ino) => {
                     target_to_evict =
@@ -1268,10 +1291,11 @@ impl InodeOps for Inode {
             src_inode.set_ctime(&time);
 
             context.insert_dirent(parent.ino, &mut parent, new_name_bytes, src_ino, file_type)?;
+            self.dir_cache_insert(new_name, src_ino, file_type);
             context.remove_dirent(parent.ino, &mut parent, old_name_bytes)?;
+            self.dir_cache_remove(old_name);
             context.write_inode(&mut parent)?;
             context.write_inode(&mut src_inode)?;
-            self.invalidate_dir_cache();
             drop(parent);
             drop(context);
             if let Some(ino) = target_to_evict {
@@ -1291,7 +1315,7 @@ impl InodeOps for Inode {
         ensure_dir_writable(&old_parent, "rename")?;
         ensure_dir_writable(&new_parent_inode, "rename")?;
 
-        let src_ino = lookup_name_in_dir(&context, &old_parent, old_name_bytes)?;
+        let src_ino = lookup_name_in_dir(&context, &mut old_parent, old_name_bytes)?;
         if src_ino != source_ino {
             return ret_errno("rename: source inode changed", Errno::ENOENT);
         }
@@ -1305,7 +1329,7 @@ impl InodeOps for Inode {
 
         let fsno = context.fsno;
         let mut target_to_evict = None;
-        match lookup_name_in_dir(&context, &new_parent_inode, new_name_bytes) {
+        match lookup_name_in_dir(&context, &mut new_parent_inode, new_name_bytes) {
             Ok(target_ino) if target_ino == src_ino => return Ok(()),
             Ok(target_ino) => {
                 target_to_evict = remove_rename_target(
@@ -1336,7 +1360,7 @@ impl InodeOps for Inode {
         )?;
 
         if src_mode_type == S_IFDIR {
-            context.patch_dotdot(src_ino, &src_inode, new_parent_inode.ino)?;
+            context.patch_dotdot(src_ino, &mut src_inode, new_parent_inode.ino)?;
             old_parent.i_links_count = old_parent
                 .i_links_count
                 .checked_sub(1)
@@ -1353,8 +1377,8 @@ impl InodeOps for Inode {
         context.write_inode(&mut old_parent)?;
         context.write_inode(&mut new_parent_inode)?;
         context.write_inode(&mut src_inode)?;
-        self.invalidate_dir_cache();
-        new_parent.invalidate_dir_cache();
+        self.dir_cache_remove(old_name);
+        new_parent.dir_cache_insert(new_name, src_ino, file_type);
         if src_mode_type == S_IFDIR {
             invalidate_cached_dir(context.fsno, src_ino);
         }
@@ -1373,11 +1397,11 @@ impl InodeOps for Inode {
             .upgrade()
             .ok_or_else(|| debug_errno("get_dent: context has been dropped", Errno::EIO))?;
         let context = context.read();
-        let inode = self.inode.lock();
+        let mut inode = self.inode.lock();
 
         ensure_dir_readable(&inode)?;
         Ok(self
-            .dir_result_at(&context, &inode, index)?
+            .with_dir_cache(&context, &mut inode, |cache| cache.entries.get(index).cloned())?
             .map(|entry| (entry, index + 1)))
     }
 
@@ -1387,7 +1411,7 @@ impl InodeOps for Inode {
             .upgrade()
             .ok_or_else(|| debug_errno("lookup: context has been dropped", Errno::EIO))?;
         let context = context.read();
-        let inode = self.inode.lock();
+        let mut inode = self.inode.lock();
 
         ensure_dir_readable(&inode)?;
 
@@ -1396,7 +1420,7 @@ impl InodeOps for Inode {
             return ret_errno("lookup: name is empty or too long", Errno::ENOENT);
         }
 
-        self.lookup_dir_entry(&context, &inode, needle)
+        self.lookup_dir_entry(&context, &mut inode, needle)
     }
 
     fn symlink(&self, target: &str) -> SysResult<()> {
@@ -1409,7 +1433,7 @@ impl InodeOps for Inode {
             .upgrade()
             .ok_or_else(|| debug_errno("readlink: context has been dropped", Errno::EIO))?;
         let context = context.read();
-        let inode = self.inode.lock();
+        let mut inode = self.inode.lock();
 
         if (inode.i_mode & S_IFMT) != Mode::S_IFLNK.bits() as u16 {
             return Ok(None);
@@ -1421,7 +1445,7 @@ impl InodeOps for Inode {
             return Ok(Some(len));
         }
 
-        let read_len = Self::read_raw_at_locked(&context, &inode, buf, 0)?;
+        let read_len = Self::read_raw_at_locked(&context, &mut inode, buf, 0)?;
         Ok(Some(read_len))
     }
 
@@ -1449,7 +1473,7 @@ impl InodeOps for Inode {
         if self.deleted.load(Ordering::Acquire) {
             return ret_errno("load_raw_page: inode has been deleted", Errno::EIO);
         }
-        let inode = self.inode.lock();
+        let mut inode = self.inode.lock();
 
         let file_size = usize::try_from(inode.i_size).map_err(|_| Errno::EFBIG)?;
         if offset >= file_size {
@@ -1457,7 +1481,7 @@ impl InodeOps for Inode {
         }
 
         let len = core::cmp::min(file_size - offset, arch::PGSIZE);
-        let read_len = Self::read_raw_at_locked(&context, &inode, &mut frame.slice()[..len], offset)?;
+        let read_len = Self::read_raw_at_locked(&context, &mut inode, &mut frame.slice()[..len], offset)?;
         if read_len < len {
             frame.slice()[read_len..len].fill(0);
         }
@@ -1588,49 +1612,36 @@ impl Drop for Inode {
     }
 }
 
-fn read_dir_results_from_disk(context: &Context, inode: &Ext4Inode) -> SysResult<Vec<DirResult>> {
+fn read_dir_results_from_disk(context: &Context, inode: &mut Ext4Inode) -> SysResult<Vec<DirResult>> {
     let block_size = context.block_size as u64;
     let total_blocks = u32::try_from(inode.i_size.div_ceil(block_size))
         .map_err(|_| debug_errno("read_dir_results_from_disk: logical block count overflow", Errno::EFBIG))?;
     let ino = inode.ino;
     let generation = inode.i_generation;
+    let map = if inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
+        Some(context.extent_map(inode)?)
+    } else {
+        None
+    };
     let mut results = Vec::new();
 
-    if inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-        let root = context.parse_extent_root(inode)?;
-        for lblk in 0..total_blocks {
-            let Some(pblk) = lookup_extent_lblk(context, root.clone(), ino, generation, lblk)? else {
-                continue;
-            };
-            let dir_block = context.read_dir_block(ino, generation, pblk)?;
-            for entry in &dir_block.entries {
-                if entry.inode != 0 {
-                    results.push(to_dir_result(entry));
-                }
-            }
-        }
-    } else {
-        for lblk in 0..total_blocks {
-            let Some(pblk) = lookup_lblk(context, inode, lblk)? else {
-                continue;
-            };
-            let dir_block = context.read_dir_block(ino, generation, pblk)?;
-            for entry in &dir_block.entries {
-                if entry.inode != 0 {
-                    results.push(to_dir_result(entry));
-                }
+    for lblk in 0..total_blocks {
+        let pblk = match &map {
+            Some(map) => map.lookup(lblk, false),
+            None => lookup_lblk(context, inode, lblk)?,
+        };
+        let Some(pblk) = pblk else {
+            continue;
+        };
+        let dir_block = context.read_dir_block(ino, generation, pblk)?;
+        for entry in &dir_block.entries {
+            if entry.inode != 0 {
+                results.push(to_dir_result(entry));
             }
         }
     }
 
     Ok(results)
-}
-
-fn cached_or_load_dir_results(context: &Context, inode: &Ext4Inode) -> SysResult<Vec<DirResult>> {
-    if let Some(cached) = cached_ext4_inode(context.fsno, inode.ino) {
-        return cached.dir_results(context, inode);
-    }
-    read_dir_results_from_disk(context, inode)
 }
 
 fn invalidate_cached_dir(fsno: u32, ino: u32) {
@@ -1650,6 +1661,11 @@ fn advance_extent_cursor(extents: &[ExtentLeaf], extent_idx: &mut usize, lblk: u
         }
         *extent_idx += 1;
     }
+}
+
+/// Index of the first extent that may contain `lblk` or lie after it.
+fn first_extent_index(extents: &[ExtentLeaf], lblk: usize) -> usize {
+    extents.partition_point(|extent| extent_end_lblk(*extent).is_some_and(|end| (end as usize) <= lblk))
 }
 
 fn extent_len_blocks(raw: u16) -> u32 {
@@ -1823,7 +1839,7 @@ fn ensure_dir_writable(inode: &Ext4Inode, op: &str) -> SysResult<()> {
     Ok(())
 }
 
-fn lookup_name_in_dir(context: &Context, inode: &Ext4Inode, needle: &[u8]) -> SysResult<u32> {
+fn lookup_name_in_dir(context: &Context, inode: &mut Ext4Inode, needle: &[u8]) -> SysResult<u32> {
     if let Some(cached) = cached_ext4_inode(context.fsno, inode.ino) {
         return cached.lookup_dir_entry(context, inode, needle);
     }
@@ -1899,11 +1915,13 @@ fn ensure_rmdir_cleanup_supported(inode: &Ext4Inode) -> SysResult<()> {
     ensure_dir_writable(inode, "rmdir")
 }
 
-fn is_dir_empty(context: &Context, inode: &Ext4Inode) -> SysResult<bool> {
+fn is_dir_empty(context: &Context, inode: &mut Ext4Inode) -> SysResult<bool> {
     ensure_dir_readable(inode)?;
-    Ok(cached_or_load_dir_results(context, inode)?
-        .into_iter()
-        .all(|entry| entry.name.as_bytes() == b"." || entry.name.as_bytes() == b".."))
+    let is_empty = |entries: &[DirResult]| entries.iter().all(|entry| entry.name == "." || entry.name == "..");
+    if let Some(cached) = cached_ext4_inode(context.fsno, inode.ino) {
+        return cached.with_dir_cache(context, inode, |cache| is_empty(&cache.entries));
+    }
+    Ok(is_empty(&read_dir_results_from_disk(context, inode)?))
 }
 
 fn check_rename_target_type(source_mode_type: u16, target_mode_type: u16) -> SysResult<()> {
@@ -1933,7 +1951,7 @@ fn remove_rename_target(
 
     if target_mode_type == S_IFDIR {
         ensure_rmdir_cleanup_supported(&target)?;
-        if !is_dir_empty(context, &target)? {
+        if !is_dir_empty(context, &mut target)? {
             return ret_errno("rename: target directory is not empty", Errno::ENOTEMPTY);
         }
 
@@ -1975,7 +1993,7 @@ fn remove_rename_target(
 
 fn destroy_unlinked_inode(context: &Context, inode: &mut Ext4Inode, was_dir: bool) -> SysResult<()> {
     if inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-        context.remove_extent_range(inode.ino, inode, 0, u32::MAX)?;
+        context.remove_extent_range(inode, 0, u32::MAX)?;
         inode.i_size = 0;
     } else {
         inode.i_size = 0;

@@ -1,6 +1,8 @@
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp;
+use core::sync::atomic::Ordering;
 
 use crate::kernel::errno::{Errno, SysResult};
 use crate::klib::crc::crc32c_update;
@@ -9,7 +11,6 @@ use super::*;
 
 const ROOT_EXTENT_MAX: u16 = ((INODE_BLOCK_ARRAY_SIZE - EXTENT_HEADER_SIZE) / EXTENT_ENTRY_SIZE) as u16;
 const DEFAULT_EXTRA_ISIZE: u16 = 32;
-const EXT_INIT_MAX_LEN: u16 = 32768;
 const DX_ROOT_INFO_OFF: usize = 24;
 const DX_ROOT_ENTRY_OFF: usize = 32;
 const DX_NODE_ENTRY_OFF: usize = 8;
@@ -94,7 +95,7 @@ impl Context {
 
         let hint = self
             .alloc_hint_group
-            .load(core::sync::atomic::Ordering::Relaxed)
+            .load(Ordering::Relaxed)
             .min(self.groups_count.saturating_sub(1));
         for offset in 0..self.groups_count {
             let group = hint.wrapping_add(offset) % self.groups_count;
@@ -141,8 +142,7 @@ impl Context {
                 self.write_group_desc(group, &mut gd)?;
             }
             self.dec_superblock_free_blocks(blocks.len() as u64)?;
-            self.alloc_hint_group
-                .store(group, core::sync::atomic::Ordering::Relaxed);
+            self.alloc_hint_group.store(group, Ordering::Relaxed);
             return Ok(blocks);
         }
 
@@ -184,8 +184,8 @@ impl Context {
 
         let total = u64::try_from(blocks.len())
             .map_err(|_| debug_errno("free_blocks_by_group: block count does not fit u64", Errno::EIO))?;
-        self.read_superblock()?
-            .free_blocks_count()?
+        self.free_blocks_count
+            .load(Ordering::Relaxed)
             .checked_add(total)
             .ok_or_else(|| {
                 debug_errno(
@@ -255,7 +255,12 @@ impl Context {
     }
 
     pub fn alloc_inode(&self, is_dir: bool) -> SysResult<u32> {
-        for group in 0..self.groups_count {
+        let hint = self
+            .alloc_inode_hint_group
+            .load(Ordering::Relaxed)
+            .min(self.groups_count.saturating_sub(1));
+        for offset in 0..self.groups_count {
+            let group = hint.wrapping_add(offset) % self.groups_count;
             let mut gd = self.read_group_desc(group)?;
             if gd.free_inodes_count == 0 {
                 continue;
@@ -290,6 +295,7 @@ impl Context {
                     .and_then(|v| v.checked_add(1))
                     .ok_or_else(|| debug_errno("alloc_inode: inode number overflow", Errno::EINVAL))?;
                 self.zero_inode_record(ino)?;
+                self.alloc_inode_hint_group.store(group, Ordering::Relaxed);
                 return Ok(ino);
             }
         }
@@ -326,6 +332,7 @@ impl Context {
                 .ok_or_else(|| debug_errno("free_inode_bit: used_dirs_count underflow", Errno::EIO))?;
         }
         self.write_group_desc(group, &mut gd)?;
+        self.alloc_inode_hint_group.fetch_min(group, Ordering::Relaxed);
         self.inc_superblock_free_inodes()
     }
 
@@ -361,6 +368,7 @@ impl Context {
             i_generation: 0,
             i_file_acl: 0,
             i_extra_isize: self.default_extra_isize(),
+            extent_map: None,
         };
         self.init_empty_extent_root(&mut inode)?;
         Ok(inode)
@@ -376,118 +384,64 @@ impl Context {
         put_u32_le(i_block, 8, 0)
     }
 
-    pub fn insert_extent_1blk(&self, ino: u32, inode: &mut Ext4Inode, lblk: u32, pblk: u64) -> SysResult<()> {
+    /// Returns the decoded extent tree of `inode`, reading the external
+    /// extent blocks only when `i_block` changed since the last call.
+    pub fn extent_map(&self, inode: &mut Ext4Inode) -> SysResult<Arc<ExtentMap>> {
         if !inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-            return ret_errno("insert_extent_1blk: inode does not use extents", Errno::EOPNOTSUPP);
+            return ret_errno("extent_map: inode does not use extents", Errno::EOPNOTSUPP);
+        }
+        if let Some(map) = &inode.extent_map {
+            return Ok(map.clone());
         }
 
         let root = self.parse_extent_root(inode)?;
-        let tree_generation = root.header.eh_generation;
-        let mut extents = Vec::new();
-        let mut old_extent_blocks = Vec::new();
-        self.collect_extent_leaves(ino, inode.i_generation, &root, &mut extents, &mut old_extent_blocks)?;
-        let old_extents = extents.clone();
-
-        insert_extent_leaf(&mut extents, lblk, pblk)?;
-        self.rebuild_extent_tree(ino, inode, tree_generation, &extents, &old_extent_blocks)?;
-        self.update_i_blocks_from_extent_delta(inode, &old_extents, old_extent_blocks.len(), &extents)
+        let mut map = ExtentMap {
+            tree_generation: root.header.eh_generation,
+            leaves: Vec::new(),
+            nodes: Vec::new(),
+        };
+        self.collect_extent_nodes(inode.ino, inode.i_generation, &root, &mut map)?;
+        let map = Arc::new(map);
+        inode.extent_map = Some(map.clone());
+        Ok(map)
     }
 
-    pub fn extent_tree_snapshot(&self, ino: u32, inode: &Ext4Inode) -> SysResult<(u32, Vec<ExtentLeaf>, Vec<u64>)> {
-        if !inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-            return ret_errno("extent_tree_snapshot: inode does not use extents", Errno::EOPNOTSUPP);
-        }
-
-        let root = self.parse_extent_root(inode)?;
-        let tree_generation = root.header.eh_generation;
-        let mut extents = Vec::new();
-        let mut old_extent_blocks = Vec::new();
-        self.collect_extent_leaves(ino, inode.i_generation, &root, &mut extents, &mut old_extent_blocks)?;
-        Ok((tree_generation, extents, old_extent_blocks))
-    }
-
-    pub fn replace_extent_tree(
-        &self,
-        ino: u32,
-        inode: &mut Ext4Inode,
-        tree_generation: u32,
-        extents: &[ExtentLeaf],
-        old_extent_blocks: &[u64],
-    ) -> SysResult<()> {
-        self.rebuild_extent_tree(ino, inode, tree_generation, extents, old_extent_blocks)
+    pub fn insert_extent_1blk(&self, inode: &mut Ext4Inode, lblk: u32, pblk: u64) -> SysResult<()> {
+        let old = self.extent_map(inode)?;
+        let mut leaves = old.leaves.clone();
+        insert_extent_leaf(&mut leaves, lblk, pblk)?;
+        self.replace_extent_tree(inode, &old, leaves)
     }
 
     pub fn insert_extent_mapping(&self, extents: &mut Vec<ExtentLeaf>, lblk: u32, pblk: u64) -> SysResult<()> {
         insert_extent_leaf(extents, lblk, pblk)
     }
 
-    pub fn update_i_blocks_from_extent_delta(
-        &self,
-        inode: &mut Ext4Inode,
-        old_extents: &[ExtentLeaf],
-        old_external_extent_blocks: usize,
-        new_extents: &[ExtentLeaf],
-    ) -> SysResult<()> {
-        if !inode.i_flags.contains(Ext4InodeFlags::EXTENTS) {
-            inode.i_blocks = 0;
-            return Ok(());
-        }
-
-        let old_fs_blocks = extent_data_blocks(old_extents)?
-            .checked_add(old_external_extent_blocks as u64)
-            .ok_or_else(|| {
-                debug_errno(
-                    "update_i_blocks_from_extent_delta: old fs block count overflow",
-                    Errno::EINVAL,
-                )
-            })?;
-        let new_external_extent_blocks = self.external_extent_block_count_for_extent_count(new_extents.len())?;
-        let new_fs_blocks = extent_data_blocks(new_extents)?
-            .checked_add(new_external_extent_blocks)
-            .ok_or_else(|| {
-                debug_errno(
-                    "update_i_blocks_from_extent_delta: new fs block count overflow",
-                    Errno::EINVAL,
-                )
-            })?;
+    fn update_i_blocks(&self, inode: &mut Ext4Inode, old: &ExtentMap, new: &ExtentMap) -> SysResult<()> {
+        let old_fs_blocks = extent_data_blocks(&old.leaves)?
+            .checked_add(old.nodes.len() as u64)
+            .ok_or_else(|| debug_errno("update_i_blocks: old fs block count overflow", Errno::EINVAL))?;
+        let new_fs_blocks = extent_data_blocks(&new.leaves)?
+            .checked_add(new.nodes.len() as u64)
+            .ok_or_else(|| debug_errno("update_i_blocks: new fs block count overflow", Errno::EINVAL))?;
         let sectors_per_fs_block = (self.block_size / 512) as u64;
 
-        if new_fs_blocks >= old_fs_blocks {
-            let delta = new_fs_blocks
-                .checked_sub(old_fs_blocks)
-                .and_then(|blocks| blocks.checked_mul(sectors_per_fs_block))
-                .ok_or_else(|| {
-                    debug_errno(
-                        "update_i_blocks_from_extent_delta: positive sector delta overflow",
-                        Errno::EINVAL,
-                    )
-                })?;
-            inode.i_blocks = inode
-                .i_blocks
-                .checked_add(delta)
-                .ok_or_else(|| debug_errno("update_i_blocks_from_extent_delta: i_blocks overflow", Errno::EINVAL))?;
+        inode.i_blocks = if new_fs_blocks >= old_fs_blocks {
+            (new_fs_blocks - old_fs_blocks)
+                .checked_mul(sectors_per_fs_block)
+                .and_then(|delta| inode.i_blocks.checked_add(delta))
+                .ok_or_else(|| debug_errno("update_i_blocks: i_blocks overflow", Errno::EINVAL))?
         } else {
-            let delta = old_fs_blocks
-                .checked_sub(new_fs_blocks)
-                .and_then(|blocks| blocks.checked_mul(sectors_per_fs_block))
-                .ok_or_else(|| {
-                    debug_errno(
-                        "update_i_blocks_from_extent_delta: negative sector delta overflow",
-                        Errno::EINVAL,
-                    )
-                })?;
-            inode.i_blocks = inode
-                .i_blocks
-                .checked_sub(delta)
-                .ok_or_else(|| debug_errno("update_i_blocks_from_extent_delta: i_blocks underflow", Errno::EINVAL))?;
-        }
-
+            (old_fs_blocks - new_fs_blocks)
+                .checked_mul(sectors_per_fs_block)
+                .and_then(|delta| inode.i_blocks.checked_sub(delta))
+                .ok_or_else(|| debug_errno("update_i_blocks: i_blocks underflow", Errno::EINVAL))?
+        };
         Ok(())
     }
 
     pub fn remove_extent_range(
         &self,
-        ino: u32,
         inode: &mut Ext4Inode,
         first_lblk: u32,
         last_lblk_inclusive: u32,
@@ -499,19 +453,13 @@ impl Context {
             return Ok(());
         }
 
-        let root = self.parse_extent_root(inode)?;
-        let tree_generation = root.header.eh_generation;
-        let mut extents = Vec::new();
-        let mut old_extent_blocks = Vec::new();
-        self.collect_extent_leaves(ino, inode.i_generation, &root, &mut extents, &mut old_extent_blocks)?;
-
-        let (new_extents, mut blocks_to_free) = remove_extent_leaves(&extents, first_lblk, last_lblk_inclusive)?;
-        self.rebuild_extent_tree(ino, inode, tree_generation, &new_extents, &old_extent_blocks)?;
-
-        self.free_blocks_by_group(&mut blocks_to_free)?;
-
-        self.update_i_blocks_from_extent_delta(inode, &extents, old_extent_blocks.len(), &new_extents)?;
-        Ok(())
+        let old = self.extent_map(inode)?;
+        let (leaves, mut blocks_to_free) = remove_extent_leaves(&old.leaves, first_lblk, last_lblk_inclusive)?;
+        if blocks_to_free.is_empty() {
+            return Ok(());
+        }
+        self.replace_extent_tree(inode, &old, leaves)?;
+        self.free_blocks_by_group(&mut blocks_to_free)
     }
 
     pub fn init_dir_block(&self, pblk: u64, dir_ino: u32, dir_generation: u32, parent_ino: u32) -> SysResult<()> {
@@ -565,11 +513,11 @@ impl Context {
             return self.insert_indexed_dirent(dir_ino, dir_inode, name, child_ino, file_type);
         }
 
-        let root = self.parse_extent_root(dir_inode)?;
+        let map = self.extent_map(dir_inode)?;
         let total_blocks = dir_inode.i_size.div_ceil(self.block_size as u64) as u32;
 
         for lblk in 0..total_blocks {
-            let Some(pblk) = lookup_lblk_mut(self, root.clone(), dir_ino, dir_inode.i_generation, lblk)? else {
+            let Some(pblk) = map.lookup(lblk, true) else {
                 continue;
             };
 
@@ -595,7 +543,7 @@ impl Context {
             // insert_extent_1blk/write_inode and write_dir_block cannot
             // expose stale data from a previously freed block.
             self.zero_fs_block(new_pblk)?;
-            self.insert_extent_1blk(dir_ino, dir_inode, total_blocks, new_pblk)?;
+            self.insert_extent_1blk(dir_inode, total_blocks, new_pblk)?;
             dir_inode.i_size = dir_inode
                 .i_size
                 .checked_add(self.block_size as u64)
@@ -636,11 +584,11 @@ impl Context {
             return self.remove_indexed_dirent(dir_ino, dir_inode, name);
         }
 
-        let root = self.parse_extent_root(dir_inode)?;
+        let map = self.extent_map(dir_inode)?;
         let total_blocks = dir_inode.i_size.div_ceil(self.block_size as u64) as u32;
 
         for lblk in 0..total_blocks {
-            let Some(pblk) = lookup_lblk_mut(self, root.clone(), dir_ino, dir_inode.i_generation, lblk)? else {
+            let Some(pblk) = map.lookup(lblk, true) else {
                 continue;
             };
 
@@ -655,7 +603,7 @@ impl Context {
         ret_errno("remove_dirent: name not found", Errno::ENOENT)
     }
 
-    pub fn patch_dotdot(&self, dir_ino: u32, dir_inode: &Ext4Inode, parent_ino: u32) -> SysResult<()> {
+    pub fn patch_dotdot(&self, dir_ino: u32, dir_inode: &mut Ext4Inode, parent_ino: u32) -> SysResult<()> {
         if dir_inode.i_flags.contains(Ext4InodeFlags::INLINE_DATA) {
             return ret_errno("patch_dotdot: inline_data directory unsupported", Errno::EOPNOTSUPP);
         }
@@ -666,8 +614,9 @@ impl Context {
             return self.patch_indexed_dotdot(dir_ino, dir_inode, parent_ino);
         }
 
-        let root = self.parse_extent_root(dir_inode)?;
-        let pblk = lookup_lblk_mut(self, root, dir_ino, dir_inode.i_generation, 0)?
+        let pblk = self
+            .extent_map(dir_inode)?
+            .lookup(0, true)
             .ok_or_else(|| debug_errno("patch_dotdot: missing directory data block", Errno::EIO))?;
         let mut dir_block = self.read_dir_block(dir_ino, dir_inode.i_generation, pblk)?;
 
@@ -682,9 +631,10 @@ impl Context {
         ret_errno("patch_dotdot: missing '..' entry", Errno::EIO)
     }
 
-    fn read_directory_logical_raw(&self, dir_ino: u32, dir_inode: &Ext4Inode, lblk: u32) -> SysResult<(u64, Vec<u8>)> {
-        let root = self.parse_extent_root(dir_inode)?;
-        let pblk = lookup_lblk_mut(self, root, dir_ino, dir_inode.i_generation, lblk)?
+    fn read_directory_logical_raw(&self, dir_inode: &mut Ext4Inode, lblk: u32) -> SysResult<(u64, Vec<u8>)> {
+        let pblk = self
+            .extent_map(dir_inode)?
+            .lookup(lblk, true)
             .ok_or_else(|| debug_errno("read_directory_logical_raw: missing directory data block", Errno::EIO))?;
         Ok((pblk, self.read_fs_block(pblk)?))
     }
@@ -697,10 +647,10 @@ impl Context {
         child_ino: u32,
         file_type: Ext4DirEntryFileType,
     ) -> SysResult<()> {
-        let (root_pblk, root_raw) = self.read_directory_logical_raw(dir_ino, dir_inode, 0)?;
+        let (root_pblk, root_raw) = self.read_directory_logical_raw(dir_inode, 0)?;
         let (hash_version, _, _) = self.parse_htree_root(&root_raw)?;
         let hash = htree_hash(name, self.hash_seed, hash_version)?;
-        let leaf = self.find_indexed_directory_leaf(dir_ino, dir_inode, hash, root_pblk, root_raw)?;
+        let leaf = self.find_indexed_directory_leaf(dir_inode, hash, root_pblk, root_raw)?;
 
         let mut dir_block = self.read_dir_block(dir_ino, dir_inode.i_generation, leaf.leaf_pblk)?;
         let old_block = dir_block.clone();
@@ -717,8 +667,8 @@ impl Context {
         self.split_indexed_directory_leaf(dir_ino, dir_inode, leaf, hash_version, hash, name, child_ino, file_type)
     }
 
-    fn remove_indexed_dirent(&self, dir_ino: u32, dir_inode: &Ext4Inode, name: &[u8]) -> SysResult<(u32, u8)> {
-        let (_, root_raw) = self.read_directory_logical_raw(dir_ino, dir_inode, 0)?;
+    fn remove_indexed_dirent(&self, dir_ino: u32, dir_inode: &mut Ext4Inode, name: &[u8]) -> SysResult<(u32, u8)> {
+        let (_, root_raw) = self.read_directory_logical_raw(dir_inode, 0)?;
         let (hash_version, root, indirect_levels) = self.parse_htree_root(&root_raw)?;
         let hash = htree_hash(name, self.hash_seed, hash_version)?;
         let root_start = htree_find_position(&root_raw, root, hash);
@@ -745,7 +695,7 @@ impl Context {
                     }
 
                     let node_lblk = htree_entry_block(&root_raw, root, root_pos)?;
-                    let (_, node_raw) = self.read_directory_logical_raw(dir_ino, dir_inode, node_lblk)?;
+                    let (_, node_raw) = self.read_directory_logical_raw(dir_inode, node_lblk)?;
                     let node = self.parse_htree_node(&node_raw)?;
                     let node_start = if root_pos == root_start {
                         htree_find_position(&node_raw, node, hash)
@@ -777,11 +727,11 @@ impl Context {
     fn try_remove_indexed_leaf(
         &self,
         dir_ino: u32,
-        dir_inode: &Ext4Inode,
+        dir_inode: &mut Ext4Inode,
         leaf_lblk: u32,
         name: &[u8],
     ) -> SysResult<Option<(u32, u8)>> {
-        let (leaf_pblk, _) = self.read_directory_logical_raw(dir_ino, dir_inode, leaf_lblk)?;
+        let (leaf_pblk, _) = self.read_directory_logical_raw(dir_inode, leaf_lblk)?;
         let mut dir_block = self.read_dir_block(dir_ino, dir_inode.i_generation, leaf_pblk)?;
         let Some(removed) = remove_dirent_from_block(&mut dir_block, name)? else {
             return Ok(None);
@@ -790,8 +740,8 @@ impl Context {
         Ok(Some(removed))
     }
 
-    fn patch_indexed_dotdot(&self, dir_ino: u32, dir_inode: &Ext4Inode, parent_ino: u32) -> SysResult<()> {
-        let (pblk, mut raw) = self.read_directory_logical_raw(dir_ino, dir_inode, 0)?;
+    fn patch_indexed_dotdot(&self, dir_ino: u32, dir_inode: &mut Ext4Inode, parent_ino: u32) -> SysResult<()> {
+        let (pblk, mut raw) = self.read_directory_logical_raw(dir_inode, 0)?;
         let dot_len = get_u16_le(&raw, 4)? as usize;
         let header_end = dot_len
             .checked_add(DIR_ENTRY_HEADER_SIZE)
@@ -817,8 +767,7 @@ impl Context {
 
     fn find_indexed_directory_leaf(
         &self,
-        dir_ino: u32,
-        dir_inode: &Ext4Inode,
+        dir_inode: &mut Ext4Inode,
         hash: u32,
         root_pblk: u64,
         root_raw: Vec<u8>,
@@ -829,7 +778,7 @@ impl Context {
         match indirect_levels {
             0 => {
                 let leaf_lblk = htree_entry_block(&root_raw, root, root_position)?;
-                let (leaf_pblk, _) = self.read_directory_logical_raw(dir_ino, dir_inode, leaf_lblk)?;
+                let (leaf_pblk, _) = self.read_directory_logical_raw(dir_inode, leaf_lblk)?;
                 Ok(HTreeLeafPath {
                     index_pblk: root_pblk,
                     index_raw: root_raw,
@@ -840,11 +789,11 @@ impl Context {
             }
             1 => {
                 let node_lblk = htree_entry_block(&root_raw, root, root_position)?;
-                let (node_pblk, node_raw) = self.read_directory_logical_raw(dir_ino, dir_inode, node_lblk)?;
+                let (node_pblk, node_raw) = self.read_directory_logical_raw(dir_inode, node_lblk)?;
                 let node = self.parse_htree_node(&node_raw)?;
                 let node_position = htree_find_position(&node_raw, node, hash);
                 let leaf_lblk = htree_entry_block(&node_raw, node, node_position)?;
-                let (leaf_pblk, _) = self.read_directory_logical_raw(dir_ino, dir_inode, leaf_lblk)?;
+                let (leaf_pblk, _) = self.read_directory_logical_raw(dir_inode, leaf_lblk)?;
                 Ok(HTreeLeafPath {
                     index_pblk: node_pblk,
                     index_raw: node_raw,
@@ -969,7 +918,7 @@ impl Context {
             // insert_extent_1blk and the dir block writes cannot expose
             // stale data from a previously freed block.
             self.zero_fs_block(new_pblk)?;
-            self.insert_extent_1blk(dir_ino, dir_inode, new_lblk, new_pblk)?;
+            self.insert_extent_1blk(dir_inode, new_lblk, new_pblk)?;
             dir_inode.i_size = dir_inode
                 .i_size
                 .checked_add(self.block_size as u64)
@@ -1105,156 +1054,199 @@ impl Context {
         Ok(())
     }
 
-    fn rebuild_extent_tree(
+    /// Rewrites the extent tree of `inode` to map exactly `leaves`.
+    ///
+    /// External blocks of the old tree are reused depth by depth, and a reused
+    /// block whose entries are unchanged is not rewritten, so appending to a
+    /// large file only touches the last leaf block.
+    pub fn replace_extent_tree(
         &self,
-        ino: u32,
         inode: &mut Ext4Inode,
-        tree_generation: u32,
-        extents: &[ExtentLeaf],
-        old_extent_blocks: &[u64],
+        old: &ExtentMap,
+        leaves: Vec<ExtentLeaf>,
     ) -> SysResult<()> {
-        if extents.is_empty() {
-            self.init_empty_extent_root(inode)?;
-            self.write_inode(inode)?;
-            for &pblk in old_extent_blocks {
-                self.free_block(pblk)?;
-            }
-            return Ok(());
-        }
+        let ino = inode.ino;
+        let generation = inode.i_generation;
+        let tree_generation = old.tree_generation;
+        // Reused blocks are overwritten below; a failure must re-read the disk.
+        inode.extent_map = None;
 
-        if extents.len() <= ROOT_EXTENT_MAX as usize {
-            let mut root = ExtentBlock {
-                pblk: 0,
-                raw: Vec::new(),
-                header: ExtentHeader {
-                    eh_magic: EXT4_EXTENT_MAGIC,
-                    eh_entries: extents.len() as u16,
-                    eh_max: ROOT_EXTENT_MAX,
-                    eh_depth: 0,
-                    eh_generation: tree_generation,
-                },
-                idx: Vec::new(),
-                leaf: extents.to_vec(),
-                tail_checksum: None,
-            };
-            self.encode_extent_root(inode, &mut root)?;
-            self.write_inode(inode)?;
-            for &pblk in old_extent_blocks {
-                self.free_block(pblk)?;
-            }
-            return Ok(());
-        }
-
-        let block_max = self.extent_block_max_entries()?;
-        let block_max_usize = block_max as usize;
-        let mut reused = 0usize;
-        let mut newly_allocated = Vec::new();
-
-        let mut nodes = Vec::new();
-        for chunk in extents.chunks(block_max_usize) {
-            let pblk = self.next_extent_tree_block(old_extent_blocks, &mut reused, &mut newly_allocated)?;
-            let mut block = self.make_extent_block(pblk, 0, tree_generation, chunk, &[])?;
-            self.write_extent_block(ino, inode.i_generation, &mut block)?;
-            nodes.push(BuiltExtentNode {
-                first_lblk: chunk[0].ee_block,
-                pblk,
-                depth: 0,
-            });
-        }
-
-        while nodes.len() > ROOT_EXTENT_MAX as usize {
-            let child_depth = nodes[0].depth;
-            let mut parents = Vec::new();
-            for chunk in nodes.chunks(block_max_usize) {
-                let pblk = self.next_extent_tree_block(old_extent_blocks, &mut reused, &mut newly_allocated)?;
-                let mut idx = Vec::with_capacity(chunk.len());
-                for child in chunk {
-                    idx.push(ExtentIdx {
-                        ei_block: child.first_lblk,
-                        ei_leaf: child.pblk,
-                    });
-                }
-                let mut block = self.make_extent_block(pblk, child_depth + 1, tree_generation, &[], &idx)?;
-                self.write_extent_block(ino, inode.i_generation, &mut block)?;
-                parents.push(BuiltExtentNode {
-                    first_lblk: idx[0].ei_block,
-                    pblk,
-                    depth: child_depth + 1,
-                });
-            }
-            nodes = parents;
-        }
-
-        let root_depth = nodes[0]
-            .depth
-            .checked_add(1)
-            .ok_or_else(|| debug_errno("rebuild_extent_tree: root depth overflow", Errno::EINVAL))?;
+        let mut map = ExtentMap {
+            tree_generation,
+            leaves,
+            nodes: Vec::new(),
+        };
         let mut root = ExtentBlock {
             pblk: 0,
             raw: Vec::new(),
             header: ExtentHeader {
                 eh_magic: EXT4_EXTENT_MAGIC,
-                eh_entries: nodes.len() as u16,
+                eh_entries: 0,
                 eh_max: ROOT_EXTENT_MAX,
-                eh_depth: root_depth,
+                eh_depth: 0,
                 eh_generation: tree_generation,
             },
-            idx: nodes
+            idx: Vec::new(),
+            leaf: Vec::new(),
+            tail_checksum: None,
+        };
+        let mut unused = vec![true; old.nodes.len()];
+        let mut newly_allocated = Vec::new();
+
+        let result = (|| -> SysResult<()> {
+            if map.leaves.len() <= ROOT_EXTENT_MAX as usize {
+                root.header.eh_entries = map.leaves.len() as u16;
+                root.leaf = map.leaves.clone();
+                return Ok(());
+            }
+
+            let block_max = self.extent_block_max_entries()? as usize;
+            let mut level = Vec::new();
+            let mut start = 0usize;
+            while start < map.leaves.len() {
+                let end = cmp::min(start + block_max, map.leaves.len());
+                let chunk = &map.leaves[start..end];
+                let (pblk, old_node) = self.next_extent_tree_block(old, &mut unused, 0, &mut newly_allocated)?;
+                if !old_node.is_some_and(|node| node.depth == 0 && old.leaves[node.leaves.clone()] == *chunk) {
+                    let mut block = self.make_extent_block(pblk, 0, tree_generation, chunk, &[])?;
+                    self.write_extent_block(ino, generation, &mut block)?;
+                }
+                level.push(BuiltExtentNode {
+                    first_lblk: chunk[0].ee_block,
+                    pblk,
+                    depth: 0,
+                });
+                map.nodes.push(ExtentNode {
+                    pblk,
+                    depth: 0,
+                    leaves: start..end,
+                    idx: Vec::new(),
+                });
+                start = end;
+            }
+
+            while level.len() > ROOT_EXTENT_MAX as usize {
+                let depth = level[0].depth + 1;
+                let mut parents = Vec::new();
+                for chunk in level.chunks(block_max) {
+                    let idx: Vec<ExtentIdx> = chunk
+                        .iter()
+                        .map(|child| ExtentIdx {
+                            ei_block: child.first_lblk,
+                            ei_leaf: child.pblk,
+                        })
+                        .collect();
+                    let (pblk, old_node) =
+                        self.next_extent_tree_block(old, &mut unused, depth, &mut newly_allocated)?;
+                    if !old_node.is_some_and(|node| node.depth == depth && node.idx == idx) {
+                        let mut block = self.make_extent_block(pblk, depth, tree_generation, &[], &idx)?;
+                        self.write_extent_block(ino, generation, &mut block)?;
+                    }
+                    parents.push(BuiltExtentNode {
+                        first_lblk: idx[0].ei_block,
+                        pblk,
+                        depth,
+                    });
+                    map.nodes.push(ExtentNode {
+                        pblk,
+                        depth,
+                        leaves: 0..0,
+                        idx,
+                    });
+                }
+                level = parents;
+            }
+
+            root.header.eh_entries = level.len() as u16;
+            root.header.eh_depth = level[0]
+                .depth
+                .checked_add(1)
+                .ok_or_else(|| debug_errno("replace_extent_tree: root depth overflow", Errno::EINVAL))?;
+            root.idx = level
                 .iter()
                 .map(|node| ExtentIdx {
                     ei_block: node.first_lblk,
                     ei_leaf: node.pblk,
                 })
-                .collect(),
-            leaf: Vec::new(),
-            tail_checksum: None,
-        };
-        self.encode_extent_root(inode, &mut root)?;
-        self.write_inode(inode)?;
-
-        for &pblk in &old_extent_blocks[reused..] {
-            self.free_block(pblk)?;
+                .collect();
+            Ok(())
+        })();
+        if let Err(err) = result {
+            for pblk in newly_allocated {
+                let _ = self.free_block(pblk);
+            }
+            return Err(err);
         }
 
-        Ok(())
+        self.update_i_blocks(inode, old, &map)?;
+        self.encode_extent_root(inode, &mut root)?;
+        inode.extent_map = Some(Arc::new(map));
+        self.write_inode(inode)?;
+
+        let mut stale: Vec<u64> = old
+            .nodes
+            .iter()
+            .zip(&unused)
+            .filter_map(|(node, &unused)| unused.then_some(node.pblk))
+            .collect();
+        self.free_blocks_by_group(&mut stale)
     }
 
-    fn collect_extent_leaves(
+    fn collect_extent_nodes(
         &self,
         ino: u32,
         generation: u32,
         block: &ExtentBlock,
-        extents: &mut Vec<ExtentLeaf>,
-        extent_blocks: &mut Vec<u64>,
+        map: &mut ExtentMap,
     ) -> SysResult<()> {
         if block.header.eh_depth == 0 {
-            extents.extend_from_slice(&block.leaf);
+            map.leaves.extend_from_slice(&block.leaf);
             return Ok(());
         }
 
         for idx in &block.idx {
-            extent_blocks.push(idx.ei_leaf);
             let child = self.read_extent_block(ino, generation, idx.ei_leaf)?;
-            self.collect_extent_leaves(ino, generation, &child, extents, extent_blocks)?;
+            if child.header.eh_depth.checked_add(1) != Some(block.header.eh_depth) {
+                return ret_errno("collect_extent_nodes: unexpected extent block depth", Errno::EIO);
+            }
+            let start = map.leaves.len();
+            let node = map.nodes.len();
+            map.nodes.push(ExtentNode {
+                pblk: idx.ei_leaf,
+                depth: child.header.eh_depth,
+                leaves: start..start,
+                idx: child.idx.clone(),
+            });
+            self.collect_extent_nodes(ino, generation, &child, map)?;
+            map.nodes[node].leaves = start..map.leaves.len();
         }
 
         Ok(())
     }
 
-    fn next_extent_tree_block(
+    /// Picks a block for a rebuilt extent node: an unused old node of the same
+    /// depth first, then any unused old node, then a freshly allocated block.
+    fn next_extent_tree_block<'a>(
         &self,
-        old_extent_blocks: &[u64],
-        reused: &mut usize,
+        old: &'a ExtentMap,
+        unused: &mut [bool],
+        depth: u16,
         newly_allocated: &mut Vec<u64>,
-    ) -> SysResult<u64> {
-        if let Some(&pblk) = old_extent_blocks.get(*reused) {
-            *reused += 1;
-            Ok(pblk)
-        } else {
-            let pblk = self.alloc_block()?;
-            newly_allocated.push(pblk);
-            Ok(pblk)
+    ) -> SysResult<(u64, Option<&'a ExtentNode>)> {
+        let reuse = old
+            .nodes
+            .iter()
+            .zip(unused.iter())
+            .position(|(node, &unused)| unused && node.depth == depth)
+            .or_else(|| unused.iter().position(|&unused| unused));
+        if let Some(pos) = reuse {
+            unused[pos] = false;
+            return Ok((old.nodes[pos].pblk, Some(&old.nodes[pos])));
         }
+
+        let pblk = self.alloc_block()?;
+        newly_allocated.push(pblk);
+        Ok((pblk, None))
     }
 
     fn make_extent_block(
@@ -1329,43 +1321,47 @@ impl Context {
     }
 
     fn dec_superblock_free_blocks(&self, count: u64) -> SysResult<()> {
-        let mut sb = self.read_superblock()?;
-        let free = sb
-            .free_blocks_count()?
+        let free = self
+            .free_blocks_count
+            .load(Ordering::Relaxed)
             .checked_sub(count)
             .ok_or_else(|| debug_errno("dec_superblock_free_blocks: underflow", Errno::EIO))?;
-        sb.set_free_blocks_count(free)?;
-        self.write_superblock(&mut sb)
+        self.free_blocks_count.store(free, Ordering::Relaxed);
+        self.superblock_dirty.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn inc_superblock_free_blocks(&self, count: u64) -> SysResult<()> {
-        let mut sb = self.read_superblock()?;
-        let free = sb
-            .free_blocks_count()?
+        let free = self
+            .free_blocks_count
+            .load(Ordering::Relaxed)
             .checked_add(count)
             .ok_or_else(|| debug_errno("inc_superblock_free_blocks: overflow", Errno::EIO))?;
-        sb.set_free_blocks_count(free)?;
-        self.write_superblock(&mut sb)
+        self.free_blocks_count.store(free, Ordering::Relaxed);
+        self.superblock_dirty.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn dec_superblock_free_inodes(&self) -> SysResult<()> {
-        let mut sb = self.read_superblock()?;
-        let free = sb
-            .free_inodes_count()?
+        let free = self
+            .free_inodes_count
+            .load(Ordering::Relaxed)
             .checked_sub(1)
             .ok_or_else(|| debug_errno("dec_superblock_free_inodes: underflow", Errno::EIO))?;
-        sb.set_free_inodes_count(free)?;
-        self.write_superblock(&mut sb)
+        self.free_inodes_count.store(free, Ordering::Relaxed);
+        self.superblock_dirty.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn inc_superblock_free_inodes(&self) -> SysResult<()> {
-        let mut sb = self.read_superblock()?;
-        let free = sb
-            .free_inodes_count()?
+        let free = self
+            .free_inodes_count
+            .load(Ordering::Relaxed)
             .checked_add(1)
             .ok_or_else(|| debug_errno("inc_superblock_free_inodes: overflow", Errno::EIO))?;
-        sb.set_free_inodes_count(free)?;
-        self.write_superblock(&mut sb)
+        self.free_inodes_count.store(free, Ordering::Relaxed);
+        self.superblock_dirty.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn default_extra_isize(&self) -> u16 {
@@ -1394,27 +1390,6 @@ impl Context {
         }
         gd.flags &= !EXT4_BG_INODE_UNINIT;
         Ok(())
-    }
-
-    fn external_extent_block_count_for_extent_count(&self, extent_count: usize) -> SysResult<u64> {
-        if extent_count <= ROOT_EXTENT_MAX as usize {
-            return Ok(0);
-        }
-
-        let block_max = self.extent_block_max_entries()? as usize;
-        let mut nodes = extent_count.div_ceil(block_max) as u64;
-        let mut total = nodes;
-
-        while nodes > ROOT_EXTENT_MAX as u64 {
-            nodes = nodes.div_ceil(block_max as u64);
-            total = total.checked_add(nodes).ok_or_else(|| {
-                debug_errno(
-                    "external_extent_block_count_for_extent_count: node count overflow",
-                    Errno::EINVAL,
-                )
-            })?;
-        }
-        Ok(total)
     }
 }
 
@@ -1455,48 +1430,6 @@ fn extent_data_blocks(extents: &[ExtentLeaf]) -> SysResult<u64> {
             .ok_or_else(|| debug_errno("extent_data_blocks: block count overflow", Errno::EINVAL))?;
     }
     Ok(total)
-}
-
-fn lookup_lblk_mut(
-    context: &Context,
-    root: ExtentBlock,
-    ino: u32,
-    generation: u32,
-    lblk: u32,
-) -> SysResult<Option<u64>> {
-    let mut cur = root;
-    loop {
-        if cur.header.eh_depth == 0 {
-            return Ok(find_in_leaves_mut(&cur.leaf, lblk));
-        }
-
-        let mut chosen_leaf: Option<u64> = None;
-        for idx in &cur.idx {
-            if idx.ei_block <= lblk {
-                chosen_leaf = Some(idx.ei_leaf);
-            } else {
-                break;
-            }
-        }
-        let next = chosen_leaf
-            .or_else(|| cur.idx.first().map(|idx| idx.ei_leaf))
-            .ok_or_else(|| debug_errno("lookup_lblk_mut: extent index lookup failed", Errno::EIO))?;
-        cur = context.read_extent_block(ino, generation, next)?;
-    }
-}
-
-fn find_in_leaves_mut(leaves: &[ExtentLeaf], lblk: u32) -> Option<u64> {
-    for leaf in leaves {
-        let len = extent_len_u32(leaf.ee_len_raw);
-        if lblk < leaf.ee_block {
-            return None;
-        }
-        let end = leaf.ee_block.checked_add(len)?;
-        if lblk < end {
-            return Some(leaf.ee_start + (lblk - leaf.ee_block) as u64);
-        }
-    }
-    None
 }
 
 fn extent_len_u32(raw: u16) -> u32 {

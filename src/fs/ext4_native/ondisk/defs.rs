@@ -1,4 +1,7 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::ops::Range;
+
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
@@ -95,6 +98,7 @@ pub(super) const EXT4_BG_INODE_UNINIT: u16 = 0x0001;
 pub(super) const EXT4_BG_BLOCK_UNINIT: u16 = 0x0002;
 
 pub(super) const EXTENT_HEADER_SIZE: usize = 12;
+pub(super) const EXT_INIT_MAX_LEN: u16 = 32768;
 pub(super) const EXTENT_ENTRY_SIZE: usize = 12;
 
 pub(super) const DIR_ENTRY_HEADER_SIZE: usize = 8;
@@ -189,6 +193,28 @@ pub struct Ext4Inode {
 
     pub i_file_acl: u64,
     pub i_extra_isize: u16,
+
+    /// Decoded extent tree matching `i_block`; cleared by [Ext4Inode::i_block_mut].
+    pub extent_map: Option<Arc<ExtentMap>>,
+}
+
+/// In-memory copy of an inode's extent tree.
+#[derive(Clone)]
+pub struct ExtentMap {
+    pub tree_generation: u32,
+    pub leaves: Vec<ExtentLeaf>,
+    /// External extent blocks; nodes of the same depth appear left to right.
+    pub nodes: Vec<ExtentNode>,
+}
+
+#[derive(Clone)]
+pub struct ExtentNode {
+    pub pblk: u64,
+    pub depth: u16,
+    /// Leaf entries held by a depth-0 node, as a range of [ExtentMap::leaves].
+    pub leaves: Range<usize>,
+    /// Index entries held by an interior node.
+    pub idx: Vec<ExtentIdx>,
 }
 
 #[derive(Clone, Copy)]
@@ -200,13 +226,13 @@ pub struct ExtentHeader {
     pub eh_generation: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ExtentIdx {
     pub ei_block: u32,
     pub ei_leaf: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ExtentLeaf {
     pub ee_block: u32,
     pub ee_len_raw: u16,

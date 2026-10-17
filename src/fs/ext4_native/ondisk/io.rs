@@ -56,7 +56,16 @@ impl Context {
         let idx = ino - 1;
         let group = idx / self.inodes_per_group;
         let index = idx % self.inodes_per_group;
-        let gd = self.read_group_desc(group)?;
+        // The inode table never moves, so its location is cached per group.
+        let cached = self.inode_tables.lock().get(&group).copied();
+        let inode_table_first_block = match cached {
+            Some(pblk) => pblk,
+            None => {
+                let pblk = self.read_group_desc(group)?.inode_table_first_block;
+                self.inode_tables.lock().insert(group, pblk);
+                pblk
+            }
+        };
 
         let byte_off_in_group = (index as u64)
             .checked_mul(self.inode_size as u64)
@@ -66,8 +75,7 @@ impl Context {
         let off_in_block = usize::try_from(byte_off_in_group % self.block_size as u64)
             .map_err(|_| debug_errno("inode_location: in-block offset does not fit usize", Errno::EINVAL))?;
 
-        let table_block = gd
-            .inode_table_first_block
+        let table_block = inode_table_first_block
             .checked_add(block_off)
             .ok_or_else(|| debug_errno("inode_location: table block overflow", Errno::EINVAL))?;
 

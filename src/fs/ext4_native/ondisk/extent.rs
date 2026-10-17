@@ -87,6 +87,23 @@ impl Context {
     }
 }
 
+impl ExtentMap {
+    /// Maps `lblk` through the extent containing it. Unwritten extents are
+    /// included only when `include_unwritten` is set.
+    pub fn lookup(&self, lblk: u32, include_unwritten: bool) -> Option<u64> {
+        let pos = self.leaves.partition_point(|leaf| leaf.ee_block <= lblk);
+        let leaf = self.leaves.get(pos.checked_sub(1)?)?;
+        let unwritten = leaf.ee_len_raw > EXT_INIT_MAX_LEN;
+        let len = if unwritten {
+            leaf.ee_len_raw - EXT_INIT_MAX_LEN
+        } else {
+            leaf.ee_len_raw
+        };
+        let offset = lblk - leaf.ee_block;
+        (offset < len as u32 && (include_unwritten || !unwritten)).then(|| leaf.ee_start + offset as u64)
+    }
+}
+
 fn parse_extent_root_bytes(raw: &[u8], block_size: usize) -> SysResult<ExtentBlock> {
     let (header, idx, leaf, tail_checksum) = parse_extent_block_view(raw, true, block_size)?;
     Ok(ExtentBlock {

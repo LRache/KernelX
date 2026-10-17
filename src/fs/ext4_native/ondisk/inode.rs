@@ -25,7 +25,6 @@ const INODE_FILE_ACL_HIGH_OFF: usize = 0x76;
 const INODE_CHECKSUM_LO_OFF: usize = 0x7C;
 const INODE_EXTRA_ISIZE_OFF: usize = 0x80;
 const INODE_CHECKSUM_HI_OFF: usize = 0x82;
-const EXT_INIT_MAX_LEN: u16 = 32768;
 const BLOCK_PTR_SIZE: usize = core::mem::size_of::<u32>();
 const EXT4_INODE_DIRECT_BLOCK_COUNT: usize = 12;
 const EXT4_INODE_INDIRECT_BLOCK: usize = EXT4_INODE_DIRECT_BLOCK_COUNT;
@@ -60,6 +59,7 @@ impl Ext4Inode {
             i_extra_isize: get_u16_le(raw, INODE_EXTRA_ISIZE_OFF)?,
             raw: raw.to_vec(),
             ino,
+            extent_map: None,
         })
     }
 
@@ -71,6 +71,7 @@ impl Ext4Inode {
 
     #[inline]
     pub fn i_block_mut(&mut self) -> &mut [u8] {
+        self.extent_map = None;
         let end = INODE_BLOCK_ARRAY_OFF + INODE_BLOCK_ARRAY_SIZE;
         &mut self.raw[INODE_BLOCK_ARRAY_OFF..end]
     }

@@ -10,10 +10,11 @@ mod util;
 
 pub use defs::{
     DirBlock, DirEntry2, Ext4BitmapBlock, Ext4DirEntryFileType, Ext4GroupDesc, Ext4IncompatFeatures, Ext4Inode,
-    Ext4InodeFlags, Ext4RoCompatFeatures, Ext4Superblock, ExtentBlock, ExtentHeader, ExtentIdx, ExtentLeaf,
+    Ext4InodeFlags, Ext4RoCompatFeatures, Ext4Superblock, ExtentBlock, ExtentHeader, ExtentIdx, ExtentLeaf, ExtentMap,
+    ExtentNode,
 };
 pub use group_desc::{clear_bit, set_bit, test_bit};
-pub(crate) use inode::{lookup_extent_lblk, lookup_lblk};
+pub(crate) use inode::lookup_lblk;
 pub(crate) use util::{debug_errno, mount_errno, mount_ret_errno, ret_errno};
 
 pub(super) use super::ctx::Context;

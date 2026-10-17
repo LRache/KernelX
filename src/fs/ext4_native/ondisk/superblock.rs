@@ -1,9 +1,12 @@
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::driver::BlockDriverOps;
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
+use crate::klib::SpinLock;
 use crate::klib::crc::crc32c_update;
 
 use super::*;
@@ -284,7 +287,13 @@ impl Context {
             feature_compat,
             feature_incompat,
             feature_ro_compat,
-            alloc_hint_group: core::sync::atomic::AtomicU32::new(0),
+            alloc_hint_group: AtomicU32::new(0),
+            alloc_inode_hint_group: AtomicU32::new(0),
+            inodes_count: sb.inodes_count()?,
+            free_blocks_count: AtomicU64::new(sb.free_blocks_count()?),
+            free_inodes_count: AtomicU32::new(sb.free_inodes_count()?),
+            superblock_dirty: AtomicBool::new(false),
+            inode_tables: SpinLock::new(BTreeMap::new(), "ext4_native::Context::inode_tables"),
         })
     }
 
@@ -314,16 +323,34 @@ impl Context {
         self.block_size
     }
 
+    /// Writes the in-memory free block/inode counters back to the superblock.
+    pub fn flush_superblock(&self) -> SysResult<()> {
+        if !self.superblock_dirty.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        let result = (|| -> SysResult<()> {
+            let mut sb = self.read_superblock()?;
+            sb.set_free_blocks_count(self.free_blocks_count.load(Ordering::Relaxed))?;
+            sb.set_free_inodes_count(self.free_inodes_count.load(Ordering::Relaxed))?;
+            self.write_superblock(&mut sb)
+        })();
+        if result.is_err() {
+            self.superblock_dirty.store(true, Ordering::Release);
+        }
+        result
+    }
+
     pub fn statfs(&self) -> SysResult<Statfs> {
-        let sb = self.read_superblock()?;
+        let free_blocks = self.free_blocks_count.load(Ordering::Relaxed);
         Ok(Statfs {
             f_type: EXT4_SUPER_MAGIC as u64,
             f_bsize: self.block_size as u64,
             f_blocks: self.blocks_count,
-            f_bfree: sb.free_blocks_count()?,
-            f_bavail: sb.free_blocks_count()?,
-            f_files: sb.inodes_count()? as u64,
-            f_ffree: sb.free_inodes_count()? as u64,
+            f_bfree: free_blocks,
+            f_bavail: free_blocks,
+            f_files: self.inodes_count as u64,
+            f_ffree: self.free_inodes_count.load(Ordering::Relaxed) as u64,
             f_fsid: self.fsno as u64,
             f_namelen: EXT4_MAX_NAME_LEN as u64,
             f_frsize: self.block_size as u64,

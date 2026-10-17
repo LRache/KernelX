@@ -1,4 +1,6 @@
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 
 use crate::driver::BlockDriverOps;
 use crate::fs::Mode;
@@ -7,7 +9,7 @@ use crate::fs::ext4_native::ondisk::{Ext4IncompatFeatures, Ext4RoCompatFeatures,
 use crate::fs::filesystem::{FileSystemOps, MountOptions, SuperBlockOps, VfsSuperBlock, VfsSuperBlockOps};
 use crate::kernel::errno::{Errno, SysResult};
 use crate::kernel::uapi::Statfs;
-use crate::klib::SleepRwLockOnStack;
+use crate::klib::{SleepRwLockOnStack, SpinLock};
 
 pub struct Context {
     pub(super) fsno: u32,
@@ -35,8 +37,18 @@ pub struct Context {
     pub(super) feature_incompat: Ext4IncompatFeatures,
     pub(super) feature_ro_compat: Ext4RoCompatFeatures,
 
-    // block-allocation cursor: next search starts near the last allocated group
-    pub(super) alloc_hint_group: core::sync::atomic::AtomicU32,
+    // allocation cursors: next search starts near the last allocated group
+    pub(super) alloc_hint_group: AtomicU32,
+    pub(super) alloc_inode_hint_group: AtomicU32,
+
+    // superblock counters, written back by flush_superblock()
+    pub(super) inodes_count: u32,
+    pub(super) free_blocks_count: AtomicU64,
+    pub(super) free_inodes_count: AtomicU32,
+    pub(super) superblock_dirty: AtomicBool,
+
+    // group -> first inode table block
+    pub(super) inode_tables: SpinLock<BTreeMap<u32, u64>>,
 }
 
 pub struct SuperBlock {
@@ -64,11 +76,17 @@ impl SuperBlockOps for SuperBlock {
     }
 
     fn sync(&self) -> SysResult<()> {
-        Ok(())
+        self.context.write().flush_superblock()
     }
 
     fn type_name(&self) -> &'static str {
         "ext4_native"
+    }
+}
+
+impl Drop for SuperBlock {
+    fn drop(&mut self) {
+        let _ = self.context.read().flush_superblock();
     }
 }
 
