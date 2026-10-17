@@ -225,6 +225,17 @@ pub fn free_contiguous(addr: usize, pages: usize) {
     FRAME_ALLOCATOR.lock().free_contiguous(addr, pages);
 }
 
+pub fn alloc_contiguous_aligned(pages: usize, align: usize) -> usize {
+    FRAME_ALLOCATOR
+        .lock()
+        .alloc_contiguous_aligned(pages, align)
+        .unwrap_or_else(|| allocation_failed("contiguous-aligned", pages))
+}
+
+pub fn free_contiguous_aligned(addr: usize, pages: usize, align: usize) {
+    FRAME_ALLOCATOR.lock().free_contiguous_aligned(addr, pages, align);
+}
+
 pub fn copy(src: usize, dst: usize) {
     debug_assert!(
         src % arch::PGSIZE == 0,
