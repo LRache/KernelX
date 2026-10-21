@@ -62,17 +62,17 @@ pub struct PCB {
     cwd: SpinLock<Arc<Dentry>>,
     umask: SpinLock<u16>,
     file_size_limit: SpinLock<(usize, usize)>,
-    
+
     /// The child PCB and the waiters of this PCB.
     child_wait: SleepLock<ChildWaitState>,
-    
+
     /// The waiters of this PCB's pidfd.
     pidfd_waiters: SpinLock<WaitQueue<Event>>,
-    
+
     /// The UTS namespace of this process.
     uts: UtsNamespace,
 
-    /// The pending signals of this process and 
+    /// The pending signals of this process and
     /// the signal actions are stored in the TCB.
     signal: Signal,
 
