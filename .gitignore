@@ -68,6 +68,7 @@ kernel.asm
 /alpine-*
 *.img
 *.log
+*.zst
 
 # Kconfig generated files
 .config*
@@ -79,3 +80,6 @@ kernel.asm
 Cargo.lock
 
 output
+
+# python
+__pycache__/
